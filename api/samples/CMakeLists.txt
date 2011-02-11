@@ -127,6 +127,16 @@ foreach (src ${srcs})
       use_DynamoRIO_extension(${tgt} drsyms)
     endif ()
 
+    if ("${tgt}" STREQUAL "bbcount_outofline_call")
+      use_DynamoRIO_extension(${tgt} drcalls)
+    endif ()
+
+    # TODO(rnk): Do *not* commit this.  Use git-svn at some point to stage
+    # patches.
+    if ("${tgt}" STREQUAL "dcache")
+      use_DynamoRIO_extension(${tgt} drcalls)
+    endif ()
+
     get_target_property(tgtnm ${tgt} LOCATION)
     add_custom_command(TARGET ${tgt}
       POST_BUILD
