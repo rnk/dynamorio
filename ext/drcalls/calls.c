@@ -135,15 +135,13 @@ code_cache_grow(void *drcontext, code_cache_t *code_cache)
 }
 
 /* Emit the shared clean call code into the code cache and return the entry
- * point.  Grows the code cache as necessary. */
+ * point.  Grows the code cache as necessary.  Assumes that the code cache lock
+ * is held. */
 static byte *
 emit_shared_call(void *drcontext, void *callee, uint num_args)
 {
     byte *entry;
     instrlist_t *ilist;
-
-    DR_ASSERT_MSG(!dr_mutex_trylock(code_cache->lock),
-                  "Caller must hold code cache lock");
 
     dr_log(drcontext, LOG_CACHE, 3,
            "drcalls: emitting new shared clean call\n");
