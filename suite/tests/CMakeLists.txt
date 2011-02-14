@@ -1401,13 +1401,10 @@ tobuild(security-common.TestAllocWE security-common/TestAllocWE.c)
 tobuild(security-common.TestMemProtChg security-common/TestMemProtChg.c)
 tochcon(security-common.TestMemProtChg wine_exec_t)
 
-set(ENABLE_DRCALLS ON)
-if (ENABLE_DRCALLS)
-  #tobuild_ci(drcalls.bbcount "ext-drcalls/bbcount.c" "" "" "")
-  #use_DynamoRIO_extension(drcalls.bbcount.dll drcalls)
+if (BUILD_DRCALLS)
   tobuild_drcalls(drcalls.bbcount "ext-drcalls/bbcount.c" "" "" "")
   tobuild_drcalls(drcalls.outofline "ext-drcalls/outofline.c" "" "" "")
-endif (ENABLE_DRCALLS)
+endif (BUILD_DRCALLS)
 
 ###########################################################################
 
