@@ -99,8 +99,11 @@ static bool
 privload_process_one_import(privmod_t *mod, privmod_t *impmod,
                             IMAGE_THUNK_DATA *lookup, app_pc *address);
 
+static const char *
+privload_map_name(const char *impname, privmod_t *immed_dep);
+
 static privmod_t *
-privload_locate_and_load(const char *impname, privmod_t *dependent, privmod_t *immed_dep);
+privload_locate_and_load(const char *impname, privmod_t *dependent);
 
 /* Redirection of ntdll routines that for transparency reasons we can't
  * point at the real ntdll.  If we get a lot of these should switch to
@@ -116,6 +119,9 @@ static app_pc
 privload_redirect_imports(privmod_t *impmod, const char *name);
 
 static bool WINAPI
+redirect_ignore_arg0(void);
+
+static bool WINAPI
 redirect_ignore_arg4(void *arg1);
 
 static bool WINAPI
@@ -123,6 +129,13 @@ redirect_ignore_arg8(void *arg1, void *arg2);
 
 static bool WINAPI
 redirect_ignore_arg12(void *arg1, void *arg2, void *arg3);
+
+static HANDLE WINAPI
+redirect_RtlCreateHeap(ULONG flags, void *base, size_t reserve_sz,
+                       size_t commit_sz, void *lock, void *params);
+
+static bool WINAPI
+redirect_RtlDestroyHeap(HANDLE base);
 
 static void * WINAPI
 redirect_RtlAllocateHeap(HANDLE heap, ULONG flags, SIZE_T size);
@@ -185,15 +198,20 @@ static const redirect_import_t redirect_ntdll[] = {
     {"LdrSetDllManifestProber",           (app_pc)redirect_ignore_arg4},
     {"RtlSetThreadPoolStartFunc",         (app_pc)redirect_ignore_arg8},
     {"RtlSetUnhandledExceptionFilter",    (app_pc)redirect_ignore_arg4},
+    /* avoid attempts to free on private heap allocs made earlier on app heap: */
+    {"RtlCleanUpTEBLangLists",            (app_pc)redirect_ignore_arg0},
     /* Rtl*Heap routines:
-     * The plan is to allow other Heaps to be created, and only redirect use of
-     * PEB.ProcessHeap.  For now we'll leave the query, walk, enum, etc.  of
+     * We turn new Heap creation into essentially nops, and we redirect allocs
+     * from PEB.ProcessHeap or a Heap whose creation we saw.
+     * For now we'll leave the query, walk, enum, etc.  of
      * PEB.ProcessHeap pointing at the app's and focus on allocation.
      * There are many corner cases where we won't be transparent but we'll
      * incrementally add more redirection (i#235) and more transparency: have to
      * start somehwere.  Our biggest problems are ntdll routines that internally
-     * allocate or free combined with the other of the pair from outside.
+     * allocate or free, esp when combined with the other of the pair from outside.
      */
+    {"RtlCreateHeap",                  (app_pc)redirect_RtlCreateHeap},
+    {"RtlDestroyHeap",                 (app_pc)redirect_RtlDestroyHeap},
     {"RtlAllocateHeap",                (app_pc)redirect_RtlAllocateHeap},
     {"RtlReAllocateHeap",              (app_pc)redirect_RtlReAllocateHeap},
     {"RtlFreeHeap",                    (app_pc)redirect_RtlFreeHeap},
@@ -270,6 +288,12 @@ static bool loaded_windows_lib;
 
 /***************************************************************************/
 
+HANDLE WINAPI RtlCreateHeap(ULONG flags, void *base, size_t reserve_sz,
+                            size_t commit_sz, void *lock, void *params);
+
+bool WINAPI RtlDestroyHeap(HANDLE base);
+
+
 void 
 os_loader_init_prologue(void)
 {
@@ -310,9 +334,23 @@ os_loader_init_prologue(void)
         private_peb->FlsListHead.Flink = (LIST_ENTRY *) &private_peb->FlsListHead;
         private_peb->FlsListHead.Blink = (LIST_ENTRY *) &private_peb->FlsListHead;
         private_peb->FlsCallback = NULL;
+
         swap_peb_pointer(NULL, true/*to priv*/);
         LOG(GLOBAL, LOG_LOADER, 2, "app peb="PFX"\n", own_peb);
         LOG(GLOBAL, LOG_LOADER, 2, "private peb="PFX"\n", private_peb);
+
+        /* We can't redirect ntdll routines allocating memory internally,
+         * but we can at least have them not affect the app's Heap.
+         * We do this after the swap in case it affects some other peb field,
+         * in which case it will match the RtlDestroyHeap.
+         */
+        private_peb->ProcessHeap = RtlCreateHeap(0, NULL, 0, 0, NULL, NULL);
+        if (private_peb->ProcessHeap == NULL) {
+            SYSLOG_INTERNAL_ERROR("private default heap creation failed");
+            /* fallback */
+            private_peb->ProcessHeap = own_peb->ProcessHeap;
+        }
+
         priv_fls_data = get_tls(FLS_DATA_TIB_OFFSET);
         priv_nt_rpc = get_tls(NT_RPC_TIB_OFFSET);
         LOG(GLOBAL, LOG_LOADER, 2, "initial thread TEB->FlsData="PFX"\n", priv_fls_data);
@@ -386,6 +424,16 @@ os_loader_exit(void)
              */
             swap_peb_pointer(NULL, false/*to app*/);
         }
+        /* we do have a dcontext */
+        ASSERT(get_thread_private_dcontext != NULL);
+        TRY_EXCEPT(get_thread_private_dcontext(), {
+            RtlDestroyHeap(private_peb->ProcessHeap);
+        }, {
+            /* shouldn't crash, but does on security-win32/sd_tester,
+             * probably b/c it corrupts the heap: regardless we don't
+             * want DR reporting a crash on an ntdll address so we ignore.
+             */
+        });
         HEAP_TYPE_FREE(GLOBAL_DCONTEXT, private_peb->FastPebLock,
                        RTL_CRITICAL_SECTION, ACCT_OTHER, UNPROTECTED);
         HEAP_TYPE_FREE(GLOBAL_DCONTEXT, private_peb, PEB, ACCT_OTHER, UNPROTECTED);
@@ -620,6 +668,7 @@ privload_unload_imports(privmod_t *mod)
 
     while (imports->OriginalFirstThunk != 0) {
         const char *impname = (const char *) RVA_TO_VA(mod->base, imports->Name);
+        impname = privload_map_name(impname, mod);
         impmod = privload_lookup(impname);
         /* If we hit an error in the middle of loading we may not have loaded
          * all imports for mod so impmod may not be found
@@ -741,6 +790,7 @@ privload_process_imports(privmod_t *mod)
         const char *impname = (const char *) RVA_TO_VA(mod->base, imports->Name);
         LOG(GLOBAL, LOG_LOADER, 2, "%s: %s imports from %s\n", __FUNCTION__,
             mod->name, impname);
+        impname = privload_map_name(impname, mod);
 
         /* FIXME i#233: support bound imports: for now ignoring */
         if (imports->TimeDateStamp == -1) {
@@ -758,7 +808,7 @@ privload_process_imports(privmod_t *mod)
 
         impmod = privload_lookup(impname);
         if (impmod == NULL) {
-            impmod = privload_locate_and_load(impname, mod, mod);
+            impmod = privload_locate_and_load(impname, mod);
             if (impmod == NULL) {
                 LOG(GLOBAL, LOG_LOADER, 1, "%s: unable to load import lib %s\n",
                     __FUNCTION__, impname);
@@ -853,6 +903,7 @@ privload_process_one_import(privmod_t *mod, privmod_t *impmod,
     privmod_t *last_forwmod = NULL;
     const char *forwfunc = NULL;
     const char *impfunc = NULL;
+    const char *forwpath = NULL;
 
     ASSERT_OWN_RECURSIVE_LOCK(true, &privload_lock);
     if (TEST(IMAGE_ORDINAL_FLAG, lookup->u1.Function)) {
@@ -899,11 +950,15 @@ privload_process_one_import(privmod_t *mod, privmod_t *impmod,
         LOG(GLOBAL, LOG_LOADER, 2, "\tforwarder %s => %s %s\n",
             forwarder, forwmodpath, forwfunc);
         last_forwmod = forwmod;
-        forwmod = privload_lookup(forwmodpath);
+        forwpath = privload_map_name(forwmodpath,
+                                     last_forwmod == NULL ? mod : last_forwmod);
+        forwmod = privload_lookup(forwpath);
         if (forwmod == NULL) {
             /* don't use forwmodpath past here: recursion may clobber it */
-            forwmod = privload_locate_and_load(forwmodpath, mod,
-                                               last_forwmod == NULL ? mod : last_forwmod);
+            /* XXX: should inc ref count: but then need to walk individual imports
+             * and dec on unload.  For now risking it.
+             */
+            forwmod = privload_locate_and_load(forwpath, mod);
             if (forwmod == NULL) {
                 LOG(GLOBAL, LOG_LOADER, 1, "%s: unable to load forworder for %s\n"
                     __FUNCTION__, forwarder);
@@ -1062,10 +1117,29 @@ map_api_set_dll(const char *name, privmod_t *dependent)
 }
 
 /* If walking forwarder chain, immed_dep should be most recent walked.
- * Else should equal dependent.
+ * Else should be regular dependent.
  */
+static const char *
+privload_map_name(const char *impname, privmod_t *immed_dep)
+{
+    /* 0) on Windows 7, the API-set pseudo-dlls map to real dlls */
+    if (get_os_version() >= WINDOWS_VERSION_7 &&
+        str_case_prefix(impname, "API-MS-Win-")) {
+        IF_DEBUG(const char *apiname = impname;)
+        /* We need immediate dependent to avoid infinite chain when hit
+         * kernel32 OpenProcessToken forwarder which needs to forward
+         * to kernelbase
+         */
+        impname = map_api_set_dll(impname, immed_dep);
+        LOG(GLOBAL, LOG_LOADER, 2, "%s: mapped API-set dll %s to %s\n",
+            __FUNCTION__, apiname, impname);
+        return impname;
+    }
+    return impname;
+}
+
 static privmod_t *
-privload_locate_and_load(const char *impname, privmod_t *dependent, privmod_t *immed_dep)
+privload_locate_and_load(const char *impname, privmod_t *dependent)
 {
     privmod_t *mod = NULL;
     uint i;
@@ -1082,23 +1156,6 @@ privload_locate_and_load(const char *impname, privmod_t *dependent, privmod_t *i
      * (i#277/PR 540817, added to search_paths in privload_init_search_paths()).
      */
 
-    /* 0) on Windows 7, the API-set pseudo-dlls map to real dlls */
-    if (get_os_version() >= WINDOWS_VERSION_7 &&
-        str_case_prefix(impname, "API-MS-Win-")) {
-        IF_DEBUG(const char *apiname = impname;)
-        /* We need immediate dependent to avoid infinite chain when hit
-         * kernel32 OpenProcessToken forwarder which needs to forward
-         * to kernelbase
-         */
-        impname = map_api_set_dll(impname, immed_dep);
-        LOG(GLOBAL, LOG_LOADER, 2, "%s: mapped API-set dll %s to %s\n",
-            __FUNCTION__, apiname, impname);
-        /* currently caller must do lookup: privload_load does not */
-        mod = privload_lookup(impname);
-        if (mod != NULL)
-            return mod;
-    }
-    
     /* 1) client lib dir(s) and Extensions dir */
     for (i = 0; i < search_paths_idx; i++) {
         snprintf(modpath, BUFFER_SIZE_ELEMENTS(modpath), "%s/%s",
@@ -1225,6 +1282,12 @@ privload_redirect_imports(privmod_t *impmod, const char *name)
 }
 
 static bool WINAPI
+redirect_ignore_arg0(void)
+{
+    return true;
+}
+
+static bool WINAPI
 redirect_ignore_arg4(void *arg1)
 {
     return true;
@@ -1245,9 +1308,60 @@ redirect_ignore_arg12(void *arg1, void *arg2, void *arg3)
 /****************************************************************************
  * Rtl*Heap redirection
  *
- * We only redirect for PEB.ProcessHeap.  See comments at top of file
- * and i#235 for adding further redirection.
+ * We only redirect for PEB.ProcessHeap or heaps whose creation we saw
+ * (e.g., private kernel32!_crtheap).
+ * See comments at top of file and i#235 for adding further redirection.
  */
+
+static HANDLE WINAPI
+redirect_RtlCreateHeap(ULONG flags, void *base, size_t reserve_sz,
+                       size_t commit_sz, void *lock, void *params)
+{
+    if (IF_CLIENT_INTERFACE_ELSE(INTERNAL_OPTION(privlib_privheap), true)) {
+        /* We don't want to waste space by letting a Heap be created
+         * and not used so we nop this.  We need to return something
+         * here, and distinguish a nop-ed from real in Destroy, so we
+         * allocate a token block.
+         */
+        LOG(GLOBAL, LOG_LOADER, 2, "%s "PFX"\n", __FUNCTION__, base);
+        return (HANDLE) global_heap_alloc(1 HEAPACCT(ACCT_LIBDUP));
+    } else
+        return RtlCreateHeap(flags, base, reserve_sz, commit_sz, lock, params);
+}
+
+static bool
+redirect_heap_call(HANDLE heap)
+{
+    PEB *peb;
+#ifdef CLIENT_INTERFACE
+    if (!INTERNAL_OPTION(privlib_privheap))
+        return false;
+#endif
+    peb = get_peb(NT_CURRENT_PROCESS);
+    /* either default heap, or one whose creation we intercepted */
+    return (heap == peb->ProcessHeap ||
+            /* check both current and private: should be same, but
+             * handle case where didn't swap
+             */
+            heap == private_peb->ProcessHeap ||
+            is_dynamo_address((byte*)heap));
+}
+
+static bool WINAPI
+redirect_RtlDestroyHeap(HANDLE base)
+{
+    if (redirect_heap_call(base)) {
+        /* XXX i#: need to iterate over all blocks in the heap and free them:
+         * would have to keep a list of blocks.
+         * For now assume all private heaps practice individual dealloc
+         * instead of whole-pool-free.
+         */
+        LOG(GLOBAL, LOG_LOADER, 2, "%s "PFX"\n", __FUNCTION__, base);
+        global_heap_free((byte *)base, 1 HEAPACCT(ACCT_LIBDUP));
+        return true;
+    } else
+        return RtlDestroyHeap(base);
+}
 
 void * WINAPI RtlAllocateHeap(HANDLE heap, ULONG flags, SIZE_T size);
 
@@ -1255,8 +1369,7 @@ static void * WINAPI
 redirect_RtlAllocateHeap(HANDLE heap, ULONG flags, SIZE_T size)
 {
     PEB *peb = get_peb(NT_CURRENT_PROCESS);
-    if (IF_CLIENT_INTERFACE_ELSE(INTERNAL_OPTION(privlib_privheap), true) &&
-        heap == peb->ProcessHeap) {
+    if (redirect_heap_call(heap)) {
         byte *mem;
         ASSERT(sizeof(size_t) >= HEAP_ALIGNMENT);
         size += sizeof(size_t);
@@ -1296,8 +1409,7 @@ redirect_RtlReAllocateHeap(HANDLE heap, ULONG flags, byte *ptr, SIZE_T size)
      * addresses go natively.  Xref the opposite problem with
      * RtlFreeUnicodeString, handled below.
      */
-    if (IF_CLIENT_INTERFACE_ELSE(INTERNAL_OPTION(privlib_privheap), true) &&
-        heap == peb->ProcessHeap && (is_dynamo_address(ptr) || ptr == NULL)) {
+    if (redirect_heap_call(heap) && (is_dynamo_address(ptr) || ptr == NULL)) {
         byte *buf = NULL;
         /* RtlReAllocateHeap does re-alloc 0-sized */
         LOG(GLOBAL, LOG_LOADER, 2, "%s "PFX" "PIFX"\n", __FUNCTION__, ptr, size);
@@ -1329,7 +1441,7 @@ static bool WINAPI
 redirect_RtlFreeHeap(HANDLE heap, ULONG flags, byte *ptr)
 {
     PEB *peb = get_peb(NT_CURRENT_PROCESS);
-    if (heap == peb->ProcessHeap && is_dynamo_address(ptr)/*see above*/) {
+    if (redirect_heap_call(heap) && is_dynamo_address(ptr)/*see above*/) {
         ASSERT(IF_CLIENT_INTERFACE_ELSE(INTERNAL_OPTION(privlib_privheap), true));
         if (ptr != NULL) {
             LOG(GLOBAL, LOG_LOADER, 2, "%s "PFX"\n", __FUNCTION__, ptr);
@@ -1349,7 +1461,7 @@ static SIZE_T WINAPI
 redirect_RtlSizeHeap(HANDLE heap, ULONG flags, byte *ptr)
 {
     PEB *peb = get_peb(NT_CURRENT_PROCESS);
-    if (heap == peb->ProcessHeap && is_dynamo_address(ptr)/*see above*/) {
+    if (redirect_heap_call(heap) && is_dynamo_address(ptr)/*see above*/) {
         ASSERT(IF_CLIENT_INTERFACE_ELSE(INTERNAL_OPTION(privlib_privheap), true));
         if (ptr != NULL)
             return *((size_t *)(ptr - sizeof(size_t)));
@@ -1368,8 +1480,7 @@ redirect_RtlLockHeap(HANDLE heap)
     /* If the main heap, we assume any subsequent alloc/free will be through
      * DR heap, so we nop this
      */
-    if (IF_CLIENT_INTERFACE_ELSE(INTERNAL_OPTION(privlib_privheap), true) &&
-        heap == peb->ProcessHeap) {
+    if (redirect_heap_call(heap)) {
         /* nop */
         return true;
     } else {
@@ -1384,8 +1495,7 @@ redirect_RtlUnlockHeap(HANDLE heap)
     /* If the main heap, we assume any prior alloc/free was through
      * DR heap, so we nop this
      */
-    if (IF_CLIENT_INTERFACE_ELSE(INTERNAL_OPTION(privlib_privheap), true) &&
-        heap == peb->ProcessHeap) {
+    if (redirect_heap_call(heap)) {
         /* nop */
         return true;
     } else {
