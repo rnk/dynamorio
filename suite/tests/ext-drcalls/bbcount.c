@@ -5,22 +5,22 @@
 /*
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions are met:
- * 
+ *
  * * Redistributions of source code must retain the above copyright notice,
  *   this list of conditions and the following disclaimer.
- * 
+ *
  * * Redistributions in binary form must reproduce the above copyright notice,
  *   this list of conditions and the following disclaimer in the documentation
  *   and/or other materials provided with the distribution.
- * 
- * * Neither the name of VMware, Inc. nor the names of its contributors may be
+ *
+ * * Neither the name of MIT nor the names of its contributors may be
  *   used to endorse or promote products derived from this software without
  *   specific prior written permission.
- * 
+ *
  * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
  * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
  * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
- * ARE DISCLAIMED. IN NO EVENT SHALL VMWARE, INC. OR CONTRIBUTORS BE LIABLE
+ * ARE DISCLAIMED. IN NO EVENT SHALL MIT OR CONTRIBUTORS BE LIABLE
  * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
  * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
  * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
@@ -30,32 +30,17 @@
  * DAMAGE.
  */
 
-#include <stdarg.h>
-#include <stdio.h>
-
-static void
-print(char *fmt, ...)
-{
-    va_list ap;
-    va_start(ap, fmt);
-    vfprintf(stderr, fmt, ap);
-    fflush(stderr);
-    va_end(ap);
-}
+#include "tools.h"
 
 /* Simple program which has ~30000 bbs, one for entry and exit from foo. */
-void __attribute__((noinline))
-foo(void)
-{
-}
-
 int
 main(void)
 {
     int i;
     print("Pre-loop\n");
+    /* dummy is in tools.c and will not be inlined, so we get 3 bbs per loop. */
     for (i = 0; i < 10000; i++) {
-        foo();
+        dummy();
     }
     print("Post-loop\n");
 }

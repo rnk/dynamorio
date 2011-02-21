@@ -1,5 +1,6 @@
 # **********************************************************
 # Copyright (c) 2009 VMware, Inc.    All rights reserved.
+# Copyright (c) 2011 MIT    All rights reserved.
 # **********************************************************
 
 # Redistribution and use in source and binary forms, with or without

@@ -41,8 +41,13 @@ void drcalls_init(void);
 /* Uninitialize the drcalls extension. */
 void drcalls_exit(void);
 
-/* Insert a clean call to a function before the provided instruction using an
- * out-of-line save and restore routine.
+/* Insert a clean call to a function before the provided instruction using a
+ * shared, out-of-line save and restore routine.  At each call site only the
+ * minimum amount of code is inserted to materialize the arguments and the
+ * return address into the TLS spill slots, which are all clobbered.
+ *
+ * For now, this routine clobbers the TLS SPILL_SLOT_1.
+ *
  * FIXME: Make this support functions with more than zero arguments.
  */
 void drcalls_shared_call(void *drcontext, instrlist_t *ilist, instr_t *where,

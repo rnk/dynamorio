@@ -5,22 +5,22 @@
 /*
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions are met:
- * 
+ *
  * * Redistributions of source code must retain the above copyright notice,
  *   this list of conditions and the following disclaimer.
- * 
+ *
  * * Redistributions in binary form must reproduce the above copyright notice,
  *   this list of conditions and the following disclaimer in the documentation
  *   and/or other materials provided with the distribution.
- * 
- * * Neither the name of VMware, Inc. nor the names of its contributors may be
+ *
+ * * Neither the name of MIT nor the names of its contributors may be
  *   used to endorse or promote products derived from this software without
  *   specific prior written permission.
- * 
+ *
  * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
  * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
  * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
- * ARE DISCLAIMED. IN NO EVENT SHALL VMWARE, INC. OR CONTRIBUTORS BE LIABLE
+ * ARE DISCLAIMED. IN NO EVENT SHALL MIT OR CONTRIBUTORS BE LIABLE
  * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
  * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
  * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
@@ -30,18 +30,17 @@
  * DAMAGE.
  */
 
-/* Just ensure we have several bbs here to instrument. */
-void __attribute__((noinline)) func00(void) { /* nop */ }
-void __attribute__((noinline)) func01(void) { /* nop */ }
-void __attribute__((noinline)) func02(void) { /* nop */ }
-void __attribute__((noinline)) func03(void) { /* nop */ }
+#include "tools.h"
 
-int main(void) {
+int
+main(void)
+{
     int i;
+    /* Ensure we have several bbs here to instrument by calling these dummy
+     * functions. */
     for (i = 0; i < 10; i++) {
-        func00();
-        func01();
-        func02();
-        func03();
+        (void)code_inc(1);
+        (void)code_inc(2);
+        (void)dummy();
     }
 }

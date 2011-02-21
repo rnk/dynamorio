@@ -30,8 +30,7 @@
 
 cmake_minimum_required(VERSION 2.6)
 
-# library of container utilities in C that use DR API for memory allocation
-# and synchronization
+# High level library used by clients to insert instrumentation.
 add_library(drcalls STATIC
   calls.c
   # add more here

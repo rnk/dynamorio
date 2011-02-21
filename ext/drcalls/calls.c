@@ -218,6 +218,8 @@ drcalls_shared_call(void *drcontext, instrlist_t *ilist, instr_t *where,
     byte *shared_entry;
 
     va_start(ap, num_args);
+    DR_ASSERT_MSG(num_args == 0, "Shared clean calls with arguments "
+                  "are not yet supported.");
 
     /* If we haven't seen this callee, emit the shared clean call entry/exit
      * sequence to the code cache. */
