@@ -63,12 +63,20 @@ event_exit(void)
     drcalls_exit();
 }
 
+#ifdef WINDOWS
+void *_ReturnAddress(void);
+#pragma intrinsic(_ReturnAddress)
+#define RETURN_ADDRESS() _ReturnAddress()
+#else /* WINDOWS */
+#define RETURN_ADDRESS() __builtin_return_address(0)
+#endif
+
 /* Get the return address of the clean call instrumentation function.  That
  * should point into the clean call context-switching code. */
 static void
 check_caller(void)
 {
-    void *my_ret_addr = __builtin_return_address(0);
+    void *my_ret_addr = RETURN_ADDRESS();
     if (last_ret_addr && last_ret_addr != my_ret_addr) {
         dr_fprintf(STDERR, "Clean call return addrs does not match!\n"
                    "Last return addr: %p, My return addr: %p\n",

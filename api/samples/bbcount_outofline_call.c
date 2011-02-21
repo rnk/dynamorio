@@ -88,6 +88,6 @@ static dr_emit_flags_t
 event_basic_block(void *drcontext, void *tag, instrlist_t *bb,
                   bool for_trace, bool translating)
 {
-    drcalls_shared_call(drcontext, bb, instrlist_first(bb), do_counting, 0);
+    drcalls_shared_call(drcontext, bb, instrlist_first(bb), (void*)do_counting, 0);
     return DR_EMIT_DEFAULT;
 }
