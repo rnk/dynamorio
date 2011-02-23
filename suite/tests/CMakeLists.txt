@@ -1413,6 +1413,7 @@ tochcon(security-common.TestMemProtChg wine_exec_t)
 
 if (BUILD_DRCALLS)
   tobuild_drcalls(drcalls.outofline "ext-drcalls/outofline.c" "" "" "")
+  tobuild_drcalls(drcalls.args "ext-drcalls/args.c" "" "" "")
 endif (BUILD_DRCALLS)
 
 ###########################################################################

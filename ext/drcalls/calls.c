@@ -241,14 +241,12 @@ static void
 materialize_args(void *drcontext, instrlist_t *ilist, instr_t *where,
                  uint num_args, opnd_t *args)
 {
-    instr_t *before_args;
     int i;
     opnd_t xax_opnd;
 
     dr_save_reg(drcontext, ilist, where, DR_REG_XAX, SPILL_SLOT_1);
-    xax_opnd = opnd_create_reg(DR_REG_XAX)
+    xax_opnd = opnd_create_reg(DR_REG_XAX);
 
-    before_args = instr_get_prev(where);
     for (i = 0; i < num_args; i++) {
         opnd_t arg = args[i];
         opnd_t arg_spill = dr_reg_spill_slot_opnd(drcontext, SPILL_SLOT_2 + i);
@@ -256,14 +254,9 @@ materialize_args(void *drcontext, instrlist_t *ilist, instr_t *where,
         if (opnd_is_immed_int(arg)) {
             PRE(ilist, where,
                 INSTR_CREATE_mov_imm(drcontext, xax_opnd, arg));
-        } else if (opnd_is_memory_reference(arg)) {
+        } else if (opnd_is_memory_reference(arg) || opnd_is_reg(arg)) {
             PRE(ilist, where,
                 INSTR_CREATE_mov_ld(drcontext, xax_opnd, arg));
-        } else if (opnd_is_reg(arg)) {
-            /* TODO(rnk): Is movq here right?  I can't find movl or just plain
-             * mov in decode_table.c. */
-            PRE(ilist, where,
-                INSTR_CREATE_movq(drcontext, xax_opnd, arg));
         } else {
             DR_ASSERT_MSG(false, "Unsupported operand type!");
         }
@@ -288,7 +281,7 @@ drcalls_shared_call(void *drcontext, instrlist_t *ilist, instr_t *where,
      * clean call. */
     if (num_args > 2) {
         opnd_t *args;
-        size_t arg_alloc_size = sizeof(opnd_t) * num_args
+        size_t arg_alloc_size = sizeof(opnd_t) * num_args;
         args = dr_thread_alloc(drcontext, arg_alloc_size);
         va_start(ap, num_args);
         convert_va_list_to_opnd(args, num_args, ap);
