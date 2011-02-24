@@ -44,6 +44,18 @@ if (UNIX)
   set_target_properties(drcalls PROPERTIES COMPILE_FLAGS "${cur_flags} -fPIC")
 endif (UNIX)
 
+# Clients used for benchmarking.
+set(INSCOUNT_CLIENTS
+  inscount_cleancall
+  inscount_sharedcall
+  inscount_manual)
+foreach (client ${INSCOUNT_CLIENTS})
+  set(src "bench_clients/${client}.c")
+  add_library(${client} SHARED ${src} "bench_clients/inscount_common.c")
+  configure_DynamoRIO_client(${client})
+  use_DynamoRIO_extension(${client} drcalls)
+endforeach ()
+
 export(TARGETS drcalls
   FILE ${PROJECT_BINARY_DIR}/cmake/${exported_targets_name}.cmake
   APPEND)
