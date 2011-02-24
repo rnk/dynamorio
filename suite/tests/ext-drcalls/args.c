@@ -36,8 +36,8 @@
  * find their addresses via symbol lookup and instrument them.
  */
 #ifdef WINDOWS
-#define EXPORT __declespec(dllexport)
-#define NOINLINE __declespec(noinline)
+#define EXPORT __declspec(dllexport)
+#define NOINLINE __declspec(noinline)
 #else
 #define EXPORT __attribute__((visibility ("default")))
 #define NOINLINE __attribute__((noinline))

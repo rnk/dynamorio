@@ -227,15 +227,15 @@ drcalls_exit(void)
     code_cache = NULL;
 }
 
-static int
-pick_scratch_reg(uint num_args, opnd_t *args, opnd_t *scratch_reg)
+static reg_id_t
+pick_scratch_reg(uint num_args, opnd_t *args)
 {
-    int scratch_reg_num;
+    reg_id_t scratch_reg_num;
     bool scratch_reg_conflicts = true;
     /* Find a reg that does not conflict with any registers used by argument
      * operands. */
     for (scratch_reg_num = DR_REG_XAX; scratch_reg_conflicts; scratch_reg_num++) {
-        int i;
+        uint i;
         scratch_reg_conflicts = false;
         for (i = 0; i < num_args; i++) {
             if (opnd_uses_reg(args[i], scratch_reg_num)) {
@@ -244,7 +244,6 @@ pick_scratch_reg(uint num_args, opnd_t *args, opnd_t *scratch_reg)
             }
         }
     }
-    *scratch_reg = opnd_create_reg(scratch_reg_num);
     return scratch_reg_num;
 }
 
@@ -252,9 +251,9 @@ static void
 materialize_args(void *drcontext, instrlist_t *ilist, instr_t *where,
                  uint num_args, opnd_t *args)
 {
-    int i;
-    int scratch_reg_num = DR_REG_NULL;  /* Not null if we needed one. */
-    opnd_t scratch_reg;
+    uint i;
+    reg_id_t scratch_reg_num = DR_REG_NULL;  /* Not null if we needed one. */
+    opnd_t scratch_reg = {0,};  /* Silence uninitialized warnings. */
     instr_t *before_args = instr_get_prev(where);
 
     for (i = 0; i < num_args; i++) {
@@ -276,8 +275,8 @@ materialize_args(void *drcontext, instrlist_t *ilist, instr_t *where,
             /* Otherwise, we'll need to pick a saved and restored scratch reg
              * if we haven't yet. */
             if (scratch_reg_num == DR_REG_NULL) {
-                scratch_reg_num = pick_scratch_reg(num_args, args,
-                                                   &scratch_reg);
+                scratch_reg_num = pick_scratch_reg(num_args, args);
+                scratch_reg = opnd_create_reg(scratch_reg_num);
             }
 
             /* Materialize arg into scratch reg. */
