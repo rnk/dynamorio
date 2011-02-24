@@ -3102,6 +3102,16 @@ dr_insert_clean_call(void *drcontext, instrlist_t *ilist, instr_t *where,
 
 DR_API
 /**
+ * A var-args version of #dr_insert_clean_call().  \p args is an operand array
+ * of size num_args owned by the caller.
+ */
+void
+dr_insert_clean_call_vargs(void *drcontext, instrlist_t *ilist, instr_t *where,
+                           void *callee, bool save_fpstate, uint num_args,
+                           opnd_t *args);
+
+DR_API
+/**
  * Inserts into \p ilist prior to \p where meta-instruction(s) to set
  * up the passed-in parameters, make a call to \p callee, and clean up
  * the parameters.

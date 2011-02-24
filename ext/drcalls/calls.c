@@ -5,22 +5,22 @@
 /*
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions are met:
- * 
+ *
  * * Redistributions of source code must retain the above copyright notice,
  *   this list of conditions and the following disclaimer.
- * 
+ *
  * * Redistributions in binary form must reproduce the above copyright notice,
  *   this list of conditions and the following disclaimer in the documentation
  *   and/or other materials provided with the distribution.
- * 
+ *
  * * Neither the name of MIT nor the names of its contributors may be
  *   used to endorse or promote products derived from this software without
  *   specific prior written permission.
- * 
+ *
  * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
  * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
  * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
- * ARE DISCLAIMED. IN NO EVENT SHALL VMWARE, INC. OR CONTRIBUTORS BE LIABLE
+ * ARE DISCLAIMED. IN NO EVENT SHALL MIT OR CONTRIBUTORS BE LIABLE
  * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
  * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
  * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
@@ -34,6 +34,7 @@
 #include "dr_calls.h"
 #include "hashtable.h"
 #include <stdarg.h> /* for varargs */
+#include <string.h> /* for memcmp */
 
 /* Standard alignment hack. */
 #define ALIGN_FORWARD(x, alignment) \
@@ -142,13 +143,30 @@ emit_shared_call(void *drcontext, void *callee, uint num_args)
 {
     byte *entry;
     instrlist_t *ilist;
+    opnd_t args[2];
 
     dr_log(drcontext, LOG_CACHE, 3,
            "drcalls: emitting new shared clean call\n");
 
     /* Generate the clean call ilist. */
     ilist = instrlist_create(drcontext);
-    dr_insert_clean_call(drcontext, ilist, NULL, callee, false, 0);
+    switch (num_args) {
+    default:
+        DR_ASSERT_MSG(false, "Cannot do shared clean call with >= 2 args");
+        return NULL;
+    case 2:
+        args[1] = dr_reg_spill_slot_opnd(drcontext, SPILL_SLOT_3);
+        /* FALLTHROUGH */
+    case 1:
+        args[0] = dr_reg_spill_slot_opnd(drcontext, SPILL_SLOT_2);
+        /* FALLTHROUGH */
+    case 0:
+        break;
+    }
+    dr_insert_clean_call_vargs(drcontext, ilist, NULL, callee, true, num_args,
+                               &args[0]);
+
+    /* Clean call return. */
     APP(ilist, INSTR_CREATE_jmp_ind(drcontext,
                                     dr_reg_spill_slot_opnd(drcontext,
                                                            SPILL_SLOT_1)));
@@ -209,6 +227,97 @@ drcalls_exit(void)
     code_cache = NULL;
 }
 
+static int
+pick_scratch_reg(uint num_args, opnd_t *args, opnd_t *scratch_reg)
+{
+    int scratch_reg_num;
+    bool scratch_reg_conflicts = true;
+    /* Find a reg that does not conflict with any registers used by argument
+     * operands. */
+    for (scratch_reg_num = DR_REG_XAX; scratch_reg_conflicts; scratch_reg_num++) {
+        int i;
+        scratch_reg_conflicts = false;
+        for (i = 0; i < num_args; i++) {
+            if (opnd_uses_reg(args[i], scratch_reg_num)) {
+                scratch_reg_conflicts = true;
+                break;
+            }
+        }
+    }
+    *scratch_reg = opnd_create_reg(scratch_reg_num);
+    return scratch_reg_num;
+}
+
+static void
+materialize_args(void *drcontext, instrlist_t *ilist, instr_t *where,
+                 uint num_args, opnd_t *args)
+{
+    int i;
+    int scratch_reg_num = DR_REG_NULL;  /* Not null if we needed one. */
+    opnd_t scratch_reg;
+    instr_t *before_args = instr_get_prev(where);
+
+    for (i = 0; i < num_args; i++) {
+        opnd_t arg = args[i];
+        opnd_t arg_spill = dr_reg_spill_slot_opnd(drcontext, SPILL_SLOT_2 + i);
+
+        if ((opnd_is_immed_int(arg) && opnd_get_size(arg) <= OPSZ_4) ||
+            opnd_is_reg(arg)) {
+            /* If the argument is a 32-bit immediate or register, can
+             * materialize into argument spill slot without a scratch reg. */
+            PRE(ilist, where,
+                INSTR_CREATE_mov_st(drcontext, arg_spill, arg));
+        } else if (opnd_is_far_base_disp(arg) &&
+                   opnd_get_segment(arg) == opnd_get_segment(arg_spill) &&
+                   opnd_get_disp(arg) == opnd_get_disp(arg_spill)) {
+            /* The argument already is the appropriate spill slot, so we don't
+             * touch it. */
+        } else {
+            /* Otherwise, we'll need to pick a saved and restored scratch reg
+             * if we haven't yet. */
+            if (scratch_reg_num == DR_REG_NULL) {
+                scratch_reg_num = pick_scratch_reg(num_args, args,
+                                                   &scratch_reg);
+            }
+
+            /* Materialize arg into scratch reg. */
+            if (opnd_is_immed_int(arg)) {
+                PRE(ilist, where,
+                    INSTR_CREATE_mov_imm(drcontext, scratch_reg, arg));
+            } else if (opnd_is_memory_reference(arg)) {
+                PRE(ilist, where,
+                    INSTR_CREATE_mov_ld(drcontext, scratch_reg, arg));
+            } else {
+                DR_ASSERT_MSG(false, "Unsupported operand type!");
+            }
+
+            /* Store scratch reg to arg spill slot. */
+            PRE(ilist, where,
+                INSTR_CREATE_mov_st(drcontext, arg_spill, scratch_reg));
+        }
+    }
+
+    if (scratch_reg_num != DR_REG_NULL) {
+        /* Save and restore our scratch reg only if we ended up picking one. */
+        instr_t *first = (before_args != NULL ?
+                          instr_get_next(before_args) :
+                          instrlist_first(ilist));
+        dr_save_reg(drcontext, ilist, first, scratch_reg_num, SPILL_SLOT_1);
+        dr_restore_reg(drcontext, ilist, where, scratch_reg_num, SPILL_SLOT_1);
+    }
+}
+
+static void
+convert_va_list_to_opnd(opnd_t *args, uint num_args, va_list ap)
+{
+    uint i;
+    /* There's no way to check num_args vs actual args passed in, or publicly
+     * check opnd_t for validity. */
+    for (i = 0; i < num_args; i++) {
+        args[i] = va_arg(ap, opnd_t);
+    }
+}
+
 void
 drcalls_shared_call(void *drcontext, instrlist_t *ilist, instr_t *where,
                     void *callee, uint num_args, ...)
@@ -216,10 +325,26 @@ drcalls_shared_call(void *drcontext, instrlist_t *ilist, instr_t *where,
     va_list ap;
     instr_t *return_label;
     byte *shared_entry;
+    opnd_t stack_args[2];
 
-    va_start(ap, num_args);
-    DR_ASSERT_MSG(num_args == 0, "Shared clean calls with arguments "
-                  "are not yet supported.");
+    /* If there are more args than TLS spill slots, give up and insert a normal
+     * clean call. */
+    if (num_args > 2) {
+        opnd_t *args;
+        size_t arg_alloc_size = sizeof(opnd_t) * num_args;
+        args = dr_thread_alloc(drcontext, arg_alloc_size);
+        va_start(ap, num_args);
+        convert_va_list_to_opnd(args, num_args, ap);
+        va_end(ap);
+
+        dr_log(drcontext, LOG_ALL, 3,
+               "drcalls: unable to share clean call save/restore code, "
+               "performance may suffer\n");
+        dr_insert_clean_call_vargs(drcontext, ilist, where, callee, true,
+                                   num_args, args);
+        dr_thread_free(drcontext, args, arg_alloc_size);
+        return;
+    }
 
     /* If we haven't seen this callee, emit the shared clean call entry/exit
      * sequence to the code cache. */
@@ -240,6 +365,13 @@ drcalls_shared_call(void *drcontext, instrlist_t *ilist, instr_t *where,
         dr_mutex_unlock(code_cache->lock);
     }
 
+    /* Store the arguments in spill slots.  We materialize the opnd_t values
+     * into XAX and then save XAX to the appropriate spill slot. */
+    va_start(ap, num_args);
+    convert_va_list_to_opnd(&stack_args[0], num_args, ap);
+    va_end(ap);
+    materialize_args(drcontext, ilist, where, num_args, &stack_args[0]);
+
     /* Store the return label in a spill slot, and jump to the shared clean
      * call sequence. */
     return_label = INSTR_CREATE_label(drcontext);
@@ -250,6 +382,4 @@ drcalls_shared_call(void *drcontext, instrlist_t *ilist, instr_t *where,
     PRE(ilist, where,
         INSTR_CREATE_jmp(drcontext, opnd_create_pc(shared_entry)));
     PRE(ilist, where, return_label);
-
-    va_end(ap);
 }

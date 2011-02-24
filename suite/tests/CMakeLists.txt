@@ -1425,6 +1425,7 @@ mark_execstack(security-common.TestMemProtChg)
 
 if (BUILD_DRCALLS)
   tobuild_drcalls(drcalls.outofline "ext-drcalls/outofline.c" "" "" "")
+  tobuild_drcalls(drcalls.args "ext-drcalls/args.c" "" "" "")
 endif (BUILD_DRCALLS)
 
 ###########################################################################
