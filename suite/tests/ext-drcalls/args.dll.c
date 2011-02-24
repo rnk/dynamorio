@@ -44,10 +44,14 @@
 #include "dr_api.h"
 #include "dr_calls.h"
 
+#define PRE  instrlist_meta_preinsert
+
 static app_pc foo_pc;
 static app_pc bar_pc;
 static app_pc baz_pc;
 static app_pc qux_pc;
+static app_pc reg_pc;
+static app_pc tls_pc;
 
 static void event_exit(void);
 static dr_emit_flags_t event_basic_block(void *drcontext, void *tag,
@@ -79,10 +83,14 @@ lookup_pcs(void)
         app_pc bar = (app_pc)dr_get_proc_address(handle, "bar");
         app_pc baz = (app_pc)dr_get_proc_address(handle, "baz");
         app_pc qux = (app_pc)dr_get_proc_address(handle, "qux");
+        app_pc reg = (app_pc)dr_get_proc_address(handle, "reg");
+        app_pc tls = (app_pc)dr_get_proc_address(handle, "tls");
         if (foo != NULL) { foo_pc = foo; }
         if (bar != NULL) { bar_pc = bar; }
         if (baz != NULL) { baz_pc = baz; }
         if (qux != NULL) { qux_pc = qux; }
+        if (reg != NULL) { reg_pc = reg; }
+        if (tls != NULL) { tls_pc = tls; }
         dr_free_module_data(data);
     }
     dr_module_iterator_stop(iter);
@@ -105,31 +113,47 @@ static void
 foo_call(app_pc entry_pc)
 {
     dr_fprintf(STDERR, "foo_call\n");
-    //DR_ASSERT_MSG(entry_pc == foo_pc, "Bad immediate arg");
+    DR_ASSERT_MSG(entry_pc == foo_pc, "Bad immediate arg");
 }
 
 static void
 bar_call(app_pc entry_pc, int a)
 {
     dr_fprintf(STDERR, "bar_call\n");
-    //DR_ASSERT_MSG(entry_pc == bar_pc, "Bad immediate arg");
-    //DR_ASSERT_MSG(a == 0x11223344, "Bad reg or mem arg");
+    DR_ASSERT_MSG(entry_pc == bar_pc, "Bad immediate arg");
+    DR_ASSERT_MSG(a == 0x11223344, "Bad reg or mem arg");
 }
 
 static void
 baz_call(int a, int b)
 {
     dr_fprintf(STDERR, "baz_call\n");
-    //DR_ASSERT_MSG(a == 0x11223344, "Bad reg or mem arg");
-    //DR_ASSERT_MSG(b == 0x55667788, "Bad reg or mem arg");
+    DR_ASSERT_MSG(a == 0x11223344, "Bad reg or mem arg");
+    DR_ASSERT_MSG(b == 0x55667788, "Bad reg or mem arg");
 }
 
 static void
 qux_call(int g, int h)
 {
     dr_fprintf(STDERR, "qux_call\n");
-    //DR_ASSERT_MSG(g == 0x11223344, "Bad reg or mem arg");
-    //DR_ASSERT_MSG(h == 0x55667788, "Bad reg or mem arg");
+    DR_ASSERT_MSG(g == 0x11223344, "Bad reg or mem arg");
+    DR_ASSERT_MSG(h == 0x55667788, "Bad reg or mem arg");
+}
+
+static void
+reg_call(int xcx, int xax)
+{
+    dr_fprintf(STDERR, "reg_call\n");
+    DR_ASSERT_MSG(xcx == 0xdeadbeef, "XCX was not handled");
+    DR_ASSERT_MSG(xax == 0xcafebabe, "XAX was not handled");
+}
+
+static void
+tls_call(int slot1, int slot2)
+{
+    dr_fprintf(STDERR, "tls_call\n");
+    DR_ASSERT_MSG(slot1 == 0x12345678, "Bad spill slot arg");
+    DR_ASSERT_MSG(slot2 == 0x76543210, "Bad spill slot arg");
 }
 
 #ifdef X64
@@ -197,6 +221,33 @@ event_basic_block(void *drcontext, void *tag, instrlist_t *bb,
         drcalls_shared_call(drcontext, bb, entry, qux_call, 2,
                             opnd_create_arg(6),
                             opnd_create_arg(7));
+    }
+    if (entry_pc == reg_pc) {
+        /* Try setting RAX and RCX and calling.  Pretty much evey x86 calling
+         * convention considers these registers clobbered by function calls,
+         * and we know the app just called qux, so writing these should be
+         * safe.  This test used to fail when we always grabbed RAX as scratch.
+         */
+        opnd_t reg_xcx = opnd_create_reg(DR_REG_XCX);
+        opnd_t reg_xax = opnd_create_reg(DR_REG_XAX);
+        PRE(bb, entry, INSTR_CREATE_mov_imm(drcontext, reg_xcx,
+                                            OPND_CREATE_INT32((int)0xdeadbeef)));
+        PRE(bb, entry, INSTR_CREATE_mov_imm(drcontext, reg_xax,
+                                            OPND_CREATE_INT32((int)0xcafebabe)));
+        drcalls_shared_call(drcontext, bb, entry, reg_call, 2,
+                            reg_xcx, reg_xax);
+    }
+    if (entry_pc == tls_pc) {
+        /* If we're careful to pass spill slots to the clean call in the way
+         * that the shared call passes them, then we can do so successfully. */
+        opnd_t spill_2 = dr_reg_spill_slot_opnd(drcontext, SPILL_SLOT_2);
+        opnd_t spill_3 = dr_reg_spill_slot_opnd(drcontext, SPILL_SLOT_3);
+        PRE(bb, entry, INSTR_CREATE_mov_st(drcontext, spill_2,
+                                           OPND_CREATE_INT32(0x12345678)));
+        PRE(bb, entry, INSTR_CREATE_mov_st(drcontext, spill_3,
+                                           OPND_CREATE_INT32(0x76543210)));
+        drcalls_shared_call(drcontext, bb, entry, tls_call, 2,
+                            spill_2, spill_3);
     }
     return DR_EMIT_DEFAULT;
 }

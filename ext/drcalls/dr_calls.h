@@ -35,20 +35,22 @@
 
 #include "dr_api.h"
 
+DR_EXPORT
 /* Initialize the drcalls extension. */
 void drcalls_init(void);
 
+DR_EXPORT
 /* Uninitialize the drcalls extension. */
 void drcalls_exit(void);
 
+DR_EXPORT
 /* Insert a clean call to a function before the provided instruction using a
- * shared, out-of-line save and restore routine.  At each call site only the
- * minimum amount of code is inserted to materialize the arguments and the
- * return address into the TLS spill slots, which are all clobbered.
+ * shared, out-of-line save and restore routine.
  *
- * For now, this routine clobbers the TLS SPILL_SLOT_1.
- *
- * FIXME: Make this support functions with more than zero arguments.
+ * This clobbers SPILL_SLOT_1, and SPILL_SLOT_2 and SPILL_SLOT_3 are used for
+ * argument passing.  If you wish to materialize your own arguments, you may
+ * pass SPILL_SLOT_2 as argument 1 and/or SPILL_SLOT_3 as argument 2.  Any
+ * other arrangment of spill slots will corrupt the arguments.
  */
 void drcalls_shared_call(void *drcontext, instrlist_t *ilist, instr_t *where,
                          void *callee, uint num_args, ...);

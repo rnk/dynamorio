@@ -59,7 +59,18 @@ baz(int a, int b)
 }
 
 EXPORT NOINLINE void
-qux(int a, int b, int c, int d, int e, int f, int g, int h)
+qux(ptr_uint_t a, ptr_uint_t b, ptr_uint_t c, ptr_uint_t d, ptr_uint_t e,
+    ptr_uint_t f, ptr_uint_t g, ptr_uint_t h)
+{
+}
+
+EXPORT NOINLINE void
+reg(void)
+{
+}
+
+EXPORT NOINLINE void
+tls(void)
 {
 }
 
@@ -72,4 +83,6 @@ main(void)
     bar(0x11223344);
     baz(0x11223344, 0x55667788);
     qux(1, 2, 3, 4, 5, 6, 0x11223344, 0x55667788);
+    reg();
+    tls();
 }

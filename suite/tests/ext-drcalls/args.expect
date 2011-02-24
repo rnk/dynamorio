@@ -2,4 +2,6 @@ foo_call
 bar_call
 baz_call
 qux_call
+reg_call
+tls_call
 PASSED

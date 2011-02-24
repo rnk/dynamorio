@@ -5,22 +5,22 @@
 /*
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions are met:
- * 
+ *
  * * Redistributions of source code must retain the above copyright notice,
  *   this list of conditions and the following disclaimer.
- * 
+ *
  * * Redistributions in binary form must reproduce the above copyright notice,
  *   this list of conditions and the following disclaimer in the documentation
  *   and/or other materials provided with the distribution.
- * 
+ *
  * * Neither the name of MIT nor the names of its contributors may be
  *   used to endorse or promote products derived from this software without
  *   specific prior written permission.
- * 
+ *
  * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
  * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
  * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
- * ARE DISCLAIMED. IN NO EVENT SHALL VMWARE, INC. OR CONTRIBUTORS BE LIABLE
+ * ARE DISCLAIMED. IN NO EVENT SHALL MIT OR CONTRIBUTORS BE LIABLE
  * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
  * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
  * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
@@ -34,6 +34,7 @@
 #include "dr_calls.h"
 #include "hashtable.h"
 #include <stdarg.h> /* for varargs */
+#include <string.h> /* for memcmp */
 
 /* Standard alignment hack. */
 #define ALIGN_FORWARD(x, alignment) \
@@ -226,6 +227,86 @@ drcalls_exit(void)
     code_cache = NULL;
 }
 
+static int
+pick_scratch_reg(uint num_args, opnd_t *args, opnd_t *scratch_reg)
+{
+    int scratch_reg_num;
+    bool scratch_reg_conflicts = true;
+    /* Find a reg that does not conflict with any registers used by argument
+     * operands. */
+    for (scratch_reg_num = DR_REG_XAX; scratch_reg_conflicts; scratch_reg_num++) {
+        int i;
+        scratch_reg_conflicts = false;
+        for (i = 0; i < num_args; i++) {
+            if (opnd_uses_reg(args[i], scratch_reg_num)) {
+                scratch_reg_conflicts = true;
+                break;
+            }
+        }
+    }
+    *scratch_reg = opnd_create_reg(scratch_reg_num);
+    return scratch_reg_num;
+}
+
+static void
+materialize_args(void *drcontext, instrlist_t *ilist, instr_t *where,
+                 uint num_args, opnd_t *args)
+{
+    int i;
+    int scratch_reg_num = DR_REG_NULL;  /* Not null if we needed one. */
+    opnd_t scratch_reg;
+    instr_t *before_args = instr_get_prev(where);
+
+    for (i = 0; i < num_args; i++) {
+        opnd_t arg = args[i];
+        opnd_t arg_spill = dr_reg_spill_slot_opnd(drcontext, SPILL_SLOT_2 + i);
+
+        if ((opnd_is_immed_int(arg) && opnd_get_size(arg) <= OPSZ_4) ||
+            opnd_is_reg(arg)) {
+            /* If the argument is a 32-bit immediate or register, can
+             * materialize into argument spill slot without a scratch reg. */
+            PRE(ilist, where,
+                INSTR_CREATE_mov_st(drcontext, arg_spill, arg));
+        } else if (opnd_is_far_base_disp(arg) &&
+                   opnd_get_segment(arg) == opnd_get_segment(arg_spill) &&
+                   opnd_get_disp(arg) == opnd_get_disp(arg_spill)) {
+            /* The argument already is the appropriate spill slot, so we don't
+             * touch it. */
+        } else {
+            /* Otherwise, we'll need to pick a saved and restored scratch reg
+             * if we haven't yet. */
+            if (scratch_reg_num == DR_REG_NULL) {
+                scratch_reg_num = pick_scratch_reg(num_args, args,
+                                                   &scratch_reg);
+            }
+
+            /* Materialize arg into scratch reg. */
+            if (opnd_is_immed_int(arg)) {
+                PRE(ilist, where,
+                    INSTR_CREATE_mov_imm(drcontext, scratch_reg, arg));
+            } else if (opnd_is_memory_reference(arg)) {
+                PRE(ilist, where,
+                    INSTR_CREATE_mov_ld(drcontext, scratch_reg, arg));
+            } else {
+                DR_ASSERT_MSG(false, "Unsupported operand type!");
+            }
+
+            /* Store scratch reg to arg spill slot. */
+            PRE(ilist, where,
+                INSTR_CREATE_mov_st(drcontext, arg_spill, scratch_reg));
+        }
+    }
+
+    if (scratch_reg_num != DR_REG_NULL) {
+        /* Save and restore our scratch reg only if we ended up picking one. */
+        instr_t *first = (before_args != NULL ?
+                          instr_get_next(before_args) :
+                          instrlist_first(ilist));
+        dr_save_reg(drcontext, ilist, first, scratch_reg_num, SPILL_SLOT_1);
+        dr_restore_reg(drcontext, ilist, where, scratch_reg_num, SPILL_SLOT_1);
+    }
+}
+
 static void
 convert_va_list_to_opnd(opnd_t *args, uint num_args, va_list ap)
 {
@@ -235,37 +316,6 @@ convert_va_list_to_opnd(opnd_t *args, uint num_args, va_list ap)
     for (i = 0; i < num_args; i++) {
         args[i] = va_arg(ap, opnd_t);
     }
-}
-
-static void
-materialize_args(void *drcontext, instrlist_t *ilist, instr_t *where,
-                 uint num_args, opnd_t *args)
-{
-    int i;
-    opnd_t xax_opnd;
-
-    dr_save_reg(drcontext, ilist, where, DR_REG_XAX, SPILL_SLOT_1);
-    xax_opnd = opnd_create_reg(DR_REG_XAX);
-
-    for (i = 0; i < num_args; i++) {
-        opnd_t arg = args[i];
-        opnd_t arg_spill = dr_reg_spill_slot_opnd(drcontext, SPILL_SLOT_2 + i);
-        /* Materialize the arg operand in XAX. */
-        if (opnd_is_immed_int(arg)) {
-            PRE(ilist, where,
-                INSTR_CREATE_mov_imm(drcontext, xax_opnd, arg));
-        } else if (opnd_is_memory_reference(arg) || opnd_is_reg(arg)) {
-            PRE(ilist, where,
-                INSTR_CREATE_mov_ld(drcontext, xax_opnd, arg));
-        } else {
-            DR_ASSERT_MSG(false, "Unsupported operand type!");
-        }
-        /* Store XAX to arg spill slot. */
-        PRE(ilist, where,
-            INSTR_CREATE_mov_st(drcontext, arg_spill, xax_opnd));
-    }
-
-    dr_restore_reg(drcontext, ilist, where, DR_REG_XAX, SPILL_SLOT_1);
 }
 
 void
