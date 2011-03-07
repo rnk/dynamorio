@@ -61,13 +61,14 @@ dr_init(client_id_t id)
     dr_register_exit_event(event_exit);
     dr_register_bb_event(event_basic_block);
 
-    dr_printf("Client %s running.\n", client_name);
+    dr_fprintf(STDERR, "Client %s running.\n", client_name);
 }
 
 static void
 event_exit(void)
 {
-    dr_printf("Instrumentation results: %llu instructions executed\n", global_count);
+    dr_fprintf(STDERR, "Instrumentation results: %llu instructions executed\n",
+               global_count);
     drcalls_exit();
 }
 

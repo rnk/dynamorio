@@ -163,7 +163,7 @@ emit_shared_call(void *drcontext, void *callee, uint num_args)
     case 0:
         break;
     }
-    dr_insert_clean_call_vargs(drcontext, ilist, NULL, callee, true, num_args,
+    dr_insert_clean_call_vargs(drcontext, ilist, NULL, callee, false, num_args,
                                &args[0]);
 
     /* Clean call return. */
@@ -339,7 +339,10 @@ drcalls_shared_call(void *drcontext, instrlist_t *ilist, instr_t *where,
         dr_log(drcontext, LOG_ALL, 3,
                "drcalls: unable to share clean call save/restore code, "
                "performance may suffer\n");
-        dr_insert_clean_call_vargs(drcontext, ilist, where, callee, true,
+        /* FIXME(rnk): save_fpstate should be determined via static analysis of
+         * the machine code.  We assume it will usually be false, so I've left
+         * it false here to match expected future performance. */
+        dr_insert_clean_call_vargs(drcontext, ilist, where, callee, false,
                                    num_args, args);
         dr_thread_free(drcontext, args, arg_alloc_size);
         return;
