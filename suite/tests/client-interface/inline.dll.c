@@ -185,7 +185,7 @@ event_exit(void)
 }
 
 /* Globals used by instrumentation functions. */
-ptr_uint_t count;
+extern ptr_uint_t count;
 static bool patched_func_called;
 
 static void
@@ -325,18 +325,27 @@ event_basic_block(void *dc, void *tag, instrlist_t *bb,
 
 #include "asm_defines.asm"
 
+#ifdef X64
+# define PTRWORD QWORD
+#else
+# define PTRWORD DWORD
+#endif
+
 START_FILE
 
 /* Add labels that we can use to mark this space as writable. */
 DECLARE_GLOBAL(instrument_code_start)
 GLOBAL_LABEL(instrument_code_start:)
 
+.DATA
+DECLARE_GLOBAL(count)
+count PTRWORD 0
+.CODE
+
 DECLARE_FUNC(empty)
 GLOBAL_LABEL(empty:)
     ret
     END_FUNC(empty)
-
-DECL_EXTERN(count)
 
 DECLARE_FUNC(inscount)
 GLOBAL_LABEL(inscount:)
@@ -359,7 +368,7 @@ GLOBAL_LABEL(callpic_pop:)
     Lnext_instr_pop:
     pop REG_XAX
     add REG_XAX, count - Lnext_instr_pop
-    incq [REG_XAX]
+    inc PTRWORD [REG_XAX]
     pop REG_XAX
     leave
     ret
@@ -374,7 +383,7 @@ GLOBAL_LABEL(callpic_mov:)
     Lnext_instr_mov:
     mov REG_XAX, [REG_XSP]
     add REG_XAX, count - Lnext_instr_mov
-    incq [REG_XAX]
+    inc PTRWORD [REG_XAX]
     pop REG_XAX
     leave
     ret
