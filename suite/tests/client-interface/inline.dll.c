@@ -185,7 +185,7 @@ event_exit(void)
 }
 
 /* Globals used by instrumentation functions. */
-extern ptr_uint_t count;
+ptr_uint_t count;
 static bool patched_func_called;
 
 static void
@@ -295,8 +295,14 @@ event_basic_block(void *dc, void *tag, instrlist_t *bb,
             break;
         case FN_callpic_pop:
         case FN_callpic_mov:
+	    /* We don't run these on Windows because MASM doesn't like computing
+	     * relative offsets between the code and data sections (ML error
+	     * A2025).  Furthermore, 32-bit Windows doesn't use PIC code anyway.
+	     */
+#ifndef WINDOWS
             dr_insert_clean_call(dc, bb, entry, func_ptrs[i], false, 0);
             dr_insert_clean_call(dc, bb, entry, (void*)after_callpic, false, 0);
+#endif
             break;
         case FN_nonleaf:
         case FN_cond_br:
@@ -333,14 +339,14 @@ event_basic_block(void *dc, void *tag, instrlist_t *bb,
 
 START_FILE
 
+.DATA
+DECLARE_GLOBAL(count)
+EXTERN count:
+.CODE
+
 /* Add labels that we can use to mark this space as writable. */
 DECLARE_GLOBAL(instrument_code_start)
 GLOBAL_LABEL(instrument_code_start:)
-
-.DATA
-DECLARE_GLOBAL(count)
-count PTRWORD 0
-.CODE
 
 DECLARE_FUNC(empty)
 GLOBAL_LABEL(empty:)
@@ -361,6 +367,7 @@ GLOBAL_LABEL(inscount:)
 
 DECLARE_FUNC(callpic_pop)
 GLOBAL_LABEL(callpic_pop:)
+#ifndef WINDOWS
     push REG_XBP
     mov REG_XBP, REG_XSP
     push REG_XAX
@@ -371,11 +378,13 @@ GLOBAL_LABEL(callpic_pop:)
     inc PTRWORD [REG_XAX]
     pop REG_XAX
     leave
+#endif /* WINDOWS */
     ret
     END_FUNC(callpic_pop)
 
 DECLARE_FUNC(callpic_mov)
 GLOBAL_LABEL(callpic_mov:)
+#ifndef WINDOWS
     push REG_XBP
     mov REG_XBP, REG_XSP
     push REG_XAX
@@ -386,6 +395,7 @@ GLOBAL_LABEL(callpic_mov:)
     inc PTRWORD [REG_XAX]
     pop REG_XAX
     leave
+#endif /* WINDOWS */
     ret
     END_FUNC(callpic_mov)
 
