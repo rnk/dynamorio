@@ -341,8 +341,12 @@ START_FILE
 
 .DATA
 DECLARE_GLOBAL(count)
-EXTERN count:
+DECL_EXTERN(count)
+#ifdef WINDOWS
 .CODE
+#else
+.TEXT
+#endif
 
 /* Add labels that we can use to mark this space as writable. */
 DECLARE_GLOBAL(instrument_code_start)
