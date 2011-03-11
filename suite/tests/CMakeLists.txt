@@ -629,7 +629,7 @@ function(tobuild_ci test source client_ops dr_ops exe_ops)
     # on it.
     # TODO(rnk): This extra static library step is unecessary.  If there is a
     # way to set the CFLAGS on the .o file instead of the .a file, that would be
-    # preferable.
+    # preferable.  set_source_files_properties doesn't seem to work either.
     add_library("${test}.dll.asm" STATIC "${asm_source}")
     configure_DynamoRIO_client("${test}.dll.asm")
     get_target_property(prop_cflags "${test}.dll.asm" COMPILE_FLAGS)
