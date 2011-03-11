@@ -355,10 +355,10 @@ GLOBAL_LABEL(callpic_pop:)
     push REG_XBP
     mov REG_XBP, REG_XSP
     push REG_XAX
-    call .Lnext_instr_pop
-    .Lnext_instr_pop:
+    call Lnext_instr_pop
+    Lnext_instr_pop:
     pop REG_XAX
-    add REG_XAX, count - .Lnext_instr_pop
+    add REG_XAX, count - Lnext_instr_pop
     incq [REG_XAX]
     pop REG_XAX
     leave
@@ -370,10 +370,10 @@ GLOBAL_LABEL(callpic_mov:)
     push REG_XBP
     mov REG_XBP, REG_XSP
     push REG_XAX
-    call .Lnext_instr_mov
-    .Lnext_instr_mov:
+    call Lnext_instr_mov
+    Lnext_instr_mov:
     mov REG_XAX, [REG_XSP]
-    add REG_XAX, count - .Lnext_instr_mov
+    add REG_XAX, count - Lnext_instr_mov
     incq [REG_XAX]
     pop REG_XAX
     leave
@@ -390,12 +390,12 @@ GLOBAL_LABEL(cond_br:)
     mov REG_XBP, REG_XSP
     push REG_XCX
     mov REG_XCX, SYMREF(count)
-    jecxz .Lcount_zero
-    jmp .Lnon_zero
-    .Lcount_zero:
+    jecxz Lcount_zero
+    jmp Lnon_zero
+    Lcount_zero:
         mov REG_XCX, HEX(DEADBEEF)
         mov SYMREF(count), REG_XCX
-    .Lnon_zero:
+    Lnon_zero:
     pop REG_XCX
     leave
     ret
