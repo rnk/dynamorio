@@ -4338,7 +4338,8 @@ check_callee_instr(dcontext_t *dcontext, callee_info_t *ci, app_pc next_pc)
                                   OPND_CREATE_MEMPTR(REG_XSP, 0)))) &&
                       opnd_is_reg(instr_get_dst(&ins, 0)))) {
                     LOG(THREAD, LOG_CLEANCALL, 2,
-                        "CLEANCALL: callee calls out is not PIC code, bailout\n");
+                        "CLEANCALL: callee calls out is not PIC code, "
+                        "bailout\n");
                     instr_free(dcontext, &ins);
                     return NULL;
                 }
@@ -4572,7 +4573,9 @@ analyze_callee_save_reg(dcontext_t *dcontext, callee_info_t *ci)
     top = instrlist_first(ilist);
     bot = instrlist_last(ilist);
     /* Don't crash if the function is empty, ie a single ret. */
-    if (top == NULL) return;
+    if (top == NULL) {
+        return;
+    }
     /* for easy of comparison, create push xbp, pop xbp */
     push_xbp = INSTR_CREATE_push(dcontext, opnd_create_reg(DR_REG_XBP));
     pop_xbp  = INSTR_CREATE_pop(dcontext, opnd_create_reg(DR_REG_XBP));

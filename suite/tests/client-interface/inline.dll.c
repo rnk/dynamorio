@@ -42,29 +42,17 @@
 
 #define PRE  instrlist_meta_preinsert
 
-/* Instrumentation functions that work for 32-bit x86. */
-#define FUNCTIONS_32() \
+/* List of instrumentation functions. */
+#define FUNCTIONS() \
         FUNCTION(empty) \
         FUNCTION(inscount) \
         FUNCTION(callpic_pop) \
         FUNCTION(callpic_mov) \
         FUNCTION(cond_br) \
         FUNCTION(nonleaf) \
-        FUNCTION(tls_clobber)
-
-/* Instrumentation functions that use 64-bit extensions. */
-#define FUNCTIONS_64()
-
-#ifdef X64
-#define FUNCTIONS() \
-        FUNCTIONS_32() \
-        FUNCTIONS_64() \
+        FUNCTION(tls_clobber) \
         LAST_FUNCTION()
-#else
-#define FUNCTIONS() \
-        FUNCTIONS_32() \
-        LAST_FUNCTION()
-#endif
+
 
 /* Table of function names. */
 #define FUNCTION(fn_name) #fn_name,
@@ -295,10 +283,10 @@ event_basic_block(void *dc, void *tag, instrlist_t *bb,
             break;
         case FN_callpic_pop:
         case FN_callpic_mov:
-	    /* We don't run these on Windows because MASM doesn't like computing
-	     * relative offsets between the code and data sections (ML error
-	     * A2025).  Furthermore, 32-bit Windows doesn't use PIC code anyway.
-	     */
+            /* We don't run these on Windows because MASM doesn't like computing
+             * relative offsets between the code and data sections (ML error
+             * A2025).  Furthermore, 32-bit Windows doesn't use PIC code anyway.
+             */
 #ifndef WINDOWS
             dr_insert_clean_call(dc, bb, entry, func_ptrs[i], false, 0);
             dr_insert_clean_call(dc, bb, entry, (void*)after_callpic, false, 0);

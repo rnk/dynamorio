@@ -42,13 +42,13 @@
 #define NOINLINE __attribute__((noinline))
 #endif
 
-EXPORT NOINLINE void empty() {}
-EXPORT NOINLINE void inscount() {}
-EXPORT NOINLINE void callpic_pop() {}
-EXPORT NOINLINE void callpic_mov() {}
-EXPORT NOINLINE void cond_br() {}
-EXPORT NOINLINE void tls_clobber() {}
-EXPORT NOINLINE void nonleaf() {}
+EXPORT NOINLINE void empty(void) {}
+EXPORT NOINLINE void inscount(void) {}
+EXPORT NOINLINE void callpic_pop(void) {}
+EXPORT NOINLINE void callpic_mov(void) {}
+EXPORT NOINLINE void cond_br(void) {}
+EXPORT NOINLINE void tls_clobber(void) {}
+EXPORT NOINLINE void nonleaf(void) {}
 
 int
 main(void)
