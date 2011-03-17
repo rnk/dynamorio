@@ -49,6 +49,7 @@ EXPORT NOINLINE void callpic_mov(void) {}
 EXPORT NOINLINE void cond_br(void) {}
 EXPORT NOINLINE void tls_clobber(void) {}
 EXPORT NOINLINE void nonleaf(void) {}
+EXPORT NOINLINE void aflags_clobber(void) {}
 
 int
 main(void)
@@ -60,4 +61,5 @@ main(void)
     cond_br();
     tls_clobber();
     nonleaf();
+    aflags_clobber();
 }

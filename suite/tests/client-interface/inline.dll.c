@@ -51,6 +51,7 @@
         FUNCTION(cond_br) \
         FUNCTION(nonleaf) \
         FUNCTION(tls_clobber) \
+        FUNCTION(aflags_clobber) \
         LAST_FUNCTION()
 
 
@@ -255,6 +256,57 @@ check_scratch(void)
     }
 }
 
+void set_aflags(void);
+
+static void
+check_aflags(int actual, int expected)
+{
+    byte ah = (actual >> 8) & 0xFF;
+    byte al = actual & 0xFF;
+    byte eh = (expected >> 8) & 0xFF;
+    byte el = expected & 0xFF;
+    dr_fprintf(STDERR, "actual: %04x, expected: %04x\n", actual, expected);
+    DR_ASSERT_MSG(ah == eh, "Aflags clobbered!");
+    DR_ASSERT_MSG(al == el, "Overflow clobbered!");
+    dr_fprintf(STDERR, "passed for %04x\n", expected);
+}
+
+static instr_t *
+test_aflags(void *dc, instrlist_t *bb, instr_t *where, int aflags)
+{
+    /* mov REG_XAX, HEX(D701)
+     * add al, HEX(7F)
+     * sahf ah
+     */
+    PRE(bb, where, INSTR_CREATE_mov_imm
+        (dc, opnd_create_reg(DR_REG_XAX), OPND_CREATE_INTPTR(aflags)));
+    PRE(bb, where, INSTR_CREATE_add
+        (dc, opnd_create_reg(DR_REG_AL), OPND_CREATE_INT8(0x7F)));
+    PRE(bb, where, INSTR_CREATE_sahf(dc));
+
+    dr_insert_clean_call(dc, bb, where, (void*)aflags_clobber, false, 0);
+
+    /* Get the flags back:
+     * mov REG_XAX, 0
+     * lahf
+     * seto al
+     */
+    PRE(bb, where, INSTR_CREATE_mov_imm
+        (dc, opnd_create_reg(DR_REG_XAX), OPND_CREATE_INTPTR(0)));
+    PRE(bb, where, INSTR_CREATE_lahf(dc));
+    PRE(bb, where, INSTR_CREATE_setcc
+        (dc, OP_seto, opnd_create_reg(DR_REG_AL)));
+    PRE(bb, where, INSTR_CREATE_mov_st
+        (dc, dr_reg_spill_slot_opnd(dc, SPILL_SLOT_1),
+         opnd_create_reg(DR_REG_XAX)));
+
+    /* Assert that they match the original flags. */
+    dr_insert_clean_call(dc, bb, where, (void*)check_aflags, false, 2,
+                         dr_reg_spill_slot_opnd(dc, SPILL_SLOT_1),
+                         OPND_CREATE_INT32(aflags));
+    return where;
+}
+
 static dr_emit_flags_t
 event_basic_block(void *dc, void *tag, instrlist_t *bb,
                   bool for_trace, bool translating)
@@ -262,6 +314,7 @@ event_basic_block(void *dc, void *tag, instrlist_t *bb,
     instr_t *entry = instrlist_first(bb);
     app_pc entry_pc = instr_get_app_pc(entry);
     int i;
+
     for (i = 0; i < N_FUNCS; i++) {
         if (entry_pc != func_pcs[i])
             continue;
@@ -304,11 +357,18 @@ event_basic_block(void *dc, void *tag, instrlist_t *bb,
             dr_insert_clean_call(dc, bb, entry, (void*)after_patched, false, 0);
             break;
         case FN_tls_clobber:
-            /* TODO(rnk): Fix this failing test.
             dr_insert_clean_call(dc, bb, entry, (void*)fill_scratch, false, 0);
             dr_insert_clean_call(dc, bb, entry, func_ptrs[i], false, 0);
             dr_insert_clean_call(dc, bb, entry, (void*)check_scratch, false, 0);
-            */
+            break;
+        case FN_aflags_clobber:
+            /* ah is: SF:ZF:0:AF:0:PF:1:CF.  If we turn everything on we will
+             * get all 1's except bits 3 and 5, giving a hex mask of 0xD7.
+             * Overflow is in the low byte (al usually) so use use a mask of
+             * 0xD701 first.  If we turn everything off we get 0x0200.
+             */
+            entry = test_aflags(dc, bb, entry, 0xD701);
+            (void)test_aflags(dc, bb, entry, 0x00200);
             break;
         }
     }
@@ -430,14 +490,25 @@ DECLARE_FUNC(tls_clobber)
 GLOBAL_LABEL(tls_clobber:)
     push REG_XBP
     mov REG_XBP, REG_XSP
+    sub REG_XSP, ARG_SZ
     mov REG_XAX, HEX(DEAD)
+    mov [REG_XSP], REG_XAX
     mov REG_XDX, HEX(BEEF)
-    /* Materialize 0xDEADBEEF in XAX.  Why?  Who knows. */
-    shl REG_XAX, 16
-    or REG_XAX, REG_XDX
     leave
     ret
     END_FUNC(tls_clobber)
+
+/* Zero the aflags. */
+DECLARE_FUNC(aflags_clobber)
+GLOBAL_LABEL(aflags_clobber:)
+    push REG_XBP
+    mov REG_XBP, REG_XSP
+    mov REG_XAX, 0
+    add al, HEX(7F)
+    sahf
+    leave
+    ret
+    END_FUNC(aflags_clobber)
 
 DECLARE_GLOBAL(instrument_code_end)
 GLOBAL_LABEL(instrument_code_end:)
