@@ -475,11 +475,9 @@ codegen_opnd_arg1(void)
 inscount:
     push REG_XBP
     mov REG_XBP, REG_XSP
-    push REG_XAX
     mov REG_XAX, ARG1
     mov REG_XDX, &count
     add [REG_XDX], REG_XAX
-    pop REG_XAX
     leave
     ret
 */
@@ -568,7 +566,7 @@ codegen_nonleaf(void *dc)
 }
 
 /* Conditional branches cannot be inlined.  Avoid flags usage to make test case
- * more precise.
+ * more specific.
 cond_br:
     push REG_XBP
     mov REG_XBP, REG_XSP
@@ -627,7 +625,7 @@ codegen_tls_clobber(void *dc)
     return ilist;
 }
 
-/* Zero the aflags.
+/* Zero the aflags.  Inliner must ensure they are restored.
 aflags_clobber:
     push REG_XBP
     mov REG_XBP, REG_XSP

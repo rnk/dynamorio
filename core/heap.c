@@ -50,8 +50,6 @@
 # include "hotpatch.h" /* To handle leak for case 9593. */
 #endif
 
-#include "instrument.h"
-
 #ifdef HEAP_ACCOUNTING
 # ifndef DEBUG
 # error HEAP_ACCOUNTING requires DEBUG
