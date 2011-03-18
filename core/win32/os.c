@@ -1889,7 +1889,7 @@ is_first_thread_in_new_process(HANDLE process_handle, CONTEXT *cxt)
  * handle process_handle.  Called by SYS_CreateThread in pre_system_call (in
  * which case cxt is non-NULL) and by CreateProcess[Ex] in post_system_call (in
  * which case cxt is NULL). */
-void
+bool
 maybe_inject_into_process(dcontext_t *dcontext, HANDLE process_handle,
                           CONTEXT *cxt)
 {
@@ -1900,6 +1900,7 @@ maybe_inject_into_process(dcontext_t *dcontext, HANDLE process_handle,
     /* Can't early inject 32-bit DR into a wow64 process as there is no
      * ntdll32.dll at early inject point, so thread injection only.  PR 215423.
      */
+    bool injected = false;
     if ((cxt == NULL && (DYNAMO_OPTION(inject_at_create_process) ||
                          (get_os_version() >= WINDOWS_VERSION_VISTA &&
                           DYNAMO_OPTION(vista_inject_at_create_process)))
@@ -1916,6 +1917,7 @@ maybe_inject_into_process(dcontext_t *dcontext, HANDLE process_handle,
 
         if (should_inject_into_process(dcontext, process_handle,
                                        &rununder_mask, &should_inject)) {
+            injected = true; /* attempted, at least */
             ASSERT(cxt != NULL || DYNAMO_OPTION(early_inject));
             /* FIXME : if not -early_inject, we are going to read and write
              * to cxt, which may be unsafe */
@@ -1925,6 +1927,7 @@ maybe_inject_into_process(dcontext_t *dcontext, HANDLE process_handle,
             }
         }
     }
+    return injected;
 }
 
 /* For case 8749: can't aslr dr for thin_client because cygwin apps will die. */
@@ -4341,6 +4344,7 @@ convert_NT_to_Dos_path(OUT wchar_t *buf, IN const wchar_t *fname,
      * 3) when find a match, replace \Device\HarddiskVolumeX with drive letter
      */
     /* We could cache the drive map but it can change so we re-create every time */
+    IF_X64(map.Flags = 0); /* required: i#419 */
     res = nt_get_drive_map(NT_CURRENT_PROCESS, &map);
     if (!NT_SUCCESS(res)) {
         LOG(THREAD_GET, LOG_NT, 2, "%s: drive map error 0x%x\n", __FUNCTION__, res);
@@ -4761,6 +4765,19 @@ void
 os_close(file_t f)
 {
     close_handle(f);
+}
+
+/* not isolating files on windows */
+file_t
+os_open_protected(const char *fname, int os_open_flags)
+{
+    return os_open(fname, os_open_flags);
+}
+
+void
+os_close_protected(file_t f)
+{
+    os_close(f);
 }
 
 /* We take in size_t count to match linux, but Nt{Read,Write}File only
@@ -5847,6 +5864,7 @@ void
 detach_helper(int detach_type)
 {
     thread_record_t **threads;
+    thread_record_t *toexit;
     dcontext_t *my_dcontext = get_thread_private_dcontext();
     int i, num_threads, my_thread_index = -1;
     thread_id_t my_id;
@@ -6197,8 +6215,17 @@ detach_helper(int detach_type)
         }
     }
     /* now free the detaching thread's dcontext */
-    if (my_thread_index != -1)
-        dynamo_other_thread_exit(threads[my_thread_index], false);
+    if (my_thread_index != -1) {
+        /* we need dynamo_shared_exit() to exit the thread after the client's
+         * exit event
+         */
+        toexit = threads[my_thread_index];
+#ifdef DEBUG
+        /* pre-client thread cleanup (PR 536058) */
+        dynamo_thread_exit_pre_client(toexit->dcontext, toexit->id);
+#endif
+    } else
+        toexit = NULL;
 
     /* free list of threads and cleanup_tpc */
     global_heap_free(cleanup_tpc, num_threads*sizeof(bool) HEAPACCT(ACCT_OTHER));
@@ -6214,7 +6241,7 @@ detach_helper(int detach_type)
         "Detach :  Last message from detach, about to clean up some more memory and unload\n");
     SYSLOG_INTERNAL_INFO("Detaching from process, entering final cleanup");
     /* call dynamo exit routines */
-    res = dynamo_shared_exit(detach_stacked_callbacks); 
+    res = dynamo_shared_exit(toexit, detach_stacked_callbacks); 
     ASSERT(res == SUCCESS);
 
     /* we can free the initstack, it can't be our stack, we are specially created thread */
