@@ -258,7 +258,6 @@ before_instrumentation(app_pc func)
 {
     void *dc;
     instrlist_t *ilist;
-    instr_t *jmp;
     opnd_t xax = opnd_create_reg(DR_REG_XAX);
 
     /* These functions might be > 2 GB apart in x64, so we materialize the jump
@@ -586,7 +585,6 @@ codegen_cond_br(void *dc)
 {
     instrlist_t *ilist = instrlist_create(dc);
     instr_t *arg_zero = INSTR_CREATE_label(dc);
-    opnd_t xax = opnd_create_reg(DR_REG_XAX);
     opnd_t xcx = opnd_create_reg(DR_REG_XCX);
     codegen_prologue(dc, ilist);
     /* If arg1 is non-zero, write 0xDEADBEEF to count. */

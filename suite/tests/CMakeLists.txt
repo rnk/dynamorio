@@ -1199,10 +1199,7 @@ if (CLIENT_INTERFACE)
   tobuild_ci(client.thread client-interface/thread.c "-paramx -paramy" "" "")
   tobuild_ci(client.truncate client-interface/truncate.c "" "" "")
   tobuild_ci(client.unregister client-interface/unregister.c "" "" "")
-  # TODO(rnk): Support for split-file asm needs work on Windows.
-  if (LINUX)
-    tobuild_ci(client.inline client-interface/inline.c "" "-opt_cleancall 3" "")
-  endif ()
+  tobuild_ci(client.inline client-interface/inline.c "" "-opt_cleancall 3" "")
   tobuild_api(api.dis api/dis.c "-syntax_intel"
     "${CMAKE_CURRENT_SOURCE_DIR}/api/dis-udis86-randtest.raw")
   tobuild_api(api.ir api/ir.c "" "")
