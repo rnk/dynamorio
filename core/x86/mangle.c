@@ -5254,7 +5254,7 @@ insert_inline_reg_restore(dcontext_t *dcontext, clean_call_info_t *cci,
              OPND_CREATE_MEM_lea(DR_REG_XSP, DR_REG_NULL, 0, sizeof(reg_t))));
     }
 
-    /* get aflags slot first */
+    /* aflags is next. */
     if (!cci->skip_save_aflags) {
         /* assume get saved aflags to REG_XAX */
         LOG(THREAD, LOG_CLEANCALL, 2,
@@ -5269,7 +5269,7 @@ insert_inline_reg_restore(dcontext_t *dcontext, clean_call_info_t *cci,
         PRE(ilist, where, INSTR_CREATE_sahf(dcontext));
     }
 
-    /* now restore all registers */
+    /* Now restore all registers. */
     for (i = NUM_GP_REGS - 1; i >= 0; i--) {
         if (!cci->reg_skip[i]) {
             LOG(THREAD, LOG_CLEANCALL, 2,
@@ -5308,10 +5308,10 @@ insert_inline_arg_setup(dcontext_t *dcontext, clean_call_info_t *cci,
     }
 #ifndef X64
     ASSERT(!cci->reg_skip[0]);
-    /* Move xax to local variable stack slot.  We can use the local variable
-     * stack slot because we only allow at most one local stack access, so
-     * callee either does not use the argument, or the local stack access is
-     * the arg.
+    /* Move xax to the local variable stack slot.  We can use the local
+     * variable stack slot because we only allow at most one local stack
+     * access, so callee either does not use the argument, or the local stack
+     * access is the arg.
      */
     LOG(THREAD, LOG_CLEANCALL, 2,
         "CLEANCALL: inlining clean call "PFX", passing arg via slot %d.\n",
