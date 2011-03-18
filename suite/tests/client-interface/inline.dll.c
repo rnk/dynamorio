@@ -203,8 +203,7 @@ codegen_instrumentation_funcs(void)
         dr_log(dc, LOG_EMIT, 3, "Generated instrumentation function %s at "PFX
                ":", func_names[i], pc);
 #ifdef DEBUG
-        //instrlist_disassemble(dc, pc, ilists[i], THREAD_GET());
-        instrlist_disassemble(dc, pc, ilists[i], STDOUT);
+        instrlist_disassemble(dc, pc, ilists[i], THREAD_GET());
 #endif
         pc = instrlist_encode(dc, ilists[i], pc, false);
         instrlist_clear_and_destroy(dc, ilists[i]);
