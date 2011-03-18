@@ -5183,7 +5183,7 @@ static void
 insert_inline_reg_save(dcontext_t *dcontext, clean_call_info_t *cci,
                        instrlist_t *ilist, instr_t *where, opnd_t *args)
 {
-    callee_info_t *info = cci->callee_info;
+    IF_DEBUG(callee_info_t *info = cci->callee_info;)
     int i;
     int num_pushed;
 
@@ -5270,7 +5270,7 @@ insert_inline_reg_restore(dcontext_t *dcontext, clean_call_info_t *cci,
     }
 
     /* now restore all registers */
-    for (i = NUM_GP_REGS; i >= 0; i--) {
+    for (i = NUM_GP_REGS - 1; i >= 0; i--) {
         if (!cci->reg_skip[i]) {
             LOG(THREAD, LOG_CLEANCALL, 2,
                 "CLEANCALL: inlining clean call "PFX", restoring reg %s.\n",
@@ -5308,16 +5308,17 @@ insert_inline_arg_setup(dcontext_t *dcontext, clean_call_info_t *cci,
     }
 #ifndef X64
     ASSERT(!cci->reg_skip[0]);
-    /* move xax to last scratch slot */
-    /* XXX: here we share the last scratch slot with callee's local variable,
-     * Because we only allow at most one local stack access, so callee
-     * either does not use the argument, or the local stack access is the arg.
+    /* Move xax to local variable stack slot.  We can use the local variable
+     * stack slot because we only allow at most one local stack access, so
+     * callee either does not use the argument, or the local stack access is
+     * the arg.
      */
     LOG(THREAD, LOG_CLEANCALL, 2,
         "CLEANCALL: inlining clean call "PFX", passing arg via slot %d.\n",
         ci->start, NUM_SCRATCH_SLOTS - 1);
-    PRE(ilist, where, instr_create_save_to_tls
-        (dcontext, DR_REG_XAX, SCRATCH_SLOTS(NUM_SCRATCH_SLOTS - 1)));
+    PRE(ilist, where, INSTR_CREATE_mov_st
+        (dcontext, OPND_CREATE_MEMPTR(DR_REG_XSP, 0),
+         opnd_create_reg(DR_REG_XAX)));
 #endif
 }
 
