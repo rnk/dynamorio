@@ -1143,10 +1143,18 @@ if (CLIENT_INTERFACE)
     tobuild_ci(client.security client-interface/security.c "" "-security_api" "")
   endif (PROGRAM_SHEPHERDING)
   tobuild_ci(client.strace client-interface/strace.c "" "" "")
+  use_DynamoRIO_extension(client.strace.dll drmgr)
   tobuild_ci(client.thread client-interface/thread.c "-paramx -paramy" "" "")
   tobuild_ci(client.truncate client-interface/truncate.c "" "" "")
   tobuild_ci(client.unregister client-interface/unregister.c "" "" "")
   tobuild_ci(client.inline client-interface/inline.c "" "-opt_cleancall 3" "")
+
+  tobuild_ci(client.drmgr-test client-interface/drmgr-test.c "" "" "")
+  use_DynamoRIO_extension(client.drmgr-test.dll drmgr)
+  if (UNIX)
+    target_link_libraries(client.drmgr-test ${libpthread})
+  endif (UNIX)
+
   tobuild_api(api.dis api/dis.c "-syntax_intel"
     "${CMAKE_CURRENT_SOURCE_DIR}/api/dis-udis86-randtest.raw")
   tobuild_api(api.ir api/ir.c "" "")
