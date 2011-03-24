@@ -4330,9 +4330,7 @@ check_callee_instr(dcontext_t *dcontext, callee_info_t *ci, app_pc next_pc)
                     disassemble_with_bytes(dcontext, tgt_pc, THREAD);
                 });
                 /* "pop %r1" or "mov [%rsp] %r1" */
-                if (!(((instr_get_opcode(&ins) == OP_pop &&
-                        opnd_same(instr_get_src(&ins, 1),
-                                  OPND_CREATE_MEMPTR(REG_XSP, 0))) ||
+                if (!(((instr_get_opcode(&ins) == OP_pop) ||
                        (instr_get_opcode(&ins) == OP_mov_ld &&
                         opnd_same(instr_get_src(&ins, 0),
                                   OPND_CREATE_MEMPTR(REG_XSP, 0)))) &&
@@ -5185,7 +5183,6 @@ insert_inline_reg_save(dcontext_t *dcontext, clean_call_info_t *cci,
 {
     IF_DEBUG(callee_info_t *info = cci->callee_info;)
     int i;
-    int num_pushed;
 
     /* Spill XSP to TLS_XAX_SLOT because it's not exposed to the client. */
     PRE(ilist, where, instr_create_save_to_tls
@@ -5206,29 +5203,9 @@ insert_inline_reg_save(dcontext_t *dcontext, clean_call_info_t *cci,
                 (dcontext, opnd_create_reg(DR_REG_XAX + (reg_id_t)i)));
         }
     }
-    num_pushed = i;
 
     if (!cci->skip_save_aflags) {
-        /* TODO(rnk): What ensures this? */
-        ASSERT(!cci->reg_skip[0]);
-        /* lahf */
-        PRE(ilist, where, INSTR_CREATE_lahf(dcontext));
-        /* seto al */
-        PRE(ilist, where, INSTR_CREATE_setcc
-            (dcontext, OP_seto, opnd_create_reg(DR_REG_AL)));
-        /* save XAX for take base */
-        PRE(ilist, where, INSTR_CREATE_push
-            (dcontext, opnd_create_reg(DR_REG_XAX)));
-        LOG(THREAD, LOG_CLEANCALL, 2,
-            "CLEANCALL: inlining clean call "PFX", saving aflags.\n",
-            info->start);
-        /* restore XAX, which might be used in arg */
-        if (cci->num_args == 1 && opnd_uses_reg(args[0], DR_REG_XAX)) {
-            int xax_offset = sizeof(reg_t) * num_pushed;
-            PRE(ilist, where, INSTR_CREATE_mov_ld
-                (dcontext, opnd_create_reg(DR_REG_XAX),
-                 OPND_CREATE_MEMPTR(DR_REG_XSP, xax_offset)));
-        }
+        PRE(ilist, where, INSTR_CREATE_pushf(dcontext));
     }
 
     /* If we had to rewrite a local var stack access, make space for it without
@@ -5256,17 +5233,7 @@ insert_inline_reg_restore(dcontext_t *dcontext, clean_call_info_t *cci,
 
     /* aflags is next. */
     if (!cci->skip_save_aflags) {
-        /* assume get saved aflags to REG_XAX */
-        LOG(THREAD, LOG_CLEANCALL, 2,
-            "CLEANCALL: inlining clean call "PFX", restoring aflags.\n",
-            ci->start);
-        PRE(ilist, where, INSTR_CREATE_pop
-            (dcontext, opnd_create_reg(DR_REG_XAX)));
-        /* add 0x7f,%al */
-        PRE(ilist, where, INSTR_CREATE_add
-            (dcontext, opnd_create_reg(REG_AL), OPND_CREATE_INT8(0x7f)));
-        /* sahf */
-        PRE(ilist, where, INSTR_CREATE_sahf(dcontext));
+        PRE(ilist, where, INSTR_CREATE_popf(dcontext));
     }
 
     /* Now restore all registers. */
