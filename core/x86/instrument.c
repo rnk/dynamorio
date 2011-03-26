@@ -157,7 +157,7 @@ typedef struct _callback_list_t {
             memcpy(tmp, (vec).callbacks, num * sizeof(callback_t));     \
             mutex_unlock(&callback_registration_lock);                  \
             for (idx=0; idx<num; idx++) {                               \
-                ret retop ((type)tmp[num-idx-1])(__VA_ARGS__) postop;   \
+                ret retop (((type)tmp[num-idx-1])(__VA_ARGS__)) postop; \
             }                                                           \
             HEAP_ARRAY_FREE(GLOBAL_DCONTEXT, tmp, callback_t, num,      \
                             ACCT_OTHER, UNPROTECTED);                    \
@@ -1406,7 +1406,10 @@ instrument_restore_state(dcontext_t *dcontext, bool restore_memory,
     }
     if (restore_state_ex_callbacks.num > 0) {
         /* i#220/PR 480565: client has option of failing the translation.
-         * We fail it if any client wants to.
+         * We fail it if any client wants to, short-circuiting in that case.
+         * This does violate the "priority order" of events where the
+         * last one is supposed to have final say b/c it won't even
+         * see the event (xref i#424).
          */
         call_all_ret(res, = res &&, , restore_state_ex_callbacks,
                      int (*)(void *, bool, dr_restore_state_info_t *),
@@ -1663,7 +1666,12 @@ instrument_pre_syscall(dcontext_t *dcontext, int sysnum)
     /* clear flag from dr_syscall_invoke_another() */
     dcontext->client_data->invoke_another_syscall = false;
     if (pre_syscall_callbacks.num > 0) {
-        /* skip syscall if any client wants to skip it */
+        /* skip syscall if any client wants to skip it.
+         * we short-circuit if any client wants to skip.  this does
+         * violate the "priority order" of events where the last one
+         * is supposed to have final say b/c it won't even see the
+         * event (xref i#424).
+         */
         call_all_ret(exec, = exec &&, , pre_syscall_callbacks,
                      bool (*)(void *, int), (void *)dcontext, sysnum);
     }
@@ -1694,6 +1702,11 @@ bool
 instrument_exception(dcontext_t *dcontext, dr_exception_t *exception)
 {
     bool res = true;
+    /* We short-circuit if any client wants to "own" the fault and not pass on.
+     * This does violate the "priority order" of events where the last one is
+     * supposed to have final say b/c it won't even see the event: but only one
+     * registrant should own it (xref i#424).
+     */
     call_all_ret(res, = res &&, , exception_callbacks,
                  bool (*)(void *, dr_exception_t *),
                  (void *)dcontext, exception);
@@ -1704,11 +1717,12 @@ dr_signal_action_t
 instrument_signal(dcontext_t *dcontext, dr_siginfo_t *siginfo)
 {
     dr_signal_action_t ret = DR_SIGNAL_DELIVER;
-    /* Highest priority callback decides what to do with signal.
-     * If we get rid of DR_SIGNAL_BYPASS we could change to a bool and
-     * then only deliver to app if nobody suppresses.
+    /* We short-circuit if any client wants to do other than deliver to the app.
+     * This does violate the "priority order" of events where the last one is
+     * supposed to have final say b/c it won't even see the event: but only one
+     * registrant should own the signal (xref i#424).
      */
-    call_all_ret(ret, =, , signal_callbacks,
+    call_all_ret(ret, = ret == DR_SIGNAL_DELIVER ? , : ret, signal_callbacks,
                  dr_signal_action_t (*)(void *, dr_siginfo_t *),
                  (void *)dcontext, siginfo);
     return ret;
@@ -2466,6 +2480,9 @@ dr_unload_aux_library(dr_auxlib_handle_t lib)
     }
 }
 
+/***************************************************************************
+ * LOCKS
+ */
 
 DR_API 
 /* Initializes a mutex
@@ -2537,6 +2554,71 @@ dr_mutex_trylock(void *mutex)
 {
     return mutex_trylock((mutex_t *) mutex);
 }
+
+DR_API
+void *
+dr_rwlock_create(void)
+{
+    void *rwlock = (void *) HEAP_TYPE_ALLOC(GLOBAL_DCONTEXT, read_write_lock_t,
+                                            ACCT_CLIENT, UNPROTECTED);
+    ASSIGN_INIT_READWRITE_LOCK_FREE(*((read_write_lock_t *)rwlock), dr_client_mutex);
+    return rwlock;
+}
+
+DR_API
+void
+dr_rwlock_destroy(void *rwlock)
+{
+    DELETE_READWRITE_LOCK(*((read_write_lock_t *) rwlock));
+    HEAP_TYPE_FREE(GLOBAL_DCONTEXT, (read_write_lock_t *)rwlock, read_write_lock_t,
+                   ACCT_CLIENT, UNPROTECTED);
+}
+
+DR_API
+void
+dr_rwlock_read_lock(void *rwlock)
+{
+    read_lock((read_write_lock_t *)rwlock);
+}
+
+DR_API
+void
+dr_rwlock_read_unlock(void *rwlock)
+{
+    read_unlock((read_write_lock_t *)rwlock);
+}
+
+DR_API
+void
+dr_rwlock_write_lock(void *rwlock)
+{
+    write_lock((read_write_lock_t *)rwlock);
+}
+
+DR_API
+void
+dr_rwlock_write_unlock(void *rwlock)
+{
+    write_unlock((read_write_lock_t *)rwlock);
+}
+
+DR_API
+bool
+dr_rwlock_write_trylock(void *rwlock)
+{
+    return write_trylock((read_write_lock_t *)rwlock);
+}
+
+DR_API
+bool
+dr_rwlock_self_owns_write_lock(void *rwlock)
+{
+    return self_owns_write_lock((read_write_lock_t *)rwlock);
+}
+
+/***************************************************************************
+ * MODULES
+ */
 
 DR_API
 /* Looks up the module data containing pc.  Returns NULL if not found.
@@ -2773,15 +2855,18 @@ dr_open_file(const char *fname, uint mode_flags)
         CLIENT_ASSERT((flags == 0), "dr_open_file: multiple write modes selected"); 
         flags |= OS_OPEN_WRITE;
     }
-
     if (TEST(DR_FILE_READ, mode_flags))
         flags |= OS_OPEN_READ;
+    CLIENT_ASSERT((flags != 0), "dr_open_file: no mode selected"); 
 
     if (TEST(DR_FILE_ALLOW_LARGE, mode_flags))
         flags |= OS_OPEN_ALLOW_LARGE;
 
-    CLIENT_ASSERT((flags != 0), "dr_open_file: no mode selected"); 
-    return os_open(fname, flags);
+    if (TEST(DR_FILE_CLOSE_ON_FORK, mode_flags))
+        flags |= OS_OPEN_CLOSE_ON_FORK;
+
+    /* all client-opened files are protected */
+    return os_open_protected(fname, flags);
 }
 
 DR_API 
@@ -2790,7 +2875,8 @@ DR_API
 void
 dr_close_file(file_t f)
 {
-    os_close(f);
+    /* all client-opened files are protected */
+    os_close_protected(f);
 }
 
 DR_API 

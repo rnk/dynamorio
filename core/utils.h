@@ -895,8 +895,10 @@ uint hashtable_num_bits(uint size);
  * 32bit displacement from everywhere in the supplied region. Checks for underflow. If the
  * supplied region is too large then returned value may be > reachable_region_start
  * (caller should check) as the constraint may not be satisfiable. */
-/* i#14: gcc 4.3.0 has a bug where it treats "ptr - const < ptr" as always true,
- * so we work around that here */
+/* i#14: gcc 4.3.0 treats "ptr - const < ptr" as always true,
+ * so we work around that here.  could adapt POINTER_OVERFLOW_ON_ADD
+ * or cast to ptr_uint_t like it does, instead.
+ */
 # define REACHABLE_32BIT_START(reachable_region_start, reachable_region_end) \
     (((reachable_region_end) > ((byte *)(ptr_uint_t)(uint)(INT_MIN))) ?      \
      (reachable_region_end) + INT_MIN : (byte *)PTR_UINT_0)
@@ -926,6 +928,14 @@ uint hashtable_num_bits(uint size);
         ((size) - 1 - ALIGN_MOD(addr, size, alignment)) : 0)
 
 #define IS_POWER_OF_2(x) ((x) == 0 || ((x) & ((x)-1)) == 0)
+
+/* C standard has pointer overflow as undefined so cast to unsigned
+ * (i#14 and drmem i#302)
+ */
+#define POINTER_OVERFLOW_ON_ADD(ptr, add) \
+    (((ptr_uint_t)(ptr)) + (add) < ((ptr_uint_t)(ptr)))
+#define POINTER_UNDERFLOW_ON_SUB(ptr, sub) \
+    (((ptr_uint_t)(ptr)) - (sub) > ((ptr_uint_t)(ptr)))
 
 /* bitmap_t operations */
 
@@ -1073,7 +1083,11 @@ typedef enum {
 void enable_new_log_dir(void); /* enable creating a new base logdir (for a fork, e.g.) */
 void create_log_dir(int dir_type);
 bool get_log_dir(log_dir_t dir_type, char *buffer, uint *buffer_length);
+
+/* must use close_log_file() to close */
 file_t open_log_file(const char *basename, char *finalname_with_path, uint maxlen);
+void close_log_file(file_t f);
+
 file_t get_thread_private_logfile(void);
 bool get_unique_logfile(const char *file_type, char *filename_buffer, uint maxlen, bool open_directory, file_t *file);
 const char *get_app_name_for_path(void);

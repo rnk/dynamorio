@@ -138,9 +138,6 @@ byte *  initstack;
 DECLARE_NEVERPROT_VAR(byte *exception_stack, NULL);
 #endif
 
-static void
-dynamo_thread_exit_pre_client(dcontext_t *dcontext, thread_id_t id);
-
 /*******************************************************/
 /* separate segment of Non-Self-Protected data to avoid data section
  * protection issues -- we need to write to these vars in bootstrapping
@@ -416,6 +413,7 @@ dynamorio_app_init(void)
          */
         if (stats->loglevel > 0) {
             main_logfile = open_log_file(main_logfile_name(), NULL, 0);
+            LOG(GLOBAL, LOG_TOP, 1, "global log file fd=%d\n", main_logfile);
         } else {
             /* loglevel 0 means we don't create a log file!
              * if the loglevel is later raised, too bad!  it all goes to stderr!
@@ -725,7 +723,7 @@ dynamorio_fork_init(dcontext_t *dcontext)
 # ifdef DEBUG
     /* just like dynamorio_app_init, create main_logfile before stats */
     if (stats->loglevel > 0) {
-        /* we want brand new log files */
+        /* we want brand new log files.  os_fork_init() closed inherited files. */
         main_logfile = open_log_file(main_logfile_name(), NULL, 0);
         print_file(main_logfile, "%s\n", dynamorio_version_string);
         print_file(main_logfile, "New log file for child %d forked by parent %d\n",
@@ -886,7 +884,8 @@ dynamo_process_exit_with_thread_info(void)
 
 /* shared between app_exit and detach */
 int
-dynamo_shared_exit(IF_WINDOWS_ELSE_NP(bool detach_stacked_callbacks, void)) 
+dynamo_shared_exit(IF_WINDOWS_(thread_record_t *toexit)
+                   IF_WINDOWS_ELSE_NP(bool detach_stacked_callbacks, void)) 
 {
     DEBUG_DECLARE(uint endtime);
     /* set this now, could already be set */
@@ -944,6 +943,13 @@ dynamo_shared_exit(IF_WINDOWS_ELSE_NP(bool detach_stacked_callbacks, void))
     if (get_thread_private_dcontext() != NULL)
         loader_thread_exit(get_thread_private_dcontext());
     loader_exit();
+
+    if (toexit != NULL) {
+        /* free detaching thread's dcontext */
+        mutex_lock(&thread_initexit_lock);
+        dynamo_other_thread_exit(toexit, false);
+        mutex_unlock(&thread_initexit_lock);
+    }
 #endif
 
     if (IF_WINDOWS_ELSE(!detach_stacked_callbacks, true)) {
@@ -1044,7 +1050,7 @@ dynamo_shared_exit(IF_WINDOWS_ELSE_NP(bool detach_stacked_callbacks, void))
          * right now */
         file_t file_temp = main_logfile;
         main_logfile = INVALID_FILE;
-        os_close(file_temp);
+        close_log_file(file_temp);
     }
 #else
 # ifdef DEADLOCK_AVOIDANCE
@@ -1196,7 +1202,8 @@ dynamo_process_exit_cleanup(void)
         unhook_vsyscall();
 #endif /* LINUX */
 
-        return dynamo_shared_exit(IF_WINDOWS(false /* not detaching */));
+        return dynamo_shared_exit(IF_WINDOWS_(NULL) /* not detaching */
+                                  IF_WINDOWS(false /* not detaching */));
     }
     return SUCCESS;
 }
@@ -1215,7 +1222,7 @@ dynamo_nullcalls_exit(void)
 
 #ifdef DEBUG
     if (main_logfile != STDERR) {
-        os_close(main_logfile);
+        close_log_file(main_logfile);
         main_logfile = INVALID_FILE;
     }
 #endif /* DEBUG */
@@ -2158,7 +2165,7 @@ dynamo_thread_init(byte *dstack_in, dr_mcontext_t *mc
  * fragment_thread_exit().  Since this is called outside of dynamo_thread_exit()
  * on process exit we assume fine to skip enter_threadexit().
  */
-static void
+void
 dynamo_thread_exit_pre_client(dcontext_t *dcontext, thread_id_t id)
 {
     /* fcache stats needs to examine fragment state, so run it before
@@ -2298,7 +2305,10 @@ dynamo_thread_exit_common(dcontext_t *dcontext, thread_id_t id,
         instrument_thread_exit(dcontext);
 #endif
 #ifdef WINDOWS
-    if (!dynamo_exited || other_thread) /* else already did this */
+    if (!dynamo_exited ||
+        (other_thread &&
+         (!doing_detach ||
+          dcontext->owning_thread != get_thread_id()))) /* else already did this */
         loader_thread_exit(dcontext);
 #endif
     fcache_thread_exit(dcontext);
@@ -2324,7 +2334,7 @@ dynamo_thread_exit_common(dcontext_t *dcontext, thread_id_t id,
 #ifdef DEBUG
     if (dcontext->logfile != INVALID_FILE) {
         os_flush(dcontext->logfile);
-        os_close(dcontext->logfile);
+        close_log_file(dcontext->logfile);
     }
 #endif
 
