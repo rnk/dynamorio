@@ -1,6 +1,6 @@
 # **********************************************************
-# Copyright (c) 2009 VMware, Inc.    All rights reserved.
-# Copyright (c) 2011 MIT    All rights reserved.
+# Copyright (c) 2010-2011 Google, Inc.    All rights reserved.
+# Copyright (c) 2009-2010 VMware, Inc.    All rights reserved.
 # **********************************************************
 
 # Redistribution and use in source and binary forms, with or without
@@ -254,6 +254,8 @@ if (NOT TEST_LIB_PATH)
 else (NOT TEST_LIB_PATH)
   set(MAIN_LIBRARY_OUTPUT_DIRECTORY "${TEST_LIB_PATH}")
 endif (NOT TEST_LIB_PATH)
+string(REGEX REPLACE "/lib([36])" "/ext/lib\\1"
+  EXT_LIBRARY_OUTPUT_DIRECTORY "${MAIN_LIBRARY_OUTPUT_DIRECTORY}")
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/bin")
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_LIBRARY_OUTPUT_DIRECTORY}")
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/bin")
@@ -569,26 +571,41 @@ function(tobuild_ci test source client_ops dr_ops exe_ops)
   if (NOT "${source}" MATCHES "\\.runall$")
     add_exe(${test} ${source})
 
-    if (WIN32)
-      # support a test with a library
-      get_filename_component(srcpath ${source} ABSOLUTE)
-      string(REGEX REPLACE "\\.c$" ".appdll.c" dll_srcpath "${srcpath}")
-      if (EXISTS "${dll_srcpath}")
-        string(REGEX REPLACE "\\.c$" ".appdll.c" dll_source "${source}")
-        set(lib_srcs ${dll_source})
-        set_cflags(${dll_source}) # sets srccode var
-        if ("${srccode}" MATCHES "include \"tools\\.h\"")
-          set(lib_srcs ${lib_srcs} ${tools_c} ${tools_asm})
-        endif ()
+    # support a test with a library
+    get_filename_component(srcpath ${source} ABSOLUTE)
+    string(REGEX REPLACE "\\.c$" ".appdll.c" dll_srcpath "${srcpath}")
+    if (EXISTS "${dll_srcpath}")
+      string(REGEX REPLACE "\\.c$" ".appdll.c" dll_source "${source}")
+      set(lib_srcs ${dll_source})
+      set_cflags(${dll_source}) # sets srccode var
+      if ("${srccode}" MATCHES "include \"tools\\.h\"")
+        set(lib_srcs ${lib_srcs} ${tools_c} ${tools_asm})
+      endif ()
+      
+      if ("${srccode}" MATCHES "ifndef ASM_CODE_ONLY")
+        # we rely on the asm rule doing preprocessing for us, so we just make
+        # a copy and set the ASM_CODE_ONLY define
+        get_filename_component(srcbase ${dll_srcpath} NAME_WE)
+        set(srcbase "${srcbase}.appdll") # NAME_WE took this off
+        get_filename_component(srcpath_rel ${source} PATH)
+        if ("${CMAKE_GENERATOR}" MATCHES "Visual Studio")
+          set(asm_source "${CMAKE_CURRENT_BINARY_DIR}/${srcpath_rel}/${srcbase}_asm.obj")
+        else ("${CMAKE_GENERATOR}" MATCHES "Visual Studio")
+          set(asm_source "${CMAKE_CURRENT_BINARY_DIR}/${srcpath_rel}/${srcbase}_asm.asm")
+        endif ("${CMAKE_GENERATOR}" MATCHES "Visual Studio")
+        add_test_asm_tgt("${dll_srcpath}" "${asm_source}")
+        set(lib_srcs ${lib_srcs} ${asm_source})
+        endif ("${srccode}" MATCHES "ifndef ASM_CODE_ONLY")
+
         add_library(${test}.appdll SHARED ${lib_srcs})
-        target_link_libraries(${test} ${test}.appdll)
+        # so far these are all dynamically loaded so we don't bother
+        # with "target_link_libraries(${test} ${test}.appdll)"
         if ("${srccode}" MATCHES "include \"tools\\.h\"" AND
             "${CMAKE_GENERATOR}" MATCHES "Visual Studio")
           # for correct parallel builds we need a target
           add_dependencies(${test}.appdll generate_tools_asm)
         endif ()
       endif (EXISTS "${dll_srcpath}")
-    endif (WIN32)
   endif (NOT "${source}" MATCHES "\\.runall$")
 
   add_library(${test}.dll SHARED ${client_source})
@@ -850,7 +867,7 @@ function(rundr_cmd outcmd outops native dr_ops_aux is_runall)
     # We set LD_LIBRARY_PATH even for native api/ apps since we're not setting
     # rpath (to make it easier to try different trees)
     set(cmd ${cmd}
-      -env LD_LIBRARY_PATH "${MAIN_LIBRARY_OUTPUT_DIRECTORY}:$ENV{LD_LIBRARY_PATH}")
+      -env LD_LIBRARY_PATH "${MAIN_LIBRARY_OUTPUT_DIRECTORY}:${EXT_LIBRARY_OUTPUT_DIRECTORY}:$ENV{LD_LIBRARY_PATH}")
     if (NOT native)
       # FIXME: should really use drrun to override any existing config file
       set(cmd ${cmd}
@@ -1166,6 +1183,16 @@ if (CLIENT_INTERFACE)
   if (UNIX)
     target_link_libraries(client.drmgr-test ${libpthread})
   endif (UNIX)
+
+  tobuild_ci(client.drwrap-test client-interface/drwrap-test.c
+    "" "" "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/libclient.drwrap-test.appdll.so")
+  use_DynamoRIO_extension(client.drwrap-test.dll drwrap)
+  tochcon(client.drwrap-test.appdll textrel_shlib_t)
+  if (WIN32)
+    # export from asm code
+    set_target_properties(client.drwrap-test.appdll PROPERTIES LINK_FLAGS
+      "/export:makes_tailcall")
+  endif (WIN32)
 
   tobuild_api(api.dis api/dis.c "-syntax_intel"
     "${CMAKE_CURRENT_SOURCE_DIR}/api/dis-udis86-randtest.raw")

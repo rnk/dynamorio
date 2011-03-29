@@ -1,4 +1,5 @@
 /* **********************************************************
+ * Copyright (c) 2011 Google, Inc.  All rights reserved.
  * Copyright (c) 2010 VMware, Inc.  All rights reserved.
  * **********************************************************/
 
@@ -32,6 +33,7 @@
 
 #include "tools.h"
 
+#ifdef WINDOWS
 /* test client thread transparency wrt DllMain (PR 210591) */
 
 int  __declspec(dllexport)
@@ -60,3 +62,7 @@ DllMain(HANDLE hModule, DWORD reason_for_call, LPVOID Reserved)
     }
     return TRUE;
 }
+
+#else
+/* just empty: could add complexity to CMakeLists.txt to not build */
+#endif /* WINDOWS */
