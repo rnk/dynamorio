@@ -36,6 +36,8 @@
 #include <stdarg.h> /* for varargs */
 #include <string.h> /* for memcmp */
 
+#define VERBOSE 0
+
 /* Standard alignment hack. */
 #define ALIGN_FORWARD(x, alignment) \
     ((((ptr_uint_t)x) + ((alignment)-1)) & (~((alignment)-1)))
@@ -167,9 +169,8 @@ emit_shared_call(void *drcontext, void *callee, uint num_args)
                                &args[0]);
 
     /* Clean call return. */
-    APP(ilist, INSTR_CREATE_jmp_ind(drcontext,
-                                    dr_reg_spill_slot_opnd(drcontext,
-                                                           SPILL_SLOT_1)));
+    APP(ilist, INSTR_CREATE_jmp_ind
+        (drcontext, dr_reg_spill_slot_opnd(drcontext, SPILL_SLOT_1)));
 
     /* Check that there's space to encode the ilist.  Clean calls on x86_64 use
      * about 469 bytes, so we can usually pack about 8 calls per page. */
@@ -188,6 +189,12 @@ emit_shared_call(void *drcontext, void *callee, uint num_args)
     code_cache_memprotect(code_cache->cur_block, CODE_RWX);
     code_cache->cur_pc = instrlist_encode(drcontext, ilist, entry, false);
     code_cache_memprotect(code_cache->cur_block, CODE_RX);
+
+#if VERBOSE
+    dr_log(drcontext, LOG_CACHE, 3,
+           "drcalls: shared call ilist:\n");
+    instrlist_disassemble(drcontext, entry, ilist, dr_get_logfile(drcontext));
+#endif
 
     instrlist_clear_and_destroy(drcontext, ilist);
 
