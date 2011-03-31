@@ -1,4 +1,5 @@
 # **********************************************************
+# Copyright (c) 2010-2011 Google, Inc.    All rights reserved.
 # Copyright (c) 2009-2010 VMware, Inc.    All rights reserved.
 # **********************************************************
 
@@ -351,7 +352,7 @@ if (EXISTS "${PROJECT_SOURCE_DIR}/.svn")
   endif (SVN)
 else (EXISTS "${PROJECT_SOURCE_DIR}/.svn")
   if (EXISTS "${PROJECT_SOURCE_DIR}/.git")
-    find_program(GIT git DOC "subversion client")
+    find_program(GIT git DOC "git client")
     if (GIT)
       execute_process(COMMAND ${GIT} log
         WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"

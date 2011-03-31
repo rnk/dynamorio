@@ -1,6 +1,7 @@
 /* ******************************************************************************
- * Copyright (c) 2010 Massachusetts Institute of Technology  All rights reserved.
- * Copyright (c) 2002-2009 VMware, Inc.  All rights reserved.
+ * Copyright (c) 2010-2011 Google, Inc.  All rights reserved.
+ * Copyright (c) 2010-2011 Massachusetts Institute of Technology  All rights reserved.
+ * Copyright (c) 2002-2010 VMware, Inc.  All rights reserved.
  * ******************************************************************************/
 
 /*
@@ -2789,7 +2790,11 @@ DR_API
 generic_func_t
 dr_get_proc_address(module_handle_t lib, const char *name)
 {
+#ifdef WINDOWS
+    return get_proc_address_resolve_forward(lib, name);
+#else
     return get_proc_address(lib, name);
+#endif
 }
 
 DR_API
