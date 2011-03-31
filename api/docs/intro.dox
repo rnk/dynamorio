@@ -1,5 +1,6 @@
 /* **********************************************************
- * Copyright (c) 2007-2009 VMware, Inc.  All rights reserved.
+ * Copyright (c) 2010-2011 Google, Inc.  All rights reserved.
+ * Copyright (c) 2007-2010 VMware, Inc.  All rights reserved.
  * **********************************************************/
 
 /*
@@ -966,6 +967,11 @@ Each Extension has its own documentation and has its functions and data
 structures documented separately from the main API.  See <a
 href="page_ext.html">the full list of Extensions here</a>.
 
+Be aware that some of the \DynamoRIO Extensions have LGPL licenses instead
+of the BSD license of the rest of \DynamoRIO.  Such Extensions are built as
+shared libraries, have their own license.txt files, and clearly identify
+their license in their documentation.
+
 ***************************************************************************
 \section sec_extlibs Using External Libraries
 
@@ -1091,6 +1097,11 @@ Linux\endif.  See \ref sec_deploy.
    into child processes for which a configuration file exists (typically
    created by \c drconfig; see \ref sec_deploy).  On Linux,
    forked children are always followed and this option only affects execve.
+
+   To follow all children in general but exclude certain children, leave \p
+   -follow_children on (the default) and create config files that exclude
+   the desired applications by running \c drconfig with the \c -norun
+   option.
 
  - \b -opt_memory: \anchor op_memory
    Reduce memory usage, but potentially at the cost of performance.  This

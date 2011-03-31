@@ -1,4 +1,5 @@
 /* **********************************************************
+ * Copyright (c) 2011 Google, Inc.  All rights reserved.
  * Copyright (c) 2008-2010 VMware, Inc.  All rights reserved.
  * **********************************************************/
 
@@ -80,6 +81,13 @@ typedef enum {
     DR_MODE_MEMORY_FIREWALL = 3,
 
 #endif
+
+    /**
+     * Do not run this application under DynamoRIO control.
+     * Useful for following all child processes except a handful
+     * (blacklist).
+     */
+    DR_MODE_DO_NOT_RUN = 4,
 
 } dr_operation_mode_t;
 

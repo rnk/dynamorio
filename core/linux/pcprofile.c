@@ -1,5 +1,6 @@
 /* **********************************************************
- * Copyright (c) 2001-2009 VMware, Inc.  All rights reserved.
+ * Copyright (c) 2011 Google, Inc.  All rights reserved.
+ * Copyright (c) 2001-2010 VMware, Inc.  All rights reserved.
  * **********************************************************/
 
 /*
@@ -171,7 +172,7 @@ pcprofile_thread_exit(dcontext_t *dcontext)
     if (valid_symtab)
         symtab_exit();
 #endif
-    os_close(info->file);
+    close_log_file(info->file);
     special_heap_exit(info->special_heap);
 #ifdef DEBUG
     /* for non-debug we do fast exit path and don't free local heap */

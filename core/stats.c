@@ -1,4 +1,5 @@
 /* **********************************************************
+ * Copyright (c) 2011 Google, Inc.  All rights reserved.
  * Copyright (c) 2004-2009 VMware, Inc.  All rights reserved.
  * **********************************************************/
 
@@ -228,6 +229,10 @@ kstat_exit()
     mutex_unlock(&process_kstats_lock);
 
     DELETE_LOCK(process_kstats_lock);
+
+#ifndef DEBUG
+    os_close(process_kstats_outfile);
+#endif
 }    
 
 static void
@@ -375,6 +380,8 @@ kstat_thread_exit(dcontext_t *dcontext)
     /* no clean up needed */
     dcontext->thread_kstats = NULL; /* disable thread kstats before freeing memory */
     HEAP_TYPE_FREE(dcontext, old_thread_kstats, thread_kstats_t, ACCT_STATS, UNPROTECTED);
+#else
+    close_log_file(dcontext->thread_kstats->outfile_kstats);
 #endif /* DEBUG */
 }
 

@@ -1,6 +1,6 @@
 # **********************************************************
-# Copyright (c) 2009 VMware, Inc.    All rights reserved.
-# Copyright (c) 2011 MIT    All rights reserved.
+# Copyright (c) 2010-2011 Google, Inc.    All rights reserved.
+# Copyright (c) 2009-2010 VMware, Inc.    All rights reserved.
 # **********************************************************
 
 # Redistribution and use in source and binary forms, with or without
@@ -46,7 +46,9 @@
 #   and optionally submit to dashboard.  Use w/o submit as "make runregression".
 
 option(TEST_LONG "run long set of tests")
-option(TEST_SUITE "running series of builds so skip some overlapping tests")
+# if TEST_SUITE is off, we disable some flaky tests in order to have all
+# tests succeed (i#389)
+option(TEST_SUITE "running series of builds so skip some overlapping tests; also, include racy/flaky tests (eventually they should be fixed) for better coverage")
 set(TEST_SECONDS "60" CACHE STRING "Test time limit in seconds")
 set(TEST_OPTIONS "" CACHE STRING "Extra DynamoRIO options when running tests")
 set(TEST_LIB_PATH "" CACHE STRING "DynamoRIO library path (if empty, uses local build)")
@@ -252,6 +254,8 @@ if (NOT TEST_LIB_PATH)
 else (NOT TEST_LIB_PATH)
   set(MAIN_LIBRARY_OUTPUT_DIRECTORY "${TEST_LIB_PATH}")
 endif (NOT TEST_LIB_PATH)
+string(REGEX REPLACE "/lib([36])" "/ext/lib\\1"
+  EXT_LIBRARY_OUTPUT_DIRECTORY "${MAIN_LIBRARY_OUTPUT_DIRECTORY}")
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/bin")
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_LIBRARY_OUTPUT_DIRECTORY}")
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/bin")
@@ -567,26 +571,41 @@ function(tobuild_ci test source client_ops dr_ops exe_ops)
   if (NOT "${source}" MATCHES "\\.runall$")
     add_exe(${test} ${source})
 
-    if (WIN32)
-      # support a test with a library
-      get_filename_component(srcpath ${source} ABSOLUTE)
-      string(REGEX REPLACE "\\.c$" ".appdll.c" dll_srcpath "${srcpath}")
-      if (EXISTS "${dll_srcpath}")
-        string(REGEX REPLACE "\\.c$" ".appdll.c" dll_source "${source}")
-        set(lib_srcs ${dll_source})
-        set_cflags(${dll_source}) # sets srccode var
-        if ("${srccode}" MATCHES "include \"tools\\.h\"")
-          set(lib_srcs ${lib_srcs} ${tools_c} ${tools_asm})
-        endif ()
+    # support a test with a library
+    get_filename_component(srcpath ${source} ABSOLUTE)
+    string(REGEX REPLACE "\\.c$" ".appdll.c" dll_srcpath "${srcpath}")
+    if (EXISTS "${dll_srcpath}")
+      string(REGEX REPLACE "\\.c$" ".appdll.c" dll_source "${source}")
+      set(lib_srcs ${dll_source})
+      set_cflags(${dll_source}) # sets srccode var
+      if ("${srccode}" MATCHES "include \"tools\\.h\"")
+        set(lib_srcs ${lib_srcs} ${tools_c} ${tools_asm})
+      endif ()
+      
+      if ("${srccode}" MATCHES "ifndef ASM_CODE_ONLY")
+        # we rely on the asm rule doing preprocessing for us, so we just make
+        # a copy and set the ASM_CODE_ONLY define
+        get_filename_component(srcbase ${dll_srcpath} NAME_WE)
+        set(srcbase "${srcbase}.appdll") # NAME_WE took this off
+        get_filename_component(srcpath_rel ${source} PATH)
+        if ("${CMAKE_GENERATOR}" MATCHES "Visual Studio")
+          set(asm_source "${CMAKE_CURRENT_BINARY_DIR}/${srcpath_rel}/${srcbase}_asm.obj")
+        else ("${CMAKE_GENERATOR}" MATCHES "Visual Studio")
+          set(asm_source "${CMAKE_CURRENT_BINARY_DIR}/${srcpath_rel}/${srcbase}_asm.asm")
+        endif ("${CMAKE_GENERATOR}" MATCHES "Visual Studio")
+        add_test_asm_tgt("${dll_srcpath}" "${asm_source}")
+        set(lib_srcs ${lib_srcs} ${asm_source})
+        endif ("${srccode}" MATCHES "ifndef ASM_CODE_ONLY")
+
         add_library(${test}.appdll SHARED ${lib_srcs})
-        target_link_libraries(${test} ${test}.appdll)
+        # so far these are all dynamically loaded so we don't bother
+        # with "target_link_libraries(${test} ${test}.appdll)"
         if ("${srccode}" MATCHES "include \"tools\\.h\"" AND
             "${CMAKE_GENERATOR}" MATCHES "Visual Studio")
           # for correct parallel builds we need a target
           add_dependencies(${test}.appdll generate_tools_asm)
         endif ()
       endif (EXISTS "${dll_srcpath}")
-    endif (WIN32)
   endif (NOT "${source}" MATCHES "\\.runall$")
 
   add_library(${test}.dll SHARED ${client_source})
@@ -848,7 +867,7 @@ function(rundr_cmd outcmd outops native dr_ops_aux is_runall)
     # We set LD_LIBRARY_PATH even for native api/ apps since we're not setting
     # rpath (to make it easier to try different trees)
     set(cmd ${cmd}
-      -env LD_LIBRARY_PATH "${MAIN_LIBRARY_OUTPUT_DIRECTORY}:$ENV{LD_LIBRARY_PATH}")
+      -env LD_LIBRARY_PATH "${MAIN_LIBRARY_OUTPUT_DIRECTORY}:${EXT_LIBRARY_OUTPUT_DIRECTORY}:$ENV{LD_LIBRARY_PATH}")
     if (NOT native)
       # FIXME: should really use drrun to override any existing config file
       set(cmd ${cmd}
@@ -1120,7 +1139,7 @@ if (CLIENT_INTERFACE)
   tobuild_ci(client.cleancall client-interface/cleancall.c "" "" "")
   tobuild_ci(client.count-ctis client-interface/count-ctis.c "" "" "")
   tobuild_ci(client.count-bbs client-interface/count-bbs.c "" "" "")
-  tobuild_ci(client.syscall client-interface/syscall.c "" "" "")
+  tobuild_ci(client.syscall client-interface/syscall.c "" "-no_follow_children" "")
   tobuild_ci(client.modules client-interface/modules.c "" "" "")
   if (UNIX)
     # just happens to not make as many traces.  also needs path for events*.so.
@@ -1153,9 +1172,28 @@ if (CLIENT_INTERFACE)
     tobuild_ci(client.security client-interface/security.c "" "-security_api" "")
   endif (PROGRAM_SHEPHERDING)
   tobuild_ci(client.strace client-interface/strace.c "" "" "")
+  use_DynamoRIO_extension(client.strace.dll drmgr)
   tobuild_ci(client.thread client-interface/thread.c "-paramx -paramy" "" "")
   tobuild_ci(client.truncate client-interface/truncate.c "" "" "")
   tobuild_ci(client.unregister client-interface/unregister.c "" "" "")
+  tobuild_ci(client.inline client-interface/inline.c "" "-opt_cleancall 3" "")
+
+  tobuild_ci(client.drmgr-test client-interface/drmgr-test.c "" "" "")
+  use_DynamoRIO_extension(client.drmgr-test.dll drmgr)
+  if (UNIX)
+    target_link_libraries(client.drmgr-test ${libpthread})
+  endif (UNIX)
+
+  tobuild_ci(client.drwrap-test client-interface/drwrap-test.c
+    "" "" "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/libclient.drwrap-test.appdll.so")
+  use_DynamoRIO_extension(client.drwrap-test.dll drwrap)
+  tochcon(client.drwrap-test.appdll textrel_shlib_t)
+  if (WIN32)
+    # export from asm code
+    set_target_properties(client.drwrap-test.appdll PROPERTIES LINK_FLAGS
+      "/export:makes_tailcall")
+  endif (WIN32)
+
   tobuild_api(api.dis api/dis.c "-syntax_intel"
     "${CMAKE_CURRENT_SOURCE_DIR}/api/dis-udis86-randtest.raw")
   tobuild_api(api.ir api/ir.c "" "")
@@ -1295,16 +1333,23 @@ else (UNIX)
     "-native_exec_list nativeterminate.dll.dll")
   # FIXME i#192: oomtest ends up killing parent shell: investigate, fix, re-enable!
   #tobuild(win32.oomtest win32/oomtest.c)
-  tobuild(win32.partial_map win32/partial_map.c)
+  if (TEST_SUITE) # failing on win7 (i#422) so run only in suite
+    tobuild(win32.partial_map win32/partial_map.c)
+  endif (TEST_SUITE)
   tobuild(win32.protect-datasec win32/protect-datasec.c)
   tobuild_dll(win32.rebased win32/rebased.c "")
-  tobuild_dll(win32.reload win32/reload.c "")
+  if (TEST_SUITE) # fails non-det so run only in suite
+    tobuild_dll(win32.reload win32/reload.c "")
+  endif (TEST_SUITE)
   tobuild_dll(win32.reload-newaddr win32/reload-newaddr.c "")
-  tobuild_dll(win32.reload-race win32/reload-race.c "")
+  # FIXME i#267: fix curiosities and re-enable
+  #tobuild_dll(win32.reload-race win32/reload-race.c "")
   tobuild_dll(win32.section-max win32/section-max.c "")
   tobuild(win32.suspend win32/suspend.c)
   tobuild(win32.threadchurn win32/threadchurn.c)
-  tobuild(win32.threadexit win32/threadexit.c)
+  if (TEST_SUITE) # occasionally fails so run only in suite
+    tobuild(win32.threadexit win32/threadexit.c)
+  endif (TEST_SUITE)
   # PR 215238 covers re-enabling threadinjection
   #tobuild(win32.threadinjection win32/threadinjection.c)
   # FIXME i#125: debugger test was disabled in past: not sure why
@@ -1314,7 +1359,9 @@ else (UNIX)
   tobuild(win32.winapc win32/winapc.c)
   tobuild(win32.winthread win32/winthread.c)
 
-  tobuild(security-win32.apc-shellcode security-win32/apc-shellcode.c)
+  if (NOT X64 OR TEST_SUITE) # fail on x64 so run only in suite
+    tobuild(security-win32.apc-shellcode security-win32/apc-shellcode.c)
+  endif ()
 
   if (NOT X64)
     # FIXME i#16: these tests need to be fixed to compile for x64
@@ -1334,16 +1381,23 @@ else (UNIX)
     tobuild(win32.tls win32/tls.c)
 
     tobuild_dll(security-win32.aslr-ind security-win32/aslr-ind.c "")
-    tobuild(security-win32.codemod-threads security-win32/codemod-threads.c)
+    if (TEST_SUITE) # fails non-det so run only in suite
+      tobuild(security-win32.codemod-threads security-win32/codemod-threads.c)
+    endif (TEST_SUITE)
 
     # we tweak cflags in set_cflags() rather than passing extra param all
     # the way through: adding helper func layers gets awkward w/ PARENT_SCOPE
     tobuild(security-win32.except-execution security-win32/except-execution.c)
+    # we match exe addresses in output so no ASLR
+    set_target_properties(security-win32.except-execution PROPERTIES
+      LINK_FLAGS "/dynamicbase:no")
     
     tobuild(security-win32.except-thread security-win32/except-thread.c)
     tobuild(security-win32.gbop-test security-win32/gbop-test.c)
 
-    tobuild(security-win32.hooker security-win32/hooker.c)
+    if (TEST_SUITE) # fails non-det so run only in suite
+      tobuild(security-win32.hooker security-win32/hooker.c)
+    endif (TEST_SUITE)
     tobuild(security-win32.hooker-ntdll security-win32/hooker-ntdll.c)
     tobuild(security-win32.indexisting security-win32/indexisting.c)
     tobuild(security-win32.patterns security-win32/patterns.c)
@@ -1403,7 +1457,9 @@ mark_execstack(security-common.codemod)
 tobuild(security-common.decode-bad-stack security-common/decode-bad-stack.c)
 tochcon(security-common.decode-bad-stack execmem_exec_t)
 mark_execstack(security-common.decode-bad-stack)
-tobuild(security-common.jmp_from_trace security-common/jmp_from_trace.c)
+if (TEST_SUITE) # fails non-det (i#423) so run only in suite
+  tobuild(security-common.jmp_from_trace security-common/jmp_from_trace.c)
+endif (TEST_SUITE)
 tochcon(security-common.jmp_from_trace textrel_shlib_t)
 tobuild(security-common.retexisting security-common/retexisting.c)
 tobuild(security-common.ret_noncall_trace security-common/ret_noncall_trace.c)
@@ -1418,10 +1474,12 @@ if (NOT X64)
 endif (NOT X64)
 tobuild(security-common.selfmod security-common/selfmod.c)
 tochcon(security-common.selfmod textrel_shlib_t)
-tobuild(security-common.TestAllocWE security-common/TestAllocWE.c)
-tobuild(security-common.TestMemProtChg security-common/TestMemProtChg.c)
-tochcon(security-common.TestMemProtChg wine_exec_t)
-mark_execstack(security-common.TestMemProtChg)
+if (NOT X64 OR TEST_SUITE) # fail on x64 so run only in suite
+  tobuild(security-common.TestAllocWE security-common/TestAllocWE.c)
+  tobuild(security-common.TestMemProtChg security-common/TestMemProtChg.c)
+  tochcon(security-common.TestMemProtChg wine_exec_t)
+  mark_execstack(security-common.TestMemProtChg)
+endif ()
 
 if (BUILD_DRCALLS)
   tobuild_drcalls(drcalls.outofline "ext-drcalls/outofline.c" "" "" "")

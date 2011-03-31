@@ -1,5 +1,6 @@
 /* **********************************************************
- * Copyright (c) 2000-2009 VMware, Inc.  All rights reserved.
+ * Copyright (c) 2011 Google, Inc.  All rights reserved.
+ * Copyright (c) 2000-2010 VMware, Inc.  All rights reserved.
  * **********************************************************/
 
 /*
@@ -7052,7 +7053,7 @@ exit_trace_file(per_thread_t *pt)
         }
     }
 #endif
-    os_close(pt->tracefile);
+    close_log_file(pt->tracefile);
 }
 
 /* Binary trace dump is used to save time and space.

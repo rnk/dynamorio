@@ -1,5 +1,6 @@
 /* **********************************************************
- * Copyright (c) 2006-2009 VMware, Inc.  All rights reserved.
+ * Copyright (c) 2011 Google, Inc.  All rights reserved.
+ * Copyright (c) 2006-2010 VMware, Inc.  All rights reserved.
  * **********************************************************/
 
 /*
@@ -939,9 +940,11 @@ presys_CreateThread(dcontext_t *dcontext, reg_t *param_base)
         LOG(THREAD, LOG_SYSCALLS|LOG_THREADS, 2, 
             "\tsymbol info for start address : %s\n", buf);
     });
-    /* if not early injecting, we will unsafely modify cxt (for late follow
-     * children) FIXME */
     ASSERT(cxt != NULL);
+    /* if not early injecting, we will unsafely modify cxt (for late follow
+     * children) FIXME
+     * if not injecting at all we won't change cxt.
+     */
     maybe_inject_into_process(dcontext, process_handle, cxt);
 }
 
@@ -1012,8 +1015,19 @@ add_dr_env_vars(dcontext_t *dcontext, HANDLE phandle, wchar_t **env_ptr)
             /* for simplicity we do a syscall for each var.  if too long we're
              * ok: DR vars will fit, and if longer we'll handle rest next iter.
              */
-            if (!nt_read_virtual_memory(phandle, &env[tot_sz], buf, sizeof(buf), &got))
-                return false;
+            if (!nt_read_virtual_memory(phandle, &env[tot_sz], buf, sizeof(buf), &got)) {
+                /* may have crossed page boundary */
+                byte *start = (byte *) &env[tot_sz];
+                if (PAGE_START(start) != PAGE_START(start + sizeof(buf))) {
+                    size_t toread = (byte *) ALIGN_FORWARD(start, PAGE_SIZE) - start;
+                    ASSERT(toread <= sizeof(buf));
+                    if (!nt_read_virtual_memory(phandle, &env[tot_sz], buf, toread,
+                                                &got)) {
+                        return false;
+                    }
+                } else
+                    return false;
+            }
             buf[got/sizeof(buf[0]) - 1] = '\0';
             if (buf[0] == 0)
                 break;
@@ -1231,6 +1245,11 @@ presys_ResumeThread(dcontext_t *dcontext, reg_t *param_base)
         if (process_handle == INVALID_HANDLE_VALUE) {
             LOG(THREAD, LOG_SYSCALLS, 1,
                 "WARNING: error acquiring process handle for pid="PIFX"\n", pid);
+            return;
+        }
+        if (!should_inject_into_process(dcontext, process_handle, NULL, NULL)) {
+            LOG(THREAD, LOG_SYSCALLS, 1,
+                "Not injecting so not setting DR env vars in pid="PIFX"\n", pid);
             return;
         }
         if (not_first_thread_in_new_process(process_handle, thread_handle)) {
@@ -2492,8 +2511,8 @@ postsys_CreateUserProcess(dcontext_t *dcontext, reg_t *param_base, bool success)
                             "thread ("PIFX") so can't follow children on WOW64.\n");
                     }
                 }
-                maybe_inject_into_process(dcontext, proc_handle, cxt);
-                if (cxt != NULL) {
+                if (maybe_inject_into_process(dcontext, proc_handle, cxt) &&
+                    cxt != NULL) {
                     /* injection routine is assuming doesn't have to install cxt */
                     res = nt_set_context(thread_handle, cxt);
                     if (!NT_SUCCESS(res)) {
@@ -3768,6 +3787,10 @@ dr_syscall_invoke_another(void *drcontext)
         mc->xdx = mc->xsp;
     }
     else if (get_syscall_method() == SYSCALL_METHOD_WOW64) {
+        if (get_os_version() >= WINDOWS_VERSION_7) {
+            /* emulate win7's add 4,esp after the call* in the syscall wrapper */
+            mc->xsp += XSP_SZ;
+        }
         /* perform: lea edx,[esp+0x4] */
         mc->xdx = mc->xsp + XSP_SZ;
     }

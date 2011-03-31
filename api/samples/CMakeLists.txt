@@ -1,5 +1,6 @@
 # **********************************************************
-# Copyright (c) 2009 VMware, Inc.    All rights reserved.
+# Copyright (c) 2010-2011 Google, Inc.    All rights reserved.
+# Copyright (c) 2009-2010 VMware, Inc.    All rights reserved.
 # **********************************************************
 
 # Redistribution and use in source and binary forms, with or without
@@ -125,6 +126,12 @@ foreach (src ${srcs})
 
     if (SHOW_SYMBOLS AND "${tgt}" STREQUAL "instrcalls")
       use_DynamoRIO_extension(${tgt} drsyms)
+    endif ()
+    if ("${tgt}" STREQUAL "strace")
+      use_DynamoRIO_extension(${tgt} drmgr)
+    endif ()
+    if ("${tgt}" STREQUAL "wrap")
+      use_DynamoRIO_extension(${tgt} drwrap)
     endif ()
 
     if ("${tgt}" STREQUAL "bbcount_outofline_call")

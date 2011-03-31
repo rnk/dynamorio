@@ -1,5 +1,6 @@
 /* **********************************************************
- * Copyright (c) 2002-2007 VMware, Inc.  All rights reserved.
+ * Copyright (c) 2011 Google, Inc.  All rights reserved.
+ * Copyright (c) 2002-2010 VMware, Inc.  All rights reserved.
  * **********************************************************/
 
 /*
@@ -40,6 +41,11 @@
  */
 
 /* FIXME: failure modes should be more gracefull then failing asserts in most places */
+
+/* avoid depending on __isoc99_vsscanf which requires glibc >= 2.7 */
+#define _GNU_SOURCE 1
+#include <stdio.h>
+#undef _GNU_SOURCE
 
 #include "globals.h"
 #include <string.h>

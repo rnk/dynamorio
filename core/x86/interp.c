@@ -1,5 +1,6 @@
 /* **********************************************************
- * Copyright (c) 2001-2009 VMware, Inc.  All rights reserved.
+ * Copyright (c) 2011 Google, Inc.  All rights reserved.
+ * Copyright (c) 2001-2010 VMware, Inc.  All rights reserved.
  * **********************************************************/
 
 /*
@@ -136,7 +137,7 @@ interp_exit()
 {
 #ifdef INTERNAL
     if (INTERNAL_OPTION(bbdump_tags)) {
-        os_close(bbdump_file);
+        close_log_file(bbdump_file);
     }
 #endif
     DELETE_LOCK(bb_building_lock);

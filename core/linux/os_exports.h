@@ -1,5 +1,6 @@
 /* **********************************************************
- * Copyright (c) 2000-2009 VMware, Inc.  All rights reserved.
+ * Copyright (c) 2011 Google, Inc.  All rights reserved.
+ * Copyright (c) 2000-2010 VMware, Inc.  All rights reserved.
  * **********************************************************/
 
 /*
@@ -73,6 +74,7 @@ void *get_tls(ushort tls_offs);
 void set_tls(ushort tls_offs, void *value);
 
 /* in os.c */
+void os_file_init(void);
 void os_fork_init(dcontext_t *dcontext);
 void os_thread_stack_store(dcontext_t *dcontext);
 app_pc get_dynamorio_dll_end(void);

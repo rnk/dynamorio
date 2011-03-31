@@ -1,5 +1,6 @@
 /* **********************************************************
- * Copyright (c) 2000-2009 VMware, Inc.  All rights reserved.
+ * Copyright (c) 2011 Google, Inc.  All rights reserved.
+ * Copyright (c) 2000-2010 VMware, Inc.  All rights reserved.
  * **********************************************************/
 
 /*
@@ -205,7 +206,7 @@ opnd_create_null(void)
 opnd_t
 opnd_create_reg(reg_id_t r)
 {
-    opnd_t opnd;
+    opnd_t opnd IF_DEBUG(= {0});  /* FIXME: Needed until i#417 is fixed. */
     CLIENT_ASSERT(r < REG_LAST_VALID_ENUM, "opnd_create_reg: invalid register");
     opnd.kind = REG_kind;
     opnd.value.reg = r;

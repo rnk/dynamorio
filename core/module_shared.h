@@ -1,5 +1,6 @@
 /* **********************************************************
- * Copyright (c) 2008-2009 VMware, Inc.  All rights reserved.
+ * Copyright (c) 2011 Google, Inc.  All rights reserved.
+ * Copyright (c) 2008-2010 VMware, Inc.  All rights reserved.
  * **********************************************************/
 
 /*
@@ -283,6 +284,11 @@ get_proc_address(module_handle_t lib, const char *name);
  */
 generic_func_t
 get_proc_address_ex(module_handle_t lib, const char *name, bool *is_indirect_code OUT);
+#else
+# ifdef CLIENT_INTERFACE
+generic_func_t
+get_proc_address_resolve_forward(module_handle_t lib, const char *name);
+# endif
 #endif
 
 void print_modules(file_t f, bool dump_xml);
@@ -393,6 +399,7 @@ typedef struct _privmod_t {
     app_pc base;
     size_t size;
     const char *name;
+    char path[MAXIMUM_PATH];
     uint ref_count;
     bool externally_loaded;
     struct _privmod_t *next;
@@ -442,8 +449,12 @@ privload_lookup(const char *name);
 privmod_t *
 privload_lookup_by_base(app_pc modbase);
 
+/* name is assumed to be in immutable persistent storage.
+ * a copy of path is made.
+ */
 privmod_t *
-privload_insert(privmod_t *after, app_pc base, size_t size, const char *name);
+privload_insert(privmod_t *after, app_pc base, size_t size, const char *name,
+                const char *path);
 
 /* ************************************************************************* *
  * os specific functions in loader.c, can be called from loader_shared.c     *

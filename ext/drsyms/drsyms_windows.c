@@ -1,4 +1,5 @@
 /* **********************************************************
+ * Copyright (c) 2011 Google, Inc.  All rights reserved.
  * Copyright (c) 2009-2010 VMware, Inc.  All rights reserved.
  * **********************************************************/
 
@@ -42,6 +43,7 @@
  * However, 5.0 does not have SymFromAddr.  Plus, XP's 5.2 has
  * SymFromName but it doesn't work (returns error every time).
  * So, we rely on redistributing 6.x+.
+ * 6.3+ is required for SymSearch, but the VS2005sp1 headers have 6.1.
  *
  * We do not use SymInitialize's feature of loading symbols for all
  * modules in a process as we do not need our own nor DR's symbols
@@ -72,6 +74,22 @@
 #include "hashtable.h"
 
 #include "drsyms.h"
+
+/* SymSearch is not present in VS2005sp1 headers */
+typedef BOOL (__stdcall *func_SymSearch_t)
+    (__in HANDLE hProcess,
+     __in ULONG64 BaseOfDll,
+     __in_opt DWORD Index,
+     __in_opt DWORD SymTag,
+     __in_opt PCSTR Mask,
+     __in_opt DWORD64 Address,
+     __in PSYM_ENUMERATESYMBOLS_CALLBACK EnumSymbolsCallback,
+     __in_opt PVOID UserContext,
+     __in DWORD Options);
+/* only valid for dbghelp 6.6+ */
+#ifndef SYMSEARCH_ALLITEMS
+# define SYMSEARCH_ALLITEMS 0x08
+#endif
 
 /* All dbghelp routines are un-synchronized so we provide our own synch */
 void *symbol_lock;
@@ -373,7 +391,8 @@ enum_cb(PSYMBOL_INFO pSymInfo, ULONG SymbolSize, PVOID Context)
 }
 
 static drsym_error_t
-drsym_enumerate_symbols_local(const char *modpath, drsym_enumerate_cb callback, void *data)
+drsym_enumerate_symbols_local(const char *modpath, const char *match,
+                              drsym_enumerate_cb callback, void *data)
 {
     DWORD64 base;
     drsym_error_t res = DRSYM_SUCCESS;
@@ -386,8 +405,59 @@ drsym_enumerate_symbols_local(const char *modpath, drsym_enumerate_cb callback, 
         info.cb = callback;
         info.data = data;
         info.base = base;
-        if (!SymEnumSymbols(GetCurrentProcess(), base, NULL, enum_cb, (PVOID) &info)) {
+        if (!SymEnumSymbols(GetCurrentProcess(), base, match, enum_cb, (PVOID) &info)) {
             NOTIFY("SymEnumSymbols error %d\n", GetLastError());
+            res = DRSYM_ERROR_SYMBOL_NOT_FOUND;
+        }
+    }
+    dr_mutex_unlock(symbol_lock);
+    return res;
+}
+
+/* SymSearch (w/ default flags) is much faster than SymEnumSymbols or even
+ * SymFromName so we export it separately for Windows (Dr. Memory i#313).
+ */
+static drsym_error_t
+drsym_search_symbols_local(const char *modpath, const char *match, bool full,
+                           drsym_enumerate_cb callback, void *data)
+{
+    DWORD64 base;
+    drsym_error_t res = DRSYM_SUCCESS;
+    /* dbghelp.dll 6.3+ is required for SymSearch, but the VS2005sp1
+     * headers and lib have only 6.1, so we dynamically look it up
+     */
+    static func_SymSearch_t func;
+
+    dr_mutex_lock(symbol_lock);
+    if (func == NULL) {
+        /* if we fail to find it we'll pay the lookup cost every time,
+         * but if we succeed we'll cache it
+         */
+        HMODULE hmod = GetModuleHandle("dbghelp.dll");
+        if (hmod == NULL) {
+            dr_mutex_unlock(symbol_lock);
+            /* fall back to slower enum */
+            return drsym_enumerate_symbols_local(modpath, match, callback, data);
+        }
+        func = (func_SymSearch_t) GetProcAddress(hmod, "SymSearch");
+        if (func == NULL) {
+            dr_mutex_unlock(symbol_lock);
+            /* fall back to slower enum */
+            return drsym_enumerate_symbols_local(modpath, match, callback, data);
+        }
+    }
+    base = lookup_or_load(modpath);
+    if (base == 0)
+        res = DRSYM_ERROR_LOAD_FAILED;
+    else {
+        enum_info_t info;
+        info.cb = callback;
+        info.data = data;
+        info.base = base;
+        if (!(*func)(GetCurrentProcess(), base, 0, 0, match, 0,
+                     enum_cb, (PVOID) &info,
+                     full ? SYMSEARCH_ALLITEMS : 0)) {
+            NOTIFY("SymSearch error %d\n", GetLastError());
             res = DRSYM_ERROR_SYMBOL_NOT_FOUND;
         }
     }
@@ -424,9 +494,22 @@ drsym_enumerate_symbols(const char *modpath, drsym_enumerate_cb callback, void *
     if (IS_SIDELINE) {
         return DRSYM_ERROR_NOT_IMPLEMENTED;
     } else {
-        return drsym_enumerate_symbols_local(modpath, callback, data);
+        return drsym_enumerate_symbols_local(modpath, NULL, callback, data);
     }
 }
+
+DR_EXPORT
+drsym_error_t
+drsym_search_symbols(const char *modpath, const char *match, bool full,
+                     drsym_enumerate_cb callback, void *data)
+{
+    if (IS_SIDELINE) {
+        return DRSYM_ERROR_NOT_IMPLEMENTED;
+    } else {
+        return drsym_search_symbols_local(modpath, match, full, callback, data);
+    }
+}
+
 
 /***************************************************************************/
 

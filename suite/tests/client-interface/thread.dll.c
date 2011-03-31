@@ -1,5 +1,6 @@
 /* **********************************************************
- * Copyright (c) 2007-2008 VMware, Inc.  All rights reserved.
+ * Copyright (c) 2011 Google, Inc.  All rights reserved.
+ * Copyright (c) 2007-2010 VMware, Inc.  All rights reserved.
  * **********************************************************/
 
 /*
@@ -157,7 +158,7 @@ dr_emit_flags_t bb_event(void *drcontext, void *tag, instrlist_t *bb, bool for_t
         } else
             in_nops = false;
     }
-    if (num_nops == 7) {
+    if (num_nops == 9) {
         /* PR 210591: test transparency by having client create a thread after
          * app has loaded a library and ensure its DllMain is not notified
          */
