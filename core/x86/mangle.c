@@ -4287,110 +4287,111 @@ check_callee_instr(dcontext_t *dcontext, callee_info_t *ci, app_pc next_pc)
             return NULL;
         }
         return next_pc;
-    } else { /* cti instruc */
-        if (instr_is_mbr(instr)) {
-            /* check if instr is return, and if return is the last instr. */
-            if (!instr_is_return(instr) && ci->fwd_tgt > cur_pc) {
-                LOG(THREAD, LOG_CLEANCALL, 2,
-                    "CLEANCALL: bail out on indirect branch at: "PFX"\n",
-                    cur_pc);
-                ci->bailout = true;
-            }
-            return NULL;
-        } else if (instr_is_call(instr)) {
-            tgt_pc = opnd_get_pc(instr_get_target(instr));
-            /* remove and destroy the call instruction */
-            ci->bailout = true;
-            instrlist_remove(ilist, instr);
-            instr_destroy(GLOBAL_DCONTEXT, instr);
-            instr = NULL;
-            ci->num_instrs--;
+    }
+
+    /* cti instruc */
+    if (instr_is_mbr(instr)) {
+        /* check if instr is return, and if return is the last instr. */
+        if (!instr_is_return(instr) && ci->fwd_tgt > cur_pc) {
             LOG(THREAD, LOG_CLEANCALL, 2,
-                "CLEANCALL: callee calls out at: "PFX" to "PFX"\n",
-                cur_pc, tgt_pc);
-            /* check special PIC code:
-             * 1. call next_pc; pop r1;
-             * or
-             * 2. call pic_func;
-             *    and in pic_func: mov [%xsp] %r1; ret;
-             */
-            if (INTERNAL_OPTION(opt_cleancall) >= 1) {
-                instr_t ins;
-                app_pc  tmp_pc;
-                opnd_t src = OPND_CREATE_INTPTR(next_pc);
-                instr_init(dcontext, &ins);
+                "CLEANCALL: bail out on indirect branch at: "PFX"\n",
+                cur_pc);
+            ci->bailout = true;
+        }
+        return NULL;
+    } else if (instr_is_call(instr)) {
+        tgt_pc = opnd_get_pc(instr_get_target(instr));
+        /* remove and destroy the call instruction */
+        ci->bailout = true;
+        instrlist_remove(ilist, instr);
+        instr_destroy(GLOBAL_DCONTEXT, instr);
+        instr = NULL;
+        ci->num_instrs--;
+        LOG(THREAD, LOG_CLEANCALL, 2,
+            "CLEANCALL: callee calls out at: "PFX" to "PFX"\n",
+            cur_pc, tgt_pc);
+        /* check special PIC code:
+         * 1. call next_pc; pop r1;
+         * or
+         * 2. call pic_func;
+         *    and in pic_func: mov [%xsp] %r1; ret;
+         */
+        if (INTERNAL_OPTION(opt_cleancall) >= 1) {
+            instr_t ins;
+            app_pc  tmp_pc;
+            opnd_t src = OPND_CREATE_INTPTR(next_pc);
+            instr_init(dcontext, &ins);
+            TRY_EXCEPT(dcontext, {
+                tmp_pc = decode(dcontext, tgt_pc, &ins);
+            }, {
+                ASSERT_CURIOSITY(false && 
+                                 "crashed while decoding clean call");
+                instr_free(dcontext, &ins);
+                return NULL;
+            });
+            DOLOG(3, LOG_CLEANCALL, {
+                disassemble_with_bytes(dcontext, tgt_pc, THREAD);
+            });
+            /* "pop %r1" or "mov [%rsp] %r1" */
+            if (!(((instr_get_opcode(&ins) == OP_pop) ||
+                   (instr_get_opcode(&ins) == OP_mov_ld &&
+                    opnd_same(instr_get_src(&ins, 0),
+                              OPND_CREATE_MEMPTR(REG_XSP, 0)))) &&
+                  opnd_is_reg(instr_get_dst(&ins, 0)))) {
+                LOG(THREAD, LOG_CLEANCALL, 2,
+                    "CLEANCALL: callee calls out is not PIC code, "
+                    "bailout\n");
+                instr_free(dcontext, &ins);
+                return NULL;
+            }
+            /* replace with "mov next_pc r1" */
+            /* XXX: the memory on top of stack will not be next_pc. */
+            instr = INSTR_CREATE_mov_imm
+                (GLOBAL_DCONTEXT, instr_get_dst(&ins, 0), src);
+            instr_set_translation(instr, cur_pc);
+            instrlist_append(ilist, instr);
+            ci->num_instrs++;
+            instr_reset(dcontext, &ins);
+            if (tgt_pc != next_pc) { /* a callout */
                 TRY_EXCEPT(dcontext, {
-                    tmp_pc = decode(dcontext, tgt_pc, &ins);
+                    tmp_pc = decode(dcontext, tmp_pc, &ins);
                 }, {
                     ASSERT_CURIOSITY(false && 
                                      "crashed while decoding clean call");
                     instr_free(dcontext, &ins);
                     return NULL;
                 });
-                DOLOG(3, LOG_CLEANCALL, {
-                    disassemble_with_bytes(dcontext, tgt_pc, THREAD);
-                });
-                /* "pop %r1" or "mov [%rsp] %r1" */
-                if (!(((instr_get_opcode(&ins) == OP_pop) ||
-                       (instr_get_opcode(&ins) == OP_mov_ld &&
-                        opnd_same(instr_get_src(&ins, 0),
-                                  OPND_CREATE_MEMPTR(REG_XSP, 0)))) &&
-                      opnd_is_reg(instr_get_dst(&ins, 0)))) {
-                    LOG(THREAD, LOG_CLEANCALL, 2,
-                        "CLEANCALL: callee calls out is not PIC code, "
-                        "bailout\n");
+                if (!instr_is_return(&ins)) {
                     instr_free(dcontext, &ins);
                     return NULL;
                 }
-                /* replace with "mov next_pc r1" */
-                /* XXX: the memory on top of stack will not be next_pc. */
-                instr = INSTR_CREATE_mov_imm
-                    (GLOBAL_DCONTEXT, instr_get_dst(&ins, 0), src);
-                instr_set_translation(instr, cur_pc);
-                instrlist_append(ilist, instr);
-                ci->num_instrs++;
-                instr_reset(dcontext, &ins);
-                if (tgt_pc != next_pc) { /* a callout */
-                    TRY_EXCEPT(dcontext, {
-                        tmp_pc = decode(dcontext, tmp_pc, &ins);
-                    }, {
-                        ASSERT_CURIOSITY(false && 
-                                         "crashed while decoding clean call");
-                        instr_free(dcontext, &ins);
-                        return NULL;
-                    });
-                    if (!instr_is_return(&ins)) {
-                        instr_free(dcontext, &ins);
-                        return NULL;
-                    }
-                    instr_free(dcontext, &ins);
-                }
-                LOG(THREAD, LOG_CLEANCALL, 2,
-                    "CLEANCALL: special PIC code at: "PFX"\n", 
-                    cur_pc);
-                ci->bailout = false;
                 instr_free(dcontext, &ins);
-                if (tgt_pc == next_pc)
-                    return tmp_pc;
-                else
-                    return next_pc;
             }
-        } else { /* ubr or cbr */
-            tgt_pc = opnd_get_pc(instr_get_target(instr));
-            if (tgt_pc < cur_pc) { /* backward branch */
-                if (tgt_pc < ci->start) {
-                    LOG(THREAD, LOG_CLEANCALL, 2,
-                        "CLEANCALL: bail out on out-of-range branch at: "PFX
-                        "to "PFX"\n", cur_pc, tgt_pc);
-                    ci->bailout = true;
-                    return NULL;
-                } else if (ci->bwd_tgt == NULL || tgt_pc < ci->bwd_tgt) {
-                    ci->bwd_tgt = tgt_pc;
-                }
-            } else { /* forward branch */
-                if (ci->fwd_tgt == NULL || tgt_pc > ci->fwd_tgt) {
-                    ci->fwd_tgt = tgt_pc;
-                }
+            LOG(THREAD, LOG_CLEANCALL, 2,
+                "CLEANCALL: special PIC code at: "PFX"\n", 
+                cur_pc);
+            ci->bailout = false;
+            instr_free(dcontext, &ins);
+            if (tgt_pc == next_pc)
+                return tmp_pc;
+            else
+                return next_pc;
+        }
+    } else { /* ubr or cbr */
+        tgt_pc = opnd_get_pc(instr_get_target(instr));
+        if (tgt_pc < cur_pc) { /* backward branch */
+            if (tgt_pc < ci->start) {
+                LOG(THREAD, LOG_CLEANCALL, 2,
+                    "CLEANCALL: bail out on out-of-range branch at: "PFX
+                    "to "PFX"\n", cur_pc, tgt_pc);
+                ci->bailout = true;
+                return NULL;
+            } else if (ci->bwd_tgt == NULL || tgt_pc < ci->bwd_tgt) {
+                ci->bwd_tgt = tgt_pc;
+            }
+        } else { /* forward branch */
+            if (ci->fwd_tgt == NULL || tgt_pc > ci->fwd_tgt) {
+                ci->fwd_tgt = tgt_pc;
             }
         }
     }
@@ -4403,43 +4404,44 @@ check_callee_ilist(dcontext_t *dcontext, callee_info_t *ci)
     instrlist_t *ilist = ci->ilist;
     instr_t *cti, *tgt, *ret;
     app_pc   tgt_pc;
-    if (!ci->bailout) {
-        /* no target pc of any branch is in a middle of an instruction,
-         * replace target pc with target instr
-         */
-        ret = instrlist_last(ilist);
-        /* must be RETURN, otherwise, bugs in decode_callee_ilist */
-        ASSERT(instr_is_return(ret));
-        for (cti  = instrlist_first(ilist);
-             cti != ret;
-             cti  = instr_get_next(cti)) {
-            if (!instr_is_cti(cti))
-                continue;
-            ASSERT(!instr_is_mbr(cti));
-            tgt_pc = opnd_get_pc(instr_get_target(cti));
-            for (tgt  = instrlist_first(ilist);
-                 tgt != NULL; 
-                 tgt  = instr_get_next(tgt)) {
-                if (tgt_pc == instr_get_app_pc(tgt))
-                    break;
-            }
-            if (tgt == NULL) {
-                /* cannot find a target instruction, bail out */
-                LOG(THREAD, LOG_CLEANCALL, 2,
-                    "CLEANCALL: bail out on strange internal branch at: "PFX
-                    "to "PFX"\n", instr_get_app_pc(cti), tgt_pc);
-                ci->bailout = true;
-                break;
-            }
-        }
-        /* remove RETURN as we do not need it any more */
-        instrlist_remove(ilist, ret);
-        instr_destroy(GLOBAL_DCONTEXT, ret);
-    }
+
     if (ci->bailout) {
         instrlist_clear_and_destroy(GLOBAL_DCONTEXT, ilist);
         ci->ilist = NULL;
+        return;
     }
+
+    /* no target pc of any branch is in a middle of an instruction,
+     * replace target pc with target instr
+     */
+    ret = instrlist_last(ilist);
+    /* must be RETURN, otherwise, bugs in decode_callee_ilist */
+    ASSERT(instr_is_return(ret));
+    for (cti  = instrlist_first(ilist);
+         cti != ret;
+         cti  = instr_get_next(cti)) {
+        if (!instr_is_cti(cti))
+            continue;
+        ASSERT(!instr_is_mbr(cti));
+        tgt_pc = opnd_get_pc(instr_get_target(cti));
+        for (tgt  = instrlist_first(ilist);
+             tgt != NULL; 
+             tgt  = instr_get_next(tgt)) {
+            if (tgt_pc == instr_get_app_pc(tgt))
+                break;
+        }
+        if (tgt == NULL) {
+            /* cannot find a target instruction, bail out */
+            LOG(THREAD, LOG_CLEANCALL, 2,
+                "CLEANCALL: bail out on strange internal branch at: "PFX
+                "to "PFX"\n", instr_get_app_pc(cti), tgt_pc);
+            ci->bailout = true;
+            break;
+        }
+    }
+    /* remove RETURN as we do not need it any more */
+    instrlist_remove(ilist, ret);
+    instr_destroy(GLOBAL_DCONTEXT, ret);
 }
 
 static void

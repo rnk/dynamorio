@@ -32,15 +32,21 @@
 
 #include "dr_api.h"
 
+#ifdef WINDOWS
+# define EXPORT __declspec(dllexport)
+#else
+# define EXPORT __attribute__((visibility("default")))
+#endif
+
 static app_pc start_pc;
 static app_pc stop_pc;
 static bool do_instrumentation;
 
 /* An ideal clean call for partial inlining: has a fast path with a single
  * conditional jump and return, and a slow path with a bit of control flow
- * (ternary expr) and two calls (STDERR hides a function call).
+ * (ternary expr) and a call to printf.
  */
-void
+EXPORT void
 clean_call(ptr_uint_t ea, app_pc pc, uint size, bool write)
 {
     /* Check alignment.  Assumes size is a power of two. */
@@ -60,14 +66,13 @@ instrument_mem(void *dc, instrlist_t *ilist, instr_t *where, int pos,
     opnd_t memop;
     reg_id_t arg_reg_id = DR_REG_XBX;
     opnd_t arg_reg = opnd_create_reg(arg_reg_id);
-    uint opsize;
 
     if (write) {
         memop = instr_get_dst(where, pos);
     } else {
         memop = instr_get_src(where, pos);
     }
-    opsize = opnd_size_in_bytes(opnd_get_size(memop));
+    uint opsize = opnd_size_in_bytes(opnd_get_size(memop));
     opnd_set_size(&memop, OPSZ_lea);
 
     dr_save_reg(dc, ilist, where, arg_reg_id, SPILL_SLOT_2);
@@ -122,10 +127,9 @@ event_bb(void *dc, void *entry_pc, instrlist_t *bb, bool for_trace,
 DR_EXPORT void
 dr_init(client_id_t id)
 {
+    dr_register_bb_event(event_bb);
     module_data_t *exe = dr_lookup_module_by_name("client.partial_inline");
     start_pc = (app_pc)dr_get_proc_address(exe->handle, "start_monitor");
     stop_pc = (app_pc)dr_get_proc_address(exe->handle, "stop_monitor");
-
-    dr_register_bb_event(event_bb);
     dr_free_module_data(exe);
 }
