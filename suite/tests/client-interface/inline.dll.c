@@ -46,9 +46,11 @@
 /* List of instrumentation functions. */
 #define FUNCTIONS() \
         FUNCTION(empty) \
+        FUNCTION(enterleave) \
         FUNCTION(inscount) \
         FUNCTION(callpic_pop) \
         FUNCTION(callpic_mov) \
+        FUNCTION(callpic_out) \
         FUNCTION(nonleaf) \
         FUNCTION(cond_br) \
         FUNCTION(tls_clobber) \
@@ -201,10 +203,8 @@ codegen_instrumentation_funcs(void)
         pc = (byte*)ALIGN_FORWARD(pc, 16);
         func_ptrs[i] = pc;
         dr_log(dc, LOG_EMIT, 3, "Generated instrumentation function %s at "PFX
-               ":", func_names[i], pc);
-#ifdef DEBUG
-        instrlist_disassemble(dc, pc, ilists[i], THREAD_GET());
-#endif
+               ":\n", func_names[i], pc);
+        instrlist_disassemble(dc, pc, ilists[i], dr_get_logfile(dc));
         pc = instrlist_encode(dc, ilists[i], pc, false);
         instrlist_clear_and_destroy(dc, ilists[i]);
     }
@@ -225,12 +225,6 @@ static void
 after_inscount(void)
 {
     DR_ASSERT(count == 0xDEAD);
-}
-
-static void
-after_callpic(void)
-{
-    DR_ASSERT(count == 1);
 }
 
 static void
@@ -446,6 +440,25 @@ codegen_empty(void *dc)
     return ilist;
 }
 
+/*
+enterleave:
+    enter 8, 0
+    movl [REG_XSP], -1
+    leave
+    ret
+*/
+static instrlist_t *
+codegen_enterleave(void *dc)
+{
+    instrlist_t *ilist = instrlist_create(dc);
+    APP(ilist, INSTR_CREATE_enter(dc, OPND_CREATE_INT16(8), OPND_CREATE_INT8(0)));
+    APP(ilist, INSTR_CREATE_mov_st
+        (dc, OPND_CREATE_MEMPTR(DR_REG_XSP, 0), OPND_CREATE_INT32(-1)));
+    APP(ilist, INSTR_CREATE_leave(dc));
+    APP(ilist, INSTR_CREATE_ret(dc));
+    return ilist;
+}
+
 /* Return either a stack access opnd_t or the first regparm.  Assumes frame
  * pointer is not omitted. */
 static opnd_t
@@ -541,6 +554,34 @@ codegen_callpic_mov(void *dc)
     return ilist;
 }
 
+/*
+callpic_out:
+    push REG_XBP
+    mov REG_XBP, REG_XSP
+    call picret
+    leave
+    ret
+    picret:
+    mov REG_XCX, [REG_XSP]
+    ret
+*/
+static instrlist_t *
+codegen_callpic_out(void *dc)
+{
+    instrlist_t *ilist = instrlist_create(dc);
+    instr_t *picret_label = INSTR_CREATE_label(dc);
+    codegen_prologue(dc, ilist);
+    APP(ilist, INSTR_CREATE_call(dc, opnd_create_instr(picret_label)));
+    codegen_epilogue(dc, ilist);
+
+    /* picret: */
+    APP(ilist, picret_label);
+    APP(ilist, INSTR_CREATE_mov_ld
+        (dc, opnd_create_reg(DR_REG_XCX), OPND_CREATE_MEMPTR(DR_REG_XSP, 0)));
+    APP(ilist, INSTR_CREATE_ret(dc));
+    return ilist;
+}
+
 /* Non-leaf functions cannot be inlined.
 nonleaf:
     push REG_XBP
@@ -618,7 +659,7 @@ codegen_tls_clobber(void *dc)
     APP(ilist, INSTR_CREATE_sub
         (dc, opnd_create_reg(DR_REG_XSP), OPND_CREATE_INT8(sizeof(reg_t))));
     APP(ilist, INSTR_CREATE_mov_imm(dc, xax, OPND_CREATE_INT32(0xDEAD)));
-    APP(ilist, INSTR_CREATE_mov_imm(dc, xdx, OPND_CREATE_INT32(0xDEAD)));
+    APP(ilist, INSTR_CREATE_mov_imm(dc, xdx, OPND_CREATE_INT32(0xBEEF)));
     APP(ilist, INSTR_CREATE_mov_st(dc, OPND_CREATE_MEMPTR(DR_REG_XSP, 0), xax));
     codegen_epilogue(dc, ilist);
     return ilist;

@@ -91,6 +91,7 @@ typedef struct _callee_info_t {
     app_pc start;             /* entry point of a function  */
     app_pc bwd_tgt;           /* earliest backward branch target */
     app_pc fwd_tgt;           /* last forward branch target */
+    bool is_leaf;             /* true if control cannot leave function */
     int num_xmms_used;        /* number of xmms used by callee */
     bool xmm_used[NUM_XMM_REGS];  /* xmm registers usage */
     int num_regs_used;        /* number of regs used by callee */
@@ -4208,8 +4209,7 @@ finalize_selfmod_sandbox(dcontext_t *dcontext, fragment_t *f)
 #define MAX_NUM_FUNC_INSTRS 4096
 /* the max number of instructions the callee can have for inline. */
 #define MAX_NUM_INLINE_INSTRS 20
-#define NUM_SCRATCH_SLOTS 4 /* 4 spill slots: TLS_XAX/XBX/XCX/XDX/_SLOT. */
-#define SCRATCH_SLOTS(i) (TLS_XAX_SLOT + ((ushort)i) * sizeof(reg_t))
+#define NUM_SCRATCH_SLOTS 4 /* XXX: Can support more now that we use dstack. */
 
 void
 mangle_init(void)
@@ -4264,9 +4264,183 @@ decode_callee_instr(dcontext_t *dcontext, callee_info_t *ci, app_pc instr_pc)
     return next_pc;
 }
 
+static void
+resolve_internal_brs(dcontext_t *dcontext, callee_info_t *ci)
+{
+    instrlist_t *ilist = ci->ilist;
+    instr_t *cti, *tgt, *ret;
+    app_pc   tgt_pc;
+
+    /* no target pc of any branch is in a middle of an instruction,
+     * replace target pc with target instr
+     */
+    ret = instrlist_last(ilist);
+    /* must be RETURN, otherwise, bugs in decode_callee_ilist */
+    ASSERT(instr_is_return(ret));
+    for (cti  = instrlist_first(ilist);
+         cti != ret;
+         cti  = instr_get_next(cti)) {
+        /* Ignore indirect branches and syscalls etc for now. */
+        if (!(instr_is_cbr(cti) || instr_is_ubr(cti)))
+            continue;
+        tgt_pc = opnd_get_pc(instr_get_target(cti));
+        ci->bwd_tgt = (app_pc)MIN((ptr_uint_t)ci->bwd_tgt, (ptr_uint_t)tgt_pc);
+        ci->fwd_tgt = (app_pc)MAX((ptr_uint_t)ci->fwd_tgt, (ptr_uint_t)tgt_pc);
+        for (tgt  = instrlist_first(ilist);
+             tgt != NULL;
+             tgt  = instr_get_next(tgt)) {
+            if (tgt_pc == instr_get_app_pc(tgt))
+                break;
+        }
+        if (tgt == NULL) {
+            /* cannot find a target instruction, bail out */
+            LOG(THREAD, LOG_CLEANCALL, 2,
+                "CLEANCALL: bail out on strange internal branch at: "PFX
+                "to "PFX"\n", instr_get_app_pc(cti), tgt_pc);
+            ci->bailout = true;
+            break;
+        }
+        instr_set_target(cti, opnd_create_instr(tgt));
+    }
+
+    /* Remove return, it is not generally useful for analysis. */
+    instrlist_remove(ilist, ret);
+    instr_destroy(GLOBAL_DCONTEXT, ret);
+}
+
+static bool
+instr_is_mov_ld_xsp(instr_t *instr)
+{
+    return (instr_get_opcode(instr) == OP_mov_ld &&
+            opnd_same(instr_get_src(instr, 0), OPND_CREATE_MEMPTR(REG_XSP, 0)));
+}
+
+/* Rewrite PIC code to materialize application PC directly.  Two major PIC
+ * styles:
+ * 1. call next_pc; pop r1;
+ * 2. call pic_func;
+ *    and in pic_func: mov [%xsp] %r1; ret;
+ */
+static void
+rewrite_pic_code(dcontext_t *dcontext, callee_info_t *ci)
+{
+    instr_t *call_instr;
+    instr_t *next_instr;
+    instrlist_t *ilist = ci->ilist;
+
+    for (call_instr  = instrlist_first(ilist);
+         call_instr != NULL;
+         call_instr  = next_instr) {
+        app_pc tgt_pc, cur_pc, next_pc;
+        instr_t *new_instr;
+        bool is_pic = false;
+        opnd_t pic_reg;
+
+        next_instr = instr_get_next(call_instr);
+        if (!instr_is_call(call_instr))
+            continue;
+        if (next_instr == NULL) {
+            ASSERT_CURIOSITY(false && "call is last instruction in ilist?");
+            break;
+        }
+
+        cur_pc = instr_get_app_pc(call_instr);
+        tgt_pc = opnd_get_pc(instr_get_target(call_instr));
+        next_pc = instr_get_app_pc(next_instr);
+        LOG(THREAD, LOG_CLEANCALL, 2,
+            "CLEANCALL: callee calls out at: "PFX" to "PFX"\n", cur_pc, tgt_pc);
+
+        if (tgt_pc == next_pc) {
+            /* "pop %r1" or "mov [%rsp] %r1" */
+            if (instr_get_opcode(next_instr) == OP_pop ||
+                instr_is_mov_ld_xsp(next_instr)) {
+                is_pic = true;
+                pic_reg = instr_get_dst(next_instr, 0);
+                /* Delete mov or pop. */
+                instrlist_remove(ilist, next_instr);
+                instr_destroy(GLOBAL_DCONTEXT, next_instr);
+            }
+        } else {
+            /* a callout */
+            instr_t mov_ins, ret_ins;
+            app_pc tmp_pc;
+            instr_init(dcontext, &mov_ins);
+            instr_init(dcontext, &ret_ins);
+            TRY_EXCEPT(dcontext, {
+                tmp_pc = decode(dcontext, tgt_pc, &mov_ins);
+                tmp_pc = decode(dcontext, tmp_pc, &ret_ins);
+            }, {
+                ASSERT_CURIOSITY(false && "crashed while decoding clean call");
+                /* Frees any instr internal memory and reinitializes.  Following
+                 * checks will fail. */
+                instr_reset(dcontext, &mov_ins);
+                instr_reset(dcontext, &ret_ins);
+            });
+            if (instr_is_mov_ld_xsp(&mov_ins) &&
+                instr_is_return(&ret_ins)) {
+                pic_reg = instr_get_dst(&mov_ins, 0);
+                is_pic = true;
+            }
+            instr_free(dcontext, &mov_ins);
+            instr_free(dcontext, &ret_ins);
+        }
+
+        if (!is_pic)
+            continue;
+
+        ASSERT(opnd_is_reg(pic_reg));
+        LOG(THREAD, LOG_CLEANCALL, 2,
+            "CLEANCALL: special PIC code at: "PFX"\n", cur_pc);
+
+        /* Insert "mov next_pc r1". */
+        /* XXX: The memory on top of stack will not be next_pc, and the stack
+         * may become unaligned. */
+        new_instr = INSTR_CREATE_mov_imm
+            (GLOBAL_DCONTEXT, pic_reg, OPND_CREATE_INTPTR(next_pc));
+        instr_set_translation(new_instr, cur_pc);
+        instrlist_preinsert(ilist, call_instr, new_instr);
+
+        /* Remove call. */
+        instrlist_remove(ilist, call_instr);
+        instr_destroy(GLOBAL_DCONTEXT, call_instr);
+    }
+}
+
+static void
+decode_callee_ilist(dcontext_t *dcontext, callee_info_t *ci)
+{
+    app_pc cur_pc;
+
+    ci->ilist = instrlist_create(GLOBAL_DCONTEXT);
+    cur_pc = ci->start;
+
+    LOG(THREAD, LOG_CLEANCALL, 2, 
+        "CLEANCALL: decoding callee starting at: "PFX"\n", ci->start);
+    ci->bailout = false;
+    while (cur_pc != NULL && ci->num_instrs < MAX_NUM_FUNC_INSTRS) {
+        cur_pc = decode_callee_instr(dcontext, ci, cur_pc);
+        if (cur_pc != NULL && instr_is_return(instrlist_last(ci->ilist))) {
+            break;
+        }
+    }
+
+    if (ci->bailout) {
+        instrlist_clear_and_destroy(GLOBAL_DCONTEXT, ci->ilist);
+        ci->ilist = NULL;
+        return;
+    }
+
+    /* Apply generally useful modifications to the ilist. */
+    resolve_internal_brs(dcontext, ci);
+    if (INTERNAL_OPTION(opt_cleancall) >= 1) {
+        rewrite_pic_code(dcontext, ci);
+    }
+}
+
 /* check newly decoded instruction from callee */
-static app_pc
-check_callee_instr(dcontext_t *dcontext, callee_info_t *ci, app_pc next_pc)
+app_pc
+check_callee_instr_for_inline(dcontext_t *dcontext, callee_info_t *ci,
+                              app_pc next_pc)
 {
     instrlist_t *ilist = ci->ilist;
     instr_t *instr;
@@ -4399,70 +4573,6 @@ check_callee_instr(dcontext_t *dcontext, callee_info_t *ci, app_pc next_pc)
 }
 
 static void
-check_callee_ilist(dcontext_t *dcontext, callee_info_t *ci)
-{
-    instrlist_t *ilist = ci->ilist;
-    instr_t *cti, *tgt, *ret;
-    app_pc   tgt_pc;
-
-    if (ci->bailout) {
-        instrlist_clear_and_destroy(GLOBAL_DCONTEXT, ilist);
-        ci->ilist = NULL;
-        return;
-    }
-
-    /* no target pc of any branch is in a middle of an instruction,
-     * replace target pc with target instr
-     */
-    ret = instrlist_last(ilist);
-    /* must be RETURN, otherwise, bugs in decode_callee_ilist */
-    ASSERT(instr_is_return(ret));
-    for (cti  = instrlist_first(ilist);
-         cti != ret;
-         cti  = instr_get_next(cti)) {
-        if (!instr_is_cti(cti))
-            continue;
-        ASSERT(!instr_is_mbr(cti));
-        tgt_pc = opnd_get_pc(instr_get_target(cti));
-        for (tgt  = instrlist_first(ilist);
-             tgt != NULL; 
-             tgt  = instr_get_next(tgt)) {
-            if (tgt_pc == instr_get_app_pc(tgt))
-                break;
-        }
-        if (tgt == NULL) {
-            /* cannot find a target instruction, bail out */
-            LOG(THREAD, LOG_CLEANCALL, 2,
-                "CLEANCALL: bail out on strange internal branch at: "PFX
-                "to "PFX"\n", instr_get_app_pc(cti), tgt_pc);
-            ci->bailout = true;
-            break;
-        }
-    }
-    /* remove RETURN as we do not need it any more */
-    instrlist_remove(ilist, ret);
-    instr_destroy(GLOBAL_DCONTEXT, ret);
-}
-
-static void
-decode_callee_ilist(dcontext_t *dcontext, callee_info_t *ci)
-{
-    app_pc cur_pc;
-
-    ci->ilist = instrlist_create(GLOBAL_DCONTEXT);
-    cur_pc = ci->start;
-
-    LOG(THREAD, LOG_CLEANCALL, 2, 
-        "CLEANCALL: decoding callee starting at: "PFX"\n", ci->start);
-    ci->bailout = false;
-    while (cur_pc != NULL) {
-        cur_pc = decode_callee_instr(dcontext, ci, cur_pc);
-        cur_pc = check_callee_instr(dcontext, ci, cur_pc);
-    }
-    check_callee_ilist(dcontext, ci);
-}
-
-static void
 analyze_callee_regs_usage(dcontext_t *dcontext, callee_info_t *ci)
 {
     instrlist_t *ilist = ci->ilist;
@@ -4549,7 +4659,7 @@ analyze_callee_regs_usage(dcontext_t *dcontext, callee_info_t *ci)
 
 /* We use push/pop pattern to detect callee saved registers,
  * and assume that the code later won't change those saved value
- * on the stack. 
+ * on the stack.
  */
 static void
 analyze_callee_save_reg(dcontext_t *dcontext, callee_info_t *ci)
@@ -4703,6 +4813,7 @@ static void
 analyze_callee_inline(dcontext_t *dcontext, callee_info_t *ci)
 {
     instr_t *instr;
+    instr_t *next_instr;
     opnd_t opnd, mem_ref, slot;
     bool opt_inline = true;
     int i;
@@ -4758,8 +4869,9 @@ analyze_callee_inline(dcontext_t *dcontext, callee_info_t *ci)
     ci->has_locals = false;
     for (instr  = instrlist_first(ci->ilist);
          instr != NULL;
-         instr  = instr_get_next(instr)) {
+         instr  = next_instr) {
         uint opc = instr_get_opcode(instr);
+        next_instr = instr_get_next(instr);
         /* sanity checks on stack usage */
         if (instr_writes_to_reg(instr, DR_REG_XBP) && ci->xbp_is_fp) {
             /* xbp must not be changed if xbp is used for frame pointer */
@@ -4793,7 +4905,12 @@ analyze_callee_inline(dcontext_t *dcontext, callee_info_t *ci)
                 /* other cases like push/pop are not allowed */
                 opt_inline = false;
             }
-            if (!opt_inline) {
+            if (opt_inline) {
+                /* Delete frame adjust, we do our own. */
+                instrlist_remove(ci->ilist, instr);
+                instr_destroy(GLOBAL_DCONTEXT, instr);
+                continue;
+            } else {
                 LOG(THREAD, LOG_CLEANCALL, 1,
                     "CLEANCALL: callee "PFX" cannot be inlined: "
                     "complicated stack pointer update at "PFX".\n",

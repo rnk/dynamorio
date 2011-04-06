@@ -43,9 +43,11 @@
 #endif
 
 EXPORT NOINLINE void empty(void) {}
+EXPORT NOINLINE void enterleave(void) {}
 EXPORT NOINLINE void inscount(void) {}
 EXPORT NOINLINE void callpic_pop(void) {}
 EXPORT NOINLINE void callpic_mov(void) {}
+EXPORT NOINLINE void callpic_out(void) {}
 EXPORT NOINLINE void cond_br(void) {}
 EXPORT NOINLINE void tls_clobber(void) {}
 EXPORT NOINLINE void nonleaf(void) {}
@@ -55,9 +57,11 @@ int
 main(void)
 {
     empty();
+    enterleave();
     inscount();
     callpic_pop();
     callpic_mov();
+    callpic_out();
     cond_br();
     tls_clobber();
     nonleaf();
