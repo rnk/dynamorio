@@ -52,6 +52,8 @@ EXPORT NOINLINE void cond_br(void) {}
 EXPORT NOINLINE void tls_clobber(void) {}
 EXPORT NOINLINE void nonleaf(void) {}
 EXPORT NOINLINE void aflags_clobber(void) {}
+EXPORT NOINLINE void decode_past_ret(void) {}
+EXPORT NOINLINE void decode_loop(void) {}
 
 int
 main(void)
@@ -66,4 +68,6 @@ main(void)
     tls_clobber();
     nonleaf();
     aflags_clobber();
+    decode_past_ret();
+    decode_loop();
 }

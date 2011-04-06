@@ -55,6 +55,8 @@
         FUNCTION(cond_br) \
         FUNCTION(tls_clobber) \
         FUNCTION(aflags_clobber) \
+        FUNCTION(decode_past_ret) \
+        FUNCTION(decode_loop) \
         LAST_FUNCTION()
 
 /* Table of function names. */
@@ -375,6 +377,8 @@ event_basic_block(void *dc, void *tag, instrlist_t *bb,
             break;
         case FN_nonleaf:
         case FN_cond_br:
+        case FN_decode_past_ret:
+        case FN_decode_loop:
             /* These functions cannot be inlined (yet). */
             dr_insert_clean_call(dc, bb, entry, func_ptrs[i], false, 0);
             inline_expected = false;
@@ -685,6 +689,75 @@ codegen_aflags_clobber(void *dc)
     APP(ilist, INSTR_CREATE_add
         (dc, opnd_create_reg(DR_REG_AL), OPND_CREATE_INT8(0x7F)));
     APP(ilist, INSTR_CREATE_sahf(dc));
+    codegen_epilogue(dc, ilist);
+    return ilist;
+}
+
+/* Check that the inliner can decode this jump past the return and back.
+decode_past_ret:
+    push REG_XBP
+    mov REG_XBP, REG_XSP
+
+    mov REG_XCX, ARG1
+    jecxz Lpast
+
+    Lret:
+    leave
+    ret
+
+    Lpast:
+    mov REG_XCX, 1
+    jmp Lret
+*/
+static instrlist_t *
+codegen_decode_past_ret(void *dc)
+{
+    instrlist_t *ilist = instrlist_create(dc);
+    instr_t *l_ret = INSTR_CREATE_label(dc);
+    instr_t *l_past = INSTR_CREATE_label(dc);
+    opnd_t xcx = opnd_create_reg(DR_REG_XCX);
+    codegen_prologue(dc, ilist);
+    APP(ilist, INSTR_CREATE_mov_ld(dc, xcx, codegen_opnd_arg1()));
+    APP(ilist, INSTR_CREATE_jecxz(dc, opnd_create_instr(l_past)));
+    APP(ilist, l_ret);
+    codegen_epilogue(dc, ilist);
+    APP(ilist, l_past);
+    APP(ilist, INSTR_CREATE_mov_imm(dc, xcx, OPND_CREATE_INTPTR(1)));
+    return ilist;
+}
+
+/* Check that the inliner can decode this loop.  Most importantly, we want to be
+ * sure that the fallthrough from dec to Lcmp doesn't get decoded twice.
+decode_loop:
+    push REG_XBP
+    mov REG_XBP, REG_XSP
+
+    mov REG_XCX, ARG1
+    jmp Lcmp
+    Lloop:
+        dec REG_XCX
+        Lcmp:
+        test REG_XCX, REG_XCX
+        jnz Lloop
+
+    leave
+    ret
+*/
+static instrlist_t *
+codegen_decode_loop(void *dc)
+{
+    instrlist_t *ilist = instrlist_create(dc);
+    instr_t *l_cmp = INSTR_CREATE_label(dc);
+    instr_t *l_loop = INSTR_CREATE_label(dc);
+    opnd_t xcx = opnd_create_reg(DR_REG_XCX);
+    codegen_prologue(dc, ilist);
+    APP(ilist, INSTR_CREATE_mov_ld(dc, xcx, codegen_opnd_arg1()));
+    APP(ilist, INSTR_CREATE_jmp(dc, opnd_create_instr(l_cmp)));
+    APP(ilist, l_loop);
+    APP(ilist, INSTR_CREATE_dec(dc, xcx));
+    APP(ilist, l_cmp);
+    APP(ilist, INSTR_CREATE_test(dc, xcx, xcx));
+    APP(ilist, INSTR_CREATE_jcc(dc, OP_jnz, opnd_create_instr(l_loop)));
     codegen_epilogue(dc, ilist);
     return ilist;
 }

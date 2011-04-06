@@ -4206,7 +4206,7 @@ finalize_selfmod_sandbox(dcontext_t *dcontext, fragment_t *f)
 /* clean call optimization code */
 
 /* The max number of instructions try to decode from a function. */
-#define MAX_NUM_FUNC_INSTRS 4096
+#define MAX_NUM_FUNC_INSTRS 1024
 /* the max number of instructions the callee can have for inline. */
 #define MAX_NUM_INLINE_INSTRS 20
 #define NUM_SCRATCH_SLOTS 4 /* XXX: Can support more now that we use dstack. */
@@ -4268,17 +4268,14 @@ static void
 resolve_internal_brs(dcontext_t *dcontext, callee_info_t *ci)
 {
     instrlist_t *ilist = ci->ilist;
-    instr_t *cti, *tgt, *ret;
+    instr_t *cti, *tgt;
     app_pc   tgt_pc;
 
     /* no target pc of any branch is in a middle of an instruction,
      * replace target pc with target instr
      */
-    ret = instrlist_last(ilist);
-    /* must be RETURN, otherwise, bugs in decode_callee_ilist */
-    ASSERT(instr_is_return(ret));
     for (cti  = instrlist_first(ilist);
-         cti != ret;
+         cti != NULL;
          cti  = instr_get_next(cti)) {
         /* Ignore indirect branches and syscalls etc for now. */
         if (!(instr_is_cbr(cti) || instr_is_ubr(cti)))
@@ -4302,10 +4299,6 @@ resolve_internal_brs(dcontext_t *dcontext, callee_info_t *ci)
         }
         instr_set_target(cti, opnd_create_instr(tgt));
     }
-
-    /* Remove return, it is not generally useful for analysis. */
-    instrlist_remove(ilist, ret);
-    instr_destroy(GLOBAL_DCONTEXT, ret);
 }
 
 static bool
@@ -4406,21 +4399,81 @@ rewrite_pic_code(dcontext_t *dcontext, callee_info_t *ci)
     }
 }
 
-static void
-decode_callee_ilist(dcontext_t *dcontext, callee_info_t *ci)
+static instr_t *
+find_pc_in_ilist(instrlist_t *ilist, app_pc pc)
 {
+    instr_t *instr;
+    for (instr = instrlist_first(ilist); instr != NULL;
+         instr = instr_get_next(instr)) {
+        if (pc == instr_get_app_pc(instr)) {
+            return instr;
+        }
+    }
+    return NULL;
+}
+
+/* Callee decoder.  Starts at the entry pc and maintains a limited stack of
+ * target pcs.  Gives up if the target pc is too far away.
+ */
+#define MAX_TARGETS 10
+static void
+decode_callee_ilist(dcontext_t *dc, callee_info_t *ci)
+{
+    int pc_top = 0;  /* Points to next free stack slot. */
+    app_pc pc_stack[MAX_TARGETS];
     app_pc cur_pc;
 
-    ci->ilist = instrlist_create(GLOBAL_DCONTEXT);
-    cur_pc = ci->start;
-
-    LOG(THREAD, LOG_CLEANCALL, 2, 
+    LOG(dr_get_logfile(dc), LOG_CLEANCALL, 2,
         "CLEANCALL: decoding callee starting at: "PFX"\n", ci->start);
+    ci->ilist = instrlist_create(GLOBAL_DCONTEXT);
     ci->bailout = false;
-    while (cur_pc != NULL && ci->num_instrs < MAX_NUM_FUNC_INSTRS) {
-        cur_pc = decode_callee_instr(dcontext, ci, cur_pc);
-        if (cur_pc != NULL && instr_is_return(instrlist_last(ci->ilist))) {
+    cur_pc = ci->start;
+    while (cur_pc != NULL) {
+        instr_t *instr;
+
+        /* Sanity check whether we want to decode this pc. */
+        if ((ptr_uint_t)cur_pc < (ptr_uint_t)ci->start ||
+            (ptr_uint_t)ci->start + 4096 < (ptr_uint_t)cur_pc) {
+            LOG(dr_get_logfile(dc), LOG_CLEANCALL, 2,
+                "CLEANCALL: jump target "PFX" too far, bailing from decode\n",
+                cur_pc);
+            ci->bailout = true;
             break;
+        }
+
+        cur_pc = decode_callee_instr(dc, ci, cur_pc);
+        if (cur_pc == NULL)  /* bailout */
+            break;
+        if (ci->num_instrs > MAX_NUM_FUNC_INSTRS) {
+            LOG(dr_get_logfile(dc), LOG_CLEANCALL, 2,
+                "CLEANCALL: too many instructions, bailing from decode\n");
+            ci->bailout = true;
+            break;
+        }
+
+        instr = instrlist_last(ci->ilist);
+        if (instr_is_return(instr) || instr_is_ubr(instr)) {
+            cur_pc = NULL;  /* Don't keep decoding after a ret or jmp. */
+        }
+        /* For branches, save the branch target to decode later. */
+        if (instr_is_ubr(instr) || instr_is_cbr(instr)) {
+            if (pc_top >= MAX_TARGETS) {
+                LOG(dr_get_logfile(dc), LOG_CLEANCALL, 2,
+                    "CLEANCALL: too many cbrs, bailing from decode\n");
+                ci->bailout = true;
+                break;
+            }
+            pc_stack[pc_top++] = opnd_get_pc(instr_get_target(instr));
+        }
+
+        if (find_pc_in_ilist(ci->ilist, cur_pc) != NULL) {
+            cur_pc = NULL;
+        }
+        while (cur_pc == NULL && pc_top > 0) {
+            cur_pc = pc_stack[--pc_top];
+            if (find_pc_in_ilist(ci->ilist, cur_pc) != NULL) {
+                cur_pc = NULL;
+            }
         }
     }
 
@@ -4431,9 +4484,9 @@ decode_callee_ilist(dcontext_t *dcontext, callee_info_t *ci)
     }
 
     /* Apply generally useful modifications to the ilist. */
-    resolve_internal_brs(dcontext, ci);
+    resolve_internal_brs(dc, ci);
     if (INTERNAL_OPTION(opt_cleancall) >= 1) {
-        rewrite_pic_code(dcontext, ci);
+        rewrite_pic_code(dc, ci);
     }
 }
 
@@ -4684,6 +4737,13 @@ analyze_callee_save_reg(dcontext_t *dcontext, callee_info_t *ci)
      */
     top = instrlist_first(ilist);
     bot = instrlist_last(ilist);
+    if (bot != NULL && instr_is_return(bot)) {
+        bot = instr_get_prev(bot);
+    } else {
+        LOG(THREAD, LOG_CLEANCALL, 2,
+            "CLEANCALL: cannot analyze reg save, callee does not end in ret\n");
+        return;
+    }
     if (top == bot) {
         /* zero or one instruction only, no callee save */
         return;
@@ -4880,11 +4940,18 @@ analyze_callee_inline(dcontext_t *dcontext, callee_info_t *ci)
                 ci->start);
             opt_inline = false;
             break;
+        } else if (instr_is_return(instr) &&
+                   instr == instrlist_last(ci->ilist)) {
+            /* No need to ret from inline code. */
+            instrlist_remove(ci->ilist, instr);
+            instr_destroy(GLOBAL_DCONTEXT, instr);
+            continue;
         } else if (instr_writes_to_reg(instr, DR_REG_XSP)) {
             /* stack pointer update, we only allow:
              * lea [xsp, disp] => xsp
              * xsp + imm_int => xsp
              * xsp - imm_int => xsp
+             * ret ; only if it's the last instruction
              */
             if (ci->has_locals) {
                 /* we do not allow stack adjustment after accessing the stack */
