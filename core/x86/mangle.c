@@ -91,13 +91,12 @@ typedef struct _callee_info_t {
     app_pc start;             /* entry point of a function  */
     app_pc bwd_tgt;           /* earliest backward branch target */
     app_pc fwd_tgt;           /* last forward branch target */
-    bool is_leaf;             /* true if control cannot leave function */
     int num_xmms_used;        /* number of xmms used by callee */
     bool xmm_used[NUM_XMM_REGS];  /* xmm registers usage */
     int num_regs_used;        /* number of regs used by callee */
     bool reg_used[NUM_GP_REGS];   /* general purpose registers usage */
-    int num_callee_save_regs; /* number of regs callee saved */
     bool callee_save_regs[NUM_GP_REGS]; /* callee-save registers */
+    int frame_size;           /* size of stack frame adjustment for locals */
     bool has_locals;          /* if reference local via statck */
     bool xbp_is_fp;           /* if xbp is used as frame pointer */
     bool opt_inline;          /* can be inlined or not */
@@ -136,6 +135,8 @@ callee_info_init(callee_info_t *ci)
         ci->xmm_used[i] = true;
     /* assuming all gp registers are used */
     ci->num_regs_used = NUM_XMM_REGS;
+    for (i = 0; i < NUM_GP_REGS; i++)
+        ci->reg_used[i] = true;
     for (i = 0; i < NUM_GP_REGS; i++)
         ci->reg_used[i] = true;
 }
@@ -4264,6 +4265,17 @@ decode_callee_instr(dcontext_t *dcontext, callee_info_t *ci, app_pc instr_pc)
     return next_pc;
 }
 
+/* Uses a heuristic to decide if the target pc is reasonably within the current
+ * callee.  If the callee tail calls to a nearby helper, we don't really mind if
+ * we end up including the helper in the callee.
+ */
+static bool
+tgt_pc_in_callee(app_pc tgt_pc, callee_info_t *ci)
+{
+    return ((ptr_uint_t)ci->start <= (ptr_uint_t)tgt_pc &&
+            (ptr_uint_t)tgt_pc < (ptr_uint_t)ci->start + 4096);
+}
+
 static void
 resolve_internal_brs(dcontext_t *dcontext, callee_info_t *ci)
 {
@@ -4271,16 +4283,20 @@ resolve_internal_brs(dcontext_t *dcontext, callee_info_t *ci)
     instr_t *cti, *tgt;
     app_pc   tgt_pc;
 
-    /* no target pc of any branch is in a middle of an instruction,
-     * replace target pc with target instr
+    /* Check that no target pc of any branch is in a middle of an instruction,
+     * and replace target pc with label before the target instr.
      */
     for (cti  = instrlist_first(ilist);
          cti != NULL;
          cti  = instr_get_next(cti)) {
-        /* Ignore indirect branches and syscalls etc for now. */
+        instr_t *label;
+        /* Ignore indirect branches, syscalls, calls, etc for now.  They may be
+         * part of code that we choose not to inline. */
         if (!(instr_is_cbr(cti) || instr_is_ubr(cti)))
             continue;
         tgt_pc = opnd_get_pc(instr_get_target(cti));
+        if (!tgt_pc_in_callee(tgt_pc, ci))
+            continue;  /* Probably a tail call.  We've logged it previously. */
         ci->bwd_tgt = (app_pc)MIN((ptr_uint_t)ci->bwd_tgt, (ptr_uint_t)tgt_pc);
         ci->fwd_tgt = (app_pc)MAX((ptr_uint_t)ci->fwd_tgt, (ptr_uint_t)tgt_pc);
         for (tgt  = instrlist_first(ilist);
@@ -4293,11 +4309,13 @@ resolve_internal_brs(dcontext_t *dcontext, callee_info_t *ci)
             /* cannot find a target instruction, bail out */
             LOG(THREAD, LOG_CLEANCALL, 2,
                 "CLEANCALL: bail out on strange internal branch at: "PFX
-                "to "PFX"\n", instr_get_app_pc(cti), tgt_pc);
+                " to "PFX"\n", instr_get_app_pc(cti), tgt_pc);
             ci->bailout = true;
             break;
         }
-        instr_set_target(cti, opnd_create_instr(tgt));
+        label = INSTR_CREATE_label(GLOBAL_DCONTEXT);
+        instrlist_preinsert(ilist, tgt, label);
+        instr_set_target(cti, opnd_create_instr(label));
     }
 }
 
@@ -4421,7 +4439,7 @@ decode_callee_ilist(dcontext_t *dc, callee_info_t *ci)
 {
     int pc_top = 0;  /* Points to next free stack slot. */
     app_pc pc_stack[MAX_TARGETS];
-    app_pc cur_pc;
+    app_pc cur_pc, next_pc;
 
     LOG(dr_get_logfile(dc), LOG_CLEANCALL, 2,
         "CLEANCALL: decoding callee starting at: "PFX"\n", ci->start);
@@ -4432,8 +4450,7 @@ decode_callee_ilist(dcontext_t *dc, callee_info_t *ci)
         instr_t *instr;
 
         /* Sanity check whether we want to decode this pc. */
-        if ((ptr_uint_t)cur_pc < (ptr_uint_t)ci->start ||
-            (ptr_uint_t)ci->start + 4096 < (ptr_uint_t)cur_pc) {
+        if (!tgt_pc_in_callee(cur_pc, ci)) {
             LOG(dr_get_logfile(dc), LOG_CLEANCALL, 2,
                 "CLEANCALL: jump target "PFX" too far, bailing from decode\n",
                 cur_pc);
@@ -4441,8 +4458,8 @@ decode_callee_ilist(dcontext_t *dc, callee_info_t *ci)
             break;
         }
 
-        cur_pc = decode_callee_instr(dc, ci, cur_pc);
-        if (cur_pc == NULL)  /* bailout */
+        next_pc = decode_callee_instr(dc, ci, cur_pc);
+        if (next_pc == NULL)  /* bailout */
             break;
         if (ci->num_instrs > MAX_NUM_FUNC_INSTRS) {
             LOG(dr_get_logfile(dc), LOG_CLEANCALL, 2,
@@ -4453,28 +4470,40 @@ decode_callee_ilist(dcontext_t *dc, callee_info_t *ci)
 
         instr = instrlist_last(ci->ilist);
         if (instr_is_return(instr) || instr_is_ubr(instr)) {
-            cur_pc = NULL;  /* Don't keep decoding after a ret or jmp. */
+            next_pc = NULL;  /* Don't keep decoding after a ret or jmp. */
         }
         /* For branches, save the branch target to decode later. */
         if (instr_is_ubr(instr) || instr_is_cbr(instr)) {
+            app_pc tgt_pc;
             if (pc_top >= MAX_TARGETS) {
                 LOG(dr_get_logfile(dc), LOG_CLEANCALL, 2,
                     "CLEANCALL: too many cbrs, bailing from decode\n");
                 ci->bailout = true;
                 break;
             }
-            pc_stack[pc_top++] = opnd_get_pc(instr_get_target(instr));
-        }
 
-        if (find_pc_in_ilist(ci->ilist, cur_pc) != NULL) {
-            cur_pc = NULL;
-        }
-        while (cur_pc == NULL && pc_top > 0) {
-            cur_pc = pc_stack[--pc_top];
-            if (find_pc_in_ilist(ci->ilist, cur_pc) != NULL) {
-                cur_pc = NULL;
+            /* If the target is resonably within the callee, follow it.
+             * Otherwise, it's probably a tail call. */
+            tgt_pc = opnd_get_pc(instr_get_target(instr));
+            if (tgt_pc_in_callee(tgt_pc, ci)) {
+                pc_stack[pc_top++] = tgt_pc;
+            } else {
+                LOG(dr_get_logfile(dc), LOG_CLEANCALL, 2,
+                    "CLEANCALL: probable tail call at "PFX" to tgt "PFX"\n",
+                    cur_pc, tgt_pc);
             }
         }
+
+        if (find_pc_in_ilist(ci->ilist, next_pc) != NULL) {
+            next_pc = NULL;
+        }
+        while (next_pc == NULL && pc_top > 0) {
+            next_pc = pc_stack[--pc_top];
+            if (find_pc_in_ilist(ci->ilist, next_pc) != NULL) {
+                next_pc = NULL;
+            }
+        }
+        cur_pc = next_pc;
     }
 
     if (ci->bailout) {
@@ -4488,141 +4517,6 @@ decode_callee_ilist(dcontext_t *dc, callee_info_t *ci)
     if (INTERNAL_OPTION(opt_cleancall) >= 1) {
         rewrite_pic_code(dc, ci);
     }
-}
-
-/* check newly decoded instruction from callee */
-app_pc
-check_callee_instr_for_inline(dcontext_t *dcontext, callee_info_t *ci,
-                              app_pc next_pc)
-{
-    instrlist_t *ilist = ci->ilist;
-    instr_t *instr;
-    app_pc   cur_pc, tgt_pc;
-
-    if (next_pc == NULL)
-        return NULL;
-    instr  = instrlist_last(ilist);
-    cur_pc = instr_get_app_pc(instr);
-    ASSERT(next_pc == cur_pc + instr_length(dcontext, instr));
-    if (!instr_is_cti(instr)) {
-        /* special instructions, bail out. */
-        if (instr_is_syscall(instr) || instr_is_interrupt(instr)) {
-            LOG(THREAD, LOG_CLEANCALL, 2,
-                "CLEANCALL: bail out on syscall or interrupt at: "PFX"\n",
-                cur_pc);
-            ci->bailout = true;
-            return NULL;
-        }
-        return next_pc;
-    }
-
-    /* cti instruc */
-    if (instr_is_mbr(instr)) {
-        /* check if instr is return, and if return is the last instr. */
-        if (!instr_is_return(instr) && ci->fwd_tgt > cur_pc) {
-            LOG(THREAD, LOG_CLEANCALL, 2,
-                "CLEANCALL: bail out on indirect branch at: "PFX"\n",
-                cur_pc);
-            ci->bailout = true;
-        }
-        return NULL;
-    } else if (instr_is_call(instr)) {
-        tgt_pc = opnd_get_pc(instr_get_target(instr));
-        /* remove and destroy the call instruction */
-        ci->bailout = true;
-        instrlist_remove(ilist, instr);
-        instr_destroy(GLOBAL_DCONTEXT, instr);
-        instr = NULL;
-        ci->num_instrs--;
-        LOG(THREAD, LOG_CLEANCALL, 2,
-            "CLEANCALL: callee calls out at: "PFX" to "PFX"\n",
-            cur_pc, tgt_pc);
-        /* check special PIC code:
-         * 1. call next_pc; pop r1;
-         * or
-         * 2. call pic_func;
-         *    and in pic_func: mov [%xsp] %r1; ret;
-         */
-        if (INTERNAL_OPTION(opt_cleancall) >= 1) {
-            instr_t ins;
-            app_pc  tmp_pc;
-            opnd_t src = OPND_CREATE_INTPTR(next_pc);
-            instr_init(dcontext, &ins);
-            TRY_EXCEPT(dcontext, {
-                tmp_pc = decode(dcontext, tgt_pc, &ins);
-            }, {
-                ASSERT_CURIOSITY(false && 
-                                 "crashed while decoding clean call");
-                instr_free(dcontext, &ins);
-                return NULL;
-            });
-            DOLOG(3, LOG_CLEANCALL, {
-                disassemble_with_bytes(dcontext, tgt_pc, THREAD);
-            });
-            /* "pop %r1" or "mov [%rsp] %r1" */
-            if (!(((instr_get_opcode(&ins) == OP_pop) ||
-                   (instr_get_opcode(&ins) == OP_mov_ld &&
-                    opnd_same(instr_get_src(&ins, 0),
-                              OPND_CREATE_MEMPTR(REG_XSP, 0)))) &&
-                  opnd_is_reg(instr_get_dst(&ins, 0)))) {
-                LOG(THREAD, LOG_CLEANCALL, 2,
-                    "CLEANCALL: callee calls out is not PIC code, "
-                    "bailout\n");
-                instr_free(dcontext, &ins);
-                return NULL;
-            }
-            /* replace with "mov next_pc r1" */
-            /* XXX: the memory on top of stack will not be next_pc. */
-            instr = INSTR_CREATE_mov_imm
-                (GLOBAL_DCONTEXT, instr_get_dst(&ins, 0), src);
-            instr_set_translation(instr, cur_pc);
-            instrlist_append(ilist, instr);
-            ci->num_instrs++;
-            instr_reset(dcontext, &ins);
-            if (tgt_pc != next_pc) { /* a callout */
-                TRY_EXCEPT(dcontext, {
-                    tmp_pc = decode(dcontext, tmp_pc, &ins);
-                }, {
-                    ASSERT_CURIOSITY(false && 
-                                     "crashed while decoding clean call");
-                    instr_free(dcontext, &ins);
-                    return NULL;
-                });
-                if (!instr_is_return(&ins)) {
-                    instr_free(dcontext, &ins);
-                    return NULL;
-                }
-                instr_free(dcontext, &ins);
-            }
-            LOG(THREAD, LOG_CLEANCALL, 2,
-                "CLEANCALL: special PIC code at: "PFX"\n", 
-                cur_pc);
-            ci->bailout = false;
-            instr_free(dcontext, &ins);
-            if (tgt_pc == next_pc)
-                return tmp_pc;
-            else
-                return next_pc;
-        }
-    } else { /* ubr or cbr */
-        tgt_pc = opnd_get_pc(instr_get_target(instr));
-        if (tgt_pc < cur_pc) { /* backward branch */
-            if (tgt_pc < ci->start) {
-                LOG(THREAD, LOG_CLEANCALL, 2,
-                    "CLEANCALL: bail out on out-of-range branch at: "PFX
-                    "to "PFX"\n", cur_pc, tgt_pc);
-                ci->bailout = true;
-                return NULL;
-            } else if (ci->bwd_tgt == NULL || tgt_pc < ci->bwd_tgt) {
-                ci->bwd_tgt = tgt_pc;
-            }
-        } else { /* forward branch */
-            if (ci->fwd_tgt == NULL || tgt_pc > ci->fwd_tgt) {
-                ci->fwd_tgt = tgt_pc;
-            }
-        }
-    }
-    return next_pc;
 }
 
 static void
@@ -4710,133 +4604,402 @@ analyze_callee_regs_usage(dcontext_t *dcontext, callee_info_t *ci)
     }
 }
 
-/* We use push/pop pattern to detect callee saved registers,
- * and assume that the code later won't change those saved value
- * on the stack.
+/* Find all control flow instructions that leave the function.
+ */
+#define MAX_EXIT_POINTS 10
+static int
+analyze_find_exit_instrs(dcontext_t *dc, callee_info_t *ci, instr_t **bots)
+{
+    int num_bots = 0;
+    instr_t *instr;
+
+    for (instr  = instrlist_first(ci->ilist);
+         instr != NULL;
+         instr  = instr_get_next(instr)) {
+        instr_t *exit_instr = NULL;
+        if (instr_is_return(instr)) {
+            exit_instr = instr;
+        }
+        if (instr_is_ubr(instr)) {
+            opnd_t tgt = instr_get_target(instr);
+            if (opnd_is_pc(tgt) && !tgt_pc_in_callee(opnd_get_pc(tgt), ci)) {
+                exit_instr = instr;
+            }
+        }
+        if (exit_instr != NULL) {
+            if (num_bots >= MAX_EXIT_POINTS) {
+                return num_bots;
+            }
+            bots[num_bots++] = exit_instr;
+        }
+    }
+
+    return num_bots;
+}
+
+/* Returns true if the instruction is a control flow instruction or jump target.
+ */
+static bool
+is_cti_or_label_instr(instr_t *instr)
+{
+    return (instr_is_cti(instr) || instr_is_label(instr));
+}
+
+/* Returns false if the instruction is a control flow instruction, a stack
+ * instruction, or a jump target.  Otherwise returns true.
+ */
+static bool
+is_boring_instr(instr_t *instr)
+{
+    if (instr_uses_reg(instr, DR_REG_XBP) || instr_uses_reg(instr, DR_REG_XSP))
+        return false;
+    return !is_cti_or_label_instr(instr);
+}
+
+/* Advance forward in the ilist until we find an instruction that modifies the
+ * stack, does control flow, or is a label.
+ */
+static instr_t *
+skip_boring_instrs_fwd(instr_t *top)
+{
+    for (; top != NULL; top = instr_get_next(top))
+        if (!is_boring_instr(top))
+            break;
+    return top;
+}
+
+/* Advance backwards through the ilist until we find an instruction that
+ * modifies the stack, does control flow, or is a label.
  */
 static void
-analyze_callee_save_reg(dcontext_t *dcontext, callee_info_t *ci)
+skip_boring_instrs_bwd(instr_t **bots, int num)
+{
+    int i;
+    for (i = 0; i < num; i++) {
+        instr_t *bot = bots[i];
+        for (; bot != NULL; bot = instr_get_prev(bot))
+            if (!is_boring_instr(bot))
+                break;
+        bots[i] = bot;
+    }
+}
+
+typedef bool (*pred_fn_t)(instr_t *item, void *data);
+
+/* Takes a predicate function pointer, a data value to pass to all predicate
+ * calls, and an array of instr_t pointers and number of elements.  If the
+ * predicate returns true for all instrs, return true, otherwise false.
+ */
+static bool
+all_satisfy(pred_fn_t pred, void *data, instr_t **instrs, int num)
+{
+    int i;
+    for (i = 0; i < num; i++) {
+        if (!pred(instrs[i], data)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+/* Similar to all_satisfy, except return true if any predicates succeed.
+ */
+static bool
+any_satisfy(pred_fn_t pred, void *data, instr_t **instrs, int num)
+{
+    int i;
+    for (i = 0; i < num; i++) {
+        if (pred(instrs[i], data)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool
+pred_not_null(instr_t *instr, void *data)
+{
+    return instr != NULL;
+}
+
+/* TODO(rnk): Only one use, maybe should re-inline it. */
+static instr_t *
+remove_top_bot_pairs(instrlist_t *ilist, instr_t *top, instr_t **bots,
+                     int num_bots)
+{
+    instr_t *instr;
+    int i;
+
+    instr = instr_get_next(top);
+    instrlist_remove(ilist, top);
+    instr_destroy(GLOBAL_DCONTEXT, top);
+    top = instr;
+    for (i = 0; i < num_bots; i++) {
+        instr = instr_get_prev(bots[i]);
+        instrlist_remove(ilist, bots[i]);
+        instr_destroy(GLOBAL_DCONTEXT, bots[i]);
+        bots[i] = instr;
+    }
+    return top;
+}
+
+/* Find enter/leave pair.  Frame setup may maintain xbp as frame ptr or not.  If
+ * maintaining frame ptr, there are two prologue and epilogue sequences.
+ * Prologue:
+ * enter $framesize, $0
+ * push xbp ; ... ; mov xsp => xbp
+ * Epilogue:
+ * leave
+ * mov xbp => xsp ; ... ; pop xbp
+ *
+ * We should match any combination of the above epilogues and prologues.
+ * push+mov+leave seems most common.
+ *
+ * If omitting frame pointer, xbp is just callee-saved and xsp is adjusted
+ * directly:
+ * push xbp ; sub $framesize xsp ; ... ; add $framesize xbp ; pop xbp
+ *
+ * Returns new top after removing xbp save if found.
+ *
+ * TODO(rnk): Eventually this should record the frame size, which we can use in
+ * the partial inline clean failure path.
+ */
+static instr_t *
+analyze_enter_leave(dcontext_t *dc, callee_info_t *ci, instr_t *top,
+                    instr_t **bots, int num_bots)
+{
+    opnd_t xbp, xsp;
+    instr_t *push_xbp;
+    instr_t *save_xsp;
+    instr_t *restore_xsp;
+    instr_t *pop_xbp;
+    instr_t *cmp_push_xbp;
+    instr_t *cmp_save_xsp;
+    instr_t *cmp_restore_xsp;
+    instr_t *cmp_pop_xbp;
+    instr_t *restore_xsps[MAX_EXIT_POINTS];
+    instr_t *pop_xbps[MAX_EXIT_POINTS];
+    int i;
+
+    /* for easy of comparison, create push xbp, pop xbp */
+    xbp = opnd_create_reg(DR_REG_XBP);
+    xsp = opnd_create_reg(DR_REG_XSP);
+    cmp_push_xbp    = INSTR_CREATE_push(dc, xbp);
+    cmp_pop_xbp     = INSTR_CREATE_pop (dc, xsp);
+    /* TODO(rnk): These instructions for comparison might be mov_ld or mov_st.
+     * DR seems to prefer mov_st when disassembling. */
+    cmp_save_xsp    = INSTR_CREATE_mov_st(dc, xbp, xsp);
+    cmp_restore_xsp = INSTR_CREATE_mov_st(dc, xsp, xbp);
+
+    /* Determine prologue style: do we push xbp, do we save xsp. */
+    push_xbp = NULL;
+    save_xsp = NULL;
+    if (instr_get_opcode(top) == OP_enter) {
+        /* Enter pushes xbp, copies xsp to xbp, and decrements xsp. */
+        push_xbp = top;
+        save_xsp = top;
+    } else if (instr_same(cmp_push_xbp, top)) {
+        instr_t *maybe_save = skip_boring_instrs_fwd(instr_get_next(top));
+        push_xbp = top;
+        if (instr_same(maybe_save, cmp_save_xsp)) {
+            save_xsp = maybe_save;
+        }
+    }
+    if (push_xbp == NULL) {
+        LOG(dr_get_logfile(dc), LOG_CLEANCALL, 2,
+            "CLEANCALL: callee does not save xbp before using stack at "PFX"\n",
+            instr_get_app_pc(top));
+    }
+
+    /* Determine epilogue styles. */
+    for (i = 0; i < num_bots; i++) {
+        instr_t *bot = bots[i];
+        pop_xbp = NULL;
+        restore_xsp = NULL;
+        if (instr_get_opcode(bot) == OP_leave) {
+            /* Leave does both. */
+            pop_xbp = bot;
+            restore_xsp = bot;
+        } else if (instr_same(bot, cmp_pop_xbp)) {
+            instr_t *maybe_restore = instr_get_prev(bot);
+            pop_xbp = bot;
+            skip_boring_instrs_bwd(&maybe_restore, 1);
+            if (instr_same(maybe_restore, cmp_restore_xsp)) {
+                restore_xsp = maybe_restore;
+            }
+        }
+        pop_xbps[i] = pop_xbp;
+        restore_xsps[i] = restore_xsp;
+    }
+
+    LOG(dr_get_logfile(dc), LOG_CLEANCALL, 2,
+        "CLEANCALL: prologue pushes %%xbp at "PFX", sets fp at "PFX"\n",
+        push_xbp == NULL ? NULL : instr_get_app_pc(push_xbp),
+        save_xsp == NULL ? NULL : instr_get_app_pc(save_xsp));
+    for (i = 0; i < num_bots; i++) {
+        LOG(dr_get_logfile(dc), LOG_CLEANCALL, 2,
+            "CLEANCALL: epilogue sets sp to fp at "PFX" pops %%xbp at "PFX"\n",
+            restore_xsps[i] == NULL ? NULL : instr_get_app_pc(restore_xsps[i]),
+            pop_xbps    [i] == NULL ? NULL : instr_get_app_pc(pop_xbps    [i]));
+    }
+
+    /* If prologue and epilogue style match, remove prologue and epilogue
+     * instructions. */
+    if (push_xbp != NULL && save_xsp != NULL &&
+        all_satisfy(pred_not_null, NULL, pop_xbps, num_bots) &&
+        all_satisfy(pred_not_null, NULL, restore_xsps, num_bots)) {
+        /* Using xbp as frame pointer, delete both instrs if not same. */
+        top = instr_get_next(save_xsp);
+        instrlist_remove(ci->ilist, push_xbp);
+        instr_destroy(GLOBAL_DCONTEXT, push_xbp);
+        if (push_xbp != save_xsp) {
+            instrlist_remove(ci->ilist, save_xsp);
+            instr_destroy(GLOBAL_DCONTEXT, save_xsp);
+        }
+        for (i = 0; i < num_bots; i++) {
+            bots[i] = instr_get_prev(restore_xsps[i]);
+            instrlist_remove(ci->ilist, pop_xbps[i]);
+            instr_destroy(GLOBAL_DCONTEXT, pop_xbps[i]);
+            if (restore_xsps[i] != pop_xbps[i]) {
+                instrlist_remove(ci->ilist, restore_xsps[i]);
+                instr_destroy(GLOBAL_DCONTEXT, restore_xsps[i]);
+            }
+        }
+    }
+    else if (push_xbp != NULL && save_xsp == NULL &&
+             all_satisfy(pred_not_null, NULL, pop_xbps, num_bots) &&
+             !any_satisfy(pred_not_null, NULL, restore_xsps, num_bots)) {
+        /* Not using xbp as frame pointer, delete push/pop instrs only. */
+        top = instr_get_next(push_xbp);
+        instrlist_remove(ci->ilist, push_xbp);
+        instr_destroy(GLOBAL_DCONTEXT, push_xbp);
+        for (i = 0; i < num_bots; i++) {
+            bots[i] = instr_get_prev(restore_xsps[i]);
+            instrlist_remove(ci->ilist, pop_xbps[i]);
+            instr_destroy(GLOBAL_DCONTEXT, pop_xbps[i]);
+        }
+    }
+    else {
+        LOG(dr_get_logfile(dc), LOG_CLEANCALL, 2,
+            "CLEANCALL: Unable to match prologue to epilogue.\n");
+        push_xbp = NULL;
+        save_xsp = NULL;
+    }
+
+    if (push_xbp != NULL) {
+        /* Function preserves xbp. */
+        ci->callee_save_regs[DR_REG_XBP - DR_REG_XAX] = true;
+    }
+
+    /* Destroy instructions used for comparison. */
+    instr_destroy(dc, cmp_push_xbp);
+    instr_destroy(dc, cmp_pop_xbp);
+    instr_destroy(dc, cmp_save_xsp);
+    instr_destroy(dc, cmp_restore_xsp);
+
+    return top;
+}
+
+/* We use push/pop pattern to detect callee saved registers, and assume that the
+ * code later won't change those saved value on the stack.
+ */
+static void
+analyze_callee_setup(dcontext_t *dcontext, callee_info_t *ci)
 {
     instrlist_t *ilist = ci->ilist;
-    instr_t *top, *bot, *push_xbp, *pop_xbp, *instr;
+    instr_t *top;
+    instr_t *bots[MAX_EXIT_POINTS];
+    int num_bots, i;
 
     ASSERT(ilist != NULL);
-    ci->num_callee_save_regs = 0;
-    /* 1. frame pointer usage analysis. */
-    /* XXX: frame pointer setup is not always starts from the first instr
-     * 0xb7df0520 <inscount+0>:     call   0xb7df076d <__i686.get_pc_thunk.cx>
-     * 0xb7df0525 <inscount+5>:     add    $0x1407,%ecx
-     * 0xb7df052b <inscount+11>:    xor    %edx,%edx
-     * 0xb7df052d <inscount+13>:    push   %ebp
-     * 0xb7df052e <inscount+14>:    mov    %esp,%ebp
-     * 0xb7df0530 <inscount+16>:    mov    0x8(%ebp),%eax
-     * 0xb7df0533 <inscount+19>:    add    %eax,0x44(%ecx)
-     * 0xb7df0539 <inscount+25>:    adc    %edx,0x48(%ecx)
-     * 0xb7df053f <inscount+31>:    pop    %ebp
-     * 0xb7df0540 <inscount+32>:    ret    
+    /* Function prologues and epilogues are frequently rescheduled so that
+     * register-to-register instructions are intermixed with both.  Our analysis
+     * ignores instructions in the prologue and epilogue that don't touch the
+     * stack and ignore them.
+     *
+     * Furthermore, while we assume a single entry point to the function,
+     * multiple exit points are common, and they may be tail calls.  To handle
+     * this, we maintain a short list of exit points and perform our matching on
+     * each.
      */
     top = instrlist_first(ilist);
-    bot = instrlist_last(ilist);
-    if (bot != NULL && instr_is_return(bot)) {
-        bot = instr_get_prev(bot);
-    } else {
-        LOG(THREAD, LOG_CLEANCALL, 2,
-            "CLEANCALL: cannot analyze reg save, callee does not end in ret\n");
-        return;
-    }
-    if (top == bot) {
+    if (top == NULL || instr_get_next(top) == NULL) {
         /* zero or one instruction only, no callee save */
         return;
     }
-    /* for easy of comparison, create push xbp, pop xbp */
-    push_xbp = INSTR_CREATE_push(dcontext, opnd_create_reg(DR_REG_XBP));
-    pop_xbp  = INSTR_CREATE_pop(dcontext, opnd_create_reg(DR_REG_XBP));
-    /* Check enter/leave pair  */
-    if ((instr_get_opcode(top) == OP_enter || instr_same(push_xbp, top)) &&
-        (instr_get_opcode(bot) == OP_leave || instr_same(pop_xbp, top))  &&
-        (ci->bwd_tgt == NULL || instr_get_app_pc(top) <  ci->bwd_tgt) &&
-        (ci->fwd_tgt == NULL || instr_get_app_pc(bot) >= ci->fwd_tgt)) {
-        /* xbp is callee saved, remove from reg_used*/
-        ASSERT(ci->reg_used[DR_REG_XBP - DR_REG_XAX]);
-        ci->reg_used[DR_REG_XBP - DR_REG_XAX] = false;
-        ci->num_regs_used--;
-        /* check if xbp is fp */
-        instr = instr_get_next(top);
-        if (instr_get_opcode(top) == OP_enter) {
-            ci->xbp_is_fp = true;
-        } else if (instr != NULL &&
-                   instr_num_srcs(instr) == 1 &&
-                   instr_num_dsts(instr) == 1 &&
-                   opnd_is_reg(instr_get_src(instr, 0)) &&
-                   opnd_get_reg(instr_get_src(instr, 0)) == DR_REG_XSP &&
-                   opnd_is_reg(instr_get_dst(instr, 0)) &&
-                   opnd_get_reg(instr_get_dst(instr, 0)) == DR_REG_XBP) {
-            /* mov xsp => xbp */
-            ci->xbp_is_fp = true;
-            /* remove it */
-            instrlist_remove(ilist, instr);
-            instr_destroy(GLOBAL_DCONTEXT, instr);
-        }
-        if (ci->xbp_is_fp) {
-            LOG(THREAD, LOG_CLEANCALL, 2,
-                "CLEANCALL: callee "PFX" use XBP as frame pointer\n", ci->start);
-        } else {
-            LOG(THREAD, LOG_CLEANCALL, 2,
-                "CLEANCALL: callee "PFX" callee-saves reg xbp at "PFX" and "PFX"\n",
-                ci->start, instr_get_app_pc(top), instr_get_app_pc(bot));
-            ci->callee_save_regs
-                [DR_REG_XBP - DR_REG_XAX] = true;
-            ci->num_callee_save_regs++;
-        }
-        /* remove top/bot pair */
-        instr = instr_get_next(top);
-        instrlist_remove(ilist, top);
-        instr_destroy(GLOBAL_DCONTEXT, top);
-        top   = instr;
-        instr = instr_get_prev(bot);
-        instrlist_remove(ilist, bot);
-        instr_destroy(GLOBAL_DCONTEXT, bot);
-        bot   = instr;
+    num_bots = analyze_find_exit_instrs(dcontext, ci, bots);
+    if (num_bots >= MAX_EXIT_POINTS) {
+        LOG(THREAD, LOG_CLEANCALL, 2,
+            "CLEANCALL: bailing from setup analysis, too many exits\n");
+        return;
     }
-    instr_destroy(dcontext, push_xbp);
-    instr_destroy(dcontext, pop_xbp);
+
+    top = skip_boring_instrs_fwd(top);
+    skip_boring_instrs_bwd(bots, num_bots);
+
+    /* Delete rets, skip jmps. */
+    for (i = 0; i < num_bots; i++) {
+        if (instr_is_return(bots[i])) {
+            instr_t *ret = bots[i];
+            bots[i] = instr_get_prev(ret);
+            instrlist_remove(ilist, ret);
+            instr_destroy(GLOBAL_DCONTEXT, ret);
+        } else if (instr_is_ubr(bots[i])) {
+            bots[i] = instr_get_prev(bots[i]);
+        }
+    }
+    skip_boring_instrs_bwd(bots, num_bots);
+
+    /* Find and delete enter/leave or equivalent instructions.  We assume these
+     * come before register saves and restores. */
+    top = analyze_enter_leave(dcontext, ci, top, bots, num_bots);
 
     /* get the rest callee save regs */
     /* XXX: the callee save may be corrupted by memory update on the stack. */
     /* XXX: the callee save may use mov instead of push/pop */
-    while (top != NULL && bot != NULL) {
-        /* if not in the first/last bb, break */
-        if ((ci->bwd_tgt != NULL && instr_get_app_pc(top) >= ci->bwd_tgt) ||
-            (ci->fwd_tgt != NULL && instr_get_app_pc(bot) <  ci->fwd_tgt) ||
-            instr_is_cti(top) || instr_is_cti(bot))
+    while (top != NULL && all_satisfy(pred_not_null, NULL, bots, num_bots)) {
+        opnd_t reg_opnd;
+        reg_id_t reg_id;
+        /* Ignore nops and boring instructions. */
+        top = skip_boring_instrs_fwd(top);
+        skip_boring_instrs_bwd(bots, num_bots);
+        /* If not in the first/last bb, break. */
+        if (top == NULL || is_cti_or_label_instr(top))
             break;
-        /* XXX: I saw some compiler inserts nop, need to handle. */
-        /* push/pop pair check */
-        if (instr_get_opcode(top) != OP_push ||
-            instr_get_opcode(bot) != OP_pop  ||
-            !opnd_same(instr_get_src(top, 0), instr_get_dst(bot, 0)) ||
-            !opnd_is_reg(instr_get_src(top, 0)) ||
-            opnd_get_reg(instr_get_src(top, 0)) == REG_XSP)
+        if (!all_satisfy(pred_not_null, NULL, bots, num_bots) ||
+            any_satisfy((pred_fn_t)is_cti_or_label_instr, NULL, bots, num_bots))
             break;
+
+        /* If we're doing a push on entry, all pops must match. */
+        if (instr_get_opcode(top) == OP_push) {
+            instr_t *pop_reg;
+            reg_opnd = instr_get_src(top, 0);
+            reg_id = opnd_get_reg(reg_opnd);
+            pop_reg = INSTR_CREATE_pop(dcontext, reg_opnd);
+            if (!all_satisfy((pred_fn_t)instr_same, pop_reg, bots, num_bots)) {
+                instr_destroy(dcontext, pop_reg);
+                break;
+            }
+            instr_destroy(dcontext, pop_reg);
+        } else {
+            break;  /* top was not a register save. */
+        }
+
+        /* TODO(rnk): Check forwards and backwards from the save/restore
+         * instructions that the register is not used as a destination. */
+
         /* it is callee save reg. */
         /* Note, cannot change ci->reg_used now, because we still need
          * save those callee-save registers if inline.
          */
         LOG(THREAD, LOG_CLEANCALL, 2,
-            "CLEANCALL: callee "PFX" callee-saves reg %s at "PFX" and "PFX"\n",
-            ci->start, reg_names[opnd_get_reg(instr_get_src(top, 0))],
-            instr_get_app_pc(top), instr_get_app_pc(bot));
-        ci->callee_save_regs
-            [opnd_get_reg(instr_get_src(top, 0)) - DR_REG_XAX] = true;
-        ci->num_callee_save_regs++;
-        /* remove & destroy the push/pop pairs */
-        instrlist_remove(ilist, top);
-        instr_destroy(GLOBAL_DCONTEXT, top);
-        instrlist_remove(ilist, bot);
-        instr_destroy(GLOBAL_DCONTEXT, bot);
-        /* get next pair */
-        top = instrlist_first(ilist);
-        bot = instrlist_last(ilist);
+            "CLEANCALL: callee "PFX" callee-saves reg %s at "PFX"\n",
+            ci->start, reg_names[reg_id], instr_get_app_pc(top));
+        ci->callee_save_regs[reg_id - DR_REG_XAX] = true;
+
+        /* Remove & destroy the push/pop pairs, we do our own save/restore if
+         * inlined. */
+        top = remove_top_bot_pairs(ilist, top, bots, num_bots);
     }
 }
 
@@ -4867,6 +5030,31 @@ analyze_callee_errno(dcontext_t *dcontext, callee_info_t *ci)
         LOG(THREAD, LOG_CLEANCALL, 2,
             "CLEANCALL: callee "PFX" access far memory\n", ci->start);
     }
+}
+
+static void
+analyze_callee_partial(dcontext_t *dcontext, callee_info_t *ci)
+{
+    instr_t *first_cti;
+
+    /* Find first branch target or control flow instruction. */
+    for (first_cti  = instrlist_first(ci->ilist);
+         first_cti != NULL;
+         first_cti  = instr_get_next(first_cti)) {
+        app_pc cur_pc = instr_get_app_pc(first_cti);
+        if (instr_is_cti(first_cti) || cur_pc == ci->bwd_tgt) {
+            break;
+        } else if (ci->bwd_tgt != NULL &&
+                   (ptr_uint_t)cur_pc > (ptr_uint_t)ci->bwd_tgt) {
+            ASSERT_CURIOSITY(false && "CLEANCALL: Passed bwd_tgt?");
+            return;
+        }
+    }
+    if (first_cti == NULL) {
+        return;  /* No control flow, candidate for full inline. */
+    }
+
+    /* TODO(rnk): Do something useful.  :) */
 }
 
 static void
@@ -4910,8 +5098,7 @@ analyze_callee_inline(dcontext_t *dcontext, callee_info_t *ci)
             ci->start);
         opt_inline = false;
     }
-    if (!SCRATCH_ALWAYS_TLS() ||
-        ci->num_regs_used > NUM_SCRATCH_SLOTS) {
+    if (ci->num_regs_used > NUM_SCRATCH_SLOTS) {
         LOG(THREAD, LOG_CLEANCALL, 1,
             "CLEANCALL: callee "PFX" cannot be inlined:"
             " not enough scratch slots.\n", ci->start);
@@ -4921,6 +5108,13 @@ analyze_callee_inline(dcontext_t *dcontext, callee_info_t *ci)
         instrlist_clear_and_destroy(GLOBAL_DCONTEXT, ci->ilist);
         ci->ilist = NULL;
         return;
+    }
+
+    /* Remove trailing ret if we're going to inline. */
+    instr = instrlist_last(ci->ilist);
+    if (instr_is_return(instr)) {
+        instrlist_remove(ci->ilist, instr);
+        instr_destroy(GLOBAL_DCONTEXT, instr);
     }
 
     /* Now we need scan instructions in the list,
@@ -4940,18 +5134,11 @@ analyze_callee_inline(dcontext_t *dcontext, callee_info_t *ci)
                 ci->start);
             opt_inline = false;
             break;
-        } else if (instr_is_return(instr) &&
-                   instr == instrlist_last(ci->ilist)) {
-            /* No need to ret from inline code. */
-            instrlist_remove(ci->ilist, instr);
-            instr_destroy(GLOBAL_DCONTEXT, instr);
-            continue;
         } else if (instr_writes_to_reg(instr, DR_REG_XSP)) {
             /* stack pointer update, we only allow:
              * lea [xsp, disp] => xsp
              * xsp + imm_int => xsp
              * xsp - imm_int => xsp
-             * ret ; only if it's the last instruction
              */
             if (ci->has_locals) {
                 /* we do not allow stack adjustment after accessing the stack */
@@ -5090,20 +5277,22 @@ static void
 analyze_callee_ilist(dcontext_t *dcontext, callee_info_t *ci)
 {
     ASSERT(!ci->bailout && ci->ilist != NULL);
-    analyze_callee_regs_usage(dcontext, ci);
     if (INTERNAL_OPTION(opt_cleancall) < 1) {
+        analyze_callee_regs_usage(dcontext, ci);
         instrlist_clear_and_destroy(GLOBAL_DCONTEXT, ci->ilist);
         ci->ilist = NULL;
     } else {
-        analyze_callee_save_reg(dcontext, ci);
+        analyze_callee_setup(dcontext, ci);
+        analyze_callee_regs_usage(dcontext, ci);
         analyze_callee_errno(dcontext, ci);
+        analyze_callee_partial(dcontext, ci);
         analyze_callee_inline(dcontext, ci);
     }
 }
 
 static void
-analyze_clean_call_aflags(dcontext_t *dcontext, 
-                          clean_call_info_t *cci, instr_t *where)
+analyze_clean_call_aflags(dcontext_t *dcontext, clean_call_info_t *cci,
+                          instr_t *where)
 {
     callee_info_t *ci = cci->callee_info;
     instr_t *instr;
@@ -5193,6 +5382,9 @@ analyze_clean_call_args(dcontext_t *dcontext,
      * the full context switch with dr_mcontext_t layout,
      * in which case we need keep dr_mcontext_t layout.
      */
+    /* TODO(rnk): Now that we don't bail out on nonleaf functions we should add
+     * a check here to save all regs if the callee is not a leaf.  It might try
+     * to access the mcontext. */
     cci->save_all_regs = false;
     for (i = 0; i < cci->num_args; i++) {
         if (opnd_is_reg(args[i]))
@@ -5255,17 +5447,12 @@ analyze_clean_call_inline(dcontext_t *dcontext, clean_call_info_t *cci)
         if (!cci->skip_save_aflags) {
             /* one more slot for store app's eflags */
             num_slots++;
-            if (cci->reg_skip[0]) {
-                cci->num_regs_skip--;
-                cci->reg_skip[0] = false; /* need save xax */
-                num_slots++;
-            }
         }
 #ifndef X64
         if (cci->num_args == 1 && cci->reg_skip[0]) {
-            /* we use rax to put arg into tls */
+            /* we use eax to put arg into tls */
             cci->num_regs_skip--;
-            cci->reg_skip[0] = false; 
+            cci->reg_skip[0] = false;
             num_slots++;
         }
 #endif
@@ -5359,8 +5546,9 @@ analyze_clean_call(dcontext_t *dcontext, clean_call_info_t *cci, instr_t *where,
     /* 7. check arguments */
     analyze_clean_call_args(dcontext, cci, args);
     /* 8. inline optimization analysis */
-    if (analyze_clean_call_inline(dcontext, cci))
+    if (analyze_clean_call_inline(dcontext, cci)) {
         return true;
+    }
     /* by default, no inline optimization */
     return false;
 }
