@@ -637,7 +637,8 @@ callpic_out:
     call picret
     leave
     ret
-    picret:
+
+picret:
     mov REG_XCX, [REG_XSP]
     ret
 */
