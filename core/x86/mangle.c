@@ -4384,10 +4384,12 @@ rewrite_pic_code(dcontext_t *dcontext, callee_info_t *ci)
     for (call_instr  = instrlist_first(ilist);
          call_instr != NULL;
          call_instr  = next_instr) {
-        app_pc tgt_pc, cur_pc, next_pc;
+        app_pc cur_pc, next_pc;
         instr_t *new_instr;
         bool is_pic = false;
         opnd_t pic_reg;
+        opnd_t tgt;
+        app_pc tgt_pc = NULL;
 
         next_instr = instr_get_next(call_instr);
         if (!instr_is_call(call_instr))
@@ -4398,12 +4400,13 @@ rewrite_pic_code(dcontext_t *dcontext, callee_info_t *ci)
         }
 
         cur_pc = instr_get_app_pc(call_instr);
-        tgt_pc = opnd_get_pc(instr_get_target(call_instr));
+        tgt = instr_get_target(call_instr);
+        if (opnd_is_pc(tgt))
+            tgt_pc = opnd_get_pc(tgt);
+        /* Will be NULL if we inserted next_instr. */
         next_pc = instr_get_app_pc(next_instr);
-        LOG(THREAD, LOG_CLEANCALL, 2,
-            "CLEANCALL: callee calls out at: "PFX" to "PFX"\n", cur_pc, tgt_pc);
 
-        if (tgt_pc == next_pc) {
+        if (tgt_pc != NULL && tgt_pc == next_pc) {
             /* "pop %r1" or "mov [%rsp] %r1" */
             if (instr_get_opcode(next_instr) == OP_pop ||
                 instr_is_mov_ld_xsp(next_instr)) {
@@ -4413,7 +4416,7 @@ rewrite_pic_code(dcontext_t *dcontext, callee_info_t *ci)
                 instrlist_remove(ilist, next_instr);
                 instr_destroy(GLOBAL_DCONTEXT, next_instr);
             }
-        } else {
+        } else if (tgt_pc != NULL) {
             /* a callout */
             instr_t mov_ins, ret_ins;
             app_pc tmp_pc;
@@ -4459,37 +4462,28 @@ rewrite_pic_code(dcontext_t *dcontext, callee_info_t *ci)
     }
 }
 
-static instr_t *
-find_pc_in_ilist(instrlist_t *ilist, app_pc pc)
-{
-    instr_t *instr;
-    for (instr = instrlist_first(ilist); instr != NULL;
-         instr = instr_get_next(instr)) {
-        if (pc == instr_get_app_pc(instr)) {
-            return instr;
-        }
-    }
-    return NULL;
-}
-
-/* Callee decoder.  Starts at the entry pc and maintains a limited stack of
- * target pcs.  Gives up if the target pc is too far away.
+/* Callee decoder.  Starts at the entry pc and remembers farthest forward
+ * target pc that doesn't look like a tail call.  Decodes until that pc is
+ * encountered and then onwards towards the next tail call, backwards jmp, or
+ * ret.
  */
-#define MAX_TARGETS 10
 static void
 decode_callee_ilist(dcontext_t *dc, callee_info_t *ci)
 {
-    int pc_top = 0;  /* Points to next free stack slot. */
-    app_pc pc_stack[MAX_TARGETS];
-    app_pc cur_pc, next_pc;
+    app_pc cur_pc;
+    app_pc max_tgt_pc = NULL;
+    bool decode_next = true;
 
     LOG(dr_get_logfile(dc), LOG_CLEANCALL, 2,
         "CLEANCALL: decoding callee starting at: "PFX"\n", ci->start);
     ci->ilist = instrlist_create(GLOBAL_DCONTEXT);
     ci->bailout = false;
     cur_pc = ci->start;
-    while (cur_pc != NULL) {
+
+    while (decode_next) {
         instr_t *instr;
+        app_pc next_pc;
+        app_pc tgt_pc = NULL;
 
         /* Sanity check whether we want to decode this pc. */
         if (!tgt_pc_in_callee(cur_pc, ci)) {
@@ -4501,8 +4495,11 @@ decode_callee_ilist(dcontext_t *dc, callee_info_t *ci)
         }
 
         next_pc = decode_callee_instr(dc, ci, cur_pc);
-        if (next_pc == NULL)  /* bailout */
+        if (next_pc == NULL) {  /* bailout */
+            LOG(dr_get_logfile(dc), LOG_CLEANCALL, 2,
+                "CLEANCALL: decode returned NULL\n");
             break;
+        }
         if (ci->num_instrs > MAX_NUM_FUNC_INSTRS) {
             LOG(dr_get_logfile(dc), LOG_CLEANCALL, 2,
                 "CLEANCALL: too many instructions, bailing from decode\n");
@@ -4511,40 +4508,50 @@ decode_callee_ilist(dcontext_t *dc, callee_info_t *ci)
         }
 
         instr = instrlist_last(ci->ilist);
-        if (instr_is_return(instr) || instr_is_ubr(instr)) {
-            next_pc = NULL;  /* Don't keep decoding after a ret or jmp. */
-        }
-        /* For branches, save the branch target to decode later. */
+
+        /* Remember the maximum branch target if it looks like it's within the
+         * callee.  */
         if (instr_is_ubr(instr) || instr_is_cbr(instr)) {
-            app_pc tgt_pc;
-            if (pc_top >= MAX_TARGETS) {
-                LOG(dr_get_logfile(dc), LOG_CLEANCALL, 2,
-                    "CLEANCALL: too many cbrs, bailing from decode\n");
-                ci->bailout = true;
-                break;
+            opnd_t tgt = instr_get_target(instr);
+            if (opnd_is_pc(tgt)) {
+                tgt_pc = opnd_get_pc(tgt);
+                if (tgt_pc_in_callee(tgt_pc, ci)) {
+                    max_tgt_pc = (app_pc)MAX((ptr_uint_t)max_tgt_pc,
+                                             (ptr_uint_t)tgt_pc);
+                }
             }
+        }
 
-            /* If the target is resonably within the callee, follow it.
-             * Otherwise, it's probably a tail call. */
-            tgt_pc = opnd_get_pc(instr_get_target(instr));
-            if (tgt_pc_in_callee(tgt_pc, ci)) {
-                pc_stack[pc_top++] = tgt_pc;
-            } else {
+        /* Stop decoding after a ret. */
+        if (instr_is_return(instr)) {
+            LOG(dr_get_logfile(dc), LOG_CLEANCALL, 2,
+                "CLEANCALL: stop decode for ret\n");
+            decode_next = false;
+        }
+
+        if (instr_is_ubr(instr) && tgt_pc != NULL) {
+            /* Stop decoding after backwards jmps. */
+            if ((ptr_uint_t)tgt_pc < (ptr_uint_t)cur_pc) {
                 LOG(dr_get_logfile(dc), LOG_CLEANCALL, 2,
-                    "CLEANCALL: probable tail call at "PFX" to tgt "PFX"\n",
+                    "CLEANCALL: stop decode for bwds jmp from "PFX" to "PFX"\n",
                     cur_pc, tgt_pc);
+                decode_next = false;
+            }
+
+            /* Stop decoding after tail calls */
+            if (!tgt_pc_in_callee(tgt_pc, ci)) {
+                LOG(dr_get_logfile(dc), LOG_CLEANCALL, 2,
+                    "CLEANCALL: stop decode for probable tail call at "PFX
+                    " to tgt "PFX"\n", cur_pc, tgt_pc);
+                decode_next = false;
             }
         }
 
-        if (find_pc_in_ilist(ci->ilist, next_pc) != NULL) {
-            next_pc = NULL;
+        /* Keep decoding if we haven't hit the max jump target. */
+        if (!decode_next && (ptr_uint_t)max_tgt_pc > (ptr_uint_t)cur_pc) {
+            decode_next = true;
         }
-        while (next_pc == NULL && pc_top > 0) {
-            next_pc = pc_stack[--pc_top];
-            if (find_pc_in_ilist(ci->ilist, next_pc) != NULL) {
-                next_pc = NULL;
-            }
-        }
+
         cur_pc = next_pc;
     }
 
@@ -4928,6 +4935,7 @@ analyze_enter_leave(dcontext_t *dc, callee_info_t *ci, instr_t *top,
         all_satisfy(pred_not_null, NULL, restore_xsps, num_bots)) {
         /* Using xbp as frame pointer, delete both instrs if not same. */
         top = instr_get_next(save_xsp);
+        ci->xbp_is_fp = true;
         remove_both_instrs(GLOBAL_DCONTEXT, ci->ilist, push_xbp, save_xsp);
         for (i = 0; i < num_bots; i++) {
             bots[i] = instr_get_prev(restore_xsps[i]); /* Earliest instr. */
