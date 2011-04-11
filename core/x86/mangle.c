@@ -103,6 +103,7 @@ typedef struct _callee_info_t {
     bool write_aflags;        /* if the function changes aflags */
     bool read_aflags;         /* if the function reads aflags from caller */
     bool errno_used;          /* application's errno is accessed */
+    bool is_leaf;             /* true if all control flow is within callee */
     instrlist_t *ilist;       /* instruction list of function for inline. */
 } callee_info_t;
 static callee_info_t     default_callee_info;
@@ -4319,6 +4320,47 @@ resolve_internal_brs(dcontext_t *dcontext, callee_info_t *ci)
     }
 }
 
+/* Check if there is any control flow we couldn't follow.
+ */
+static void
+analyze_is_leaf(dcontext_t *dc, callee_info_t *ci)
+{
+    bool is_leaf = true;
+    instr_t *instr;
+    for (instr = instrlist_first(ci->ilist); instr != NULL;
+         instr = instr_get_next(instr)) {
+        if (instr_is_syscall(instr) || instr_is_interrupt(instr)) {
+            LOG(dr_get_logfile(dc), LOG_CLEANCALL, 2,
+                "CLEANCALL: not leaf, syscall or interrupt at "PFX"\n",
+                instr_get_app_pc(instr));
+            is_leaf = false;
+            break;
+        }
+        if (!instr_is_cti(instr))
+            continue;
+        /* XXX: We assume callees do not push arbitrary return addresses and ret
+         * to them.  */
+        if (instr_is_return(instr))
+            continue;
+        if (instr_is_call(instr) || instr_is_mbr(instr)) {
+            LOG(dr_get_logfile(dc), LOG_CLEANCALL, 2,
+                "CLEANCALL: not leaf, call or indirect jump at "PFX"\n",
+                instr_get_app_pc(instr));
+            is_leaf = false;
+            break;
+        }
+        if ((instr_is_cbr(instr) || instr_is_ubr(instr)) &&
+            opnd_is_pc(instr_get_target(instr))) {
+            LOG(dr_get_logfile(dc), LOG_CLEANCALL, 2,
+                "CLEANCALL: not leaf, unresolved jump at "PFX"\n",
+                instr_get_app_pc(instr));
+            is_leaf = false;
+            break;
+        }
+    }
+    ci->is_leaf = is_leaf;
+}
+
 static bool
 instr_is_mov_ld_xsp(instr_t *instr)
 {
@@ -4722,6 +4764,17 @@ pred_not_null(instr_t *instr, void *data)
     return instr != NULL;
 }
 
+/* Remove and delete an instruction from an ilist.  This helper routine exists
+ * to avoid frequent typos where different instructions are passed to the remove
+ * and destory routines.
+ */
+static void
+remove_and_destroy(void *dc, instrlist_t *ilist, instr_t *instr)
+{
+    instrlist_remove(ilist, instr);
+    instr_destroy(dc, instr);
+}
+
 /* TODO(rnk): Only one use, maybe should re-inline it. */
 static instr_t *
 remove_top_bot_pairs(instrlist_t *ilist, instr_t *top, instr_t **bots,
@@ -4731,16 +4784,41 @@ remove_top_bot_pairs(instrlist_t *ilist, instr_t *top, instr_t **bots,
     int i;
 
     instr = instr_get_next(top);
-    instrlist_remove(ilist, top);
-    instr_destroy(GLOBAL_DCONTEXT, top);
+    remove_and_destroy(GLOBAL_DCONTEXT, ilist, top);
     top = instr;
     for (i = 0; i < num_bots; i++) {
         instr = instr_get_prev(bots[i]);
-        instrlist_remove(ilist, bots[i]);
-        instr_destroy(GLOBAL_DCONTEXT, bots[i]);
+        remove_and_destroy(GLOBAL_DCONTEXT, ilist, bots[i]);
         bots[i] = instr;
     }
     return top;
+}
+
+/* Checks if instruction is equivalent to "mov %src => %dst".  This is needed
+ * because mov can be encoded with mov_ld or mov_st opcodes. */
+static bool
+is_mov_reg2reg(instr_t *instr, reg_id_t dst, reg_id_t src)
+{
+    int opc = instr_get_opcode(instr);
+    return ((opc == OP_mov_ld || opc == OP_mov_st) &&
+            opnd_same(instr_get_src(instr, 0), opnd_create_reg(src)) &&
+            opnd_same(instr_get_dst(instr, 0), opnd_create_reg(dst)));
+}
+
+/* Remove two instructions from the same ilist so long as they aren't the same
+ * instruction. */
+static void
+remove_both_instrs(void *dc, instrlist_t *ilist,
+                   instr_t *instr1, instr_t *instr2)
+{
+    ASSERT(instr1 != NULL && instr2 != NULL);
+    if (instr1 == instr2) {
+        instr2 = NULL;
+    }
+    remove_and_destroy(dc, ilist, instr1);
+    if (instr2 != NULL) {
+        remove_and_destroy(dc, ilist, instr2);
+    }
 }
 
 /* Find enter/leave pair.  Frame setup may maintain xbp as frame ptr or not.  If
@@ -4785,9 +4863,7 @@ analyze_enter_leave(dcontext_t *dc, callee_info_t *ci, instr_t *top,
     xbp = opnd_create_reg(DR_REG_XBP);
     xsp = opnd_create_reg(DR_REG_XSP);
     cmp_push_xbp    = INSTR_CREATE_push(dc, xbp);
-    cmp_pop_xbp     = INSTR_CREATE_pop (dc, xsp);
-    /* TODO(rnk): These instructions for comparison might be mov_ld or mov_st.
-     * DR seems to prefer mov_st when disassembling. */
+    cmp_pop_xbp     = INSTR_CREATE_pop (dc, xbp);
     cmp_save_xsp    = INSTR_CREATE_mov_st(dc, xbp, xsp);
     cmp_restore_xsp = INSTR_CREATE_mov_st(dc, xsp, xbp);
 
@@ -4801,7 +4877,8 @@ analyze_enter_leave(dcontext_t *dc, callee_info_t *ci, instr_t *top,
     } else if (instr_same(cmp_push_xbp, top)) {
         instr_t *maybe_save = skip_boring_instrs_fwd(instr_get_next(top));
         push_xbp = top;
-        if (instr_same(maybe_save, cmp_save_xsp)) {
+        /* Instr is "mov xsp => xbp". */
+        if (is_mov_reg2reg(maybe_save, DR_REG_XBP, DR_REG_XSP)) {
             save_xsp = maybe_save;
         }
     }
@@ -4824,7 +4901,8 @@ analyze_enter_leave(dcontext_t *dc, callee_info_t *ci, instr_t *top,
             instr_t *maybe_restore = instr_get_prev(bot);
             pop_xbp = bot;
             skip_boring_instrs_bwd(&maybe_restore, 1);
-            if (instr_same(maybe_restore, cmp_restore_xsp)) {
+            /* Instr is "mov xbp => xsp". */
+            if (is_mov_reg2reg(maybe_restore, DR_REG_XSP, DR_REG_XBP)) {
                 restore_xsp = maybe_restore;
             }
         }
@@ -4850,20 +4928,11 @@ analyze_enter_leave(dcontext_t *dc, callee_info_t *ci, instr_t *top,
         all_satisfy(pred_not_null, NULL, restore_xsps, num_bots)) {
         /* Using xbp as frame pointer, delete both instrs if not same. */
         top = instr_get_next(save_xsp);
-        instrlist_remove(ci->ilist, push_xbp);
-        instr_destroy(GLOBAL_DCONTEXT, push_xbp);
-        if (push_xbp != save_xsp) {
-            instrlist_remove(ci->ilist, save_xsp);
-            instr_destroy(GLOBAL_DCONTEXT, save_xsp);
-        }
+        remove_both_instrs(GLOBAL_DCONTEXT, ci->ilist, push_xbp, save_xsp);
         for (i = 0; i < num_bots; i++) {
-            bots[i] = instr_get_prev(restore_xsps[i]);
-            instrlist_remove(ci->ilist, pop_xbps[i]);
-            instr_destroy(GLOBAL_DCONTEXT, pop_xbps[i]);
-            if (restore_xsps[i] != pop_xbps[i]) {
-                instrlist_remove(ci->ilist, restore_xsps[i]);
-                instr_destroy(GLOBAL_DCONTEXT, restore_xsps[i]);
-            }
+            bots[i] = instr_get_prev(restore_xsps[i]); /* Earliest instr. */
+            remove_both_instrs(GLOBAL_DCONTEXT, ci->ilist,
+                               pop_xbps[i], restore_xsps[i]);
         }
     }
     else if (push_xbp != NULL && save_xsp == NULL &&
@@ -4871,12 +4940,11 @@ analyze_enter_leave(dcontext_t *dc, callee_info_t *ci, instr_t *top,
              !any_satisfy(pred_not_null, NULL, restore_xsps, num_bots)) {
         /* Not using xbp as frame pointer, delete push/pop instrs only. */
         top = instr_get_next(push_xbp);
-        instrlist_remove(ci->ilist, push_xbp);
-        instr_destroy(GLOBAL_DCONTEXT, push_xbp);
+        remove_and_destroy(GLOBAL_DCONTEXT, ci->ilist, push_xbp);
         for (i = 0; i < num_bots; i++) {
-            bots[i] = instr_get_prev(restore_xsps[i]);
-            instrlist_remove(ci->ilist, pop_xbps[i]);
-            instr_destroy(GLOBAL_DCONTEXT, pop_xbps[i]);
+            /* New bottom is one earlier than pop. */
+            bots[i] = instr_get_prev(pop_xbps[i]);
+            remove_and_destroy(GLOBAL_DCONTEXT, ci->ilist, pop_xbps[i]);
         }
     }
     else {
@@ -4942,8 +5010,7 @@ analyze_callee_setup(dcontext_t *dcontext, callee_info_t *ci)
         if (instr_is_return(bots[i])) {
             instr_t *ret = bots[i];
             bots[i] = instr_get_prev(ret);
-            instrlist_remove(ilist, ret);
-            instr_destroy(GLOBAL_DCONTEXT, ret);
+            remove_and_destroy(GLOBAL_DCONTEXT, ilist, ret);
         } else if (instr_is_ubr(bots[i])) {
             bots[i] = instr_get_prev(bots[i]);
         }
@@ -5111,10 +5178,10 @@ analyze_callee_inline(dcontext_t *dcontext, callee_info_t *ci)
     }
 
     /* Remove trailing ret if we're going to inline. */
+    /* TODO(rnk): Handle ret not being last instruction. */
     instr = instrlist_last(ci->ilist);
-    if (instr_is_return(instr)) {
-        instrlist_remove(ci->ilist, instr);
-        instr_destroy(GLOBAL_DCONTEXT, instr);
+    if (instr != NULL && instr_is_return(instr)) {
+        remove_and_destroy(GLOBAL_DCONTEXT, ci->ilist, instr);
     }
 
     /* Now we need scan instructions in the list,
@@ -5161,8 +5228,7 @@ analyze_callee_inline(dcontext_t *dcontext, callee_info_t *ci)
             }
             if (opt_inline) {
                 /* Delete frame adjust, we do our own. */
-                instrlist_remove(ci->ilist, instr);
-                instr_destroy(GLOBAL_DCONTEXT, instr);
+                remove_and_destroy(GLOBAL_DCONTEXT, ci->ilist, instr);
                 continue;
             } else {
                 LOG(THREAD, LOG_CLEANCALL, 1,
@@ -5282,6 +5348,7 @@ analyze_callee_ilist(dcontext_t *dcontext, callee_info_t *ci)
         instrlist_clear_and_destroy(GLOBAL_DCONTEXT, ci->ilist);
         ci->ilist = NULL;
     } else {
+        analyze_is_leaf(dcontext, ci);
         analyze_callee_setup(dcontext, ci);
         analyze_callee_regs_usage(dcontext, ci);
         analyze_callee_errno(dcontext, ci);
@@ -5375,16 +5442,13 @@ analyze_clean_call_args(dcontext_t *dcontext,
                         opnd_t *args)
 {
     uint i, j, num_regparm;
-    DEBUG_DECLARE(callee_info_t *ci = cci->callee_info;)
+    IF_DEBUG(callee_info_t *ci =) cci->callee_info;
 
     num_regparm = cci->num_args < NUM_REGPARM ? cci->num_args : NUM_REGPARM;
     /* If a param uses a reg, DR need restore register value, which assumes
      * the full context switch with dr_mcontext_t layout,
      * in which case we need keep dr_mcontext_t layout.
      */
-    /* TODO(rnk): Now that we don't bail out on nonleaf functions we should add
-     * a check here to save all regs if the callee is not a leaf.  It might try
-     * to access the mcontext. */
     cci->save_all_regs = false;
     for (i = 0; i < cci->num_args; i++) {
         if (opnd_is_reg(args[i]))
@@ -5394,15 +5458,10 @@ analyze_clean_call_args(dcontext_t *dcontext,
                 cci->save_all_regs = true;
         }
     }
-    if (cci->save_all_regs) {
+    if (!ci->is_leaf) {
         LOG(THREAD, LOG_CLEANCALL, 2,
-            "CLEANCALL: inserting clean call "PFX
-            ", save all regs in dr_mcontext_t layout.\n",
-            ci->start);
-        cci->num_regs_skip = 0;
-        memset(cci->reg_skip, 0, sizeof(bool) * NUM_GP_REGS);
-        cci->skip_save_errno = false;
-        cci->should_align = true;
+            "CLEANCALL: callee is not leaf, saving all regs.\n");
+        cci->save_all_regs = true;
     }
 }
 
@@ -5465,7 +5524,19 @@ analyze_clean_call_inline(dcontext_t *dcontext, clean_call_info_t *cci)
         }
     }
     if (!opt_inline) {
-        if (!cci->save_all_regs) {
+        if (cci->save_all_regs) {
+            LOG(THREAD, LOG_CLEANCALL, 2,
+                "CLEANCALL: inserting clean call "PFX
+                ", save all regs in dr_mcontext_t layout.\n",
+                info->start);
+            cci->num_regs_skip = 0;
+            memset(cci->reg_skip, 0, sizeof(bool) * NUM_GP_REGS);
+            cci->num_xmms_skip = 0;
+            memset(cci->xmm_skip, 0, sizeof(bool) * NUM_XMM_REGS);
+            cci->skip_save_errno = false;
+            cci->skip_save_aflags = false;
+            cci->should_align = true;
+        } else {
             uint i;
             for (i = 0; i < NUM_GP_REGS; i++) {
                 if (!cci->reg_skip[i] && info->callee_save_regs[i]) {

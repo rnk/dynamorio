@@ -46,7 +46,10 @@
 /* List of instrumentation functions. */
 #define FUNCTIONS() \
         FUNCTION(empty) \
+        FUNCTION(empty_push) \
         FUNCTION(enterleave) \
+        FUNCTION(entermovpop) \
+        FUNCTION(scheduled_prologue) \
         FUNCTION(inscount) \
         FUNCTION(callpic_pop) \
         FUNCTION(callpic_mov) \
@@ -141,27 +144,17 @@ event_exit(void)
 static void
 lookup_pcs(void)
 {
-    dr_module_iterator_t *iter;
+    module_data_t *exe;
     int i;
 
-    iter = dr_module_iterator_start();
-    while (dr_module_iterator_hasnext(iter)) {
-        module_data_t *data = dr_module_iterator_next(iter);
-        module_handle_t handle = data->handle;
-        for (i = 0; i < N_FUNCS; i++) {
-            app_pc func_pc = (app_pc)dr_get_proc_address(handle, func_names[i]);
-            if (func_pc != NULL) {
-                func_app_pcs[i] = func_pc;
-            }
-        }
-        dr_free_module_data(data);
-    }
-    dr_module_iterator_stop(iter);
-
+    exe = dr_lookup_module_by_name("client.inline");
     for (i = 0; i < N_FUNCS; i++) {
-        DR_ASSERT_MSG(func_app_pcs[i] != NULL,
+        app_pc func_pc = (app_pc)dr_get_proc_address(exe->handle, func_names[i]);
+        DR_ASSERT_MSG(func_pc != NULL,
                       "Unable to find a function we wanted to instrument!");
+        func_app_pcs[i] = func_pc;
     }
+    dr_free_module_data(exe);
 }
 
 /* Generate the instrumentation. */
@@ -224,9 +217,9 @@ ptr_uint_t count;
 static bool patched_func_called;
 
 static void
-after_inscount(void)
+check_count(void)
 {
-    DR_ASSERT(count == 0xDEAD);
+    DR_ASSERT(count == 0xDEADBEEF);
 }
 
 static void
@@ -371,9 +364,8 @@ event_basic_block(void *dc, void *tag, instrlist_t *bb,
             break;
         case FN_inscount:
             dr_insert_clean_call(dc, bb, entry, func_ptrs[i], false, 1,
-                                 OPND_CREATE_INT32(0xDEAD));
-            dr_insert_clean_call(dc, bb, entry, (void*)after_inscount, false,
-                                 0);
+                                 OPND_CREATE_INT32((int)0xDEADBEEF));
+            dr_insert_clean_call(dc, bb, entry, (void*)check_count, false, 0);
             break;
         case FN_nonleaf:
         case FN_cond_br:
@@ -445,6 +437,27 @@ codegen_empty(void *dc)
 }
 
 /*
+empty_push:
+    push xbp
+    mov xbp, xsp
+    push xbx
+    # nothing
+    pop xbx
+    leave
+    ret
+*/
+static instrlist_t *
+codegen_empty_push(void *dc)
+{
+    instrlist_t *ilist = instrlist_create(dc);
+    codegen_prologue(dc, ilist);
+    APP(ilist, INSTR_CREATE_push(dc, opnd_create_reg(DR_REG_XBX)));
+    APP(ilist, INSTR_CREATE_pop(dc, opnd_create_reg(DR_REG_XBX)));
+    codegen_epilogue(dc, ilist);
+    return ilist;
+}
+
+/*
 enterleave:
     enter 8, 0
     movl [REG_XSP], -1
@@ -459,6 +472,63 @@ codegen_enterleave(void *dc)
     APP(ilist, INSTR_CREATE_mov_st
         (dc, OPND_CREATE_MEMPTR(DR_REG_XSP, 0), OPND_CREATE_INT32(-1)));
     APP(ilist, INSTR_CREATE_leave(dc));
+    APP(ilist, INSTR_CREATE_ret(dc));
+    return ilist;
+}
+
+/* Checks that inliner can recognize alternate leave pattern with enter.
+entermovpop:
+    enter 8, 0
+    movl [REG_XSP], -1
+    mov REG_XSP, REG_XBP
+    pop REG_XBP
+    ret
+*/
+static instrlist_t *
+codegen_entermovpop(void *dc)
+{
+    instrlist_t *ilist = instrlist_create(dc);
+    opnd_t xbp = opnd_create_reg(DR_REG_XBP);
+    opnd_t xsp = opnd_create_reg(DR_REG_XSP);
+    APP(ilist, INSTR_CREATE_enter(dc, OPND_CREATE_INT16(8), OPND_CREATE_INT8(0)));
+    APP(ilist, INSTR_CREATE_mov_st
+        (dc, OPND_CREATE_MEMPTR(DR_REG_XSP, 0), OPND_CREATE_INT32(-1)));
+    APP(ilist, INSTR_CREATE_mov_st(dc, xsp, xbp));
+    APP(ilist, INSTR_CREATE_pop(dc, xbp));
+    APP(ilist, INSTR_CREATE_ret(dc));
+    return ilist;
+}
+
+/* Checks that the inliner can deal with instructions scheduled into the
+ * prologue and epilogue that don't touch the stack.  Compilers does this when
+ * instructions use registers that are callee-saved.
+scheduled_prologue:
+    mov REG_XDI, REG_XAX
+    push REG_XBP
+    test REG_XAX, REG_XAX
+    mov REG_XBP, REG_XSP
+    cmovz REG_XAX, REG_XSI
+    mov REG_XSP, REG_XBP
+    nop
+    pop REG_XBP
+    ret
+*/
+static instrlist_t *
+codegen_scheduled_prologue(void *dc)
+{
+    instrlist_t *ilist = instrlist_create(dc);
+    opnd_t xax = opnd_create_reg(DR_REG_XAX);
+    opnd_t xdi = opnd_create_reg(DR_REG_XDI);
+    opnd_t xbp = opnd_create_reg(DR_REG_XBP);
+    opnd_t xsp = opnd_create_reg(DR_REG_XSP);
+    APP(ilist, INSTR_CREATE_mov_st(dc, xax, xdi));
+    APP(ilist, INSTR_CREATE_push(dc, xbp));
+    APP(ilist, INSTR_CREATE_test(dc, xax, xax));
+    APP(ilist, INSTR_CREATE_mov_st(dc, xbp, xsp));
+    APP(ilist, INSTR_CREATE_cmovcc(dc, OP_cmovz, xax, opnd_create_reg(DR_REG_XSI)));
+    APP(ilist, INSTR_CREATE_mov_st(dc, xsp, xbp));
+    APP(ilist, INSTR_CREATE_nop(dc));
+    APP(ilist, INSTR_CREATE_pop(dc, xbp));
     APP(ilist, INSTR_CREATE_ret(dc));
     return ilist;
 }
@@ -493,7 +563,7 @@ inscount:
     mov REG_XBP, REG_XSP
     mov REG_XAX, ARG1
     mov REG_XDX, &count
-    add [REG_XDX], REG_XAX
+    add [REG_XDX], REG_EAX
     leave
     ret
 */
@@ -502,11 +572,13 @@ codegen_inscount(void *dc)
 {
     instrlist_t *ilist = instrlist_create(dc);
     opnd_t xax = opnd_create_reg(DR_REG_XAX);
+    opnd_t eax = opnd_create_reg(DR_REG_EAX);
     codegen_prologue(dc, ilist);
     APP(ilist, INSTR_CREATE_mov_ld(dc, xax, codegen_opnd_arg1()));
     APP(ilist, INSTR_CREATE_mov_imm
         (dc, opnd_create_reg(DR_REG_XDX), OPND_CREATE_INTPTR(&count)));
-    APP(ilist, INSTR_CREATE_add(dc, OPND_CREATE_MEMPTR(DR_REG_XDX, 0), xax));
+    /* Note: 32-bit add. */
+    APP(ilist, INSTR_CREATE_add(dc, OPND_CREATE_MEM32(DR_REG_XDX, 0), eax));
     codegen_epilogue(dc, ilist);
     return ilist;
 }
