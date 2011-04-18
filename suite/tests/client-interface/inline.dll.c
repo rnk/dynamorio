@@ -368,7 +368,6 @@ event_basic_block(void *dc, void *tag, instrlist_t *bb,
             dr_insert_clean_call(dc, bb, entry, (void*)check_count, false, 0);
             break;
         case FN_nonleaf:
-        case FN_cond_br:
         case FN_decode_past_ret:
         case FN_decode_loop:
             /* These functions cannot be inlined (yet). */
@@ -682,8 +681,8 @@ codegen_nonleaf(void *dc)
     return ilist;
 }
 
-/* Conditional branches cannot be inlined.  Avoid flags usage to make test case
- * more specific.
+/* This simple conditional branch code can now be inlined.  Test that it works
+ * correctly.
 cond_br:
     push REG_XBP
     mov REG_XBP, REG_XSP

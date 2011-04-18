@@ -89,8 +89,6 @@ typedef struct _callee_info_t {
     bool bailout;             /* if we bail out on function analysis */
     int num_instrs;           /* total number of instructions of a function */
     app_pc start;             /* entry point of a function  */
-    app_pc bwd_tgt;           /* earliest backward branch target */
-    app_pc fwd_tgt;           /* last forward branch target */
     int num_xmms_used;        /* number of xmms used by callee */
     bool xmm_used[NUM_XMM_REGS];  /* xmm registers usage */
     int num_regs_used;        /* number of regs used by callee */
@@ -100,9 +98,11 @@ typedef struct _callee_info_t {
     bool has_locals;          /* if reference local via statck */
     bool xbp_is_fp;           /* if xbp is used as frame pointer */
     bool opt_inline;          /* can be inlined or not */
+    bool opt_partial;         /* can be partially inlined */
     bool write_aflags;        /* if the function changes aflags */
     bool read_aflags;         /* if the function reads aflags from caller */
     bool errno_used;          /* application's errno is accessed */
+    bool has_cti;             /* true if callee has any control flow */
     bool is_leaf;             /* true if all control flow is within callee */
     instrlist_t *ilist;       /* instruction list of function for inline. */
 } callee_info_t;
@@ -4528,7 +4528,7 @@ finalize_selfmod_sandbox(dcontext_t *dcontext, fragment_t *f)
 #define MAX_NUM_FUNC_INSTRS 1024
 /* the max number of instructions the callee can have for inline. */
 #define MAX_NUM_INLINE_INSTRS 20
-#define NUM_SCRATCH_SLOTS 4 /* XXX: Can support more now that we use dstack. */
+#define NUM_SCRATCH_SLOTS 6 /* XXX: Can support more now that we use dstack. */
 
 void
 mangle_init(void)
@@ -4615,8 +4615,6 @@ resolve_internal_brs(dcontext_t *dcontext, callee_info_t *ci)
         tgt_pc = opnd_get_pc(instr_get_target(cti));
         if (!tgt_pc_in_callee(tgt_pc, ci))
             continue;  /* Probably a tail call.  We've logged it previously. */
-        ci->bwd_tgt = (app_pc)MIN((ptr_uint_t)ci->bwd_tgt, (ptr_uint_t)tgt_pc);
-        ci->fwd_tgt = (app_pc)MAX((ptr_uint_t)ci->fwd_tgt, (ptr_uint_t)tgt_pc);
         for (tgt  = instrlist_first(ilist);
              tgt != NULL;
              tgt  = instr_get_next(tgt)) {
@@ -4632,6 +4630,7 @@ resolve_internal_brs(dcontext_t *dcontext, callee_info_t *ci)
             break;
         }
         label = INSTR_CREATE_label(GLOBAL_DCONTEXT);
+        instr_set_translation(label, instr_get_app_pc(tgt));
         instrlist_preinsert(ilist, tgt, label);
         instr_set_target(cti, opnd_create_instr(label));
     }
@@ -4640,9 +4639,10 @@ resolve_internal_brs(dcontext_t *dcontext, callee_info_t *ci)
 /* Check if there is any control flow we couldn't follow.
  */
 static void
-analyze_is_leaf(dcontext_t *dc, callee_info_t *ci)
+analyze_callee_cti(dcontext_t *dc, callee_info_t *ci)
 {
     bool is_leaf = true;
+    bool has_cti = false;
     instr_t *instr;
     for (instr = instrlist_first(ci->ilist); instr != NULL;
          instr = instr_get_next(instr)) {
@@ -4651,7 +4651,7 @@ analyze_is_leaf(dcontext_t *dc, callee_info_t *ci)
                 "CLEANCALL: not leaf, syscall or interrupt at "PFX"\n",
                 instr_get_app_pc(instr));
             is_leaf = false;
-            break;
+            has_cti = true;  /* syscalls etc. count as control flow. */
         }
         if (!instr_is_cti(instr))
             continue;
@@ -4659,12 +4659,12 @@ analyze_is_leaf(dcontext_t *dc, callee_info_t *ci)
          * to them.  */
         if (instr_is_return(instr))
             continue;
+        has_cti = true;
         if (instr_is_call(instr) || instr_is_mbr(instr)) {
             LOG(dr_get_logfile(dc), LOG_CLEANCALL, 2,
                 "CLEANCALL: not leaf, call or indirect jump at "PFX"\n",
                 instr_get_app_pc(instr));
             is_leaf = false;
-            break;
         }
         if ((instr_is_cbr(instr) || instr_is_ubr(instr)) &&
             opnd_is_pc(instr_get_target(instr))) {
@@ -4672,10 +4672,10 @@ analyze_is_leaf(dcontext_t *dc, callee_info_t *ci)
                 "CLEANCALL: not leaf, unresolved jump at "PFX"\n",
                 instr_get_app_pc(instr));
             is_leaf = false;
-            break;
         }
     }
     ci->is_leaf = is_leaf;
+    ci->has_cti = has_cti;
 }
 
 static bool
@@ -5163,41 +5163,45 @@ remove_both_instrs(void *dc, instrlist_t *ilist,
  *
  * Returns new top after removing xbp save if found.
  *
- * TODO(rnk): Eventually this should record the frame size, which we can use in
- * the partial inline clean failure path.
+ * Sets ci->frame_size if 'enter' is used to set up frame.
  */
 static instr_t *
 analyze_enter_leave(dcontext_t *dc, callee_info_t *ci, instr_t *top,
                     instr_t **bots, int num_bots)
 {
     opnd_t xbp, xsp;
-    instr_t *push_xbp;
-    instr_t *save_xsp;
-    instr_t *restore_xsp;
-    instr_t *pop_xbp;
-    instr_t *cmp_push_xbp;
-    instr_t *cmp_save_xsp;
-    instr_t *cmp_restore_xsp;
-    instr_t *cmp_pop_xbp;
+    instr_t *push_xbp;    /* Push of xbp.  Can be push or enter. */
+    instr_t *save_xsp;    /* Copy of xsp to xbp.  Can be mov or enter. */
+    instr_t *restore_xsp; /* Restore of xsp from xbp.  Can be mov or leave. */
+    instr_t *pop_xbp;     /* Pop of xbp.  Can be pop or leave. */
+    /* Callees are single-entry, but may have multiple exits using different
+     * prologues.  However, they should all undo the operations of the prologue.
+     * These arrays track individual epilogue instructions for each exit point
+     * of the callee.
+     */
     instr_t *restore_xsps[MAX_EXIT_POINTS];
     instr_t *pop_xbps[MAX_EXIT_POINTS];
     int i;
+    /* Reference instructions for comparison. */
+    instr_t *cmp_push_xbp;
+    instr_t *cmp_pop_xbp;
 
     /* for easy of comparison, create push xbp, pop xbp */
     xbp = opnd_create_reg(DR_REG_XBP);
     xsp = opnd_create_reg(DR_REG_XSP);
     cmp_push_xbp    = INSTR_CREATE_push(dc, xbp);
     cmp_pop_xbp     = INSTR_CREATE_pop (dc, xbp);
-    cmp_save_xsp    = INSTR_CREATE_mov_st(dc, xbp, xsp);
-    cmp_restore_xsp = INSTR_CREATE_mov_st(dc, xsp, xbp);
 
     /* Determine prologue style: do we push xbp, do we save xsp. */
     push_xbp = NULL;
     save_xsp = NULL;
     if (instr_get_opcode(top) == OP_enter) {
-        /* Enter pushes xbp, copies xsp to xbp, and decrements xsp. */
+        /* Enter pushes xbp, copies xsp to xbp, and subtracts from xsp. */
         push_xbp = top;
         save_xsp = top;
+        ci->frame_size = opnd_get_immed_int(instr_get_src(top, 0));
+        ASSERT_CURIOSITY(opnd_get_immed_int(instr_get_src(top, 1)) == 0 &&
+                         "Callee uses 'enter' with non-zero second argument?");
     } else if (instr_same(cmp_push_xbp, top)) {
         instr_t *maybe_save = skip_boring_instrs_fwd(instr_get_next(top));
         push_xbp = top;
@@ -5287,8 +5291,6 @@ analyze_enter_leave(dcontext_t *dc, callee_info_t *ci, instr_t *top,
     /* Destroy instructions used for comparison. */
     instr_destroy(dc, cmp_push_xbp);
     instr_destroy(dc, cmp_pop_xbp);
-    instr_destroy(dc, cmp_save_xsp);
-    instr_destroy(dc, cmp_restore_xsp);
 
     return top;
 }
@@ -5330,13 +5332,9 @@ analyze_callee_setup(dcontext_t *dcontext, callee_info_t *ci)
     top = skip_boring_instrs_fwd(top);
     skip_boring_instrs_bwd(bots, num_bots);
 
-    /* Delete rets, skip jmps. */
+    /* Skip rets and jmps.  Other analyses need to see them. */
     for (i = 0; i < num_bots; i++) {
-        if (instr_is_return(bots[i])) {
-            instr_t *ret = bots[i];
-            bots[i] = instr_get_prev(ret);
-            remove_and_destroy(GLOBAL_DCONTEXT, ilist, ret);
-        } else if (instr_is_ubr(bots[i])) {
+        if (instr_is_return(bots[i]) || instr_is_ubr(bots[i])) {
             bots[i] = instr_get_prev(bots[i]);
         }
     }
@@ -5429,29 +5427,134 @@ analyze_callee_errno(dcontext_t *dcontext, callee_info_t *ci)
 #endif
 }
 
+static bool
+is_fastpath(instr_t *instr)
+{
+    int length = 0;
+    for (; instr != NULL; instr = instr_get_next(instr)) {
+        if (instr_is_return(instr)) {
+            return true;
+        }
+        if (instr_is_cti(instr)) {
+            return false;
+        }
+        if (length > 5) {
+            return false;
+        }
+        length++;
+    }
+    return false;
+}
+
+/* Turns callees with a fast path into an ilist that can be inlined.  Relies on
+ * control flow being resolved, but rets still being present.
+ */
 static void
-analyze_callee_partial(dcontext_t *dcontext, callee_info_t *ci)
+analyze_callee_partial(dcontext_t *dc, callee_info_t *ci)
 {
     instr_t *first_cti;
+    instr_t *tgt_instr;
+    instr_t *fallthrough_instr;
+    instr_t *fastpath_start;
+    instr_t *slowpath_start;
+    instr_t *instr;
+    instr_t *next_instr;
+    opnd_t tgt;
+    bool taken_fast, fallthrough_fast;
+
+    if (INTERNAL_OPTION(opt_cleancall) < 2) {
+        LOG(dr_get_logfile(dc), LOG_CLEANCALL, 3,
+            "CLEANCALL: partial inlining disabled: opt_cleancall: %d.\n",
+            INTERNAL_OPTION(opt_cleancall));
+        ci->opt_partial = false;
+    }
 
     /* Find first branch target or control flow instruction. */
     for (first_cti  = instrlist_first(ci->ilist);
          first_cti != NULL;
          first_cti  = instr_get_next(first_cti)) {
-        app_pc cur_pc = instr_get_app_pc(first_cti);
-        if (instr_is_cti(first_cti) || cur_pc == ci->bwd_tgt) {
+        if (instr_is_cti(first_cti)) {
             break;
-        } else if (ci->bwd_tgt != NULL &&
-                   (ptr_uint_t)cur_pc > (ptr_uint_t)ci->bwd_tgt) {
-            ASSERT_CURIOSITY(false && "CLEANCALL: Passed bwd_tgt?");
-            return;
         }
     }
     if (first_cti == NULL) {
-        return;  /* No control flow, candidate for full inline. */
+        return;  /* No control flow, can't partial inline. */
+    }
+    if (!instr_is_cbr(first_cti)) {
+        LOG(dr_get_logfile(dc), LOG_CLEANCALL, 2,
+            "CLEANCALL: cannot partially inline calllee "PFX": "
+            "first cti is not cbr at "PFX".\n",
+            ci->start, instr_get_app_pc(first_cti));
+        return;
     }
 
-    /* TODO(rnk): Do something useful.  :) */
+    /* Find target. */
+    tgt = instr_get_target(first_cti);
+    if (!opnd_is_instr(tgt)) {
+        LOG(dr_get_logfile(dc), LOG_CLEANCALL, 2,
+            "CLEANCALL: cannot partially inline calllee "PFX": "
+            "control flow to non-label at "PFX".\n",
+            ci->start, instr_get_app_pc(first_cti));
+        return;
+    }
+    tgt_instr = opnd_get_instr(tgt);
+    fallthrough_instr = instr_get_next(first_cti);
+
+    /* Find fastpath, taken or fallthrough. */
+    taken_fast = is_fastpath(tgt_instr);
+    fallthrough_fast = is_fastpath(fallthrough_instr);
+    if (taken_fast && fallthrough_fast) {
+        LOG(dr_get_logfile(dc), LOG_CLEANCALL, 2,
+            "CLEANCALL: both paths at "PFX" and "PFX" are fast.\n",
+            instr_get_app_pc(fallthrough_instr), instr_get_app_pc(tgt_instr));
+        ci->opt_partial = true;
+        return;
+    } else if (taken_fast) {
+        fastpath_start = tgt_instr;
+        slowpath_start = fallthrough_instr;
+    } else if (fallthrough_fast) {
+        fastpath_start = fallthrough_instr;
+        slowpath_start = tgt_instr;
+    } else {
+        LOG(dr_get_logfile(dc), LOG_CLEANCALL, 2,
+            "CLEANCALL: cannot partially inline calllee "PFX": "
+            "neither path is fast for cbr at "PFX".\n",
+            ci->start, instr_get_app_pc(first_cti));
+        return;
+    }
+
+    /* Insert jmp into slowpath.  This is hopelessly broken of course, but
+     * serves as starting point. */
+    tgt = opnd_create_pc(instr_get_app_pc(slowpath_start));
+    /* TODO(rnk): Pull in shared clean call so we can do that. */
+    instrlist_preinsert(ci->ilist, slowpath_start,
+                        INSTR_CREATE_jmp(GLOBAL_DCONTEXT, tgt));
+
+    /* Remove slowpath instructions. */
+    for (instr = slowpath_start; instr != NULL; instr = next_instr) {
+        /* Skip fastpath code if we encounter it. */
+        if (instr == fastpath_start) {
+            while (!instr_is_return(instr)) {
+                instr = instr_get_next(instr);
+            }
+            instr = instr_get_next(instr);
+        }
+        if (instr == NULL)
+            break;
+        next_instr = instr_get_next(instr);
+        remove_and_destroy(GLOBAL_DCONTEXT, ci->ilist, instr);
+    }
+
+    LOG(dr_get_logfile(dc), LOG_CLEANCALL, 2,
+        "CLEANCALL: callee is a candidate for partial inlining.\n");
+    ci->opt_partial = true;
+    /* Re-calculate the number of instructions, since we just deleted a bunch.
+     */
+    ci->num_instrs = 0;
+    for (instr = instrlist_first(ci->ilist); instr != NULL;
+         instr = instr_get_next(instr)) {
+        ci->num_instrs++;
+    }
 }
 
 static void
@@ -5477,7 +5580,7 @@ analyze_callee_inline(dcontext_t *dcontext, callee_info_t *ci)
             ci->start, ci->num_instrs);
         opt_inline = false;
     }
-    if (ci->bwd_tgt != NULL || ci->fwd_tgt != NULL) {
+    if (ci->has_cti && !ci->opt_partial) {
         LOG(THREAD, LOG_CLEANCALL, 1,
             "CLEANCALL: callee "PFX" cannot be inlined: has control flow.\n", 
             ci->start);
@@ -5497,8 +5600,9 @@ analyze_callee_inline(dcontext_t *dcontext, callee_info_t *ci)
     }
     if (ci->num_regs_used > NUM_SCRATCH_SLOTS) {
         LOG(THREAD, LOG_CLEANCALL, 1,
-            "CLEANCALL: callee "PFX" cannot be inlined:"
-            " not enough scratch slots.\n", ci->start);
+            "CLEANCALL: callee "PFX" cannot be inlined: "
+            "uses too many scratch slots: %d > %d.\n",
+            ci->start, ci->num_regs_used, NUM_SCRATCH_SLOTS);
         opt_inline = false;
     }
     if (!opt_inline) {
@@ -5532,6 +5636,10 @@ analyze_callee_inline(dcontext_t *dcontext, callee_info_t *ci)
             opt_inline = false;
             break;
         } else if (instr_writes_to_reg(instr, DR_REG_XSP)) {
+            /* TODO(rnk): For partial inlining, it would be best to pull this
+             * analysis code into the analysis so we can know the frame size.
+             * For now we cannot partially inline callees that adjust the stack
+             * in the prologue. */
             /* stack pointer update, we only allow:
              * lea [xsp, disp] => xsp
              * xsp + imm_int => xsp
@@ -5678,11 +5786,11 @@ analyze_callee_ilist(dcontext_t *dcontext, callee_info_t *ci)
         instrlist_clear_and_destroy(GLOBAL_DCONTEXT, ci->ilist);
         ci->ilist = NULL;
     } else {
-        analyze_is_leaf(dcontext, ci);
+        analyze_callee_cti(dcontext, ci);
         analyze_callee_setup(dcontext, ci);
+        analyze_callee_partial(dcontext, ci);
         analyze_callee_regs_usage(dcontext, ci);
         analyze_callee_errno(dcontext, ci);
-        analyze_callee_partial(dcontext, ci);
         analyze_callee_inline(dcontext, ci);
     }
 }
@@ -5808,9 +5916,10 @@ analyze_clean_call_inline(dcontext_t *dcontext, clean_call_info_t *cci)
             info->start, INTERNAL_OPTION(opt_cleancall));
         opt_inline = false;
     }
-    if (cci->num_args > 1) {
+    if (cci->num_args > IF_X64_ELSE(NUM_REGPARM, 1)) {
         LOG(THREAD, LOG_CLEANCALL, 2,
-            "CLEANCALL: fail inlining clean call "PFX", number of args %d > 1.\n",
+            "CLEANCALL: fail inlining clean call "PFX", "
+            "number of args %d > IF_X64_ELSE(NUM_REGPARM, 1).\n",
             info->start, cci->num_args);
         opt_inline = false;
     }
@@ -5838,7 +5947,7 @@ analyze_clean_call_inline(dcontext_t *dcontext, clean_call_info_t *cci)
             num_slots++;
         }
 #ifndef X64
-        if (cci->num_args == 1 && cci->reg_skip[0]) {
+        if (cci->num_args > 0 && cci->reg_skip[0]) {
             /* we use eax to put arg into tls */
             cci->num_regs_skip--;
             cci->reg_skip[0] = false;
@@ -6034,21 +6143,24 @@ insert_inline_arg_setup(dcontext_t *dcontext, clean_call_info_t *cci,
                         instrlist_t *ilist, instr_t *where, opnd_t *args)
 {
     reg_id_t reg;
+    uint i;
     DEBUG_DECLARE(callee_info_t *ci = cci->callee_info;)
 
     if (cci->num_args == 0)
         return;
-    ASSERT(cci->num_args == 1);
-    reg = shrink_reg_for_param(IF_X64_ELSE(regparms[0], DR_REG_XAX), args[0]);
-    LOG(THREAD, LOG_CLEANCALL, 2,
-        "CLEANCALL: inlining clean call "PFX", passing arg via reg %s.\n",
-        ci->start, reg_names[reg]);
-    if (opnd_is_immed_int(args[0])) {
-        PRE(ilist, where, INSTR_CREATE_mov_imm
-            (dcontext, opnd_create_reg(reg), args[0]));
-    } else {
-        PRE(ilist, where, INSTR_CREATE_mov_ld
-            (dcontext, opnd_create_reg(reg), args[0]));
+    ASSERT(cci->num_args <= IF_X64_ELSE(NUM_REGPARM, 1));
+    for (i = 0; i < cci->num_args; i++) {
+        reg = shrink_reg_for_param(IF_X64_ELSE(regparms[i], DR_REG_XAX), args[i]);
+        LOG(THREAD, LOG_CLEANCALL, 2,
+            "CLEANCALL: inlining clean call "PFX", passing arg via reg %s.\n",
+            ci->start, reg_names[reg]);
+        if (opnd_is_immed_int(args[i])) {
+            PRE(ilist, where, INSTR_CREATE_mov_imm
+                (dcontext, opnd_create_reg(reg), args[i]));
+        } else {
+            PRE(ilist, where, INSTR_CREATE_mov_ld
+                (dcontext, opnd_create_reg(reg), args[i]));
+        }
     }
 #ifndef X64
     ASSERT(!cci->reg_skip[0]);
@@ -6111,4 +6223,3 @@ insert_inline_clean_call(dcontext_t *dcontext, clean_call_info_t *cci,
      * leave it for higher optimization level.
      */
 }
-
