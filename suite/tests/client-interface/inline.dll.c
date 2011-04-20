@@ -326,6 +326,13 @@ after_callee(bool inline_expected, const char *func_name)
     dc = dr_get_current_drcontext();
     dr_get_mcontext(dc, &after_mcontext, &after_errno);
 
+#if defined(WINDOWS) && !defined(X64)
+    /* On 32-bit Windows xmm6-7 are not saved and left uninitialized, which
+     * creates spurious differences.  Zero them out. */
+    memset(&before_mcontext.xmm[6], 0, 2 * sizeof(dr_xmm_t));
+    memset(&after_mcontext.xmm[6], 0, 2 * sizeof(dr_xmm_t));
+#endif
+
     /* Compare mcontexts. */
     if (before_errno != after_errno) {
         dr_fprintf(STDERR, "errnos differ!\nbefore: %d, after: %d\n",
@@ -349,8 +356,8 @@ after_callee(bool inline_expected, const char *func_name)
             const char *diff_str =
                     (memcmp(&before_reg, &after_reg, sizeof(dr_xmm_t)) == 0 ?
                      "" : " <- DIFFERS");
-            dr_fprintf(STDERR, "xmm%2d before: %04x%04x%04x%04x "
-                       "after: %04x%04x%04x%04x%s\n",
+            dr_fprintf(STDERR, "xmm%2d before: %08x%08x%08x%08x "
+                       "after: %08x%08x%08x%08x%s\n",
                        i,
                        before_reg.u32[0], before_reg.u32[1],
                        before_reg.u32[2], before_reg.u32[3],
