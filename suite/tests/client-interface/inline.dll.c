@@ -142,7 +142,13 @@ lookup_pcs(void)
     module_data_t *exe;
     int i;
 
-    exe = dr_lookup_module_by_name("client.inline");
+    exe = dr_lookup_module_by_name(
+#ifdef WINDOWS
+            "client.inline.exe"
+#else
+            "client.inline"
+#endif
+            );
     for (i = 0; i < N_FUNCS; i++) {
         app_pc func_pc = (app_pc)dr_get_proc_address(
                 exe->handle, func_names[i]);
