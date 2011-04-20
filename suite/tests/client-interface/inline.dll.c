@@ -38,7 +38,9 @@
 #define ALIGN_BACKWARD(x, alignment) \
         (((ptr_uint_t)x) & (~((ptr_uint_t)(alignment)-1)))
 #define ALIGN_FORWARD(x, alignment) \
-        ((((ptr_uint_t)x) + ((alignment)-1)) & (~((ptr_uint_t)(alignment)-1)))
+        ((((ptr_uint_t)x) + (((ptr_uint_t)alignment)-1)) & (~(((ptr_uint_t)alignment)-1)))
+
+#define CALLEE_ALIGNMENT 64
 
 #define PRE  instrlist_meta_preinsert
 #define APP  instrlist_meta_append
@@ -82,7 +84,7 @@ static codegen_func_t codegen_funcs[] = {
 #undef FUNCTION
 #undef LAST_FUNCTION
 
-/* Count the number of functions. */
+/* Create an enum for each function. */
 #define FUNCTION(fn_name) FN_##fn_name,
 #define LAST_FUNCTION() LAST_FUNC_ENUM
 enum {
@@ -179,7 +181,7 @@ codegen_instrumentation_funcs(void)
     /* Compute size of each instr and set each note with the offset. */
     for (i = 0; i < N_FUNCS; i++) {
         instr_t *inst;
-        offset = ALIGN_FORWARD(offset, 16);
+        offset = ALIGN_FORWARD(offset, CALLEE_ALIGNMENT);
         for (inst = instrlist_first(ilists[i]); inst;
              inst = instr_get_next(inst)) {
             instr_set_note(inst, (void *)(ptr_int_t)offset);
@@ -198,7 +200,7 @@ codegen_instrumentation_funcs(void)
      * already set. */
     pc = (byte*)rwx_mem;
     for (i = 0; i < N_FUNCS; i++) {
-        pc = (byte*)ALIGN_FORWARD(pc, 16);
+        pc = (byte*)ALIGN_FORWARD(pc, CALLEE_ALIGNMENT);
         func_ptrs[i] = pc;
         dr_log(dc, LOG_EMIT, 3, "Generated instrumentation function %s at "PFX
                ":", func_names[i], pc);
@@ -219,7 +221,7 @@ free_instrumentation_funcs(void)
 
 /* Globals used by instrumentation functions. */
 ptr_uint_t count;
-static bool patched_func_called;
+static uint callee_inlined;
 
 static void
 after_inscount(void)
@@ -234,19 +236,12 @@ after_callpic(void)
 }
 
 static void
-patched_func(void)
-{
-    patched_func_called = true;
-}
-
-static void
 check_if_inlined(bool inline_expected)
 {
     if (inline_expected) {
-        DR_ASSERT_MSG(!patched_func_called, "Function was not inlined!");
+        DR_ASSERT_MSG(callee_inlined, "Function was not inlined!");
     } else {
-        DR_ASSERT_MSG(patched_func_called,
-                      "Function was inlined unexpectedly!");
+        DR_ASSERT_MSG(!callee_inlined, "Function was inlined unexpectedly!");
     }
 }
 
@@ -258,20 +253,38 @@ before_instrumentation(app_pc func)
     void *dc;
     instrlist_t *ilist;
     opnd_t xax = opnd_create_reg(DR_REG_XAX);
+    byte *end_pc;
 
-    /* These functions might be > 2 GB apart in x64, so we materialize the jump
-     * target to a register and do an indirect jump. */
+    /* Patch the callee to be:
+     * push xax
+     * mov xax, &callee_inlined
+     * mov dword [xax], 0
+     * pop xax
+     * ret
+     */
     dc = dr_get_current_drcontext();
     ilist = instrlist_create(dc);
+    APP(ilist, INSTR_CREATE_push(dc, xax));
     APP(ilist, INSTR_CREATE_mov_imm
-        (dc, xax, OPND_CREATE_INTPTR(&patched_func)));
-    APP(ilist, INSTR_CREATE_jmp_ind(dc, xax));
-    instrlist_encode(dc, ilist, func, false /* no jump targets */);
+        (dc, xax, OPND_CREATE_INTPTR(&callee_inlined)));
+    APP(ilist, INSTR_CREATE_mov_st
+        (dc, OPND_CREATE_MEM32(DR_REG_XAX, 0), OPND_CREATE_INT32(0)));
+    APP(ilist, INSTR_CREATE_pop(dc, xax));
+    APP(ilist, INSTR_CREATE_ret(dc));
+
+    end_pc = instrlist_encode(dc, ilist, func, false /* no jump targets */);
     instrlist_clear_and_destroy(dc, ilist);
+
+    /* Check there was enough room in the function.  We align every callee
+     * entry point to CALLEE_ALIGNMENT, so each function has at least
+     * CALLEE_ALIGNMENT bytes long.
+     */
+    DR_ASSERT_MSG(end_pc < func + CALLEE_ALIGNMENT,
+                  "Patched code too big for smallest function!");
 
     /* Reset instrumentation globals. */
     count = 0;
-    patched_func_called = false;
+    callee_inlined = 1;
 }
 
 static void
@@ -316,14 +329,19 @@ check_aflags(int actual, int expected)
 static instr_t *
 test_aflags(void *dc, instrlist_t *bb, instr_t *where, int aflags)
 {
-    /* mov REG_XAX, HEX(D701)
+    opnd_t xax = opnd_create_reg(DR_REG_XAX);
+    opnd_t al = opnd_create_reg(DR_REG_AL);
+
+    /* Save REG_XAX, then populate aflags:
+     * mov [SPILL_SLOT_1], REG_XAX
+     * mov REG_XAX, aflags
      * add al, HEX(7F)
      * sahf ah
      */
-    PRE(bb, where, INSTR_CREATE_mov_imm
-        (dc, opnd_create_reg(DR_REG_XAX), OPND_CREATE_INTPTR(aflags)));
-    PRE(bb, where, INSTR_CREATE_add
-        (dc, opnd_create_reg(DR_REG_AL), OPND_CREATE_INT8(0x7F)));
+    PRE(bb, where, INSTR_CREATE_mov_st
+        (dc, dr_reg_spill_slot_opnd(dc, SPILL_SLOT_1), xax));
+    PRE(bb, where, INSTR_CREATE_mov_imm(dc, xax, OPND_CREATE_INTPTR(aflags)));
+    PRE(bb, where, INSTR_CREATE_add(dc, al, OPND_CREATE_INT8(0x7F)));
     PRE(bb, where, INSTR_CREATE_sahf(dc));
 
     dr_insert_clean_call(dc, bb, where, func_ptrs[FN_aflags_clobber], false, 0);
@@ -333,19 +351,20 @@ test_aflags(void *dc, instrlist_t *bb, instr_t *where, int aflags)
      * lahf
      * seto al
      */
-    PRE(bb, where, INSTR_CREATE_mov_imm
-        (dc, opnd_create_reg(DR_REG_XAX), OPND_CREATE_INTPTR(0)));
+    PRE(bb, where, INSTR_CREATE_mov_imm(dc, xax, OPND_CREATE_INTPTR(0)));
     PRE(bb, where, INSTR_CREATE_lahf(dc));
-    PRE(bb, where, INSTR_CREATE_setcc
-        (dc, OP_seto, opnd_create_reg(DR_REG_AL)));
+    PRE(bb, where, INSTR_CREATE_setcc(dc, OP_seto, al));
     PRE(bb, where, INSTR_CREATE_mov_st
-        (dc, dr_reg_spill_slot_opnd(dc, SPILL_SLOT_1),
-         opnd_create_reg(DR_REG_XAX)));
+        (dc, dr_reg_spill_slot_opnd(dc, SPILL_SLOT_2), xax));
 
     /* Assert that they match the original flags. */
     dr_insert_clean_call(dc, bb, where, (void*)check_aflags, false, 2,
-                         dr_reg_spill_slot_opnd(dc, SPILL_SLOT_1),
+                         dr_reg_spill_slot_opnd(dc, SPILL_SLOT_2),
                          OPND_CREATE_INT32(aflags));
+
+    /* Restore xax. */
+    PRE(bb, where, INSTR_CREATE_mov_ld
+        (dc, xax, dr_reg_spill_slot_opnd(dc, SPILL_SLOT_1)));
     return where;
 }
 
@@ -618,7 +637,7 @@ codegen_tls_clobber(void *dc)
     APP(ilist, INSTR_CREATE_sub
         (dc, opnd_create_reg(DR_REG_XSP), OPND_CREATE_INT8(sizeof(reg_t))));
     APP(ilist, INSTR_CREATE_mov_imm(dc, xax, OPND_CREATE_INT32(0xDEAD)));
-    APP(ilist, INSTR_CREATE_mov_imm(dc, xdx, OPND_CREATE_INT32(0xDEAD)));
+    APP(ilist, INSTR_CREATE_mov_imm(dc, xdx, OPND_CREATE_INT32(0xBEEF)));
     APP(ilist, INSTR_CREATE_mov_st(dc, OPND_CREATE_MEMPTR(DR_REG_XSP, 0), xax));
     codegen_epilogue(dc, ilist);
     return ilist;

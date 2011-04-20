@@ -5125,7 +5125,15 @@ analyze_callee_inline(dcontext_t *dcontext, callee_info_t *ci)
                 /* other cases like push/pop are not allowed */
                 opt_inline = false;
             }
-            if (!opt_inline) {
+            if (opt_inline) {
+                instr_t *next_instr = instr_get_next(instr);
+                LOG(THREAD, LOG_CLEANCALL, 3,
+                    "CLEANCALL: removing frame adjustment at "PFX".\n",
+                    instr_get_app_pc(instr));
+                instrlist_remove(ci->ilist, instr);
+                instr_destroy(GLOBAL_DCONTEXT, instr);
+                instr = next_instr;
+            } else {
                 LOG(THREAD, LOG_CLEANCALL, 1,
                     "CLEANCALL: callee "PFX" cannot be inlined: "
                     "complicated stack pointer update at "PFX".\n",
