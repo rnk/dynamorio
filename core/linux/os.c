@@ -98,6 +98,8 @@ extern char **__environ;
 # include "instr.h" /* for get_segment_base() */
 #endif
 
+#include "decode_fast.h" /* decode_cti: maybe os_handle_mov_seg should be ifdef X86? */
+
 #ifndef HAVE_PROC_MAPS
 /* must be prior to including dlfcn.h */
 # define _GNU_SOURCE 1
@@ -154,6 +156,7 @@ typedef struct _our_modify_ldt_t {
     unsigned int  seg_not_present:1;
     unsigned int  useable:1;
 } our_modify_ldt_t;
+
 #define GDT_NUM_TLS_SLOTS 3
 #ifdef X64
 /* Linux GDT layout in x86_64: 
@@ -337,6 +340,13 @@ app_pc vsyscall_syscall_end_pc = NULL;
 /* pc where kernel returns control after sysenter vsyscall */
 app_pc vsyscall_sysenter_return_pc = NULL;
 #define VSYSCALL_PAGE_START_HARDCODED ((app_pc)(ptr_uint_t) 0xffffe000)
+#ifdef X64
+/* i#430, in Red Hat Enterprise Server 5.6, vysycall region is marked 
+ * not executable
+ * ffffffffff600000-ffffffffffe00000 ---p 00000000 00:00 0  [vsyscall]
+ */
+# define VSYSCALL_REGION_MAPS_NAME "[vsyscall]"
+#endif
 
 /* The pthreads library keeps errno in its pthread_descr data structure,
  * which it looks up by dispatching on the stack pointer.  This doesn't work
@@ -1133,7 +1143,7 @@ typedef struct _os_local_state_t {
     union {
         /* i#107: We use space in os_tls to store thread area information
          * thread init. It will not conflict with the client_tls usage,
-         * so we put them into an union for saving space. 
+         * so we put them into a union for saving space. 
          */
         os_seg_info_t os_seg_info;
         void *client_tls[MAX_NUM_CLIENT_TLS];
@@ -1327,13 +1337,17 @@ get_local_state()
 #endif
 }
 
+/* i#107: handle segment register usage conflicts between app and dr:
+ * os_handle_mov_seg updates the app's tls selector maintained by DR.
+ * It is called before entering code cache in dispatch_enter_fcache.
+ */
 void
 os_handle_mov_seg(dcontext_t *dcontext, byte *pc)
 {
     instr_t instr;
     opnd_t opnd;
     reg_id_t seg;
-    ushort sel;
+    ushort sel = 0;
     our_modify_ldt_t *desc;
     os_local_state_t *os_tls;
     os_thread_data_t *ostd;
@@ -1368,10 +1382,10 @@ os_handle_mov_seg(dcontext_t *dcontext, byte *pc)
     /* calculate the entry_number */
     if (seg == SEG_GS) {
         os_tls->app_gs = sel;
-        os_tls->app_gs_base = desc[SELECTOR_INDEX(sel)].base_addr;
+        os_tls->app_gs_base = (void *)(ptr_uint_t) desc[SELECTOR_INDEX(sel)].base_addr;
     } else {
         os_tls->app_fs = sel;
-        os_tls->app_fs_base = desc[SELECTOR_INDEX(sel)].base_addr;
+        os_tls->app_fs_base = (void *)(ptr_uint_t) desc[SELECTOR_INDEX(sel)].base_addr;
     }
     instr_free(dcontext, &instr);
 }
@@ -4966,10 +4980,10 @@ pre_system_call(dcontext_t *dcontext)
     case SYS_set_thread_area: {
         our_modify_ldt_t desc;
         if (INTERNAL_OPTION(mangle_app_seg) && 
-            safe_read((const void *)sys_param(dcontext, 0), 
+            safe_read((void *)sys_param(dcontext, 0), 
                       sizeof(desc), &desc)) {
             if (os_set_app_thread_area(dcontext, &desc) &&
-                safe_write_ex((const void *)sys_param(dcontext, 0), 
+                safe_write_ex((void *)sys_param(dcontext, 0), 
                               sizeof(desc), &desc, NULL)) {
                 /* check if the range is unlimited */
                 ASSERT_CURIOSITY(desc.limit == 0xfffff);
@@ -4985,7 +4999,7 @@ pre_system_call(dcontext_t *dcontext)
             safe_read((const void *)sys_param(dcontext, 0), 
                       sizeof(desc), &desc)) {
             if (os_get_app_thread_area(dcontext, &desc) &&
-                safe_write_ex((const void *)sys_param(dcontext, 0), 
+                safe_write_ex((void *)sys_param(dcontext, 0), 
                               sizeof(desc), &desc, NULL)) {
                 execute_syscall = false;
                 SET_RETURN_VAL(dcontext, 0);
@@ -5429,7 +5443,7 @@ handle_post_arch_prctl(dcontext_t *dcontext, int code, reg_t base)
             our_modify_ldt_t *desc;
             /* update new value set by app */
             os_tls->app_fs = read_selector(SEG_FS);
-            os_tls->app_fs_base = base;
+            os_tls->app_fs_base = (void *) base;
             /* update the app_thread_areas */
             ostd = (os_thread_data_t *)dcontext->os_field;
             desc = (our_modify_ldt_t *)ostd->app_thread_areas;
@@ -5442,7 +5456,7 @@ handle_post_arch_prctl(dcontext_t *dcontext, int code, reg_t base)
     }
     case ARCH_GET_FS: {
         if (IF_CLIENT_INTERFACE_ELSE(INTERNAL_OPTION(private_loader), false))
-            safe_write_ex(base, sizeof(void *), &os_tls->app_fs_base, NULL);
+            safe_write_ex((void *)base, sizeof(void *), &os_tls->app_fs_base, NULL);
         break;
     }
     case ARCH_SET_GS: {
@@ -5450,7 +5464,7 @@ handle_post_arch_prctl(dcontext_t *dcontext, int code, reg_t base)
         our_modify_ldt_t *desc;
         /* update new value set by app */
         os_tls->app_gs = read_selector(SEG_GS);
-        os_tls->app_gs_base = base;
+        os_tls->app_gs_base = (void *) base;
         /* update the app_thread_areas */
         ostd = (os_thread_data_t *)dcontext->os_field;
         desc = ostd->app_thread_areas;
@@ -5461,7 +5475,7 @@ handle_post_arch_prctl(dcontext_t *dcontext, int code, reg_t base)
         break;
     }
     case ARCH_GET_GS: {
-        safe_write_ex(base, sizeof(void *), &os_tls->app_gs_base, NULL);
+        safe_write_ex((void*)base, sizeof(void *), &os_tls->app_gs_base, NULL);
         break;
     }
     default: {
@@ -6904,8 +6918,11 @@ find_executable_vm_areas(void)
          */
         if (strncmp(iter.comment, VSYSCALL_PAGE_MAPS_NAME,
                     strlen(VSYSCALL_PAGE_MAPS_NAME)) == 0
+            IF_X64_ELSE(|| strncmp(iter.comment, VSYSCALL_REGION_MAPS_NAME,
+                                   strlen(VSYSCALL_REGION_MAPS_NAME)) == 0,
             /* Older kernels do not label it as "[vdso]", but it is hardcoded there */
-            IF_NOT_X64(|| iter.vm_start == VSYSCALL_PAGE_START_HARDCODED)) {
+            /* 32-bit */
+                        || iter.vm_start == VSYSCALL_PAGE_START_HARDCODED)) { 
 # ifndef X64
             /* We assume no vsyscall page for x64; thus, checking the
              * hardcoded address shouldn't have any false positives.
@@ -6925,6 +6942,11 @@ find_executable_vm_areas(void)
             /* i#172
              * fix bugs for OS where vdso page is set unreadable as below
              * ffffffffff600000-ffffffffffe00000 ---p 00000000 00:00 0 [vdso]
+             * but it is readable indeed.
+             */
+            /* i#430
+             * fix bugs for OS where vdso page is set unreadable as below
+             * ffffffffff600000-ffffffffffe00000 ---p 00000000 00:00 0 [vsyscall]
              * but it is readable indeed.
              */
             if (!TESTALL((PROT_READ|PROT_EXEC), iter.prot))

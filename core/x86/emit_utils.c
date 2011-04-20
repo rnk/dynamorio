@@ -1,5 +1,5 @@
 /* **********************************************************
- * Copyright (c) 2010 Google, Inc.  All rights reserved.
+ * Copyright (c) 2010-2011 Google, Inc.  All rights reserved.
  * Copyright (c) 2000-2010 VMware, Inc.  All rights reserved.
  * **********************************************************/
 
@@ -1082,7 +1082,9 @@ exit_cti_disp_pc(cache_pc branch_pc)
         length++;
         byte_ptr++;
         opcode = *byte_ptr;
-        /* branch hints are only valid with jcc instrs */
+        /* branch hints are only valid with jcc instrs, and if present on
+         * other ctis we strip them out during mangling (i#435)
+         */
         ASSERT(opcode == RAW_OPCODE_jcc_byte1);
     }
 
@@ -3334,6 +3336,7 @@ emit_fcache_enter_common(dcontext_t *dcontext, generated_code_t *code, byte *pc,
          */
         int i;
         uint opcode = (proc_has_feature(FEATURE_SSE2) ? OP_movdqa : OP_movaps);
+        /* FIXME i#433: need DR cxt switch and clean call to preserve ymm */
         ASSERT(proc_has_feature(FEATURE_SSE));
         for (i=0; i<NUM_XMM_SAVED; i++) {
             APP(&ilist, instr_create_1dst_1src

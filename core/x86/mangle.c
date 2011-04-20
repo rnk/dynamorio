@@ -1,6 +1,6 @@
 /* ******************************************************************************
- * Copyright (c) 2010 Massachusetts Institute of Technology  All rights reserved.
  * Copyright (c) 2010-2011 Google, Inc.  All rights reserved.
+ * Copyright (c) 2010 Massachusetts Institute of Technology  All rights reserved.
  * Copyright (c) 2000-2010 VMware, Inc.  All rights reserved.
  * ******************************************************************************/
 
@@ -444,6 +444,7 @@ insert_push_all_registers(dcontext_t *dcontext, clean_call_info_t *cci,
          * guide says to use movlps+movhps for unaligned stores, but
          * for simplicity and smaller code I'm using movups anyway.
          */
+        /* FIXME i#433: need DR cxt switch and clean call to preserve ymm */
         uint opcode = (proc_has_feature(FEATURE_SSE2) ?
                        (stack_align16 ? OP_movdqa : OP_movdqu) :
                        (stack_align16 ? OP_movaps : OP_movups));
@@ -564,6 +565,7 @@ insert_pop_all_registers(dcontext_t *dcontext, clean_call_info_t *cci,
         int i;
         /* See discussion in emit_fcache_enter_shared on which opcode
          * is better. */
+        /* FIXME i#433: need DR cxt switch and clean call to preserve ymm */
         uint opcode = (proc_has_feature(FEATURE_SSE2) ?
                        (stack_align16 ? OP_movdqa : OP_movdqu) :
                        (stack_align16 ? OP_movaps : OP_movups));
@@ -1950,6 +1952,7 @@ mangle_direct_call(dcontext_t *dcontext, instrlist_t *ilist, instr_t *instr,
                          opnd_create_reg(reg)) :                                  \
      instr_create_save_to_dcontext((dc), (reg), (dc_offs)))
 
+#ifdef LINUX
 /***************************************************************************
  * Mangle the memory reference operand that uses fs/gs semgents,
  * get the segment base of fs/gs into reg, and 
@@ -1973,7 +1976,7 @@ mangle_seg_ref_opnd(dcontext_t *dcontext, instrlist_t *ilist,
     if (IF_CLIENT_INTERFACE_ELSE(INTERNAL_OPTION(private_loader), true)
         && seg == IF_X64_ELSE(SEG_FS, SEG_GS))
         return oldop;
-    /* The reg should not be used by the oldop*/
+    /* The reg should not be used by the oldop */
     ASSERT(!opnd_uses_reg(oldop, reg));
 
     /* get app's segment base into reg. */
@@ -2005,6 +2008,7 @@ mangle_seg_ref_opnd(dcontext_t *dcontext, instrlist_t *ilist,
     }
     return newop;
 }
+#endif /* LINUX */
 
 /***************************************************************************
  * INDIRECT CALL
@@ -2137,6 +2141,7 @@ mangle_indirect_call(dcontext_t *dcontext, instrlist_t *ilist, instr_t *instr,
         /* FIXME: we use REG_XCX to store the segment base, which might be used
          * in target and cause assertion failure in mangle_seg_ref_opnd.
          */
+        ASSERT_BUG_NUM(107, !opnd_uses_reg(target, REG_XCX));
         target = mangle_seg_ref_opnd(dcontext, ilist, instr, target, REG_XCX);
     }
 #endif
@@ -2465,6 +2470,7 @@ mangle_indirect_jump(dcontext_t *dcontext, instrlist_t *ilist, instr_t *instr,
         /* FIXME: we use REG_XCX to store segment base, which might be used 
          * in target and cause assertion failure in mangle_seg_ref_opnd.
          */
+        ASSERT_BUG_NUM(107, !opnd_uses_reg(target, REG_XCX));
         target = mangle_seg_ref_opnd(dcontext, ilist, instr, target, REG_XCX);
     }
 #endif
@@ -3132,17 +3138,32 @@ static void
 mangle_exit_cti_prefixes(dcontext_t *dcontext, instr_t *instr)
 {
     uint prefixes = instr_get_prefixes(instr);
-    if (TESTANY(~(PREFIX_JCC_TAKEN|PREFIX_JCC_NOT_TAKEN), prefixes)) {
+    if (prefixes != 0) {
+        bool remove = false;
         /* Case 8738: while for transparency it would be best to maintain all
          * prefixes, our patching and other routines make assumptions about
          * the length of exit ctis.  Plus our elision removes the whole 
          * instr in any case.
          */
-        LOG(THREAD, LOG_INTERP, 4,
-            "\tremoving unknown prefixes "PFX" from "PFX"\n",
-            prefixes, instr_get_raw_bits(instr));
-        prefixes &= (PREFIX_JCC_TAKEN|PREFIX_JCC_NOT_TAKEN);
-        instr_set_prefixes(instr, prefixes);
+        if (instr_is_cbr(instr)) {
+            if (TESTANY(~(PREFIX_JCC_TAKEN|PREFIX_JCC_NOT_TAKEN), prefixes)) {
+                remove = true;
+                prefixes &= (PREFIX_JCC_TAKEN|PREFIX_JCC_NOT_TAKEN);
+            }
+        } else {
+            /* prefixes on ubr or mbr should be nops and for ubr will mess up
+             * our size assumptions so drop them (i#435)
+             */
+            remove = true;
+            prefixes = 0;
+        }
+        if (remove) {
+            LOG(THREAD, LOG_INTERP, 4,
+                "\tremoving unknown prefixes "PFX" from "PFX"\n",
+                prefixes, instr_get_raw_bits(instr));
+            ASSERT(instr_operands_valid(instr)); /* ensure will encode w/o raw bits */
+            instr_set_prefixes(instr, prefixes);
+        }
     }
 }
 
@@ -3251,7 +3272,7 @@ mangle_rel_addr(dcontext_t *dcontext, instrlist_t *ilist, instr_t *instr,
             }
             ASSERT(!instr_reads_from_reg(instr, scratch_reg));
             ASSERT(!spill || !instr_writes_to_reg(instr, scratch_reg));
-            /* FIXME PR 253446: Optimize by looking ahead for dead registers, and
+            /* XXX PR 253446: Optimize by looking ahead for dead registers, and
              * sharing single spill across whole bb, or possibly building local code
              * cache to avoid unreachability: all depending on how many rip-rel
              * instrs we see.  We'll watch the stats.
@@ -3580,7 +3601,11 @@ mangle(dcontext_t *dcontext, instrlist_t *ilist, uint flags,
 #endif
 
 #ifdef X64
-        /* FIXME: mangle_rel_addr might destroy the instr! */
+        /* FIXME: mangle_rel_addr might destroy the instr if it is a LEA,
+         * which makes instr points to freed memory.
+         * In such case, the control should skip later checks on the instr
+         * for exit_cti and syscall.
+         */
         if (instr_has_rel_addr_reference(instr))
             mangle_rel_addr(dcontext, ilist, instr, next_instr);
 #endif
@@ -3768,7 +3793,7 @@ sandbox_rep_instr(dcontext_t *dcontext, instrlist_t *ilist, instr_t *instr, inst
      *   restore flags and xax (xax used by stos)
      * if x64 && (start_pc > 4GB || end_pc > 4GB): restore xdx
      *   <rep instr> # doesn't use xbx
-     *     (FIXME PR 267764: restore xbx on cxt xl8 if this instr faults)
+     *     (PR 267764/i#398: we special-case restore xbx on cxt xl8 if this instr faults)
      *   mov xbx,xcx # we can use xcx, it's dead since 0 after rep
      *   restore xbx
      *   jecxz ok2  # if xbx was 1 we'll fall through and exit
@@ -5422,7 +5447,9 @@ analyze_callee_errno(dcontext_t *dcontext, callee_info_t *ci)
             "CLEANCALL: callee "PFX" access far memory\n", ci->start);
     }
 #else
-    /* FIXME: For Windows, we simply assume no */
+    /* XXX: For Windows, how do we know if it accessess errno?
+     * Now we simply assume no. 
+     */
     ci->errno_used = false;
 #endif
 }
