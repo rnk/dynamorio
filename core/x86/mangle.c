@@ -5049,7 +5049,7 @@ analyze_callee_errno(dcontext_t *dcontext, callee_info_t *ci)
 static void
 analyze_callee_inline(dcontext_t *dcontext, callee_info_t *ci)
 {
-    instr_t *instr;
+    instr_t *instr, *next_instr;
     opnd_t opnd, mem_ref, slot;
     bool opt_inline = true;
     int i;
@@ -5105,8 +5105,9 @@ analyze_callee_inline(dcontext_t *dcontext, callee_info_t *ci)
     ci->has_locals = false;
     for (instr  = instrlist_first(ci->ilist);
          instr != NULL;
-         instr  = instr_get_next(instr)) {
+         instr  = next_instr) {
         uint opc = instr_get_opcode(instr);
+        next_instr = instr_get_next(instr);
         /* sanity checks on stack usage */
         if (instr_writes_to_reg(instr, DR_REG_XBP) && ci->xbp_is_fp) {
             /* xbp must not be changed if xbp is used for frame pointer */
@@ -5141,13 +5142,12 @@ analyze_callee_inline(dcontext_t *dcontext, callee_info_t *ci)
                 opt_inline = false;
             }
             if (opt_inline) {
-                instr_t *next_instr = instr_get_next(instr);
                 LOG(THREAD, LOG_CLEANCALL, 3,
                     "CLEANCALL: removing frame adjustment at "PFX".\n",
                     instr_get_app_pc(instr));
                 instrlist_remove(ci->ilist, instr);
                 instr_destroy(GLOBAL_DCONTEXT, instr);
-                instr = next_instr;
+                continue;
             } else {
                 LOG(THREAD, LOG_CLEANCALL, 1,
                     "CLEANCALL: callee "PFX" cannot be inlined: "
