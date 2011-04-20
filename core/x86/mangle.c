@@ -5279,8 +5279,10 @@ analyze_clean_call_aflags(dcontext_t *dcontext,
     callee_info_t *ci = cci->callee_info;
     instr_t *instr;
 
-    cci->skip_save_aflags  = !ci->write_aflags;
+    /* If there's a flags read, we clear the flags.  If there's a write or read,
+     * we save them, because a read creates a clear which is a write. */
     cci->skip_clear_eflags = !ci->read_aflags;
+    cci->skip_save_aflags  = !(ci->write_aflags || ci->read_aflags);
     /* XXX: this is a more aggressive optimization by analyzing the ilist
      * to be instrumented. The client may change the ilist, which violate
      * the analysis result. For example, 

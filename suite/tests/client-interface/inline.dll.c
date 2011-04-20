@@ -33,6 +33,7 @@
 /* Test the clean call inliner. */
 
 #include "dr_api.h"
+#include <stddef.h> /* offsetof */
 #include <string.h> /* memset */
 
 #define ALIGN_BACKWARD(x, alignment) \
@@ -201,9 +202,7 @@ codegen_instrumentation_funcs(void)
         func_ptrs[i] = pc;
         dr_log(dc, LOG_EMIT, 3, "Generated instrumentation function %s at "PFX
                ":", func_names[i], pc);
-#ifdef DEBUG
-        instrlist_disassemble(dc, pc, ilists[i], THREAD_GET());
-#endif
+        instrlist_disassemble(dc, pc, ilists[i], dr_get_logfile(dc));
         pc = instrlist_encode(dc, ilists[i], pc, false);
         instrlist_clear_and_destroy(dc, ilists[i]);
     }
@@ -220,6 +219,11 @@ free_instrumentation_funcs(void)
 ptr_uint_t count;
 static uint callee_inlined;
 
+static dr_mcontext_t before_mcontext;
+static int before_errno;
+static dr_mcontext_t after_mcontext;
+static int after_errno;
+
 static void
 after_inscount(void)
 {
@@ -232,25 +236,21 @@ after_callpic(void)
     DR_ASSERT(count == 1);
 }
 
-static void
-check_if_inlined(bool inline_expected)
-{
-    if (inline_expected) {
-        DR_ASSERT_MSG(callee_inlined, "Function was not inlined!");
-    } else {
-        DR_ASSERT_MSG(!callee_inlined, "Function was inlined unexpectedly!");
-    }
-}
-
 /* Reset count and patch the out-of-line version of the instrumentation function
  * so we can find out if it got called, which would mean it wasn't inlined. */
 static void
-before_instrumentation(app_pc func)
+before_callee(app_pc func, const char *func_name)
 {
     void *dc;
     instrlist_t *ilist;
     opnd_t xax = opnd_create_reg(DR_REG_XAX);
     byte *end_pc;
+
+    dr_fprintf(STDERR, "Calling func %s...\n", func_name);
+
+    /* Save mcontext before call. */
+    dc = dr_get_current_drcontext();
+    dr_get_mcontext(dc, &before_mcontext, &before_errno);
 
     /* Patch the callee to be:
      * push xax
@@ -259,7 +259,6 @@ before_instrumentation(app_pc func)
      * pop xax
      * ret
      */
-    dc = dr_get_current_drcontext();
     ilist = instrlist_create(dc);
     APP(ilist, INSTR_CREATE_push(dc, xax));
     APP(ilist, INSTR_CREATE_mov_imm
@@ -271,6 +270,8 @@ before_instrumentation(app_pc func)
 
     end_pc = instrlist_encode(dc, ilist, func, false /* no jump targets */);
     instrlist_clear_and_destroy(dc, ilist);
+    dr_log(dc, LOG_EMIT, 3, "Patched instrumentation function %s at "PFX":\n",
+           func_name, func);
 
     /* Check there was enough room in the function.  We align every callee
      * entry point to CALLEE_ALIGNMENT, so each function has at least
@@ -282,6 +283,90 @@ before_instrumentation(app_pc func)
     /* Reset instrumentation globals. */
     count = 0;
     callee_inlined = 1;
+}
+
+#define NUM_GP_REGS   (1 + (IF_X64_ELSE(DR_REG_R15, DR_REG_XDI) - DR_REG_XAX))
+static int reg_offsets[NUM_GP_REGS + 1] = {
+    offsetof(dr_mcontext_t, xax),
+    offsetof(dr_mcontext_t, xbx),
+    offsetof(dr_mcontext_t, xcx),
+    offsetof(dr_mcontext_t, xdx),
+    offsetof(dr_mcontext_t, xdi),
+    offsetof(dr_mcontext_t, xsi),
+    offsetof(dr_mcontext_t, xbp),
+    offsetof(dr_mcontext_t, xsp),
+#ifdef X64
+    offsetof(dr_mcontext_t, r8),
+    offsetof(dr_mcontext_t, r9),
+    offsetof(dr_mcontext_t, r10),
+    offsetof(dr_mcontext_t, r11),
+    offsetof(dr_mcontext_t, r12),
+    offsetof(dr_mcontext_t, r13),
+    offsetof(dr_mcontext_t, r14),
+    offsetof(dr_mcontext_t, r15),
+#endif
+    offsetof(dr_mcontext_t, xflags),
+};
+
+static const char *reg_names[NUM_GP_REGS + 1] = {
+    "xax", "xbx", "xcx", "xdx", "xdi", "xsi", "xbp", "xsp",
+#ifdef X64
+    "r8 ", "r9 ", "r10", "r11", "r12", "r13", "r14", "r15",
+#endif
+    "xflags"
+};
+
+static void
+after_callee(bool inline_expected, const char *func_name)
+{
+    int i;
+    void *dc;
+
+    /* Save mcontext after call. */
+    dc = dr_get_current_drcontext();
+    dr_get_mcontext(dc, &after_mcontext, &after_errno);
+
+    /* Compare mcontexts. */
+    if (before_errno != after_errno) {
+        dr_fprintf(STDERR, "errnos differ!\nbefore: %d, after: %d\n",
+                   before_errno, after_errno);
+    }
+    if (memcmp(&before_mcontext, &after_mcontext, sizeof(dr_mcontext_t))) {
+        dr_fprintf(STDERR, "Registers clobbered by supposedly clean call!\n"
+                   "Printing GPRs + flags:\n");
+        for (i = 0; i < NUM_GP_REGS + 1; i++) {
+            reg_t before_reg = *(reg_t*)((byte*)&before_mcontext + reg_offsets[i]);
+            reg_t after_reg  = *(reg_t*)((byte*)&after_mcontext  + reg_offsets[i]);
+            const char *diff_str = (before_reg == after_reg ?
+                                    "" : " <- DIFFERS");
+            dr_fprintf(STDERR, "%s before: "PFX" after: "PFX"%s\n",
+                       reg_names[i], before_reg, after_reg, diff_str);
+        }
+        dr_fprintf(STDERR, "Printing XMM regs:\n");
+        for (i = 0; i < NUM_XMM_SLOTS; i++) {
+            dr_xmm_t before_reg = before_mcontext.xmm[i];
+            dr_xmm_t  after_reg =  after_mcontext.xmm[i];
+            const char *diff_str =
+                    (memcmp(&before_reg, &after_reg, sizeof(dr_xmm_t)) == 0 ?
+                     "" : " <- DIFFERS");
+            dr_fprintf(STDERR, "xmm%2d before: %04x%04x%04x%04x "
+                       "after: %04x%04x%04x%04x%s\n",
+                       i,
+                       before_reg.u32[0], before_reg.u32[1],
+                       before_reg.u32[2], before_reg.u32[3],
+                       after_reg.u32[0], after_reg.u32[1],
+                       after_reg.u32[2], after_reg.u32[3],
+                       diff_str);
+        }
+    }
+
+    if (inline_expected) {
+        DR_ASSERT_MSG(callee_inlined, "Function was not inlined!");
+    } else {
+        DR_ASSERT_MSG(!callee_inlined, "Function was inlined unexpectedly!");
+    }
+
+    dr_fprintf(STDERR, "Called func %s.\n", func_name);
 }
 
 static void
@@ -329,24 +414,32 @@ test_aflags(void *dc, instrlist_t *bb, instr_t *where, int aflags)
     opnd_t xax = opnd_create_reg(DR_REG_XAX);
     opnd_t al = opnd_create_reg(DR_REG_AL);
 
-    /* Save REG_XAX, then populate aflags:
+    /* Save flags and REG_XAX
+     * XXX: Assumes we can push to application stack, which happens to be valid
+     * for this test application.
+     *
+     * pushf
      * mov [SPILL_SLOT_1], REG_XAX
+     */
+    PRE(bb, where, INSTR_CREATE_pushf(dc));
+    PRE(bb, where, INSTR_CREATE_mov_st
+        (dc, dr_reg_spill_slot_opnd(dc, SPILL_SLOT_1), xax));
+    /* Then populate aflags from XAX:
      * mov REG_XAX, aflags
      * add al, HEX(7F)
      * sahf ah
      */
-    PRE(bb, where, INSTR_CREATE_mov_st
-        (dc, dr_reg_spill_slot_opnd(dc, SPILL_SLOT_1), xax));
     PRE(bb, where, INSTR_CREATE_mov_imm(dc, xax, OPND_CREATE_INTPTR(aflags)));
     PRE(bb, where, INSTR_CREATE_add(dc, al, OPND_CREATE_INT8(0x7F)));
     PRE(bb, where, INSTR_CREATE_sahf(dc));
 
     dr_insert_clean_call(dc, bb, where, func_ptrs[FN_aflags_clobber], false, 0);
 
-    /* Get the flags back:
+    /* Get the flags back into XAX, and then to SPILL_SLOT_2:
      * mov REG_XAX, 0
      * lahf
      * seto al
+     * mov [SPILL_SLOT_2], REG_XAX
      */
     PRE(bb, where, INSTR_CREATE_mov_imm(dc, xax, OPND_CREATE_INTPTR(0)));
     PRE(bb, where, INSTR_CREATE_lahf(dc));
@@ -359,9 +452,10 @@ test_aflags(void *dc, instrlist_t *bb, instr_t *where, int aflags)
                          dr_reg_spill_slot_opnd(dc, SPILL_SLOT_2),
                          OPND_CREATE_INT32(aflags));
 
-    /* Restore xax. */
+    /* Restore and flags. */
     PRE(bb, where, INSTR_CREATE_mov_ld
         (dc, xax, dr_reg_spill_slot_opnd(dc, SPILL_SLOT_1)));
+    PRE(bb, where, INSTR_CREATE_popf(dc));
     return where;
 }
 
@@ -380,8 +474,9 @@ event_basic_block(void *dc, void *tag, instrlist_t *bb,
             continue;
 
         func_called[i] = 1;
-        dr_insert_clean_call(dc, bb, entry, (void*)before_instrumentation,
-                             false, 1, OPND_CREATE_INTPTR(func_ptrs[i]));
+        dr_insert_clean_call(dc, bb, entry, (void*)before_callee, false, 2,
+                             OPND_CREATE_INTPTR(func_ptrs[i]),
+                             OPND_CREATE_INTPTR(func_names[i]));
 
         switch (i) {
         default:
@@ -416,8 +511,9 @@ event_basic_block(void *dc, void *tag, instrlist_t *bb,
             (void)test_aflags(dc, bb, entry, 0x00200);
             break;
         }
-        dr_insert_clean_call(dc, bb, entry, (void*)check_if_inlined, false, 1,
-                             OPND_CREATE_INT32(inline_expected));
+        dr_insert_clean_call(dc, bb, entry, (void*)after_callee, false, 2,
+                             OPND_CREATE_INT32(inline_expected),
+                             OPND_CREATE_INTPTR(func_names[i]));
     }
     return DR_EMIT_DEFAULT;
 }
