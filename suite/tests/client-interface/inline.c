@@ -151,6 +151,10 @@ main(void)
 
 #include "asm_defines.asm"
 
+START_FILE
+
+DECL_EXTERN(memcpy)
+
 /* All instrumentation functions are a single 'ret'.  This ensures that they
  * don't modify any registers. */
 #define FUNCTION(FUNCNAME) \
@@ -223,5 +227,7 @@ GLOBAL_LABEL(save_regs_around_call:)
     leave
     ret
 END_FUNC(save_regs_around_call)
+
+END_FILE
 
 #endif
