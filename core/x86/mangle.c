@@ -3135,17 +3135,32 @@ static void
 mangle_exit_cti_prefixes(dcontext_t *dcontext, instr_t *instr)
 {
     uint prefixes = instr_get_prefixes(instr);
-    if (TESTANY(~(PREFIX_JCC_TAKEN|PREFIX_JCC_NOT_TAKEN), prefixes)) {
+    if (prefixes != 0) {
+        bool remove = false;
         /* Case 8738: while for transparency it would be best to maintain all
          * prefixes, our patching and other routines make assumptions about
          * the length of exit ctis.  Plus our elision removes the whole 
          * instr in any case.
          */
-        LOG(THREAD, LOG_INTERP, 4,
-            "\tremoving unknown prefixes "PFX" from "PFX"\n",
-            prefixes, instr_get_raw_bits(instr));
-        prefixes &= (PREFIX_JCC_TAKEN|PREFIX_JCC_NOT_TAKEN);
-        instr_set_prefixes(instr, prefixes);
+        if (instr_is_cbr(instr)) {
+            if (TESTANY(~(PREFIX_JCC_TAKEN|PREFIX_JCC_NOT_TAKEN), prefixes)) {
+                remove = true;
+                prefixes &= (PREFIX_JCC_TAKEN|PREFIX_JCC_NOT_TAKEN);
+            }
+        } else {
+            /* prefixes on ubr or mbr should be nops and for ubr will mess up
+             * our size assumptions so drop them (i#435)
+             */
+            remove = true;
+            prefixes = 0;
+        }
+        if (remove) {
+            LOG(THREAD, LOG_INTERP, 4,
+                "\tremoving unknown prefixes "PFX" from "PFX"\n",
+                prefixes, instr_get_raw_bits(instr));
+            ASSERT(instr_operands_valid(instr)); /* ensure will encode w/o raw bits */
+            instr_set_prefixes(instr, prefixes);
+        }
     }
 }
 
@@ -3254,7 +3269,7 @@ mangle_rel_addr(dcontext_t *dcontext, instrlist_t *ilist, instr_t *instr,
             }
             ASSERT(!instr_reads_from_reg(instr, scratch_reg));
             ASSERT(!spill || !instr_writes_to_reg(instr, scratch_reg));
-            /* FIXME PR 253446: Optimize by looking ahead for dead registers, and
+            /* XXX PR 253446: Optimize by looking ahead for dead registers, and
              * sharing single spill across whole bb, or possibly building local code
              * cache to avoid unreachability: all depending on how many rip-rel
              * instrs we see.  We'll watch the stats.
@@ -3775,7 +3790,7 @@ sandbox_rep_instr(dcontext_t *dcontext, instrlist_t *ilist, instr_t *instr, inst
      *   restore flags and xax (xax used by stos)
      * if x64 && (start_pc > 4GB || end_pc > 4GB): restore xdx
      *   <rep instr> # doesn't use xbx
-     *     (FIXME PR 267764: restore xbx on cxt xl8 if this instr faults)
+     *     (PR 267764/i#398: we special-case restore xbx on cxt xl8 if this instr faults)
      *   mov xbx,xcx # we can use xcx, it's dead since 0 after rep
      *   restore xbx
      *   jecxz ok2  # if xbx was 1 we'll fall through and exit
