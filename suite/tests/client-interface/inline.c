@@ -30,52 +30,46 @@
  * DAMAGE.
  */
 
-/* Most functions here need to be exported and not inlined no matter the build
- * mode so that we can find their addresses via symbol lookup for
- * instrumentation.
- */
+/* Export instrumented functions so we can easily find them in client.  */
 #ifdef WINDOWS
-#define EXPORT __declspec(dllexport)
-#define NOINLINE __declspec(noinline)
-#else
-#define EXPORT __attribute__((visibility("default")))
-#define NOINLINE __attribute__((noinline))
+# define EXPORT __declspec(dllexport)
+#else /* LINUX */
+# define EXPORT __attribute__((visibility("default")))
 #endif
 
-EXPORT NOINLINE void empty(void) {}
-EXPORT NOINLINE void empty_push(void) {}
-EXPORT NOINLINE void enterleave(void) {}
-EXPORT NOINLINE void entermovpop(void) {}
-EXPORT NOINLINE void scheduled_prologue(void) {}
-EXPORT NOINLINE void inscount(void) {}
-EXPORT NOINLINE void callpic_pop(void) {}
-EXPORT NOINLINE void callpic_mov(void) {}
-EXPORT NOINLINE void callpic_out(void) {}
-EXPORT NOINLINE void cond_br(void) {}
-EXPORT NOINLINE void tls_clobber(void) {}
-EXPORT NOINLINE void nonleaf(void) {}
-EXPORT NOINLINE void aflags_clobber(void) {}
-EXPORT NOINLINE void decode_past_ret(void) {}
-EXPORT NOINLINE void decode_loop(void) {}
+/* List of instrumented functions. */
+#define FUNCTIONS() \
+        FUNCTION(empty) \
+        FUNCTION(empty_push) \
+        FUNCTION(enterleave) \
+        FUNCTION(entermovpop) \
+        FUNCTION(scheduled_prologue) \
+        FUNCTION(inscount) \
+        FUNCTION(callpic_pop) \
+        FUNCTION(callpic_mov) \
+        FUNCTION(callpic_out) \
+        FUNCTION(nonleaf) \
+        FUNCTION(cond_br) \
+        FUNCTION(tls_clobber) \
+        FUNCTION(aflags_clobber) \
+        FUNCTION(decode_past_ret) \
+        FUNCTION(decode_loop) \
+        LAST_FUNCTION()
 
-void set_xax_and_call(void (*func)(void));
+/* Definitions for every function. */
+#define FUNCTION(FUNCNAME) EXPORT void FUNCNAME(void) { }
+#define LAST_FUNCTION()
+FUNCTIONS()
+#undef FUNCTION
+#undef LAST_FUNCTION
 
 int
 main(void)
 {
-    empty();
-    empty_push();
-    enterleave();
-    entermovpop();
-    scheduled_prologue();
-    inscount();
-    callpic_pop();
-    callpic_mov();
-    callpic_out();
-    cond_br();
-    tls_clobber();
-    nonleaf();
-    aflags_clobber();
-    decode_past_ret();
-    decode_loop();
+    /* Calls to every function. */
+#define FUNCTION(FUNCNAME) FUNCNAME();
+#define LAST_FUNCTION()
+    FUNCTIONS()
+#undef FUNCTION
+#undef LAST_FUNCTION
 }
