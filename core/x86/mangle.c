@@ -76,6 +76,7 @@ extern void callback_start_return(void);
  */
 #define POST instrlist_meta_postinsert
 #define PRE  instrlist_meta_preinsert
+#define APP  instrlist_meta_append
 
 #if defined(NATIVE_RETURN) && !defined(DEBUG)
 extern int num_fragments;
@@ -105,6 +106,7 @@ typedef struct _callee_info_t {
     bool has_cti;             /* true if callee has any control flow */
     bool is_leaf;             /* true if all control flow is within callee */
     instrlist_t *ilist;       /* instruction list of function for inline. */
+    app_pc partial_slowpath;
 } callee_info_t;
 static callee_info_t     default_callee_info;
 static clean_call_info_t default_clean_call_info;
@@ -655,6 +657,10 @@ clean_call_beyond_mcontext(void)
     return XSP_SZ/*errno*/ IF_X64(+ XSP_SZ/*align*/);
 }
 
+static uint
+preinsert_push_mcontext(dcontext_t *dcontext, clean_call_info_t *cci,
+                        instrlist_t *ilist, instr_t *instr);
+
 /* prepare_for and cleanup_after assume that the stack looks the same after
  * the call to the instrumentation routine, since it stores the app state
  * on the stack.
@@ -690,10 +696,6 @@ uint
 prepare_for_clean_call(dcontext_t *dcontext, clean_call_info_t *cci,
                        instrlist_t *ilist, instr_t *instr)
 {
-    uint dstack_offs = 0;
-
-    if (cci == NULL)
-        cci = &default_clean_call_info;
     /* Swap stacks.  For thread-shared, we need to get the dcontext
      * dynamically rather than use the constant passed in here.  Save
      * away xax in a TLS slot and then load the dcontext there.
@@ -702,8 +704,7 @@ prepare_for_clean_call(dcontext_t *dcontext, clean_call_info_t *cci,
         PRE(ilist, instr, instr_create_save_to_tls
             (dcontext, REG_XAX, TLS_XAX_SLOT));
 
-        insert_get_mcontext_base(dcontext, ilist, instr,
-                                 REG_XAX);
+        insert_get_mcontext_base(dcontext, ilist, instr, REG_XAX);
 
         PRE(ilist, instr, instr_create_save_to_dc_via_reg
             (dcontext, REG_XAX, REG_XSP, XSP_OFFSET));
@@ -733,6 +734,18 @@ prepare_for_clean_call(dcontext_t *dcontext, clean_call_info_t *cci,
         PRE(ilist, instr, instr_create_save_to_dcontext(dcontext, REG_XSP, XSP_OFFSET));
         PRE(ilist, instr, instr_create_restore_dynamo_stack(dcontext));
     }
+
+    return preinsert_push_mcontext(dcontext, cci, ilist, instr);
+}
+
+static uint
+preinsert_push_mcontext(dcontext_t *dcontext, clean_call_info_t *cci,
+                        instrlist_t *ilist, instr_t *instr)
+{
+    uint dstack_offs = 0;
+
+    if (cci == NULL)
+        cci = &default_clean_call_info;
 
     /* Save flags and all registers, in dr_mcontext_t order. */
     if (!cci->skip_save_aflags) {
@@ -833,9 +846,9 @@ prepare_for_clean_call(dcontext_t *dcontext, clean_call_info_t *cci,
     return dstack_offs;
 }
 
-void
-cleanup_after_clean_call(dcontext_t *dcontext, clean_call_info_t *cci,
-                         instrlist_t *ilist, instr_t *instr)
+static void
+preinsert_pop_mcontext(dcontext_t *dcontext, clean_call_info_t *cci,
+                       instrlist_t *ilist, instr_t *instr)
 {
     if (cci == NULL)
         cci = &default_clean_call_info;
@@ -884,8 +897,19 @@ cleanup_after_clean_call(dcontext_t *dcontext, clean_call_info_t *cci,
     insert_pop_all_registers(dcontext, cci, ilist, instr,
                              /* see notes in prepare_for_clean_call() */
                              IF_X64_ELSE(true, false));
-    if (!cci->skip_save_aflags)
+    if (!cci->skip_save_aflags) {
         PRE(ilist, instr, INSTR_CREATE_popf(dcontext));
+        PRE(ilist, instr, INSTR_CREATE_lea
+            (dcontext, opnd_create_reg(REG_XSP),
+             OPND_CREATE_MEM_lea(REG_XSP, REG_NULL, 0, (int)XSP_SZ)));
+    }
+}
+
+void
+cleanup_after_clean_call(dcontext_t *dcontext, clean_call_info_t *cci,
+                         instrlist_t *ilist, instr_t *instr)
+{
+    preinsert_pop_mcontext(dcontext, cci, ilist, instr);
 
     /* Swap stacks back.  For thread-shared, we need to get the dcontext
      * dynamically.  Save xax in TLS so we can use it as scratch.
@@ -894,8 +918,7 @@ cleanup_after_clean_call(dcontext_t *dcontext, clean_call_info_t *cci,
         PRE(ilist, instr, instr_create_save_to_tls
             (dcontext, REG_XAX, TLS_XAX_SLOT));
 
-        insert_get_mcontext_base(dcontext, ilist, instr,
-                                 REG_XAX);
+        insert_get_mcontext_base(dcontext, ilist, instr, REG_XAX);
 
 #if defined(WINDOWS) && defined(CLIENT_INTERFACE)
         /* i#249: swap PEB pointers while we have dcxt in reg.  We risk "silent
@@ -4549,6 +4572,10 @@ finalize_selfmod_sandbox(dcontext_t *dcontext, fragment_t *f)
 /****************************************************************************/
 /* clean call optimization code */
 
+static void partial_cache_init(void);
+static void partial_cache_fini(void);
+static app_pc emit_partial_slowpath(void *dc, callee_info_t *ci);
+
 /* The max number of instructions try to decode from a function. */
 #define MAX_NUM_FUNC_INSTRS 1024
 /* the max number of instructions the callee can have for inline. */
@@ -4566,12 +4593,14 @@ mangle_init(void)
     callee_info_init(&default_callee_info);
     callee_info_table_init();
     clean_call_info_init(&default_clean_call_info, NULL, false, 0);
+    partial_cache_init();
 }
 
 void
 mangle_exit(void)
 {
     callee_info_table_destroy();
+    partial_cache_fini();
 }
 
 /* Decode instruction from callee and return the next_pc to be decoded. */
@@ -5550,15 +5579,8 @@ analyze_callee_partial(dcontext_t *dc, callee_info_t *ci)
         return;
     }
 
-    /* Insert jmp into slowpath.  This is hopelessly broken of course, but
-     * serves as starting point. */
-    tgt = opnd_create_pc(instr_get_app_pc(slowpath_start));
-    /* TODO(rnk): Pull in shared clean call so we can do that. */
-    instrlist_preinsert(ci->ilist, slowpath_start,
-                        INSTR_CREATE_jmp(GLOBAL_DCONTEXT, tgt));
-
     /* Remove slowpath instructions. */
-    for (instr = slowpath_start; instr != NULL; instr = next_instr) {
+    for (instr = instr_get_next(slowpath_start); instr != NULL; instr = next_instr) {
         /* Skip fastpath code if we encounter it. */
         if (instr == fastpath_start) {
             while (!instr_is_return(instr)) {
@@ -5572,9 +5594,19 @@ analyze_callee_partial(dcontext_t *dc, callee_info_t *ci)
         remove_and_destroy(GLOBAL_DCONTEXT, ci->ilist, instr);
     }
 
+    /* Emit slowpath transition code and insert jmp into slowpath.  We need to
+     * rematerialize args here, but those are different for every call site.
+     * This call is used to mark the spot where the inliner should rematerialize
+     * arguments for the slowpath.  Mark the call meta to avoid other manglings.
+     */
     LOG(dr_get_logfile(dc), LOG_CLEANCALL, 2,
         "CLEANCALL: callee is a candidate for partial inlining.\n");
     ci->opt_partial = true;
+    emit_partial_slowpath(dc, ci);
+    POST(ci->ilist, slowpath_start, INSTR_CREATE_call
+         (GLOBAL_DCONTEXT, opnd_create_pc(ci->partial_slowpath)));
+
+
     /* Re-calculate the number of instructions, since we just deleted a bunch.
      */
     ci->num_instrs = 0;
@@ -5671,6 +5703,7 @@ analyze_callee_inline(dcontext_t *dcontext, callee_info_t *ci)
              * lea [xsp, disp] => xsp
              * xsp + imm_int => xsp
              * xsp - imm_int => xsp
+             * call partial_slowpath
              */
             if (ci->has_locals) {
                 /* we do not allow stack adjustment after accessing the stack */
@@ -5687,6 +5720,17 @@ analyze_callee_inline(dcontext_t *dcontext, callee_info_t *ci)
                 /* xsp +/- int => xsp */
                 if (!opnd_is_immed_int(instr_get_src(instr, 0)))
                     opt_inline = false;
+            } else if (opc == OP_call && ci->opt_partial) {
+                /* call partial_slowpath */
+                opnd = instr_get_target(instr);
+                if (opnd_is_pc(opnd) &&
+                    opnd_get_pc(opnd) == ci->partial_slowpath) {
+                    /* Stop further analysis on this instruction, or it will be
+                     * removed. */
+                    continue;
+                } else {
+                    opt_inline = false;
+                }
             } else {
                 /* other cases like push/pop are not allowed */
                 opt_inline = false;
@@ -6254,4 +6298,168 @@ insert_inline_clean_call(dcontext_t *dcontext, clean_call_info_t *cci,
      * we can do some constant propagation optimization here,
      * leave it for higher optimization level.
      */
+}
+
+/****************************************************************************/
+/* Partial inlining lean call support. */
+
+#define CODE_CACHE_BLOCK_SIZE PAGE_SIZE
+
+/* The memory protections we use for the code cache. */
+#define CODE_RWX (DR_MEMPROT_READ|DR_MEMPROT_WRITE|DR_MEMPROT_EXEC)
+#define CODE_RX  (DR_MEMPROT_READ|DR_MEMPROT_EXEC)
+
+/* Linked list node present at the start of every block of code cache memory.
+ */
+typedef struct _code_cache_block_t code_cache_block_t;
+struct _code_cache_block_t {
+    code_cache_block_t *next;
+};
+
+/* Code cache data. */
+/* TODO(rnk): For now we assume that there will be roughly a constant number of
+ * callees, so the clean call context switch sequences live forever.  It may be
+ * worth revisiting this later if the role of this code cache expands. */
+typedef struct _code_cache_t {
+    code_cache_block_t *root;
+    code_cache_block_t *cur_block;
+    byte *cur_pc;
+    void *lock;
+} code_cache_t;
+
+static code_cache_t *code_cache;
+
+static void
+partial_cache_init(void)
+{
+    code_cache = HEAP_TYPE_ALLOC(GLOBAL_DCONTEXT, code_cache_t, ACCT_CLEANCALL,
+                                 PROTECTED);
+    code_cache->root = NULL;
+    code_cache->cur_block = NULL;
+    code_cache->cur_pc = NULL;
+    code_cache->lock = dr_mutex_create();
+}
+
+static void
+partial_cache_fini(void)
+{
+    code_cache_block_t *block;
+    code_cache_block_t *block_next;
+
+    /* Free the linked list of code cache blocks. */
+    for (block = code_cache->root; block != NULL; block = block_next) {
+        block_next = block->next;
+        dr_nonheap_free(block, CODE_CACHE_BLOCK_SIZE);
+    }
+
+    dr_mutex_destroy(code_cache->lock);
+    HEAP_TYPE_FREE(GLOBAL_DCONTEXT, code_cache, code_cache_t, ACCT_CLEANCALL,
+                   PROTECTED);
+    code_cache = NULL;
+}
+
+static byte *
+align_to_cacheline(byte *pc)
+{
+    return (byte *)ALIGN_FORWARD(pc, proc_get_cache_line_size());
+}
+
+/* Adjust the permissions on a code cache block to prot. */
+static void
+code_cache_memprotect(code_cache_block_t *block, uint prot)
+{
+    bool ok;
+    ok = dr_memory_protect(block, CODE_CACHE_BLOCK_SIZE, prot);
+    DR_ASSERT_MSG(ok, "Changing code cache protection bits failed");
+}
+
+/* Add a block to the linked list of blocks in our code cache and update the
+ * current pc and block. */
+static void
+code_cache_grow(void *dc, code_cache_t *code_cache)
+{
+    code_cache_block_t *prev_block;
+    code_cache_block_t *new_block;
+
+    dr_log(dc, LOG_CACHE, 3,
+           "drcalls: growing shared clean call code cache\n");
+
+    new_block = (code_cache_block_t *)dr_nonheap_alloc(
+        CODE_CACHE_BLOCK_SIZE, CODE_RWX);
+    new_block->next = NULL;
+
+    prev_block = code_cache->cur_block;
+    code_cache->cur_block = new_block;
+
+    /* If this was the first block we allocated, set the root to it.
+     * Otherwise, link it with the previous block. */
+    if (prev_block == NULL) {
+        code_cache->root = new_block;
+    } else {
+        code_cache_memprotect(prev_block, CODE_RWX);
+        prev_block->next = new_block;
+        code_cache_memprotect(prev_block, CODE_RX);
+    }
+    code_cache->cur_pc = (byte *)(new_block + 1);
+}
+
+static uint
+instrlist_length(void *drcontext, instrlist_t *ilist)
+{
+    instr_t *inst;
+    uint len = 0;
+    for (inst = instrlist_first(ilist); inst; inst = instr_get_next(inst)) {
+        len += instr_length(drcontext, inst);
+    }
+    return len;
+}
+
+/* Emit the slowpath back to the callee for partially inlined functions.
+ * Return the slowpath entry point. */
+static app_pc
+emit_partial_slowpath(void *dc, callee_info_t *ci)
+{
+    byte *entry;
+    instrlist_t *ilist;
+
+    LOG(dr_get_logfile(dc), LOG_CLEANCALL, 3,
+        "CLEANCALL: emitting partial inline slowpath\n");
+
+    /* Generate the clean call ilist.  Arguments should be materialized into
+     * registers at the callsite.  Application register values are already on
+     * the stack.
+     */
+    /* TODO(rnk): Make sure that the app can access the mcontext. */
+    ilist = instrlist_create(dc);
+    preinsert_push_mcontext(dc, NULL, ilist, NULL);
+    APP(ilist, INSTR_CREATE_call(dc, opnd_create_pc(ci->start)));
+    preinsert_pop_mcontext(dc, NULL, ilist, NULL);
+    APP(ilist, INSTR_CREATE_ret(dc));
+
+    /* Check that there's space to encode the ilist.  Clean calls on x86_64 use
+     * about 469 bytes, so we can usually pack about 8 calls per page. */
+    entry = align_to_cacheline(code_cache->cur_pc);
+    if (code_cache->cur_block == NULL ||
+        (entry + instrlist_length(dc, ilist) >
+         (byte*)code_cache->cur_block + CODE_CACHE_BLOCK_SIZE)) {
+        code_cache_grow(dc, code_cache);
+        entry = align_to_cacheline(code_cache->cur_pc);
+        DR_ASSERT_MSG(entry + instrlist_length(dc, ilist) <=
+                      (byte*)code_cache->cur_block + CODE_CACHE_BLOCK_SIZE,
+                      "Clean call did not fit in single code cache block!");
+    }
+
+    /* Unprotect the page, encode the instructions, and reprotect it. */
+    code_cache_memprotect(code_cache->cur_block, CODE_RWX);
+    code_cache->cur_pc = instrlist_encode(dc, ilist, entry, false);
+    code_cache_memprotect(code_cache->cur_block, CODE_RX);
+
+    LOG(dr_get_logfile(dc), LOG_CLEANCALL, 3,
+        "CLEANCALL: emitted partial inline slowpath:\n");
+    instrlist_disassemble(dc, entry, ilist, dr_get_logfile(dc));
+
+    instrlist_clear_and_destroy(dc, ilist);
+
+    ci->partial_slowpath = entry;
+    return entry;
 }

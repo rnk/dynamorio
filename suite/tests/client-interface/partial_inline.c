@@ -64,7 +64,9 @@ foo(char *a, char *b, char *c, char *d)
     stop_monitor();
 }
 
-int main(void) {
+int
+main(void)
+{
     char s[8];  /* Should have at least 4-byte alignment. */
     foo(&s[0], &s[1], &s[2], &s[3]);
     assert(s[0] == 0x11 && s[1] == 0x22 && s[2] == 0x33 && s[3] == 0x44);
