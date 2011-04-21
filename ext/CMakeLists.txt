@@ -33,6 +33,8 @@
 
 cmake_minimum_required(VERSION 2.6)
 
+option(BUILD_DRCALLS "build experimental drcalls extension" OFF)
+
 set(DynamoRIO_INTERNAL ON) # do not import dynamorio lib target
 set(DynamoRIO_DIR ${PROJECT_BINARY_DIR}/cmake)
 find_package(DynamoRIO ${VERSION_NUMBER_MAJOR}.${VERSION_NUMBER_MINOR})
@@ -67,7 +69,9 @@ endif (WIN32)
 file(GLOB dirs "*/CMakeLists.txt")
 foreach (dir ${dirs})
   get_filename_component(dir ${dir} PATH)
-  add_subdirectory(${dir})
+  if (BUILD_DRCALLS OR NOT ${dir} STREQUAL "drcalls")
+    add_subdirectory(${dir})
+  endif ()
 endforeach (dir)
 
 # documentation is put into main DR docs/ dir

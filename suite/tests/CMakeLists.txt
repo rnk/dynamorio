@@ -702,6 +702,17 @@ function(tobind target)
   )
 endfunction(tobind)
 
+function(tobuild_drcalls test source client_ops dr_ops exe_ops)
+  tobuild_ci("${test}" "${source}" "${client_ops}" "${dr_ops}" "${exe_ops}")
+  set(testlist_ci ${testlist_ci} PARENT_SCOPE)
+  set(${test}_source ${${test}_source} PARENT_SCOPE)
+  set(${test}_client_ops ${${test}_client_ops} PARENT_SCOPE)
+  set(${test}_dr_ops ${${test}_dr_ops} PARENT_SCOPE)
+  set(${test}_exe_ops ${${test}_exe_ops} PARENT_SCOPE)
+  set(${test}_client_path ${${test}_client_path} PARENT_SCOPE)
+  use_DynamoRIO_extension(${test}.dll drcalls)
+endfunction(tobuild_drcalls)
+
 # i#215: mark tests w/ text relocations to avoid violating selinux policies:
 # for that, pass in "textrel_shlib_t" as the type.
 # We also need to mark tests that make their stack +x: "execmem_exec_t"
@@ -1489,6 +1500,11 @@ if (NOT X64 OR TEST_SUITE) # fail on x64 so run only in suite
   tochcon(security-common.TestMemProtChg wine_exec_t)
   mark_execstack(security-common.TestMemProtChg)
 endif ()
+
+if (BUILD_DRCALLS)
+  tobuild_drcalls(drcalls.outofline "ext-drcalls/outofline.c" "" "" "")
+  tobuild_drcalls(drcalls.args "ext-drcalls/args.c" "" "" "")
+endif (BUILD_DRCALLS)
 
 ###########################################################################
 

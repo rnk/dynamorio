@@ -3566,15 +3566,9 @@ void
 dr_insert_clean_call(void *drcontext, instrlist_t *ilist, instr_t *where,
                      void *callee, bool save_fpstate, uint num_args, ...)
 {
-    dcontext_t *dcontext = (dcontext_t *) drcontext;
-    uint dstack_offs, pad = 0;
-    size_t buf_sz = 0;
-    clean_call_info_t cci; /* information for clean call insertion. */
-    opnd_t *args = NULL;
     va_list ap;
-    CLIENT_ASSERT(drcontext != NULL, "dr_insert_clean_call: drcontext cannot be NULL");
-    STATS_INC(cleancall_inserted);
-    LOG(THREAD, LOG_CLEANCALL, 2, "CLEANCALL: insert clean call to "PFX"\n", callee);
+    opnd_t *args = NULL;
+
     if (num_args != 0) {
         /* we don't check for GLOBAL_DCONTEXT since DR internally calls this */
         va_start(ap, num_args);
@@ -3582,8 +3576,33 @@ dr_insert_clean_call(void *drcontext, instrlist_t *ilist, instr_t *where,
         args = HEAP_ARRAY_ALLOC(drcontext, opnd_t, num_args,
                                 ACCT_CLEANCALL, UNPROTECTED);
         convert_va_list_to_opnd(args, num_args, ap);
-    va_end(ap);
+        va_end(ap);
     }
+    dr_insert_clean_call_vargs(drcontext, ilist, where, callee, save_fpstate,
+                               num_args, args);
+    if (num_args != 0) {
+        HEAP_ARRAY_FREE(drcontext, args, opnd_t, num_args,
+                        ACCT_CLEANCALL, UNPROTECTED);
+    }
+}
+
+/* Inserts a complete call to the callee with the passed-in arguments.  This is
+ * a non-varargs version of dr_insert_clean_call.  "args" is an array of opnd_t
+ * values of length num_args owned by the caller.  If num_args is 0, args may be
+ * NULL.
+ */
+void
+dr_insert_clean_call_vargs(void *drcontext, instrlist_t *ilist, instr_t *where,
+                           void *callee, bool save_fpstate, uint num_args,
+                           opnd_t *args)
+{
+    dcontext_t *dcontext = (dcontext_t *) drcontext;
+    uint dstack_offs, pad = 0;
+    size_t buf_sz = 0;
+    clean_call_info_t cci; /* information for clean call insertion. */
+    CLIENT_ASSERT(drcontext != NULL, "dr_insert_clean_call: drcontext cannot be NULL");
+    STATS_INC(cleancall_inserted);
+    LOG(THREAD, LOG_CLEANCALL, 2, "CLEANCALL: insert clean call to "PFX"\n", callee);
     /* analyze the clean call, return true if clean call can be inlined. */
     if (analyze_clean_call(dcontext, &cci, where, callee, 
                            save_fpstate, num_args, args)) {
@@ -3591,10 +3610,6 @@ dr_insert_clean_call(void *drcontext, instrlist_t *ilist, instr_t *where,
         STATS_INC(cleancall_inlined);
         LOG(THREAD, LOG_CLEANCALL, 2, "CLEANCALL: inlined callee "PFX"\n", callee);
         insert_inline_clean_call(dcontext, &cci, ilist, where, args);
-        if (num_args != 0) {
-            HEAP_ARRAY_FREE(drcontext, args, opnd_t, num_args,
-                            ACCT_CLEANCALL, UNPROTECTED);
-        }
         return;
     }
     dstack_offs = prepare_for_call_ex(dcontext, &cci, ilist, where);
@@ -3630,10 +3645,6 @@ dr_insert_clean_call(void *drcontext, instrlist_t *ilist, instr_t *where,
     instrlist_set_our_mangling(ilist, true);
     insert_meta_call_vargs(dcontext, ilist, where, true/*clean*/,
                            callee, num_args, args);
-    if (num_args != 0) {
-        HEAP_ARRAY_FREE(drcontext, args, opnd_t, num_args, 
-                        ACCT_CLEANCALL, UNPROTECTED);
-    }
     instrlist_set_our_mangling(ilist, false);
 
     if (save_fpstate) {
