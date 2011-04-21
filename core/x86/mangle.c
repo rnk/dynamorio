@@ -4923,7 +4923,7 @@ analyze_callee_save_reg(dcontext_t *dcontext, callee_info_t *ci)
     pop_xbp  = INSTR_CREATE_pop(dcontext, opnd_create_reg(DR_REG_XBP));
     /* Check enter/leave pair  */
     if ((instr_get_opcode(top) == OP_enter || instr_same(push_xbp, top)) &&
-        (instr_get_opcode(bot) == OP_leave || instr_same(pop_xbp, top))  &&
+        (instr_get_opcode(bot) == OP_leave || instr_same(pop_xbp, bot))  &&
         (ci->bwd_tgt == NULL || instr_get_app_pc(top) <  ci->bwd_tgt) &&
         (ci->fwd_tgt == NULL || instr_get_app_pc(bot) >= ci->fwd_tgt)) {
         /* xbp is callee saved, remove from reg_used*/
