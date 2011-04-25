@@ -91,6 +91,10 @@
 #endif
 #define XMM_OFFSET        ((MC_OFFS) + (offsetof(dr_mcontext_t, xmm)))
 
+#define NUM_GP_REGS   (1 + (IF_X64_ELSE(DR_REG_R15, DR_REG_XDI) - DR_REG_XAX))
+
+const int reg_mc_offset[NUM_GP_REGS];
+
 #define ERRNO_OFFSET      (offsetof(unprotected_context_t, errno))
 #define AT_SYSCALL_OFFSET (offsetof(unprotected_context_t, at_syscall))
 
@@ -229,7 +233,6 @@ typedef enum {
 #endif
 
 #define NUM_XMM_REGS  NUM_XMM_SAVED
-#define NUM_GP_REGS   (1 + (IF_X64_ELSE(DR_REG_R15, DR_REG_XDI) - DR_REG_XAX))
 
 /* information about each individual clean call invocation site */
 typedef struct _clean_call_info_t {

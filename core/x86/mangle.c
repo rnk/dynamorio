@@ -5946,7 +5946,7 @@ analyze_clean_call_regs(dcontext_t *dcontext, clean_call_info_t *cci)
             "CLEANCALL: if inserting clean call "PFX
             ", cannot skip saving reg xax.\n", info->start);
         cci->reg_skip[0] = false;
-        cci->num_regs_skip++;
+        cci->num_regs_skip--;
     }
 }
 
@@ -6140,42 +6140,38 @@ analyze_clean_call(dcontext_t *dcontext, clean_call_info_t *cci, instr_t *where,
 }
 
 static void
-insert_inline_reg_save(dcontext_t *dcontext, clean_call_info_t *cci,
+insert_inline_reg_save(dcontext_t *dc, clean_call_info_t *cci,
                        instrlist_t *ilist, instr_t *where, opnd_t *args)
 {
-    IF_DEBUG(callee_info_t *info = cci->callee_info;)
+    LOG_DECLARE(callee_info_t *info = cci->callee_info;)
     int i;
 
     /* Spill XSP to TLS_XAX_SLOT because it's not exposed to the client. */
-    PRE(ilist, where, instr_create_save_to_tls
-        (dcontext, DR_REG_XSP, TLS_XAX_SLOT));
+    PRE(ilist, where, instr_create_save_to_tls(dc, DR_REG_XSP, TLS_XAX_SLOT));
 
-    /* Switch to dstack. */
-    insert_get_mcontext_base(dcontext, ilist, where, REG_XSP);
-    PRE(ilist, where, instr_create_restore_from_dc_via_reg
-        (dcontext, DR_REG_XSP, DR_REG_XSP, DSTACK_OFFSET));
+    /* Load dcontext pointer into XSP.  We use XSP since all stack accesses in
+     * the callee are rewritten, so we know XSP is dead. */
+    insert_get_mcontext_base(dc, ilist, where, DR_REG_XSP);
 
     ASSERT(cci->num_xmms_skip == NUM_XMM_REGS);
     for (i = 0; i < NUM_GP_REGS; i++) {
         if (!cci->reg_skip[i]) {
-            LOG(THREAD, LOG_CLEANCALL, 2,
+            reg_id_t reg = DR_REG_XAX + (reg_id_t)i;
+            LOG(dr_get_logfile(dc), LOG_CLEANCALL, 2,
                 "CLEANCALL: inlining clean call "PFX", saving reg %s.\n",
-                info->start, reg_names[DR_REG_XAX + (reg_id_t)i]);
-            PRE(ilist, where, INSTR_CREATE_push
-                (dcontext, opnd_create_reg(DR_REG_XAX + (reg_id_t)i)));
+                info->start, reg_names[reg]);
+            PRE(ilist, instr, instr_create_save_to_dc_via_reg
+                (dc, DR_REG_XSP, reg, reg_mc_offset[i]));
         }
     }
 
     if (!cci->skip_save_aflags) {
-        PRE(ilist, where, INSTR_CREATE_pushf(dcontext));
-    }
-
-    /* If we had to rewrite a local var stack access, make space for it without
-     * touching aflags. */
-    if (((callee_info_t*)cci->callee_info)->has_locals) {
-        PRE(ilist, where, INSTR_CREATE_lea
-            (dcontext, opnd_create_reg(DR_REG_XSP), OPND_CREATE_MEM_lea
-             (DR_REG_XSP, DR_REG_NULL, 0, -(int)sizeof(reg_t))));
+        ASSERT_MSG(!cci->reg_skip[0], "XAX must be saved to save aflags!");
+        PRE(ilist, where, INSTR_CREATE_lahf(dc));
+        PRE(ilist, where, INSTR_CREATE_setcc
+            (dc, OP_seto, opnd_create_reg(DR_REG_AL)));
+        PRE(ilist, instr, instr_create_save_to_dc_via_reg
+            (dc, DR_REG_XSP, DR_REG_XAX, XFLAGS_OFFSET));
     }
 }
 
@@ -6186,26 +6182,24 @@ insert_inline_reg_restore(dcontext_t *dcontext, clean_call_info_t *cci,
     int i;
     callee_info_t *ci = cci->callee_info;
 
-    /* Clear stack space for local var if we had one. */
-    if (ci->has_locals) {
-        PRE(ilist, where, INSTR_CREATE_lea
-            (dcontext, opnd_create_reg(DR_REG_XSP),
-             OPND_CREATE_MEM_lea(DR_REG_XSP, DR_REG_NULL, 0, sizeof(reg_t))));
-    }
-
     /* aflags is next. */
     if (!cci->skip_save_aflags) {
-        PRE(ilist, where, INSTR_CREATE_popf(dcontext));
+        PRE(ilist, instr, instr_create_restore_from_dc_via_reg
+            (dc, DR_REG_XSP, DR_REG_XAX, XFLAGS_OFFSET));
+        PRE(ilist, where, INSTR_CREATE_add
+            (dc, opnd_create_reg(DR_REG_AL), OPND_CREATE_INT8(0x7F)));
+        PRE(ilist, where, INSTR_CREATE_sahf(dc));
     }
 
     /* Now restore all registers. */
     for (i = NUM_GP_REGS - 1; i >= 0; i--) {
         if (!cci->reg_skip[i]) {
+            reg_id_t reg = DR_REG_XAX + (reg_id_t)i;
             LOG(THREAD, LOG_CLEANCALL, 2,
                 "CLEANCALL: inlining clean call "PFX", restoring reg %s.\n",
-                ci->start, reg_names[DR_REG_XAX + (reg_id_t)i]);
-            PRE(ilist, where, INSTR_CREATE_pop
-                (dcontext, opnd_create_reg(DR_REG_XAX + (reg_id_t)i)));
+                ci->start, reg_names[reg]);
+            PRE(ilist, instr, instr_create_restore_from_dc_via_reg
+                (dc, DR_REG_XSP, reg, reg_mc_offset[i]));
         }
     }
 
@@ -6220,7 +6214,7 @@ insert_inline_arg_setup(dcontext_t *dcontext, clean_call_info_t *cci,
 {
     reg_id_t reg;
     uint i;
-    DEBUG_DECLARE(callee_info_t *ci = cci->callee_info;)
+    LOG_DECLARE(callee_info_t *ci = cci->callee_info;)
 
     if (cci->num_args == 0)
         return;

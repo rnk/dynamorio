@@ -94,6 +94,7 @@ struct instr_info_t;
  * our use in instr_info_t.code.
  * Also, reg_names array in encode.c corresponds to this enum order.
  * Plus, reg_fixer array in instr.c.
+ * Plus, reg_mc_offset array in arch.c.
  * Lots of optimizations assume same ordering of registers among
  * 32, 16, and 8  i.e. eax same position (first) in each etc.
  * reg_rm_selectable() assumes the GPR registers, mmx, and xmm are all in a row.

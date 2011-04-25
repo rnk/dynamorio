@@ -100,6 +100,30 @@ static byte *
 emit_syscall_routines(dcontext_t *dcontext, generated_code_t *code, byte *pc,
                       bool thread_shared);
 
+/* Maps DR_REG_* enums to offsets into dr_mcontext_t.  Relies on register enum
+ * ordering in instr.h.  Indexed by DR_REG_X* - DR_REG_XAX. */
+const int reg_mc_offset[NUM_GP_REGS] = {
+    XAX_OFFSET,
+    XCX_OFFSET,
+    XDX_OFFSET,
+    XBX_OFFSET,
+    XSP_OFFSET,
+    XBP_OFFSET,
+    XSI_OFFSET,
+    XDI_OFFSET
+#ifdef X64
+    ,
+    R8_OFFSET,
+    R9_OFFSET,
+    R10_OFFSET,
+    R11_OFFSET,
+    R12_OFFSET,
+    R13_OFFSET,
+    R14_OFFSET,
+    R15_OFFSET
+#endif
+};
+
 int
 reg_spill_tls_offs(reg_id_t reg)
 {
