@@ -238,7 +238,12 @@ check_count(void)
 }
 
 /* Reset count and patch the out-of-line version of the instrumentation function
- * so we can find out if it got called, which would mean it wasn't inlined. */
+ * so we can find out if it got called, which would mean it wasn't inlined.
+ *
+ * XXX: We are using self-modifying code on the callee!  If DR tries to
+ * disassemble the callee's ilist after the modification, it will trigger
+ * assertion failures in the disassembler.
+ */
 static void
 before_callee(app_pc func, const char *func_name)
 {
@@ -306,15 +311,7 @@ static int reg_offsets[NUM_GP_REGS + 1] = {
     offsetof(dr_mcontext_t, r14),
     offsetof(dr_mcontext_t, r15),
 #endif
-    offsetof(dr_mcontext_t, xflags),
-};
-
-static const char *reg_names[NUM_GP_REGS + 1] = {
-    "xax", "xbx", "xcx", "xdx", "xdi", "xsi", "xbp", "xsp",
-#ifdef X64
-    "r8 ", "r9 ", "r10", "r11", "r12", "r13", "r14", "r15",
-#endif
-    "xflags"
+    offsetof(dr_mcontext_t, xflags)
 };
 
 static void
@@ -323,15 +320,25 @@ after_callee(bool inline_expected, const char *func_name)
     int i;
     void *dc;
 
+#if defined(WINDOWS) && !defined(X64)
+    int xmm_uninit;
+    int num_uninit;
+#endif
+
     /* Save mcontext after call. */
     dc = dr_get_current_drcontext();
     dr_get_mcontext(dc, &after_mcontext, &after_errno);
 
 #if defined(WINDOWS) && !defined(X64)
-    /* On 32-bit Windows xmm6-7 are not saved and left uninitialized, which
-     * creates spurious differences.  Zero them out. */
-    memset(&before_mcontext.xmm[6], 0, 2 * sizeof(dr_xmm_t));
-    memset(&after_mcontext.xmm[6], 0, 2 * sizeof(dr_xmm_t));
+    /* For a 32-bit build on a 32-bit Windows kernel, no xmm registers are
+     * saved, and the array is left uninitialized.  On WOW64 xmm6-7 are not
+     * saved.  To avoid spurious failures, we zero out the uninit slots.
+     * On pure X64, there are only 6 slots, so none are uninitialized.
+     */
+    xmm_uninit = dr_is_wow64() ? 6 : 0;
+    num_uninit = NUM_XMM_SLOTS - xmm_uninit;
+    memset(&before_mcontext.xmm[xmm_uninit], 0, num_uninit * sizeof(dr_xmm_t));
+    memset(&after_mcontext.xmm[xmm_uninit], 0, num_uninit * sizeof(dr_xmm_t));
 #endif
 
     /* Compare mcontexts. */
@@ -345,11 +352,15 @@ after_callee(bool inline_expected, const char *func_name)
         for (i = 0; i < NUM_GP_REGS + 1; i++) {
             reg_t before_reg = *(reg_t*)((byte*)&before_mcontext + reg_offsets[i]);
             reg_t after_reg  = *(reg_t*)((byte*)&after_mcontext  + reg_offsets[i]);
+            const char *reg_name = (i < NUM_GP_REGS ?
+                                    get_register_name(DR_REG_XAX + i) :
+                                    "xflags");
             const char *diff_str = (before_reg == after_reg ?
                                     "" : " <- DIFFERS");
             dr_fprintf(STDERR, "%s before: "PFX" after: "PFX"%s\n",
-                       reg_names[i], before_reg, after_reg, diff_str);
+                       reg_name, before_reg, after_reg, diff_str);
         }
+
         dr_fprintf(STDERR, "Printing XMM regs:\n");
         for (i = 0; i < NUM_XMM_SLOTS; i++) {
             dr_xmm_t before_reg = before_mcontext.xmm[i];

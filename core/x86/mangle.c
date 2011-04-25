@@ -3192,7 +3192,8 @@ mangle_exit_cti_prefixes(dcontext_t *dcontext, instr_t *instr)
 
 #ifdef X64
 /* PR 215397: re-relativize rip-relative data addresses */
-static void
+/* i#393, returned bool indicates if the instr is destroyed. */
+static bool
 mangle_rel_addr(dcontext_t *dcontext, instrlist_t *ilist, instr_t *instr,
                 instr_t *next_instr)
 {
@@ -3239,6 +3240,7 @@ mangle_rel_addr(dcontext_t *dcontext, instrlist_t *ilist, instr_t *instr,
         instrlist_remove(ilist, instr);
         instr_destroy(dcontext, instr);
         STATS_INC(rip_rel_lea);
+        return true;
     } else {
         /* PR 251479 will automatically re-relativize if it reaches,
          * but if it doesn't we need to handle that here (since that
@@ -3324,6 +3326,7 @@ mangle_rel_addr(dcontext_t *dcontext, instrlist_t *ilist, instr_t *instr,
             STATS_INC(rip_rel_unreachable);
         }        
     }
+    return false;
 }
 #endif
 
@@ -3624,13 +3627,16 @@ mangle(dcontext_t *dcontext, instrlist_t *ilist, uint flags,
 #endif
 
 #ifdef X64
-        /* FIXME: mangle_rel_addr might destroy the instr if it is a LEA,
-         * which makes instr points to freed memory.
+        /* i#393: mangle_rel_addr might destroy the instr if it is a LEA,
+         * which makes instr point to freed memory.
          * In such case, the control should skip later checks on the instr
          * for exit_cti and syscall.
+         * skip the rest of the loop if instr is destroyed.
          */
-        if (instr_has_rel_addr_reference(instr))
-            mangle_rel_addr(dcontext, ilist, instr, next_instr);
+        if (instr_has_rel_addr_reference(instr)) {
+            if (mangle_rel_addr(dcontext, ilist, instr, next_instr))
+                continue;
+        }
 #endif
 
         if (instr_is_exit_cti(instr)) {
@@ -6160,23 +6166,23 @@ insert_inline_reg_save(dcontext_t *dc, clean_call_info_t *cci,
             LOG(dr_get_logfile(dc), LOG_CLEANCALL, 2,
                 "CLEANCALL: inlining clean call "PFX", saving reg %s.\n",
                 info->start, reg_names[reg]);
-            PRE(ilist, instr, instr_create_save_to_dc_via_reg
+            PRE(ilist, where, instr_create_save_to_dc_via_reg
                 (dc, DR_REG_XSP, reg, reg_mc_offset[i]));
         }
     }
 
     if (!cci->skip_save_aflags) {
-        ASSERT_MSG(!cci->reg_skip[0], "XAX must be saved to save aflags!");
+        DR_ASSERT_MSG(!cci->reg_skip[0], "XAX must be saved to save aflags!");
         PRE(ilist, where, INSTR_CREATE_lahf(dc));
         PRE(ilist, where, INSTR_CREATE_setcc
             (dc, OP_seto, opnd_create_reg(DR_REG_AL)));
-        PRE(ilist, instr, instr_create_save_to_dc_via_reg
+        PRE(ilist, where, instr_create_save_to_dc_via_reg
             (dc, DR_REG_XSP, DR_REG_XAX, XFLAGS_OFFSET));
     }
 }
 
 static void
-insert_inline_reg_restore(dcontext_t *dcontext, clean_call_info_t *cci,
+insert_inline_reg_restore(dcontext_t *dc, clean_call_info_t *cci,
                           instrlist_t *ilist, instr_t *where)
 {
     int i;
@@ -6184,7 +6190,7 @@ insert_inline_reg_restore(dcontext_t *dcontext, clean_call_info_t *cci,
 
     /* aflags is next. */
     if (!cci->skip_save_aflags) {
-        PRE(ilist, instr, instr_create_restore_from_dc_via_reg
+        PRE(ilist, where, instr_create_restore_from_dc_via_reg
             (dc, DR_REG_XSP, DR_REG_XAX, XFLAGS_OFFSET));
         PRE(ilist, where, INSTR_CREATE_add
             (dc, opnd_create_reg(DR_REG_AL), OPND_CREATE_INT8(0x7F)));
@@ -6195,17 +6201,17 @@ insert_inline_reg_restore(dcontext_t *dcontext, clean_call_info_t *cci,
     for (i = NUM_GP_REGS - 1; i >= 0; i--) {
         if (!cci->reg_skip[i]) {
             reg_id_t reg = DR_REG_XAX + (reg_id_t)i;
-            LOG(THREAD, LOG_CLEANCALL, 2,
+            LOG(dr_get_logfile(dc), LOG_CLEANCALL, 2,
                 "CLEANCALL: inlining clean call "PFX", restoring reg %s.\n",
                 ci->start, reg_names[reg]);
-            PRE(ilist, instr, instr_create_restore_from_dc_via_reg
+            PRE(ilist, where, instr_create_restore_from_dc_via_reg
                 (dc, DR_REG_XSP, reg, reg_mc_offset[i]));
         }
     }
 
     /* Switch back to app stack. */
     PRE(ilist, where, instr_create_restore_from_tls
-        (dcontext, DR_REG_XSP, TLS_XAX_SLOT));
+        (dc, DR_REG_XSP, TLS_XAX_SLOT));
 }
 
 static void
@@ -6425,9 +6431,9 @@ emit_partial_slowpath(void *dc, callee_info_t *ci)
      */
     /* TODO(rnk): Make sure that the app can access the mcontext. */
     ilist = instrlist_create(dc);
-    preinsert_push_mcontext(dc, NULL, ilist, NULL);
+    prepare_for_clean_call(dc, NULL, ilist, NULL);
     APP(ilist, INSTR_CREATE_call(dc, opnd_create_pc(ci->start)));
-    preinsert_pop_mcontext(dc, NULL, ilist, NULL);
+    cleanup_after_clean_call(dc, NULL, ilist, NULL);
     APP(ilist, INSTR_CREATE_ret(dc));
 
     /* Check that there's space to encode the ilist.  Clean calls on x86_64 use
