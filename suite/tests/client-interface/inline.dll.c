@@ -318,7 +318,11 @@ after_callee(bool inline_expected, const char *func_name)
 {
     int i;
     void *dc;
-    IF_WINDOWS(IF_NOT_X64(int xmm_uninit, num_uninit;))
+
+#if defined(WINDOWS) && !defined(X64)
+    int xmm_uninit;
+    int num_uninit;
+#endif
 
     /* Save mcontext after call. */
     dc = dr_get_current_drcontext();
