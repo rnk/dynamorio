@@ -508,6 +508,7 @@ event_basic_block(void *dc, void *tag, instrlist_t *bb,
                                  OPND_CREATE_INT32((int)0xDEADBEEF));
             dr_insert_clean_call(dc, bb, entry, (void*)check_count, false, 0);
             break;
+        case FN_cond_br:
         case FN_nonleaf:
         case FN_decode_past_ret:
         case FN_decode_loop:
@@ -937,6 +938,7 @@ codegen_decode_past_ret(void *dc)
     codegen_epilogue(dc, ilist);
     APP(ilist, l_past);
     APP(ilist, INSTR_CREATE_mov_imm(dc, xcx, OPND_CREATE_INTPTR(1)));
+    APP(ilist, INSTR_CREATE_jmp(dc, opnd_create_instr(l_ret)));
     return ilist;
 }
 

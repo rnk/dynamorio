@@ -106,7 +106,8 @@ typedef struct _callee_info_t {
     bool has_cti;             /* true if callee has any control flow */
     bool is_leaf;             /* true if all control flow is within callee */
     instrlist_t *ilist;       /* instruction list of function for inline. */
-    app_pc partial_slowpath;
+    instr_t *partial_label;   /* label of slowpath entry */
+    uint framesize;           /* size of the frame on dstack */
 } callee_info_t;
 static callee_info_t     default_callee_info;
 static clean_call_info_t default_clean_call_info;
@@ -142,6 +143,8 @@ callee_info_init(callee_info_t *ci)
         ci->reg_used[i] = true;
     for (i = 0; i < NUM_GP_REGS; i++)
         ci->reg_used[i] = true;
+    /* The frame should hold at least the mcontext. */
+    ci->framesize = sizeof(dr_mcontext_t);
 }
 
 static void
@@ -657,10 +660,6 @@ clean_call_beyond_mcontext(void)
     return XSP_SZ/*errno*/ IF_X64(+ XSP_SZ/*align*/);
 }
 
-static uint
-preinsert_push_mcontext(dcontext_t *dcontext, clean_call_info_t *cci,
-                        instrlist_t *ilist, instr_t *instr);
-
 /* prepare_for and cleanup_after assume that the stack looks the same after
  * the call to the instrumentation routine, since it stores the app state
  * on the stack.
@@ -696,6 +695,8 @@ uint
 prepare_for_clean_call(dcontext_t *dcontext, clean_call_info_t *cci,
                        instrlist_t *ilist, instr_t *instr)
 {
+    uint dstack_offs = 0;
+
     /* Swap stacks.  For thread-shared, we need to get the dcontext
      * dynamically rather than use the constant passed in here.  Save
      * away xax in a TLS slot and then load the dcontext there.
@@ -734,15 +735,6 @@ prepare_for_clean_call(dcontext_t *dcontext, clean_call_info_t *cci,
         PRE(ilist, instr, instr_create_save_to_dcontext(dcontext, REG_XSP, XSP_OFFSET));
         PRE(ilist, instr, instr_create_restore_dynamo_stack(dcontext));
     }
-
-    return preinsert_push_mcontext(dcontext, cci, ilist, instr);
-}
-
-static uint
-preinsert_push_mcontext(dcontext_t *dcontext, clean_call_info_t *cci,
-                        instrlist_t *ilist, instr_t *instr)
-{
-    uint dstack_offs = 0;
 
     if (cci == NULL)
         cci = &default_clean_call_info;
@@ -846,9 +838,9 @@ preinsert_push_mcontext(dcontext_t *dcontext, clean_call_info_t *cci,
     return dstack_offs;
 }
 
-static void
-preinsert_pop_mcontext(dcontext_t *dcontext, clean_call_info_t *cci,
-                       instrlist_t *ilist, instr_t *instr)
+void
+cleanup_after_clean_call(dcontext_t *dcontext, clean_call_info_t *cci,
+                         instrlist_t *ilist, instr_t *instr)
 {
     if (cci == NULL)
         cci = &default_clean_call_info;
@@ -903,13 +895,6 @@ preinsert_pop_mcontext(dcontext_t *dcontext, clean_call_info_t *cci,
             (dcontext, opnd_create_reg(REG_XSP),
              OPND_CREATE_MEM_lea(REG_XSP, REG_NULL, 0, (int)XSP_SZ)));
     }
-}
-
-void
-cleanup_after_clean_call(dcontext_t *dcontext, clean_call_info_t *cci,
-                         instrlist_t *ilist, instr_t *instr)
-{
-    preinsert_pop_mcontext(dcontext, cci, ilist, instr);
 
     /* Swap stacks back.  For thread-shared, we need to get the dcontext
      * dynamically.  Save xax in TLS so we can use it as scratch.
@@ -4580,7 +4565,7 @@ finalize_selfmod_sandbox(dcontext_t *dcontext, fragment_t *f)
 
 static void partial_cache_init(void);
 static void partial_cache_fini(void);
-static app_pc emit_partial_slowpath(void *dc, callee_info_t *ci);
+static app_pc emit_partial_slowpath(dcontext_t *dc, callee_info_t *ci);
 
 /* The max number of instructions try to decode from a function. */
 #define MAX_NUM_FUNC_INSTRS 1024
@@ -5519,6 +5504,7 @@ analyze_callee_partial(dcontext_t *dc, callee_info_t *ci)
     instr_t *fallthrough_instr;
     instr_t *fastpath_start;
     instr_t *slowpath_start;
+    instr_t *slowpath_end;
     instr_t *instr;
     instr_t *next_instr;
     opnd_t tgt;
@@ -5569,7 +5555,6 @@ analyze_callee_partial(dcontext_t *dc, callee_info_t *ci)
         LOG(dr_get_logfile(dc), LOG_CLEANCALL, 2,
             "CLEANCALL: both paths at "PFX" and "PFX" are fast.\n",
             instr_get_app_pc(fallthrough_instr), instr_get_app_pc(tgt_instr));
-        ci->opt_partial = true;
         return;
     } else if (taken_fast) {
         fastpath_start = tgt_instr;
@@ -5602,16 +5587,38 @@ analyze_callee_partial(dcontext_t *dc, callee_info_t *ci)
 
     /* Emit slowpath transition code and insert jmp into slowpath.  We need to
      * rematerialize args here, but those are different for every call site.
-     * This call is used to mark the spot where the inliner should rematerialize
-     * arguments for the slowpath.  Mark the call meta to avoid other manglings.
+     *
+     * TODO(rnk): Save a slowpath_start label into callee_info so different
+     * callsites can rematerialize arguments if necessary.
      */
     LOG(dr_get_logfile(dc), LOG_CLEANCALL, 2,
         "CLEANCALL: callee is a candidate for partial inlining.\n");
     ci->opt_partial = true;
-    emit_partial_slowpath(dc, ci);
-    POST(ci->ilist, slowpath_start, INSTR_CREATE_call
-         (GLOBAL_DCONTEXT, opnd_create_pc(ci->partial_slowpath)));
 
+    /* Add a dummy label so we can use PRE to add code in order, and so we can
+     * return to it. */
+    slowpath_end = INSTR_CREATE_label(GLOBAL_DCONTEXT);
+    POST(ci->ilist, slowpath_start, slowpath_end);
+
+    /* Put the return addr into XAX. */
+    /* TODO(rnk): XAX might not be dead, should put on stack, should beef up
+     * stack management code. */
+    ci->framesize += sizeof(reg_t);
+    LOG(dr_get_logfile(dc), LOG_CLEANCALL, 2,
+        "CLEANCALL: %s: increasing ci->framesize\n", __FUNCTION__);
+    PRE(ci->ilist, slowpath_end, INSTR_CREATE_mov_imm
+        (GLOBAL_DCONTEXT, opnd_create_reg(DR_REG_XAX),
+         opnd_create_instr(slowpath_end)));
+
+    /* Circular dependency issue: we can't emit the slowpath for the partially
+     * inlined code until we've done further analysis of register and stack
+     * usage.  We leave this jmp to a label and fix it up later.  We actually
+     * insert the label into the ilist to avoid memory leaks if inlining fails.
+     */
+    ci->partial_label = INSTR_CREATE_label(GLOBAL_DCONTEXT);
+    PRE(ci->ilist, slowpath_end, INSTR_CREATE_jmp
+        (GLOBAL_DCONTEXT, opnd_create_instr(ci->partial_label)));
+    PRE(ci->ilist, slowpath_end, ci->partial_label);
 
     /* Re-calculate the number of instructions, since we just deleted a bunch.
      */
@@ -5677,7 +5684,9 @@ analyze_callee_inline(dcontext_t *dcontext, callee_info_t *ci)
     }
 
     /* Remove trailing ret if we're going to inline. */
-    /* TODO(rnk): Handle ret not being last instruction. */
+    /* TODO(rnk): Handle ret not being last instruction and multiple rets.
+     * Idea: Create label at last ilist instruction and insert short jumps to
+     * it. */
     instr = instrlist_last(ci->ilist);
     if (instr != NULL && instr_is_return(instr)) {
         remove_and_destroy(GLOBAL_DCONTEXT, ci->ilist, instr);
@@ -5702,14 +5711,13 @@ analyze_callee_inline(dcontext_t *dcontext, callee_info_t *ci)
             break;
         } else if (instr_writes_to_reg(instr, DR_REG_XSP)) {
             /* TODO(rnk): For partial inlining, it would be best to pull this
-             * analysis code into the analysis so we can know the frame size.
-             * For now we cannot partially inline callees that adjust the stack
-             * in the prologue. */
+             * analysis code out so we can know the frame size.  For now we
+             * cannot partially inline callees that adjust the stack in the
+             * prologue. */
             /* stack pointer update, we only allow:
              * lea [xsp, disp] => xsp
              * xsp + imm_int => xsp
              * xsp - imm_int => xsp
-             * call partial_slowpath
              */
             if (ci->has_locals) {
                 /* we do not allow stack adjustment after accessing the stack */
@@ -5726,17 +5734,6 @@ analyze_callee_inline(dcontext_t *dcontext, callee_info_t *ci)
                 /* xsp +/- int => xsp */
                 if (!opnd_is_immed_int(instr_get_src(instr, 0)))
                     opt_inline = false;
-            } else if (opc == OP_call && ci->opt_partial) {
-                /* call partial_slowpath */
-                opnd = instr_get_target(instr);
-                if (opnd_is_pc(opnd) &&
-                    opnd_get_pc(opnd) == ci->partial_slowpath) {
-                    /* Stop further analysis on this instruction, or it will be
-                     * removed. */
-                    continue;
-                } else {
-                    opt_inline = false;
-                }
             } else {
                 /* other cases like push/pop are not allowed */
                 opt_inline = false;
@@ -5844,6 +5841,13 @@ analyze_callee_inline(dcontext_t *dcontext, callee_info_t *ci)
             }
         }
     }
+    if (ci->has_locals) {
+        ci->framesize += sizeof(reg_t);
+        LOG(dr_get_logfile(dcontext), LOG_CLEANCALL, 2,
+            "CLEANCALL: %s: increasing ci->framesize\n", __FUNCTION__);
+    }
+    ci->framesize = ALIGN_FORWARD_UINT(ci->framesize, 16);
+
     if (instr == NULL && opt_inline) {
         ci->opt_inline = true;
         LOG(THREAD, LOG_CLEANCALL, 1,
@@ -5854,6 +5858,27 @@ analyze_callee_inline(dcontext_t *dcontext, callee_info_t *ci)
             "CLEANCALL: callee "PFX" cannot be inlined.\n", ci->start);
         instrlist_clear_and_destroy(GLOBAL_DCONTEXT, ci->ilist);
         ci->ilist = NULL;
+        return;
+    }
+
+    /* If we succeeded in partial inlining, emit the slowpath and fix up the
+     * jmp to the label. */
+    if (ci->opt_partial) {
+        app_pc slowpath_pc = emit_partial_slowpath(dcontext, ci);
+        for (instr = instrlist_first(ci->ilist); instr != NULL;
+             instr = instr_get_next(instr)) {
+            if (instr_is_ubr(instr) &&
+                opnd_is_instr(instr_get_target(instr)) &&
+                opnd_get_instr(instr_get_target(instr)) == ci->partial_label) {
+                /* TODO(rnk): Reachability on X64! */
+                instr_set_target(instr, opnd_create_pc(slowpath_pc));
+                /* Label is no longer needed. */
+                remove_and_destroy(GLOBAL_DCONTEXT, ci->ilist,
+                                   ci->partial_label);
+                ci->partial_label = NULL;
+                break;
+            }
+        }
     }
 }
 
@@ -6145,39 +6170,105 @@ analyze_clean_call(dcontext_t *dcontext, clean_call_info_t *cci, instr_t *where,
     return false;
 }
 
+/* Turn an offset into dr_mcontext_t into an opnd_t that will access that slot
+ * for this callee.  For example, mc_frame_opnd(ci, XAX_OFFSET) gets a memory
+ * operand for the XAX slot.
+ */
+static opnd_t
+mc_frame_opnd(callee_info_t *ci, uint mc_offset)
+{
+    uint frame_offset = ci->framesize - mc_offset - sizeof(reg_t);
+    return OPND_CREATE_MEMPTR(DR_REG_XSP, frame_offset);
+}
+
+/* Saves a register to the mcontext at the base of the stack.  Assumes XSP is
+ * at dstack - framesize.
+ */
+static void
+insert_mc_reg_save(dcontext_t *dc, callee_info_t *ci, instrlist_t *ilist,
+                   instr_t *where, reg_id_t reg)
+{
+    PRE(ilist, where, INSTR_CREATE_mov_st
+        (dc, mc_frame_opnd(ci, reg_mc_offset[reg - DR_REG_XAX]),
+         opnd_create_reg(reg)));
+}
+
+/* Loads a register from the mcontext at the base of the stack.  Assumes XSP is
+ * at dstack - framesize.
+ */
+static void
+insert_mc_reg_restore(dcontext_t *dc, callee_info_t *ci, instrlist_t *ilist,
+                      instr_t *where, reg_id_t reg)
+{
+    PRE(ilist, where, INSTR_CREATE_mov_ld
+        (dc, opnd_create_reg(reg),
+         mc_frame_opnd(ci, reg_mc_offset[reg - DR_REG_XAX])));
+}
+
+/* Saves aflags to the mcontext at the base of the stack.  Assumes XSP is at
+ * dstack - framesize.  Assumes that XAX is dead and can be used as scratch.
+ */
+static void
+insert_mc_flags_save(dcontext_t *dc, callee_info_t *ci, instrlist_t *ilist,
+                     instr_t *where)
+{
+    PRE(ilist, where, INSTR_CREATE_lahf(dc));
+    PRE(ilist, where, INSTR_CREATE_setcc
+        (dc, OP_seto, opnd_create_reg(DR_REG_AL)));
+    PRE(ilist, where, INSTR_CREATE_mov_st
+        (dc, mc_frame_opnd(ci, XFLAGS_OFFSET), opnd_create_reg(DR_REG_XAX)));
+}
+
+/* Saves aflags to the mcontext at the base of the stack.  Assumes XSP is at
+ * dstack - framesize.  Assumes that XAX is dead and can be used as scratch.
+ */
+static void
+insert_mc_flags_restore(dcontext_t *dc, callee_info_t *ci, instrlist_t *ilist,
+                        instr_t *where)
+{
+    PRE(ilist, where, INSTR_CREATE_mov_ld
+        (dc, opnd_create_reg(DR_REG_XAX), mc_frame_opnd(ci, XFLAGS_OFFSET)));
+    PRE(ilist, where, INSTR_CREATE_add
+        (dc, opnd_create_reg(DR_REG_AL), OPND_CREATE_INT8(0x7F)));
+    PRE(ilist, where, INSTR_CREATE_sahf(dc));
+}
+
 static void
 insert_inline_reg_save(dcontext_t *dc, clean_call_info_t *cci,
                        instrlist_t *ilist, instr_t *where, opnd_t *args)
 {
-    LOG_DECLARE(callee_info_t *info = cci->callee_info;)
+    callee_info_t *ci = cci->callee_info;
     int i;
+
+    LOG(dr_get_logfile(dc), LOG_CLEANCALL, 3,
+        "CLEANCALL: insert_inline_reg_save: ci->framesize: %u\n", ci->framesize);
 
     /* Spill XSP to TLS_XAX_SLOT because it's not exposed to the client. */
     PRE(ilist, where, instr_create_save_to_tls(dc, DR_REG_XSP, TLS_XAX_SLOT));
 
-    /* Load dcontext pointer into XSP.  We use XSP since all stack accesses in
-     * the callee are rewritten, so we know XSP is dead. */
+    /* Switch to dstack and make room for a partially initialized mcontext
+     * structure. */
     insert_get_mcontext_base(dc, ilist, where, DR_REG_XSP);
+    PRE(ilist, where, instr_create_restore_from_dc_via_reg
+        (dc, DR_REG_XSP, DR_REG_XSP, DSTACK_OFFSET));
+    PRE(ilist, where, INSTR_CREATE_lea
+        (dc, opnd_create_reg(DR_REG_XSP),
+         OPND_CREATE_MEM_lea(DR_REG_XSP, DR_REG_NULL, 0, -ci->framesize)));
 
     ASSERT(cci->num_xmms_skip == NUM_XMM_REGS);
     for (i = 0; i < NUM_GP_REGS; i++) {
-        if (!cci->reg_skip[i]) {
+        if (ci->reg_used[i]) {
             reg_id_t reg = DR_REG_XAX + (reg_id_t)i;
             LOG(dr_get_logfile(dc), LOG_CLEANCALL, 2,
                 "CLEANCALL: inlining clean call "PFX", saving reg %s.\n",
-                info->start, reg_names[reg]);
-            PRE(ilist, where, instr_create_save_to_dc_via_reg
-                (dc, DR_REG_XSP, reg, reg_mc_offset[i]));
+                ci->start, reg_names[reg]);
+            insert_mc_reg_save(dc, ci, ilist, where, reg);
         }
     }
 
     if (!cci->skip_save_aflags) {
         DR_ASSERT_MSG(!cci->reg_skip[0], "XAX must be saved to save aflags!");
-        PRE(ilist, where, INSTR_CREATE_lahf(dc));
-        PRE(ilist, where, INSTR_CREATE_setcc
-            (dc, OP_seto, opnd_create_reg(DR_REG_AL)));
-        PRE(ilist, where, instr_create_save_to_dc_via_reg
-            (dc, DR_REG_XSP, DR_REG_XAX, XFLAGS_OFFSET));
+        insert_mc_flags_save(dc, ci, ilist, where);
     }
 }
 
@@ -6188,24 +6279,19 @@ insert_inline_reg_restore(dcontext_t *dc, clean_call_info_t *cci,
     int i;
     callee_info_t *ci = cci->callee_info;
 
-    /* aflags is next. */
+    /* aflags is first because it uses XAX. */
     if (!cci->skip_save_aflags) {
-        PRE(ilist, where, instr_create_restore_from_dc_via_reg
-            (dc, DR_REG_XSP, DR_REG_XAX, XFLAGS_OFFSET));
-        PRE(ilist, where, INSTR_CREATE_add
-            (dc, opnd_create_reg(DR_REG_AL), OPND_CREATE_INT8(0x7F)));
-        PRE(ilist, where, INSTR_CREATE_sahf(dc));
+        insert_mc_flags_restore(dc, ci, ilist, where);
     }
 
     /* Now restore all registers. */
-    for (i = NUM_GP_REGS - 1; i >= 0; i--) {
-        if (!cci->reg_skip[i]) {
+    for (i = 0; i < NUM_GP_REGS; i++) {
+        if (ci->reg_used[i]) {
             reg_id_t reg = DR_REG_XAX + (reg_id_t)i;
             LOG(dr_get_logfile(dc), LOG_CLEANCALL, 2,
                 "CLEANCALL: inlining clean call "PFX", restoring reg %s.\n",
                 ci->start, reg_names[reg]);
-            PRE(ilist, where, instr_create_restore_from_dc_via_reg
-                (dc, DR_REG_XSP, reg, reg_mc_offset[i]));
+            insert_mc_reg_restore(dc, ci, ilist, where, reg);
         }
     }
 
@@ -6376,7 +6462,7 @@ code_cache_memprotect(code_cache_block_t *block, uint prot)
 /* Add a block to the linked list of blocks in our code cache and update the
  * current pc and block. */
 static void
-code_cache_grow(void *dc, code_cache_t *code_cache)
+code_cache_grow(dcontext_t *dc, code_cache_t *code_cache)
 {
     code_cache_block_t *prev_block;
     code_cache_block_t *new_block;
@@ -6404,7 +6490,7 @@ code_cache_grow(void *dc, code_cache_t *code_cache)
 }
 
 static uint
-instrlist_length(void *drcontext, instrlist_t *ilist)
+instrlist_length(dcontext_t *drcontext, instrlist_t *ilist)
 {
     instr_t *inst;
     uint len = 0;
@@ -6414,13 +6500,68 @@ instrlist_length(void *drcontext, instrlist_t *ilist)
     return len;
 }
 
+static void
+insert_slowpath_mc(dcontext_t *dc, callee_info_t *ci, bool save,
+                   instrlist_t *ilist)
+{
+    reg_id_t reg;
+
+    /* Save all application registers that weren't saved inline. */
+    for (reg = DR_REG_XAX; reg < DR_REG_XAX + NUM_GP_REGS; reg++) {
+        if (!ci->reg_used[reg - DR_REG_XAX]) {
+            if (save)
+                insert_mc_reg_save(dc, ci, ilist, NULL, reg);
+            else
+                insert_mc_reg_restore(dc, ci, ilist, NULL, reg);
+        }
+    }
+
+    /* Save flags, but only if they weren't already saved, which happens if
+     * there was either a read or a write (a read implies a clear, which is a
+     * write). */
+    if (!(ci->read_aflags || ci->write_aflags)) {
+        /* TODO(rnk): This clobbers XAX, which could be used to pass args or
+         * state into slowpath. */
+        if (save)
+            insert_mc_flags_save(dc, ci, ilist, NULL);
+        else
+            insert_mc_flags_restore(dc, ci, ilist, NULL);
+    }
+
+    /* Save XMM regs, if appropriate. */
+    if (preserve_xmm_caller_saved()) {
+        /* PR 264138: we must preserve xmm0-5 if on a 64-bit kernel */
+        /* We align the stack ourselves, so we assume aligned SSE ops are OK.
+         */
+        int i;
+        uint opcode = (proc_has_feature(FEATURE_SSE2) ? OP_movdqa : OP_movaps);
+        for (i = 0; i < NUM_XMM_SAVED; i++) {
+            uint mc_offset = offsetof(dr_mcontext_t, xmm) + i * XMM_REG_SIZE;
+            uint frame_offset = ci->framesize - mc_offset - XMM_REG_SIZE;
+            opnd_t mem = opnd_create_base_disp(REG_XSP, REG_NULL, 0,
+                                               frame_offset, OPSZ_16);
+            opnd_t reg = opnd_create_reg(REG_XMM0 + (reg_id_t)i);
+            /* If we're saving, it's reg -> mem, otherwise mem -> reg. */
+            opnd_t src = save ? reg : mem;
+            opnd_t dst = save ? mem : reg;
+            APP(ilist, instr_create_1dst_1src(dc, opcode, dst, src));
+        }
+    }
+
+    /* FIXME i#433: need DR cxt switch and clean call to preserve ymm */
+}
+
 /* Emit the slowpath back to the callee for partially inlined functions.
  * Return the slowpath entry point. */
 static app_pc
-emit_partial_slowpath(void *dc, callee_info_t *ci)
+emit_partial_slowpath(dcontext_t *dc, callee_info_t *ci)
 {
     byte *entry;
     instrlist_t *ilist;
+    opnd_t xax = opnd_create_reg(DR_REG_XAX);
+
+    LOG(dr_get_logfile(dc), LOG_CLEANCALL, 3,
+        "CLEANCALL: emit_partial_slowpath: ci->framesize: %u\n", ci->framesize);
 
     LOG(dr_get_logfile(dc), LOG_CLEANCALL, 3,
         "CLEANCALL: emitting partial inline slowpath\n");
@@ -6429,12 +6570,17 @@ emit_partial_slowpath(void *dc, callee_info_t *ci)
      * registers at the callsite.  Application register values are already on
      * the stack.
      */
-    /* TODO(rnk): Make sure that the app can access the mcontext. */
     ilist = instrlist_create(dc);
-    prepare_for_clean_call(dc, NULL, ilist, NULL);
+    /* XAX holds retaddr, put it in reserved stack slot.  [rsp + 0] is local,
+     * [rsp + 4/8] is partial retaddr. */
+    APP(ilist, INSTR_CREATE_mov_st
+        (dc, OPND_CREATE_MEMPTR(DR_REG_XSP, sizeof(reg_t)), xax));
+    insert_slowpath_mc(dc, ci, /*save=*/true, ilist);
     APP(ilist, INSTR_CREATE_call(dc, opnd_create_pc(ci->start)));
-    cleanup_after_clean_call(dc, NULL, ilist, NULL);
-    APP(ilist, INSTR_CREATE_ret(dc));
+    insert_slowpath_mc(dc, ci, /*save=*/false, ilist);
+    APP(ilist, INSTR_CREATE_mov_ld
+        (dc, xax, OPND_CREATE_MEMPTR(DR_REG_XSP, sizeof(reg_t))));
+    APP(ilist, INSTR_CREATE_jmp_ind(dc, xax));
 
     /* Check that there's space to encode the ilist.  Clean calls on x86_64 use
      * about 469 bytes, so we can usually pack about 8 calls per page. */
@@ -6460,6 +6606,5 @@ emit_partial_slowpath(void *dc, callee_info_t *ci)
 
     instrlist_clear_and_destroy(dc, ilist);
 
-    ci->partial_slowpath = entry;
     return entry;
 }
