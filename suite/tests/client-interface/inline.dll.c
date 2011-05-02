@@ -508,10 +508,8 @@ event_basic_block(void *dc, void *tag, instrlist_t *bb,
                                  OPND_CREATE_INT32((int)0xDEADBEEF));
             dr_insert_clean_call(dc, bb, entry, (void*)check_count, false, 0);
             break;
-        case FN_cond_br:
         case FN_nonleaf:
         case FN_decode_past_ret:
-        case FN_decode_loop:
             /* These functions cannot be inlined (yet). */
             dr_insert_clean_call(dc, bb, entry, func_ptrs[i], false, 0);
             inline_expected = false;
