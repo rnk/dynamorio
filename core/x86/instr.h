@@ -1422,19 +1422,27 @@ opnd_shrink_to_32_bits(opnd_t opnd);
 DR_API
 /** 
  * Returns the value of the register \p reg, selected from the passed-in
- * register values.
+ * register values.  Supports only general-purpose registers.
  */
 reg_t
 reg_get_value(reg_id_t reg, dr_mcontext_t *mc);
+
+/* internal version */
+reg_t
+reg_get_value_priv(reg_id_t reg, priv_mcontext_t *mc);
 
 DR_API
 /**
  * Sets the register \p reg in the passed in mcontext \p mc to \p value.
  * \note Current release is limited to setting pointer-sized registers only
- * (no sub-registers).
+ * (no sub-registers, and no non-general-purpose registers).
  */
 void
 reg_set_value(reg_id_t reg, dr_mcontext_t *mc, reg_t value);
+
+/* internal version */
+void
+reg_set_value_priv(reg_id_t reg, priv_mcontext_t *mc, reg_t value);
 
 DR_API
 /** 
@@ -1446,6 +1454,10 @@ DR_API
  */
 app_pc
 opnd_compute_address(opnd_t opnd, dr_mcontext_t *mc);
+
+/* internal version */
+app_pc
+opnd_compute_address_priv(opnd_t opnd, priv_mcontext_t *mc);
 
 
 /*************************
@@ -2394,6 +2406,9 @@ DR_API
 app_pc
 instr_compute_address(instr_t *instr, dr_mcontext_t *mc);
 
+app_pc
+instr_compute_address_priv(instr_t *instr, priv_mcontext_t *mc);
+
 DR_API
 /**
  * Performs address calculation in the same manner as
@@ -2409,6 +2424,10 @@ DR_API
 bool
 instr_compute_address_ex(instr_t *instr, dr_mcontext_t *mc, uint index,
                          OUT app_pc *addr, OUT bool *write);
+
+bool
+instr_compute_address_ex_priv(instr_t *instr, priv_mcontext_t *mc, uint index,
+                              OUT app_pc *addr, OUT bool *write);
 
 DR_API
 /**
@@ -2686,7 +2705,7 @@ instr_jcc_taken(instr_t *instr, reg_t eflags);
  * (not exported since machine state isn't)
  */
 bool
-instr_cbr_taken(instr_t *instr, dr_mcontext_t *mcontext, bool pre);
+instr_cbr_taken(instr_t *instr, priv_mcontext_t *mcontext, bool pre);
 
 DR_API
 /**

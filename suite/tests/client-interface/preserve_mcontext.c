@@ -40,14 +40,15 @@
 #define EXPORT __attribute__((visibility("default")))
 #endif
 
-EXPORT void nonleaf(void) {
-    print("in nonleaf\n");
+EXPORT void app_func(void) {
+    print("in app_func\n");
 }
 
 void set_xax_and_call(void (*func)(void));
 
 int main(void) {
-    set_xax_and_call(nonleaf);
+    set_xax_and_call(app_func);
+    set_xax_and_call(app_func);
 }
 
 #else /* ASM_CODE_ONLY */

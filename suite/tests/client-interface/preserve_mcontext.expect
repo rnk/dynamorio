@@ -1,3 +1,4 @@
-instrumenting nonleaf entry
+instrumenting app_func entry
+in app_func
 xax_val: 0xdeadbeef
-in nonleaf
+in app_func

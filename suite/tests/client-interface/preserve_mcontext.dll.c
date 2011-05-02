@@ -30,87 +30,52 @@
  * DAMAGE.
  */
 
+/* Ensure that we preserve mcontext layout in the slowpath when doing partial
+ * inlining, since the client could call dr_get_mcontext.
+ */
+
 #include "dr_api.h"
 
-static app_pc nonleaf_entry_pc;
-
-static void *nonleaf_callee;
-
-static ptr_uint_t xax_val;
-
-static void
-print_xax_val(void)
-{
-    dr_fprintf(STDERR, "xax_val: 0x%08x\n", xax_val);
-    xax_val = 0;  /* Reset xax_val to isolate from next test. */
-}
+static app_pc app_func_pc;
+static void *instrumentation_pc;
+static int monitoring = 0;
 
 static dr_emit_flags_t
 event_basic_block(void *dc, void *entry_pc, instrlist_t *bb,
                   bool for_trace, bool translating)
 {
     instr_t *where = instrlist_first(bb);
-    if (entry_pc == nonleaf_entry_pc) {
-        dr_fprintf(STDERR, "instrumenting nonleaf entry\n");
-        dr_insert_clean_call(dc, bb, where, nonleaf_callee, false, 0);
-        dr_insert_clean_call(dc, bb, where, print_xax_val, false, 0);
+    if (entry_pc == app_func_pc) {
+        dr_fprintf(STDERR, "instrumenting app_func entry\n");
+        dr_insert_clean_call(dc, bb, where, instrumentation_pc, false, 0);
     }
 }
 
 static void
 event_exit(void)
 {
-    dr_nonheap_free(nonleaf_callee, 4096);
+    dr_nonheap_free(instrumentation_pc, 4096);
 }
 
 static void
 read_xax_from_mcontext(void)
 {
-    dr_mcontext_t mcontext;
+    ptr_uint_t xax_val;
+    dr_mcontext_t mcontext = {sizeof(mcontext),};
     void *dc = dr_get_current_drcontext();
-    dr_get_mcontext(dc, &mcontext, NULL);
+    dr_get_mcontext(dc, &mcontext);
     xax_val = mcontext.xax;
+    dr_fprintf(STDERR, "xax_val: 0x%08x\n", xax_val);
 }
 
 #define RWX_PROT (DR_MEMPROT_EXEC|DR_MEMPROT_READ|DR_MEMPROT_WRITE)
 #define APP instrlist_meta_append
 
-static void
-codegen_pushes(void *dc, instrlist_t *ilist)
-{
-    /* Normal prologue. */
-    APP(ilist, INSTR_CREATE_push(dc, opnd_create_reg(DR_REG_XBP)));
-    APP(ilist, INSTR_CREATE_mov_st
-        (dc, opnd_create_reg(DR_REG_XBP), opnd_create_reg(DR_REG_XSP)));
-    /* 6 register should maintain 16-byte alignment. */
-    APP(ilist, INSTR_CREATE_push(dc, opnd_create_reg(DR_REG_XAX)));
-    APP(ilist, INSTR_CREATE_push(dc, opnd_create_reg(DR_REG_XBX)));
-    APP(ilist, INSTR_CREATE_push(dc, opnd_create_reg(DR_REG_XCX)));
-    APP(ilist, INSTR_CREATE_push(dc, opnd_create_reg(DR_REG_XDX)));
-    APP(ilist, INSTR_CREATE_push(dc, opnd_create_reg(DR_REG_XDI)));
-    APP(ilist, INSTR_CREATE_push(dc, opnd_create_reg(DR_REG_XSI)));
-}
-
-static void
-codegen_pops(void *dc, instrlist_t *ilist)
-{
-    /* Reverse of pushes. */
-    APP(ilist, INSTR_CREATE_pop(dc, opnd_create_reg(DR_REG_XSI)));
-    APP(ilist, INSTR_CREATE_pop(dc, opnd_create_reg(DR_REG_XDI)));
-    APP(ilist, INSTR_CREATE_pop(dc, opnd_create_reg(DR_REG_XDX)));
-    APP(ilist, INSTR_CREATE_pop(dc, opnd_create_reg(DR_REG_XCX)));
-    APP(ilist, INSTR_CREATE_pop(dc, opnd_create_reg(DR_REG_XBX)));
-    APP(ilist, INSTR_CREATE_pop(dc, opnd_create_reg(DR_REG_XAX)));
-    /* xbp == xsp here, so we just pop xbp. */
-    APP(ilist, INSTR_CREATE_pop(dc, opnd_create_reg(DR_REG_XBP)));
-    APP(ilist, INSTR_CREATE_ret(dc));
-}
-
 static void *
 encode_new_rwx_mem(void *dc, instrlist_t *ilist)
 {
     byte *rwx_mem = dr_nonheap_alloc(4096, RWX_PROT);
-    byte *end_pc = instrlist_encode(dc, ilist, rwx_mem, /* has tgts */false);
+    byte *end_pc = instrlist_encode(dc, ilist, rwx_mem, /* has tgts */true);
     DR_ASSERT_MSG((ptr_uint_t)end_pc < (ptr_uint_t)rwx_mem + 4096,
                   "Code too big to encode!");
     instrlist_clear_and_destroy(dc, ilist);
@@ -121,13 +86,40 @@ static void
 codegen_nonleaf_callee(void *dc)
 {
     instrlist_t *ilist = instrlist_create(dc);
+    opnd_t eax = opnd_create_reg(DR_REG_EAX);
+    instr_t *done = INSTR_CREATE_label(dc);
 
-    codegen_pushes(dc, ilist);
+    /* Normal prologue. */
+    APP(ilist, INSTR_CREATE_push(dc, opnd_create_reg(DR_REG_XBP)));
+    APP(ilist, INSTR_CREATE_mov_st
+        (dc, opnd_create_reg(DR_REG_XBP), opnd_create_reg(DR_REG_XSP)));
+    /* 2 registers maintains 16-byte alignment. */
+    APP(ilist, INSTR_CREATE_push(dc, opnd_create_reg(DR_REG_XAX)));
+    APP(ilist, INSTR_CREATE_push(dc, opnd_create_reg(DR_REG_XBX)));
+
+    /* if (monitoring) {
+     *   read_xax_from_mcontext();
+     * }
+     * monitoring++;
+     */
+    APP(ilist, INSTR_CREATE_mov_ld
+        (dc, eax, OPND_CREATE_ABSMEM(&monitoring, OPSZ_4)));
+    APP(ilist, INSTR_CREATE_test(dc, eax, eax));
+    APP(ilist, INSTR_CREATE_jcc(dc, OP_jz, opnd_create_instr(done)));
     APP(ilist, INSTR_CREATE_call
         (dc, opnd_create_pc((app_pc)read_xax_from_mcontext)));
-    codegen_pops(dc, ilist);
+    APP(ilist, done);
+    APP(ilist, INSTR_CREATE_inc(dc, OPND_CREATE_ABSMEM(&monitoring, OPSZ_4)));
 
-    nonleaf_callee = encode_new_rwx_mem(dc, ilist);
+    /* Reverse of pushes. */
+    APP(ilist, INSTR_CREATE_pop(dc, opnd_create_reg(DR_REG_XBX)));
+    APP(ilist, INSTR_CREATE_pop(dc, opnd_create_reg(DR_REG_XAX)));
+
+    /* Normal epilogue. */
+    APP(ilist, INSTR_CREATE_leave(dc));
+    APP(ilist, INSTR_CREATE_ret(dc));
+
+    instrumentation_pc = encode_new_rwx_mem(dc, ilist);
 }
 
 DR_EXPORT void
@@ -140,7 +132,7 @@ dr_init(client_id_t id)
 
     /* Lookup pcs. */
     module_data_t *exe = dr_lookup_module_by_name("client.preserve_mcontext");
-    nonleaf_entry_pc = (app_pc)dr_get_proc_address(exe->handle, "nonleaf");
+    app_func_pc = (app_pc)dr_get_proc_address(exe->handle, "app_func");
     dr_free_module_data(exe);
 
     /* Codegen callees. */
