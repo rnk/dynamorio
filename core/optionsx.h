@@ -323,7 +323,9 @@
      * 2 - simple callee inline optimization,
      *     callee save reg analysis
      *     aflags usage analysis and optimization on the instrumented ilist
-     * 3 - more aggressive callee inline optimization
+     * 3 - dead code elimination
+     *     copy propagation to reduce registers used
+     *     partial inlining
      * All the optimizations assume that clean callee will not be changed
      * later.
      */

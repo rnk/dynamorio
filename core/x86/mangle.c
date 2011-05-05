@@ -83,6 +83,7 @@ extern int num_fragments;
 /* data structure of clean call callee information. */
 typedef struct _callee_info_t {
     bool bailout;             /* if we bail out on function analysis */
+    uint num_args;            /* number of args the callee takes */
     int num_instrs;           /* total number of instructions of a function */
     app_pc start;             /* entry point of a function  */
     int num_xmms_used;        /* number of xmms used by callee */
@@ -156,14 +157,15 @@ callee_info_free(callee_info_t *ci)
 }
 
 static callee_info_t *
-callee_info_create(app_pc start)
+callee_info_create(app_pc start, uint num_args)
 {
     callee_info_t *info;
-    
+
     info = HEAP_TYPE_ALLOC(GLOBAL_DCONTEXT, callee_info_t,
                            ACCT_CLEANCALL, PROTECTED);
     callee_info_init(info);
     info->start = start;
+    info->num_args = num_args;
     return info;
 }
 
@@ -4865,6 +4867,308 @@ decode_callee_ilist(dcontext_t *dc, callee_info_t *ci)
     }
 }
 
+/* Remove and delete an instruction from an ilist.  This helper routine exists
+ * to avoid frequent typos where different instructions are passed to the remove
+ * and destory routines.
+ */
+static void
+remove_and_destroy(void *dc, instrlist_t *ilist, instr_t *instr)
+{
+    instrlist_remove(ilist, instr);
+    instr_destroy(dc, instr);
+}
+
+/* Rewrite all reads of 'old' in 'opnd' to 'new', or return false.
+ */
+/* TODO(rnk): This doesn't handle al/ah type stuff.  ie, if we want to replace
+ * RAX w/ RBX we need to rewrite BH to AH and not AL. */
+static bool
+rewrite_opnd_reg(dcontext_t *dc, instr_t *instr, opnd_t *opnd,
+                 reg_id_t old, reg_id_t new, bool check_only)
+{
+    int i;
+    new = reg_fixer[new];
+    IF_X64(new = reg_64_to_32(new);)
+    for (i = 0; i < opnd_num_regs_used(*opnd); i++) {
+        reg_id_t reg_used = opnd_get_reg_used(*opnd, i);
+        if (reg_overlap(reg_used, old)) {
+            reg_id_t new_sized = reg_32_to_opsz(new, reg_get_size(reg_used));
+            if (new_sized == DR_REG_NULL)
+                return false;
+            /* TODO(rnk): There's got to be a better way to check if an
+             * instruction can be encoded, this just catches jecxz. */
+            if (check_only) {
+                int opc = instr_get_opcode(instr);
+                if (opc == OP_jecxz && new != DR_REG_XCX)
+                    return false;
+            }
+            if (!check_only) {
+                LOG(dr_get_logfile(dc), LOG_CLEANCALL, 3,
+                    "CLEANCALL: rewriting reg %s to %s at "PFX"\n",
+                    get_register_name(reg_used), get_register_name(new_sized),
+                    instr_get_app_pc(instr));
+                opnd_replace_reg(opnd, reg_used, new_sized);
+            }
+        }
+    }
+    return true;
+}
+
+/* Rewrite reads from in instr from 'old' to 'new'. */
+static bool
+rewrite_reg_reads(dcontext_t *dc, instr_t *instr, reg_id_t old, reg_id_t new,
+                  bool check_only)
+{
+    int i;
+    bool can_rewrite;
+
+    /* srcs */
+    for (i = 0; i < instr_num_srcs(instr); i++) {
+        opnd_t opnd = instr_get_src(instr, i);
+        can_rewrite = rewrite_opnd_reg(dc, instr, &opnd, old, new, check_only);
+        if (check_only) {
+            if (!can_rewrite) return false;
+        } else {
+            DR_ASSERT(can_rewrite);
+            instr_set_src(instr, i, opnd);
+        }
+    }
+
+    /* dsts */
+    for (i = 0; i < instr_num_dsts(instr); i++) {
+        opnd_t opnd = instr_get_dst(instr, i);
+        if (!opnd_is_base_disp(opnd))
+            continue;  /* The only reads in dsts are regs in base/disp opnds. */
+        can_rewrite = rewrite_opnd_reg(dc, instr, &opnd, old, new, check_only);
+        if (check_only) {
+            if (!can_rewrite) return false;
+        } else {
+            DR_ASSERT(can_rewrite);
+            instr_set_dst(instr, i, opnd);
+        }
+    }
+
+    return true;
+}
+
+/* Find the next full clobber of 'reg', if it exists.  If there is a
+ * subregister write that does not fully clobber the register, return false.
+ */
+static bool
+find_next_full_clobber(dcontext_t *dc, callee_info_t *ci, instr_t *start,
+                       reg_id_t reg, instr_t **end)
+{
+    instr_t *instr;
+    int i;
+
+    /* Find the next write of dst.  If it's a complicated subregister write, we
+     * leave it alone.  Otherwise, we can rewrite up until that instruction. */
+    for (instr = instr_get_next(start); instr != NULL;
+         instr = instr_get_next(instr)) {
+        if (instr_writes_to_reg(instr, reg)) {
+            for (i = 0; i < instr_num_dsts(instr); i++) {
+                opnd_t d = instr_get_dst(instr, i);
+                if (opnd_is_reg(d) && reg_overlap(opnd_get_reg(d), reg)) {
+                    opnd_size_t sz = opnd_get_size(d);
+                    if (sz == OPSZ_4 || sz == OPSZ_8) {
+                        /* dst is clobbered by another write, stop rewriting
+                         * here. */
+                        *end = instr;
+                        break;
+                    } else {
+                        /* Subregister write, clobber is not full. */
+                        return false;
+                    }
+                }
+            }
+        }
+    }
+    return true;
+}
+
+/* Propagate copies from dead source registers to reduce register pressure.
+ * Removes and destroys 'copy' and returns true if successful, otherwise
+ * returns false.
+ */
+static bool
+propagate_copy(dcontext_t *dc, callee_info_t *ci, instr_t *copy)
+{
+    reg_id_t src = opnd_get_reg(instr_get_src(copy, 0));
+    reg_id_t dst = opnd_get_reg(instr_get_dst(copy, 0));
+    opnd_size_t copy_sz = reg_get_size(dst);
+    instr_t *instr;
+    instr_t *last_instr = NULL;
+
+    /* Let's not get into copy sizes that don't clobber the entire GPR. */
+    if (!(copy_sz == OPSZ_4 || copy_sz == OPSZ_8))
+        return false;
+
+    /* We only rewrite up until the next instruction that fully clobbers the
+     * destination register.  If the update is not a full clobber (ie a write
+     * of a subreg) then we bail. */
+    if (!find_next_full_clobber(dc, ci, copy, dst, &last_instr))
+        return false;
+
+    LOG(dr_get_logfile(dc), LOG_CLEANCALL, 3,
+        "CLEANCALL: propagating copy at "PFX"\n", instr_get_app_pc(copy));
+
+    /* Find all reads of dst.  First, check if we can rewrite.  If so, do the
+     * modification. */
+    for (instr = copy; instr != last_instr; instr = instr_get_next(instr))
+        if (!rewrite_reg_reads(dc, instr, dst, src, /*check_only=*/true))
+            return false;
+    for (instr = copy; instr != last_instr; instr = instr_get_next(instr))
+        rewrite_reg_reads(dc, instr, dst, src, /*check_only=*/false);
+
+    /* Delete the copy. */
+    remove_and_destroy(GLOBAL_DCONTEXT, ci->ilist, copy);
+
+    return true;
+}
+
+/* Dead register analysis abstraction.  Drive it by looping over instructions
+ * in reverse.  At end of loop body, call reg_dead_update. */
+
+typedef struct _liveness_t {
+    bool reg_live[NUM_GP_REGS];
+    /* Flags that are live.  Uses EFLAGS_READ_* form of the masks. */
+    uint flags_live;
+} liveness_t;
+
+#define IS_LIVE(r) (liveness->reg_live[reg_fixer[(r)] - DR_REG_XAX])
+#define IS_DEAD(r) !IS_LIVE(r)
+#define SET_LIVE(r, d) \
+    (liveness->reg_live[reg_fixer[(r)] - DR_REG_XAX] = (d))
+
+static void
+liveness_init(liveness_t *liveness)
+{
+    int i;
+    /* At callee end, all registers are considered dead except XSP. */
+    for (i = 0; i < NUM_GP_REGS; i++)
+        liveness->reg_live[i] = false;
+    SET_LIVE(DR_REG_XSP, true);
+}
+
+static void
+liveness_update(dcontext_t *dc, callee_info_t *ci, liveness_t *liveness,
+                instr_t *instr)
+{
+    uint flags = instr_get_eflags(instr);
+    int i;
+
+    /* Mark all flags written to as dead.  */
+    liveness->flags_live &= ~(EFLAGS_WRITE_TO_READ(flags & EFLAGS_WRITE_ALL));
+    /* Mark all flags read from as live.  */
+    liveness->flags_live |= (flags & EFLAGS_READ_ALL);
+
+    /* TODO(rnk): Can mark destination register as dead here, but will
+     * break if there is control flow, for example rax is still live here:
+     * mov %rbx, %rax
+     * test %rcx, %rcx
+     * jz next
+     * xor %rax, %rax
+     * next:
+     * mov %rax, global
+     */
+
+    /* Mark all regs read from as live.  */
+    for (i = 0; i < NUM_GP_REGS; i++) {
+        if (instr_reads_from_reg(instr, DR_REG_XAX + (reg_id_t)i)) {
+            SET_LIVE(DR_REG_XAX + (reg_id_t)i, true);
+        }
+    }
+
+    /* TODO(rnk): To support partial inlining, we may need to change this to
+     * consider argument registers live-in to the call.
+     */
+}
+
+
+/* Remove and destroy instructions whose only destinations are dead registers.
+ * Assumes there are no calls or backwards branches in ilist.
+ * TODO(rnk): What about other control flow?
+ */
+static void
+optimize_callee(dcontext_t *dc, callee_info_t *ci)
+{
+    liveness_t liveness_;
+    liveness_t *liveness = &liveness_;
+    int i;
+    instrlist_t *ilist = ci->ilist;
+    instr_t *instr;
+    instr_t *prev_instr;
+
+    LOG(dr_get_logfile(dc), LOG_CLEANCALL, 3, "CLEANCALL: ilist before DCE:\n");
+    DOLOG(3, LOG_CLEANCALL, {
+        instrlist_disassemble(dc, NULL, ilist, dr_get_logfile(dc));
+    });
+
+    liveness_init(liveness);
+
+    for (instr = instrlist_last(ilist); instr != NULL;
+         instr = prev_instr) {
+        bool instr_is_live = false;
+        prev_instr = instr_get_prev(instr);
+        int opc;
+        uint flags_written;
+
+        /* If only dsts are regs, and all dsts are dead, can delete instr. */
+        for (i = 0; i < instr_num_dsts(instr); i++) {
+            opnd_t dst = instr_get_dst(instr, i);
+            if (!opnd_is_reg(dst)) break;
+            if (!IS_DEAD(opnd_get_reg(dst))) break;
+        }
+        /* If the loop exited before completion, then the destinations are
+         * live. */
+        if (i < instr_num_dsts(instr))
+            instr_is_live |= true;
+        /* If the instr writes live flags it's live. */
+        flags_written =
+            EFLAGS_WRITE_TO_READ(EFLAGS_WRITE_ALL & instr_get_eflags(instr));
+        if (TESTANY(liveness->flags_live, flags_written))
+            instr_is_live |= true;
+        /* If the instr is cti or label it's live. */
+        if (instr_is_cti(instr) || instr_is_label(instr))
+            instr_is_live |= true;
+
+        if (!instr_is_live) {
+            LOG(dr_get_logfile(dc), LOG_CLEANCALL, 3,
+                "CLEANCALL: removing dead instr at "PFX".\n",
+                instr_get_app_pc(instr));
+            remove_and_destroy(GLOBAL_DCONTEXT, ilist, instr);
+            continue;
+        }
+
+        /* If this is a copy from a dead src reg, we may be able to reduce
+         * register pressure by deleting it and using src direcly. */
+        opc = instr_get_opcode(instr);
+        if ((opc == OP_mov_ld || opc == OP_mov_st) &&
+            opnd_is_reg(instr_get_src(instr, 0)) &&
+            opnd_is_reg(instr_get_dst(instr, 0))) {
+            reg_id_t src_reg = opnd_get_reg(instr_get_src(instr, 0));
+            if (IS_DEAD(src_reg)) {
+                if (propagate_copy(dc, ci, instr)) {
+                    /* Src reg is live now. */
+                    SET_LIVE(src_reg, true);
+                    continue;
+                }
+            }
+        }
+
+        /* TODO(rnk): If this instruction has only a single register
+         * destination and we have free dead registers, see if we can reuse
+         * one. */
+
+        liveness_update(dc, ci, liveness, instr);
+    }
+
+    LOG(dr_get_logfile(dc), LOG_CLEANCALL, 3, "CLEANCALL: ilist after DCE:\n");
+    DOLOG(3, LOG_CLEANCALL, {
+        instrlist_disassemble(dc, NULL, ilist, dr_get_logfile(dc));
+    });
+}
+
 static void
 analyze_callee_regs_usage(dcontext_t *dcontext, callee_info_t *ci)
 {
@@ -5066,17 +5370,6 @@ static bool
 pred_not_null(instr_t *instr, void *data)
 {
     return instr != NULL;
-}
-
-/* Remove and delete an instruction from an ilist.  This helper routine exists
- * to avoid frequent typos where different instructions are passed to the remove
- * and destory routines.
- */
-static void
-remove_and_destroy(void *dc, instrlist_t *ilist, instr_t *instr)
-{
-    instrlist_remove(ilist, instr);
-    instr_destroy(dc, instr);
 }
 
 /* TODO(rnk): Only one use, maybe should re-inline it. */
@@ -5435,7 +5728,6 @@ analyze_callee_partial(dcontext_t *dc, callee_info_t *ci)
     instr_t *fallthrough_instr;
     instr_t *fastpath_start;
     instr_t *slowpath_start;
-    instr_t *slowpath_end;
     instr_t *instr;
     instr_t *next_instr;
     opnd_t tgt;
@@ -5533,28 +5825,16 @@ analyze_callee_partial(dcontext_t *dc, callee_info_t *ci)
         "CLEANCALL: callee is a candidate for partial inlining.\n");
     ci->opt_partial = true;
 
-    /* Add a dummy label so we can use PRE to add code in order, and so we can
-     * return to it. */
-    slowpath_end = INSTR_CREATE_label(GLOBAL_DCONTEXT);
-    POST(ci->ilist, slowpath_start, slowpath_end);
-
-    /* Put the return addr into XAX. */
-    /* TODO(rnk): XAX might not be dead, should put on stack, should beef up
-     * stack management code. */
-    ci->framesize += sizeof(reg_t);
-    PRE(ci->ilist, slowpath_end, INSTR_CREATE_mov_imm
-        (GLOBAL_DCONTEXT, opnd_create_reg(DR_REG_XAX),
-         opnd_create_instr(slowpath_end)));
-
     /* Circular dependency issue: we can't emit the slowpath for the partially
      * inlined code until we've done further analysis of register and stack
-     * usage.  We leave this jmp to a label and fix it up later.  We actually
-     * insert the label into the ilist to avoid memory leaks if inlining fails.
+     * usage.  We leave this call to a label and fix it up later.
      */
     ci->partial_label = INSTR_CREATE_label(GLOBAL_DCONTEXT);
-    PRE(ci->ilist, slowpath_end, INSTR_CREATE_jmp
+    POST(ci->ilist, slowpath_start, INSTR_CREATE_call
         (GLOBAL_DCONTEXT, opnd_create_instr(ci->partial_label)));
-    PRE(ci->ilist, slowpath_end, ci->partial_label);
+    /* XXX: Insert the label into the ilist to avoid memory leaks if inlining
+     * fails.  This makes the disassembly confusing. */
+    POST(ci->ilist, slowpath_start, ci->partial_label);
 
     /* Re-calculate the number of instructions, since we just deleted a bunch.
      */
@@ -5670,6 +5950,15 @@ analyze_callee_inline(dcontext_t *dcontext, callee_info_t *ci)
                 /* xsp +/- int => xsp */
                 if (!opnd_is_immed_int(instr_get_src(instr, 0)))
                     opt_inline = false;
+            } else if (opc == OP_call && ci->opt_partial) {
+                opnd = instr_get_target(instr);
+                if (opnd_is_instr(opnd) &&
+                    opnd_get_instr(opnd) == ci->partial_label) {
+                    /* Don't let the rest of this loop examine this call
+                     * instruction for local variable reads/writes; it won't
+                     * understand it. */
+                    continue;
+                }
             } else {
                 /* other cases like push/pop are not allowed */
                 opt_inline = false;
@@ -5801,10 +6090,11 @@ analyze_callee_inline(dcontext_t *dcontext, callee_info_t *ci)
         app_pc slowpath_pc = emit_partial_slowpath(dcontext, ci);
         for (instr = instrlist_first(ci->ilist); instr != NULL;
              instr = instr_get_next(instr)) {
-            if (instr_is_ubr(instr) &&
+            if (instr_is_call(instr) &&
                 opnd_is_instr(instr_get_target(instr)) &&
                 opnd_get_instr(instr_get_target(instr)) == ci->partial_label) {
-                /* TODO(rnk): Reachability on X64! */
+                /* TODO(rnk): Reachability on X64, or does MAP_32BIT take care
+                 * of this? */
                 instr_set_target(instr, opnd_create_pc(slowpath_pc));
                 /* Label is no longer needed. */
                 remove_and_destroy(GLOBAL_DCONTEXT, ci->ilist,
@@ -5827,7 +6117,10 @@ analyze_callee_ilist(dcontext_t *dcontext, callee_info_t *ci)
     } else {
         analyze_callee_cti(dcontext, ci);
         analyze_callee_setup(dcontext, ci);
-        analyze_callee_partial(dcontext, ci);
+        if (INTERNAL_OPTION(opt_cleancall) >= 3) {
+            analyze_callee_partial(dcontext, ci);
+            optimize_callee(dcontext, ci);
+        }
         analyze_callee_regs_usage(dcontext, ci);
         analyze_callee_tls(dcontext, ci);
         analyze_callee_inline(dcontext, ci);
@@ -5918,7 +6211,7 @@ analyze_clean_call_args(dcontext_t *dcontext,
                         opnd_t *args)
 {
     uint i, j, num_regparm;
-    IF_DEBUG(callee_info_t *ci =) cci->callee_info;
+    callee_info_t *ci = cci->callee_info;
 
     num_regparm = cci->num_args < NUM_REGPARM ? cci->num_args : NUM_REGPARM;
     /* If a param uses a reg, DR need restore register value, which assumes
@@ -6057,7 +6350,7 @@ analyze_clean_call(dcontext_t *dcontext, clean_call_info_t *cci, instr_t *where,
         STATS_INC(cleancall_analyzed);
         LOG(THREAD, LOG_CLEANCALL, 2, "CLEANCALL: analyze callee "PFX"\n", callee);
         /* 4.1. create func_info */
-        ci = callee_info_create((app_pc)callee);
+        ci = callee_info_create((app_pc)callee, num_args);
         /* 4.2. decode the callee */
         decode_callee_ilist(dcontext, ci);
         /* 4.3. analyze the instrlist */
@@ -6066,8 +6359,18 @@ analyze_clean_call(dcontext_t *dcontext, clean_call_info_t *cci, instr_t *where,
         /* 4.4. add info into callee list */
         ci = callee_info_table_add(ci);
     }
+    if (ci->num_args != num_args) {
+        LOG(THREAD, LOG_CLEANCALL, 2,
+            "CLEANCALL: failing to inline callee "PFX": "
+            "originally called with %d args now called with %d args\n",
+            callee, ci->num_args, num_args);
+        return false;
+    }
     cci->callee_info = ci;
     if (ci->bailout) {
+        /* TODO(rnk): Doesn't this write race with other readers?  Should
+         * callee info be conservatively reinitialized on bailout in the
+         * callee analysis code? */
         callee_info_init(ci);
         ci->start = (app_pc)callee;
         return false;
@@ -6091,9 +6394,9 @@ analyze_clean_call(dcontext_t *dcontext, clean_call_info_t *cci, instr_t *where,
  * operand for the XAX slot.
  */
 static opnd_t
-mc_frame_opnd(callee_info_t *ci, uint mc_offset)
+mc_frame_opnd(uint framesize, uint mc_offset)
 {
-    uint frame_offset = ci->framesize - sizeof(priv_mcontext_t) + mc_offset;
+    uint frame_offset = framesize - sizeof(priv_mcontext_t) + mc_offset;
     return OPND_CREATE_MEMPTR(DR_REG_XSP, frame_offset);
 }
 
@@ -6101,11 +6404,11 @@ mc_frame_opnd(callee_info_t *ci, uint mc_offset)
  * at dstack - framesize.
  */
 static void
-insert_mc_reg_save(dcontext_t *dc, callee_info_t *ci, instrlist_t *ilist,
+insert_mc_reg_save(dcontext_t *dc, uint framesize, instrlist_t *ilist,
                    instr_t *where, reg_id_t reg)
 {
     PRE(ilist, where, INSTR_CREATE_mov_st
-        (dc, mc_frame_opnd(ci, reg_mc_offset[reg - DR_REG_XAX]),
+        (dc, mc_frame_opnd(framesize, reg_mc_offset[reg - DR_REG_XAX]),
          opnd_create_reg(reg)));
 }
 
@@ -6113,37 +6416,39 @@ insert_mc_reg_save(dcontext_t *dc, callee_info_t *ci, instrlist_t *ilist,
  * at dstack - framesize.
  */
 static void
-insert_mc_reg_restore(dcontext_t *dc, callee_info_t *ci, instrlist_t *ilist,
+insert_mc_reg_restore(dcontext_t *dc, uint framesize, instrlist_t *ilist,
                       instr_t *where, reg_id_t reg)
 {
     PRE(ilist, where, INSTR_CREATE_mov_ld
         (dc, opnd_create_reg(reg),
-         mc_frame_opnd(ci, reg_mc_offset[reg - DR_REG_XAX])));
+         mc_frame_opnd(framesize, reg_mc_offset[reg - DR_REG_XAX])));
 }
 
 /* Saves aflags to the mcontext at the base of the stack.  Assumes XSP is at
  * dstack - framesize.  Assumes that XAX is dead and can be used as scratch.
  */
 static void
-insert_mc_flags_save(dcontext_t *dc, callee_info_t *ci, instrlist_t *ilist,
+insert_mc_flags_save(dcontext_t *dc, uint framesize, instrlist_t *ilist,
                      instr_t *where)
 {
     PRE(ilist, where, INSTR_CREATE_lahf(dc));
     PRE(ilist, where, INSTR_CREATE_setcc
         (dc, OP_seto, opnd_create_reg(DR_REG_AL)));
     PRE(ilist, where, INSTR_CREATE_mov_st
-        (dc, mc_frame_opnd(ci, XFLAGS_OFFSET), opnd_create_reg(DR_REG_XAX)));
+        (dc, mc_frame_opnd(framesize, XFLAGS_OFFSET),
+         opnd_create_reg(DR_REG_XAX)));
 }
 
 /* Saves aflags to the mcontext at the base of the stack.  Assumes XSP is at
  * dstack - framesize.  Assumes that XAX is dead and can be used as scratch.
  */
 static void
-insert_mc_flags_restore(dcontext_t *dc, callee_info_t *ci, instrlist_t *ilist,
+insert_mc_flags_restore(dcontext_t *dc, uint framesize, instrlist_t *ilist,
                         instr_t *where)
 {
     PRE(ilist, where, INSTR_CREATE_mov_ld
-        (dc, opnd_create_reg(DR_REG_XAX), mc_frame_opnd(ci, XFLAGS_OFFSET)));
+        (dc, opnd_create_reg(DR_REG_XAX),
+         mc_frame_opnd(framesize, XFLAGS_OFFSET)));
     PRE(ilist, where, INSTR_CREATE_add
         (dc, opnd_create_reg(DR_REG_AL), OPND_CREATE_INT8(0x7F)));
     PRE(ilist, where, INSTR_CREATE_sahf(dc));
@@ -6175,13 +6480,13 @@ insert_inline_reg_save(dcontext_t *dc, clean_call_info_t *cci,
             LOG(dr_get_logfile(dc), LOG_CLEANCALL, 2,
                 "CLEANCALL: inlining clean call "PFX", saving reg %s.\n",
                 ci->start, reg_names[reg]);
-            insert_mc_reg_save(dc, ci, ilist, where, reg);
+            insert_mc_reg_save(dc, ci->framesize, ilist, where, reg);
         }
     }
 
     if (!cci->skip_save_aflags) {
         DR_ASSERT_MSG(!cci->reg_skip[0], "XAX must be saved to save aflags!");
-        insert_mc_flags_save(dc, ci, ilist, where);
+        insert_mc_flags_save(dc, ci->framesize, ilist, where);
     }
 }
 
@@ -6194,7 +6499,7 @@ insert_inline_reg_restore(dcontext_t *dc, clean_call_info_t *cci,
 
     /* aflags is first because it uses XAX. */
     if (!cci->skip_save_aflags) {
-        insert_mc_flags_restore(dc, ci, ilist, where);
+        insert_mc_flags_restore(dc, ci->framesize, ilist, where);
     }
 
     /* Now restore all registers. */
@@ -6204,7 +6509,7 @@ insert_inline_reg_restore(dcontext_t *dc, clean_call_info_t *cci,
             LOG(dr_get_logfile(dc), LOG_CLEANCALL, 2,
                 "CLEANCALL: inlining clean call "PFX", restoring reg %s.\n",
                 ci->start, reg_names[reg]);
-            insert_mc_reg_restore(dc, ci, ilist, where, reg);
+            insert_mc_reg_restore(dc, ci->framesize, ilist, where, reg);
         }
     }
 
@@ -6215,19 +6520,28 @@ insert_inline_reg_restore(dcontext_t *dc, clean_call_info_t *cci,
 
 static void
 insert_inline_arg_setup(dcontext_t *dcontext, clean_call_info_t *cci,
-                        instrlist_t *ilist, instr_t *where, opnd_t *args)
+                        instrlist_t *ilist, instr_t *where, opnd_t *args,
+                        bool is_slowpath)
 {
     reg_id_t reg;
     uint i;
-    LOG_DECLARE(callee_info_t *ci = cci->callee_info;)
+    callee_info_t *ci = cci->callee_info;
 
     if (cci->num_args == 0)
         return;
+
     ASSERT(cci->num_args <= IF_X64_ELSE(NUM_REGPARM, 1));
-    /* TODO(rnk): Use an analysis to see which args are dead.  Avoids extra
-     * work in partially inlined fast paths. */
     for (i = 0; i < cci->num_args; i++) {
-        reg = shrink_reg_for_param(IF_X64_ELSE(regparms[i], DR_REG_XAX), args[i]);
+        reg = IF_X64_ELSE(regparms[i], DR_REG_XAX);
+        if (!ci->reg_used[reg - DR_REG_XAX]) {
+            if (!is_slowpath) {
+                LOG(THREAD, LOG_CLEANCALL, 2,
+                    "CLEANCALL: skipping arg setup for dead reg %s\n",
+                    reg_names[reg]);
+                continue;
+            }
+        }
+        reg = shrink_reg_for_param(reg, args[i]);
         LOG(THREAD, LOG_CLEANCALL, 2,
             "CLEANCALL: inlining clean call "PFX", passing arg via reg %s.\n",
             ci->start, reg_names[reg]);
@@ -6265,52 +6579,44 @@ insert_inline_slowpath(dcontext_t *dc, clean_call_info_t *cci, opnd_t *args)
     callee_info_t *ci = cci->callee_info;
     instrlist_t *ilist = cci->ilist;
     instr_t *instr;
-    instr_t *slowpath_jmp = NULL;
-    instr_t *where_start;
-    instr_t *where_end;
+    instr_t *slowpath_call = NULL;
     uint i;
 
     ASSERT(ci->opt_partial);
     for (instr = instrlist_first(ilist); instr != NULL;
          instr = instr_get_next(instr)) {
         /* If we find the slowpath, insert call-site specific setup. */
-        if (ci->opt_partial && instr_is_ubr(instr) &&
+        if (ci->opt_partial && instr_is_call(instr) &&
             opnd_is_pc(instr_get_target(instr)) &&
             opnd_get_pc(instr_get_target(instr)) == ci->partial_pc) {
-            slowpath_jmp = instr;
+            slowpath_call = instr;
             break;
         }
     }
-    ASSERT(slowpath_jmp != NULL);
+    ASSERT(slowpath_call != NULL);
 
-    where_start = instr_get_prev(slowpath_jmp); /* Should be mov XAX <- Lend */
-    where_end = instr_get_next(slowpath_jmp);  /* Should be Lend: */
-
-    ASSERT(instr_get_opcode(where_start) == OP_mov_imm);
-    ASSERT(instr_is_label(where_end));
-
-    /* The slowpath code saves and restores registers based on reg_used, which
-     * is different from reg_skip, which is sensitive to whether regs are dead
-     * in the caller code.  We insert extra saves and restores here to
-     * compensate. */
-    /* TODO(rnk): Write tests for this, it doesn't fire in any currently. */
-    for (i = 0; i < NUM_GP_REGS; i++) {
-        /* A register must be dead if the callee used it but we skipped it
-         * anyway. */
-        if (ci->reg_used[i] && cci->reg_skip[i]) {
-            DR_ASSERT_MSG(false, "Not yet tested, shouldn't fire yet.");
-            reg_id_t reg = DR_REG_XAX + (reg_id_t)i;
-            LOG(dr_get_logfile(dc), LOG_CLEANCALL, 2,
-                "CLEANCALL: inlining clean call "PFX", restoring reg %s.\n",
-                ci->start, reg_names[reg]);
-            insert_mc_reg_save(dc, ci, ilist, where_start, reg);
-            insert_mc_reg_restore(dc, ci, ilist, where_end, reg);
+    /* Arg setup may use registers that weren't used inline, and therefore
+     * won't be saved. */
+    for (i = 0; i < cci->num_args; i++) {
+        reg_id_t reg = IF_X64_ELSE(regparms[i], DR_REG_XAX);
+        if (!ci->reg_used[reg - DR_REG_XAX]) {
+            insert_mc_reg_save(dc, ci->framesize, ilist, slowpath_call, reg);
+            insert_mc_reg_restore(dc, ci->framesize, ilist,
+                                  instr_get_next(slowpath_call), reg);
         }
     }
 
-    /* TODO(rnk): Use an analysis to see which args are still live, since
-     * chances are most are. */
-    insert_inline_arg_setup(dc, cci, ilist, where_start, args);
+    /* Assert that reg_skip and reg_used agree, for now. */
+    for (i = 0; i < NUM_GP_REGS; i++) {
+        DR_ASSERT_MSG(ci->reg_used[i] == !cci->reg_skip[i] ||
+                      (i == 0 && !cci->reg_skip[i]),
+                      "reg_used and reg_skip don't agree!");
+    }
+
+    /* TODO(rnk): Could use an analysis to see which args are still live, since
+     * chances are most are.  The slowpath is not executed frequently, but
+     * optimizing it should reduce code size. */
+    insert_inline_arg_setup(dc, cci, ilist, slowpath_call, args, true);
 }
 
 void
@@ -6328,7 +6634,7 @@ insert_inline_clean_call(dcontext_t *dcontext, clean_call_info_t *cci,
     /* 1. save registers */
     insert_inline_reg_save(dcontext, cci, ilist, where, args);
     /* 2. setup parameters */
-    insert_inline_arg_setup(dcontext, cci, ilist, where, args);
+    insert_inline_arg_setup(dcontext, cci, ilist, where, args, false);
     /* 3. if partially inlined, remat args in slowpath */
     if (ci->opt_partial) {
         insert_inline_slowpath(dcontext, cci, args);
@@ -6484,17 +6790,35 @@ insert_slowpath_mc_regs(dcontext_t *dc, callee_info_t *ci, bool save,
                         instrlist_t *ilist)
 {
     reg_id_t reg;
+    int i;
+    uint framesize = ci->framesize + 16;  /* ret addr + alignment */
 
     for (reg = DR_REG_XAX; reg < DR_REG_XAX + NUM_GP_REGS; reg++) {
-        /* Ugly special case: if flags had to be saved, then XAX was saved and
-         * clobbered, so we should *not* save it. */
-        if (!ci->reg_used[reg - DR_REG_XAX] &&
-            !(reg == DR_REG_XAX && (ci->read_aflags || ci->write_aflags))) {
-            if (save)
-                insert_mc_reg_save(dc, ci, ilist, NULL, reg);
-            else
-                insert_mc_reg_restore(dc, ci, ilist, NULL, reg);
+        bool is_arg;
+        /* If the register was used inline it was saved inline. */
+        if (ci->reg_used[reg - DR_REG_XAX])
+            continue;
+        /* Ugly special case: if flags had to be saved, then XAX was saved
+         * inline and clobbered, so we should *not* save it. */
+        if (reg == DR_REG_XAX && (ci->read_aflags || ci->write_aflags))
+            continue;
+        /* If the register was used to pass an argument, it must have been
+         * saved inline.  The callee may not actually *use* the argument
+         * inline, so we have to check this case as well. */
+        is_arg = false;
+        for (i = 0; i < ci->num_args; i++) {
+            if (regparms[i] == reg) {
+                is_arg = true;
+                break;
+            }
         }
+        if (is_arg)
+            continue;
+
+        if (save)
+            insert_mc_reg_save(dc, framesize, ilist, NULL, reg);
+        else
+            insert_mc_reg_restore(dc, framesize, ilist, NULL, reg);
     }
 }
 
@@ -6510,10 +6834,11 @@ insert_slowpath_mc_flags(dcontext_t *dc, callee_info_t *ci, bool save,
     if (!(ci->read_aflags || ci->write_aflags)) {
         /* TODO(rnk): This clobbers XAX, which could be used to pass args into
          * slowpath. */
+        /* The + 16 is for ret addr + alignment. */
         if (save)
-            insert_mc_flags_save(dc, ci, ilist, NULL);
+            insert_mc_flags_save(dc, ci->framesize + 16, ilist, NULL);
         else
-            insert_mc_flags_restore(dc, ci, ilist, NULL);
+            insert_mc_flags_restore(dc, ci->framesize + 16, ilist, NULL);
     }
 }
 
@@ -6521,6 +6846,8 @@ static void
 insert_slowpath_mc(dcontext_t *dc, callee_info_t *ci, bool save,
                    instrlist_t *ilist)
 {
+    uint framesize = ci->framesize + 16;  /* ret addr + alignment */
+
     /* Save/restore flags uses XAX, so on save it must come after regs, and on
      * restore it must come first. */
     if (save) {
@@ -6539,7 +6866,7 @@ insert_slowpath_mc(dcontext_t *dc, callee_info_t *ci, bool save,
         uint opcode = move_mm_reg_opcode(/*aligned16=*/true, /*aligned32=*/true);
         for (i = 0; i < NUM_XMM_SAVED; i++) {
             uint mc_offset = offsetof(priv_mcontext_t, ymm) + i * XMM_SAVED_REG_SIZE;
-            uint frame_offset = ci->framesize - sizeof(priv_mcontext_t) + mc_offset;
+            uint frame_offset = framesize - sizeof(priv_mcontext_t) + mc_offset;
             opnd_t reg = opnd_create_reg(REG_SAVED_XMM0 + (reg_id_t)i);
             opnd_t mem = opnd_create_base_disp(REG_XSP, REG_NULL, 0,
                                                frame_offset, OPSZ_16);
@@ -6560,7 +6887,8 @@ emit_partial_slowpath(dcontext_t *dc, callee_info_t *ci)
 {
     byte *entry;
     instrlist_t *ilist;
-    opnd_t xax = opnd_create_reg(DR_REG_XAX);
+    opnd_t xsp = opnd_create_reg(DR_REG_XSP);
+    uint realignment;
 
     LOG(dr_get_logfile(dc), LOG_CLEANCALL, 3,
         "CLEANCALL: emitting partial inline slowpath\n");
@@ -6570,16 +6898,17 @@ emit_partial_slowpath(dcontext_t *dc, callee_info_t *ci)
      * the stack.
      */
     ilist = instrlist_create(dc);
-    /* XAX holds retaddr, put it in reserved stack slot.  [rsp + 0] is local,
-     * [rsp + 4/8] is partial retaddr. */
-    APP(ilist, INSTR_CREATE_mov_st
-        (dc, OPND_CREATE_MEMPTR(DR_REG_XSP, sizeof(reg_t)), xax));
+    /* Re-align stack to 16 bytes to prepare for call. */
+    realignment = (16 - sizeof(reg_t));
+    APP(ilist, INSTR_CREATE_lea
+        (dc, xsp, OPND_CREATE_MEM_lea(REG_XSP, REG_NULL, 0, -realignment)));
     insert_slowpath_mc(dc, ci, /*save=*/true, ilist);
     APP(ilist, INSTR_CREATE_call(dc, opnd_create_pc(ci->start)));
     insert_slowpath_mc(dc, ci, /*save=*/false, ilist);
-    APP(ilist, INSTR_CREATE_mov_ld
-        (dc, xax, OPND_CREATE_MEMPTR(DR_REG_XSP, sizeof(reg_t))));
-    APP(ilist, INSTR_CREATE_jmp_ind(dc, xax));
+    /* Un-align stack to get back to ret addr. */
+    APP(ilist, INSTR_CREATE_lea
+        (dc, xsp, OPND_CREATE_MEM_lea(REG_XSP, REG_NULL, 0, realignment)));
+    APP(ilist, INSTR_CREATE_ret(dc));
 
     /* Check that there's space to encode the ilist.  Clean calls on x86_64 use
      * about 469 bytes, so we can usually pack about 8 calls per page. */

@@ -34,6 +34,7 @@
 
 #include "dr_api.h"
 #include <stddef.h> /* offsetof */
+#include <stdlib.h> /* atoi */
 #include <string.h> /* memset */
 
 #define ALIGN_BACKWARD(x, alignment) \
@@ -63,6 +64,8 @@
         FUNCTION(aflags_clobber) \
         FUNCTION(decode_past_ret) \
         FUNCTION(decode_loop) \
+        FUNCTION(partial_global) \
+        FUNCTION(optimize_flags) \
         LAST_FUNCTION()
 
 /* Table of function names. */
@@ -503,54 +506,56 @@ event_basic_block(void *dc, void *tag, instrlist_t *bb,
     instr_t *entry = instrlist_first(bb);
     app_pc entry_pc = instr_get_app_pc(entry);
     int i;
+    bool inline_expected = true;
 
     for (i = 0; i < N_FUNCS; i++) {
-        bool inline_expected = true;
-
-        if (entry_pc != func_app_pcs[i])
-            continue;
-
-        func_called[i] = 1;
-        dr_insert_clean_call(dc, bb, entry, (void*)before_callee, false, 2,
-                             OPND_CREATE_INTPTR(func_ptrs[i]),
-                             OPND_CREATE_INTPTR(func_names[i]));
-
-        switch (i) {
-        default:
-            /* Default behavior is to call instrumentation with no-args and
-             * assert it gets inlined. */
-            dr_insert_clean_call(dc, bb, entry, func_ptrs[i], false, 0);
+        if (entry_pc == func_app_pcs[i])
             break;
-        case FN_inscount:
-            dr_insert_clean_call(dc, bb, entry, func_ptrs[i], false, 1,
-                                 OPND_CREATE_INT32((int)0xDEADBEEF));
-            dr_insert_clean_call(dc, bb, entry, (void*)check_count, false, 0);
-            break;
-        case FN_nonleaf:
-        case FN_decode_past_ret:
-            /* These functions cannot be inlined (yet). */
-            dr_insert_clean_call(dc, bb, entry, func_ptrs[i], false, 0);
-            inline_expected = false;
-            break;
-        case FN_tls_clobber:
-            dr_insert_clean_call(dc, bb, entry, (void*)fill_scratch, false, 0);
-            dr_insert_clean_call(dc, bb, entry, func_ptrs[i], false, 0);
-            dr_insert_clean_call(dc, bb, entry, (void*)check_scratch, false, 0);
-            break;
-        case FN_aflags_clobber:
-            /* ah is: SF:ZF:0:AF:0:PF:1:CF.  If we turn everything on we will
-             * get all 1's except bits 3 and 5, giving a hex mask of 0xD7.
-             * Overflow is in the low byte (al usually) so use use a mask of
-             * 0xD701 first.  If we turn everything off we get 0x0200.
-             */
-            entry = test_aflags(dc, bb, entry, 0xD701);
-            (void)test_aflags(dc, bb, entry, 0x00200);
-            break;
-        }
-        dr_insert_clean_call(dc, bb, entry, (void*)after_callee, false, 2,
-                             OPND_CREATE_INT32(inline_expected),
-                             OPND_CREATE_INTPTR(func_names[i]));
     }
+    if (i >= N_FUNCS)
+        return DR_EMIT_DEFAULT;
+
+    func_called[i] = 1;
+    dr_insert_clean_call(dc, bb, entry, (void*)before_callee, false, 2,
+                         OPND_CREATE_INTPTR(func_ptrs[i]),
+                         OPND_CREATE_INTPTR(func_names[i]));
+
+    switch (i) {
+    default:
+        /* Default behavior is to call instrumentation with no-args and
+         * assert it gets inlined. */
+        dr_insert_clean_call(dc, bb, entry, func_ptrs[i], false, 0);
+        break;
+    case FN_inscount:
+        dr_insert_clean_call(dc, bb, entry, func_ptrs[i], false, 1,
+                             OPND_CREATE_INT32((int)0xDEADBEEF));
+        dr_insert_clean_call(dc, bb, entry, (void*)check_count, false, 0);
+        break;
+    case FN_nonleaf:
+    case FN_decode_past_ret:
+        /* These functions cannot be inlined (yet). */
+        dr_insert_clean_call(dc, bb, entry, func_ptrs[i], false, 0);
+        inline_expected = false;
+        break;
+    case FN_tls_clobber:
+        dr_insert_clean_call(dc, bb, entry, (void*)fill_scratch, false, 0);
+        dr_insert_clean_call(dc, bb, entry, func_ptrs[i], false, 0);
+        dr_insert_clean_call(dc, bb, entry, (void*)check_scratch, false, 0);
+        break;
+    case FN_aflags_clobber:
+        /* ah is: SF:ZF:0:AF:0:PF:1:CF.  If we turn everything on we will
+         * get all 1's except bits 3 and 5, giving a hex mask of 0xD7.
+         * Overflow is in the low byte (al usually) so use use a mask of
+         * 0xD701 first.  If we turn everything off we get 0x0200.
+         */
+        entry = test_aflags(dc, bb, entry, 0xD701);
+        (void)test_aflags(dc, bb, entry, 0x00200);
+        break;
+    }
+    dr_insert_clean_call(dc, bb, entry, (void*)after_callee, false, 2,
+                         OPND_CREATE_INT32(inline_expected),
+                         OPND_CREATE_INTPTR(func_names[i]));
+
     return DR_EMIT_DEFAULT;
 }
 
@@ -990,6 +995,78 @@ codegen_decode_loop(void *dc)
     APP(ilist, l_cmp);
     APP(ilist, INSTR_CREATE_test(dc, xcx, xcx));
     APP(ilist, INSTR_CREATE_jcc(dc, OP_jnz, opnd_create_instr(l_loop)));
+    codegen_epilogue(dc, ilist);
+    return ilist;
+}
+
+/****************************************************************************/
+/* opt_cleancall >= 3 tests */
+
+/* Simple test case reduced from client.syscall.  Essentially, the
+ * instrumentation function looks like:
+ * if (monitoring) { -- do stuff -- }
+partial_global:
+    push %rbp
+    mov %rsp, %rbp
+    mov &count, %rax
+    mov (%rax), %rax
+    test %rax, %rax
+    jz done
+        call other_func
+    done:
+    leave
+    ret
+
+other_func:
+    int3  -- should never happen
+*/
+static instrlist_t *
+codegen_partial_global(void *dc)
+{
+    instrlist_t *ilist = instrlist_create(dc);
+    instr_t *l_done = INSTR_CREATE_label(dc);
+    instr_t *l_other_func = INSTR_CREATE_label(dc);
+    opnd_t xax = opnd_create_reg(DR_REG_XAX);
+    codegen_prologue(dc, ilist);
+    APP(ilist, INSTR_CREATE_mov_imm(dc, xax, OPND_CREATE_INTPTR(&count)));
+    APP(ilist, INSTR_CREATE_mov_ld(dc, xax, OPND_CREATE_MEMPTR(DR_REG_XAX, 0)));
+    APP(ilist, INSTR_CREATE_test(dc, xax, xax));
+    APP(ilist, INSTR_CREATE_jcc(dc, OP_jz, opnd_create_instr(l_done)));
+    APP(ilist, INSTR_CREATE_call(dc, opnd_create_instr(l_other_func)));
+    APP(ilist, l_done);
+    codegen_epilogue(dc, ilist);
+
+    APP(ilist, l_other_func);
+    APP(ilist, INSTR_CREATE_ret(dc));
+    return ilist;
+}
+
+/* Test flags optimizations.  Function takes two reg params and optimizer should
+ * be able to turn sub and add into lea's to remove flags dependency.
+ * TODO(rnk): So far we have no way to assert this, but it's easy to check the
+ * logs for it.
+optimize_flags:
+    push %rbp
+    mov %rsp, %rbp
+    sub $-1, %rdi
+    add %rsi, %rdi
+    mov &count, %rax
+    mov %rdi, (%rax)
+    leave
+    ret
+*/
+static instrlist_t *
+codegen_optimize_flags(void *dc)
+{
+    instrlist_t *ilist = instrlist_create(dc);
+    opnd_t xax = opnd_create_reg(DR_REG_XAX);
+    opnd_t xdi = opnd_create_reg(DR_REG_XDI);
+    opnd_t xsi = opnd_create_reg(DR_REG_XSI);
+    codegen_prologue(dc, ilist);
+    APP(ilist, INSTR_CREATE_sub(dc, xdi, OPND_CREATE_INT8(-1)));
+    APP(ilist, INSTR_CREATE_add(dc, xdi, xsi));
+    APP(ilist, INSTR_CREATE_mov_imm(dc, xax, OPND_CREATE_INTPTR(&count)));
+    APP(ilist, INSTR_CREATE_mov_st(dc, OPND_CREATE_MEMPTR(DR_REG_XAX, 0), xdi));
     codegen_epilogue(dc, ilist);
     return ilist;
 }

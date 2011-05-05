@@ -54,6 +54,8 @@
         FUNCTION(aflags_clobber) \
         FUNCTION(decode_past_ret) \
         FUNCTION(decode_loop) \
+        FUNCTION(partial_global) \
+        FUNCTION(optimize_flags) \
         LAST_FUNCTION()
 
 /* Definitions for every function. */
