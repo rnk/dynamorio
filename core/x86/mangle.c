@@ -4878,6 +4878,64 @@ remove_and_destroy(void *dc, instrlist_t *ilist, instr_t *instr)
     instr_destroy(dc, instr);
 }
 
+/* Dead register analysis abstraction.  Drive it by looping over instructions
+ * in reverse.  At end of loop body, call reg_dead_update. */
+
+typedef struct _liveness_t {
+    bool reg_live[NUM_GP_REGS];
+    /* Flags that are live.  Uses EFLAGS_READ_* form of the masks. */
+    uint flags_live;
+} liveness_t;
+
+#define IS_LIVE(r) (liveness->reg_live[reg_fixer[(r)] - DR_REG_XAX])
+#define IS_DEAD(r) !IS_LIVE(r)
+#define SET_LIVE(r, d) \
+    (liveness->reg_live[reg_fixer[(r)] - DR_REG_XAX] = (d))
+
+static void
+liveness_init(liveness_t *liveness)
+{
+    int i;
+    /* At callee end, all registers are considered dead except XSP. */
+    for (i = 0; i < NUM_GP_REGS; i++)
+        liveness->reg_live[i] = false;
+    SET_LIVE(DR_REG_XSP, true);
+}
+
+static void
+liveness_update(dcontext_t *dc, callee_info_t *ci, liveness_t *liveness,
+                instr_t *instr)
+{
+    uint flags = instr_get_eflags(instr);
+    int i;
+
+    /* Mark all flags written to as dead.  */
+    liveness->flags_live &= ~(EFLAGS_WRITE_TO_READ(flags & EFLAGS_WRITE_ALL));
+    /* Mark all flags read from as live.  */
+    liveness->flags_live |= (flags & EFLAGS_READ_ALL);
+
+    /* TODO(rnk): Can mark destination register as dead here, but will
+     * break if there is control flow, for example rax is still live here:
+     * mov %rbx, %rax
+     * test %rcx, %rcx
+     * jz next
+     * xor %rax, %rax
+     * next:
+     * mov %rax, global
+     */
+
+    /* Mark all regs read from as live.  */
+    for (i = 0; i < NUM_GP_REGS; i++) {
+        if (instr_reads_from_reg(instr, DR_REG_XAX + (reg_id_t)i)) {
+            SET_LIVE(DR_REG_XAX + (reg_id_t)i, true);
+        }
+    }
+
+    /* TODO(rnk): To support partial inlining, we may need to change this to
+     * consider argument registers live-in to the call.
+     */
+}
+
 /* Rewrite all reads of 'old' in 'opnd' to 'new', or return false.
  */
 /* TODO(rnk): This doesn't handle al/ah type stuff.  ie, if we want to replace
@@ -4983,6 +5041,33 @@ find_next_full_clobber(dcontext_t *dc, callee_info_t *ci, instr_t *start,
             }
         }
     }
+    if (instr == NULL)
+        *end = NULL;
+    return true;
+}
+
+/* Try to rewrite reads of 'old' after 'start' to 'new', up until the next
+ * write of 'old'. */
+static bool
+rewrite_live_reads(dcontext_t *dc, callee_info_t *ci, instr_t *start,
+                   reg_id_t old, reg_id_t new)
+{
+    instr_t *instr;
+    instr_t *last_instr = NULL;
+
+    /* We only rewrite up until the next instruction that fully clobbers the
+     * destination register.  If the update is not a full clobber (ie a write
+     * of a subreg) then we bail. */
+    if (!find_next_full_clobber(dc, ci, start, old, &last_instr))
+        return false;
+
+    /* Find all reads of old.  First, check if we can rewrite.  If so, do the
+     * modification. */
+    for (instr = start; instr != last_instr; instr = instr_get_next(instr))
+        if (!rewrite_reg_reads(dc, instr, old, new, /*check_only=*/true))
+            return false;
+    for (instr = start; instr != last_instr; instr = instr_get_next(instr))
+        rewrite_reg_reads(dc, instr, old, new, /*check_only=*/false);
     return true;
 }
 
@@ -4996,29 +5081,16 @@ propagate_copy(dcontext_t *dc, callee_info_t *ci, instr_t *copy)
     reg_id_t src = opnd_get_reg(instr_get_src(copy, 0));
     reg_id_t dst = opnd_get_reg(instr_get_dst(copy, 0));
     opnd_size_t copy_sz = reg_get_size(dst);
-    instr_t *instr;
-    instr_t *last_instr = NULL;
 
     /* Let's not get into copy sizes that don't clobber the entire GPR. */
     if (!(copy_sz == OPSZ_4 || copy_sz == OPSZ_8))
         return false;
 
-    /* We only rewrite up until the next instruction that fully clobbers the
-     * destination register.  If the update is not a full clobber (ie a write
-     * of a subreg) then we bail. */
-    if (!find_next_full_clobber(dc, ci, copy, dst, &last_instr))
-        return false;
-
     LOG(dr_get_logfile(dc), LOG_CLEANCALL, 3,
         "CLEANCALL: propagating copy at "PFX"\n", instr_get_app_pc(copy));
 
-    /* Find all reads of dst.  First, check if we can rewrite.  If so, do the
-     * modification. */
-    for (instr = copy; instr != last_instr; instr = instr_get_next(instr))
-        if (!rewrite_reg_reads(dc, instr, dst, src, /*check_only=*/true))
-            return false;
-    for (instr = copy; instr != last_instr; instr = instr_get_next(instr))
-        rewrite_reg_reads(dc, instr, dst, src, /*check_only=*/false);
+    if (!rewrite_live_reads(dc, ci, copy, dst, src))
+        return false;
 
     /* Delete the copy. */
     remove_and_destroy(GLOBAL_DCONTEXT, ci->ilist, copy);
@@ -5026,64 +5098,69 @@ propagate_copy(dcontext_t *dc, callee_info_t *ci, instr_t *copy)
     return true;
 }
 
-/* Dead register analysis abstraction.  Drive it by looping over instructions
- * in reverse.  At end of loop body, call reg_dead_update. */
-
-typedef struct _liveness_t {
-    bool reg_live[NUM_GP_REGS];
-    /* Flags that are live.  Uses EFLAGS_READ_* form of the masks. */
-    uint flags_live;
-} liveness_t;
-
-#define IS_LIVE(r) (liveness->reg_live[reg_fixer[(r)] - DR_REG_XAX])
-#define IS_DEAD(r) !IS_LIVE(r)
-#define SET_LIVE(r, d) \
-    (liveness->reg_live[reg_fixer[(r)] - DR_REG_XAX] = (d))
-
+/* If this is a reg-to-reg instruction that uses a new register when there are
+ * existing dead registers that we've already used, try to reuse registers.
+ * This creates less saves and restores.  */
 static void
-liveness_init(liveness_t *liveness)
+try_reuse_register(dcontext_t *dc, callee_info_t *ci, liveness_t *liveness,
+                   instr_t *reuse_instr)
 {
-    int i;
-    /* At callee end, all registers are considered dead except XSP. */
-    for (i = 0; i < NUM_GP_REGS; i++)
-        liveness->reg_live[i] = false;
-    SET_LIVE(DR_REG_XSP, true);
-}
+    instr_t *instr;
+    uint i;
+    bool reg_used[NUM_GP_REGS];
+    opnd_t opnd = instr_get_dst(reuse_instr, 0);
+    reg_id_t dst = opnd_get_reg(opnd);
+    reg_id_t new;
 
-static void
-liveness_update(dcontext_t *dc, callee_info_t *ci, liveness_t *liveness,
-                instr_t *instr)
-{
-    uint flags = instr_get_eflags(instr);
-    int i;
-
-    /* Mark all flags written to as dead.  */
-    liveness->flags_live &= ~(EFLAGS_WRITE_TO_READ(flags & EFLAGS_WRITE_ALL));
-    /* Mark all flags read from as live.  */
-    liveness->flags_live |= (flags & EFLAGS_READ_ALL);
-
-    /* TODO(rnk): Can mark destination register as dead here, but will
-     * break if there is control flow, for example rax is still live here:
-     * mov %rbx, %rax
-     * test %rcx, %rcx
-     * jz next
-     * xor %rax, %rax
-     * next:
-     * mov %rax, global
-     */
-
-    /* Mark all regs read from as live.  */
-    for (i = 0; i < NUM_GP_REGS; i++) {
-        if (instr_reads_from_reg(instr, DR_REG_XAX + (reg_id_t)i)) {
-            SET_LIVE(DR_REG_XAX + (reg_id_t)i, true);
+    /* Compute registers used before reuse_instr. */
+    /* TODO(rnk): This can cause quadratic behavior if called for every instr
+     * in ilist.  Assumes ilist is short. */
+    memset(reg_used, 0, sizeof(reg_used));
+    for (instr = instrlist_first(ci->ilist); instr != reuse_instr;
+         instr = instr_get_next(instr)) {
+        for (i = 0; i < NUM_GP_REGS; i++) {
+            if (instr_uses_reg(instr, DR_REG_XAX + (reg_id_t)i))
+                reg_used[i] = true;
         }
     }
+    /* Also count registers read from by reuse_instr. */
+    for (i = 0; i < NUM_GP_REGS; i++) {
+        if (instr_reads_from_reg(reuse_instr, DR_REG_XAX + (reg_id_t)i))
+            reg_used[i] = true;
+    }
 
-    /* TODO(rnk): To support partial inlining, we may need to change this to
-     * consider argument registers live-in to the call.
-     */
+    /* Find first dead register that we've already used. */
+    for (i = 0; i < NUM_GP_REGS; i++)
+        if (reg_used[i] && IS_DEAD(DR_REG_XAX + (reg_id_t)i))
+            break;
+    if (i == NUM_GP_REGS)
+        return;
+    new = DR_REG_XAX + (reg_id_t)i;
+    ASSERT(reg_used[i] && IS_DEAD(new));
+
+    if (!rewrite_opnd_reg(dc, reuse_instr, &opnd, dst, new,
+                          /*check_only=*/true))
+        return;
+
+    LOG(dr_get_logfile(dc), LOG_CLEANCALL, 3,
+        "CLEANCALL: trying to reuse dead register %s instead of %s at "PFX"\n",
+        get_register_name(new), get_register_name(dst),
+        instr_get_app_pc(reuse_instr));
+
+    /* Rewrite dst and all further uses of dst to new. */
+    if (rewrite_live_reads(dc, ci, reuse_instr, dst, new)) {
+        DEBUG_DECLARE(bool ok;)
+        LOG(dr_get_logfile(dc), LOG_CLEANCALL, 3,
+            "CLEANCALL: succeeded reusing dead register %s instead of %s at "
+            PFX"\n",
+            get_register_name(new), get_register_name(dst),
+            instr_get_app_pc(reuse_instr));
+        IF_DEBUG(ok =) rewrite_opnd_reg(dc, reuse_instr, &opnd, dst, new,
+                                        /*check_only=*/false);
+        ASSERT(ok);
+        instr_set_dst(reuse_instr, 0, opnd);
+    }
 }
-
 
 /* Remove and destroy instructions whose only destinations are dead registers.
  * Assumes there are no calls or backwards branches in ilist.
@@ -5106,8 +5183,7 @@ optimize_callee(dcontext_t *dc, callee_info_t *ci)
 
     liveness_init(liveness);
 
-    for (instr = instrlist_last(ilist); instr != NULL;
-         instr = prev_instr) {
+    for (instr = instrlist_last(ilist); instr != NULL; instr = prev_instr) {
         bool instr_is_live = false;
         prev_instr = instr_get_prev(instr);
         int opc;
@@ -5156,9 +5232,24 @@ optimize_callee(dcontext_t *dc, callee_info_t *ci)
             }
         }
 
-        /* TODO(rnk): If this instruction has only a single register
-         * destination and we have free dead registers, see if we can reuse
-         * one. */
+        liveness_update(dc, ci, liveness, instr);
+    }
+
+    /* Do a second pass and attempt to reuse registers.  We don't do this on
+     * the first pass or we may attempt to reuse registers that we don't end up
+     * using after DCE. */
+    liveness_init(liveness);
+    for (instr = instrlist_last(ilist); instr != NULL; instr = prev_instr) {
+        prev_instr = instr_get_prev(instr);
+
+        /* If this is a reg-to-reg instruction that uses a new register when
+         * there are existing dead registers that we've already used, try to
+         * reuse registers.  This creates less saves and restores.  */
+        if (!instr_is_cti(instr) &&
+            instr_num_dsts(instr) == 1 &&
+            opnd_is_reg(instr_get_dst(instr, 0))) {
+            try_reuse_register(dc, ci, liveness, instr);
+        }
 
         liveness_update(dc, ci, liveness, instr);
     }
@@ -6595,6 +6686,18 @@ insert_inline_slowpath(dcontext_t *dc, clean_call_info_t *cci, opnd_t *args)
     }
     ASSERT(slowpath_call != NULL);
 
+    /* XXX: If the callee didn't use XAX and did use flags, we may have saved
+     * XAX in order to save flags inline.  The slowpath assumes the inline code
+     * always saves XAX if there is any flags usage.  If aflags were dead so we
+     * didn't save flags and hence XAX, we will need to save XAX here. */
+    if (!ci->reg_used[DR_REG_XAX - DR_REG_XAX] &&
+        (ci->read_aflags || ci->write_aflags) &&
+        cci->skip_save_aflags) {
+        insert_mc_reg_save(dc, ci->framesize, ilist, slowpath_call, DR_REG_XAX);
+        insert_mc_reg_restore(dc, ci->framesize, ilist,
+                              instr_get_next(slowpath_call), DR_REG_XAX);
+    }
+
     /* Arg setup may use registers that weren't used inline, and therefore
      * won't be saved. */
     for (i = 0; i < cci->num_args; i++) {
@@ -6798,8 +6901,8 @@ insert_slowpath_mc_regs(dcontext_t *dc, callee_info_t *ci, bool save,
         /* If the register was used inline it was saved inline. */
         if (ci->reg_used[reg - DR_REG_XAX])
             continue;
-        /* Ugly special case: if flags had to be saved, then XAX was saved
-         * inline and clobbered, so we should *not* save it. */
+        /* XXX: If flags had to be saved, then XAX was saved inline and
+         * clobbered, so we should *not* save it. */
         if (reg == DR_REG_XAX && (ci->read_aflags || ci->write_aflags))
             continue;
         /* If the register was used to pass an argument, it must have been
