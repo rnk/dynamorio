@@ -4900,6 +4900,7 @@ liveness_init(liveness_t *liveness)
     for (i = 0; i < NUM_GP_REGS; i++)
         liveness->reg_live[i] = false;
     SET_LIVE(DR_REG_XSP, true);
+    liveness->flags_live = 0;
 }
 
 static void
@@ -4940,7 +4941,7 @@ liveness_update(dcontext_t *dc, callee_info_t *ci, liveness_t *liveness,
  */
 /* TODO(rnk): This doesn't handle al/ah type stuff.  ie, if we want to replace
  * RAX w/ RBX we need to rewrite BH to AH and not AL. */
-static bool
+static void
 rewrite_opnd_reg(dcontext_t *dc, instr_t *instr, opnd_t *opnd,
                  reg_id_t old, reg_id_t new, bool check_only)
 {
@@ -4951,45 +4952,73 @@ rewrite_opnd_reg(dcontext_t *dc, instr_t *instr, opnd_t *opnd,
         reg_id_t reg_used = opnd_get_reg_used(*opnd, i);
         if (reg_overlap(reg_used, old)) {
             reg_id_t new_sized = reg_32_to_opsz(new, reg_get_size(reg_used));
-            if (new_sized == DR_REG_NULL)
-                return false;
-            /* TODO(rnk): There's got to be a better way to check if an
-             * instruction can be encoded, this just catches jecxz. */
-            if (check_only) {
-                int opc = instr_get_opcode(instr);
-                if (opc == OP_jecxz && new != DR_REG_XCX)
-                    return false;
-            }
             if (!check_only) {
                 LOG(dr_get_logfile(dc), LOG_CLEANCALL, 3,
                     "CLEANCALL: rewriting reg %s to %s at "PFX"\n",
                     get_register_name(reg_used), get_register_name(new_sized),
                     instr_get_app_pc(instr));
-                opnd_replace_reg(opnd, reg_used, new_sized);
             }
+            opnd_replace_reg(opnd, reg_used, new_sized);
         }
     }
-    return true;
 }
 
-/* Rewrite reads from in instr from 'old' to 'new'. */
+/* Wrapper for instr_is_encoding_possible that works on labels. */
+static bool
+can_encode(instr_t *instr)
+{
+    return instr_is_label(instr) || instr_is_encoding_possible(instr);
+}
+
+static bool
+rewrite_reg_dst(dcontext_t *dc, instr_t *instr, reg_id_t old, reg_id_t new,
+                bool check_only)
+{
+    bool encodable;
+    opnd_t opnd;
+
+    /* Only rewrite instrs writing a single reg dst. */
+    if (!instr_num_dsts(instr) == 1)
+        return false;
+    opnd = instr_get_dst(instr, 0);
+    if (!opnd_is_reg(opnd))
+        return false;
+
+    /* Avoid side-effects on original instruction if we're just checking. */
+    if (check_only)
+        instr = instr_clone(dc, instr);
+
+    opnd = instr_get_dst(instr, 0);
+    rewrite_opnd_reg(dc, instr, &opnd, old, new, check_only);
+    instr_set_dst(instr, 0, opnd);
+
+    encodable = can_encode(instr);
+
+    if (check_only)
+        instr_destroy(dc, instr);
+
+    return encodable;
+}
+
+/* Rewrite reads from in instr from 'old' to 'new'.  Returns true or false if
+ * the resulting instruction is encodable.  If check_only is true, the
+ * instruction will not be modified regardless of success or failure. */
 static bool
 rewrite_reg_reads(dcontext_t *dc, instr_t *instr, reg_id_t old, reg_id_t new,
                   bool check_only)
 {
+    bool encodable;
     int i;
-    bool can_rewrite;
+
+    /* Avoid side-effects on original instruction if we're just checking. */
+    if (check_only)
+        instr = instr_clone(dc, instr);
 
     /* srcs */
     for (i = 0; i < instr_num_srcs(instr); i++) {
         opnd_t opnd = instr_get_src(instr, i);
-        can_rewrite = rewrite_opnd_reg(dc, instr, &opnd, old, new, check_only);
-        if (check_only) {
-            if (!can_rewrite) return false;
-        } else {
-            DR_ASSERT(can_rewrite);
-            instr_set_src(instr, i, opnd);
-        }
+        rewrite_opnd_reg(dc, instr, &opnd, old, new, check_only);
+        instr_set_src(instr, i, opnd);
     }
 
     /* dsts */
@@ -4997,16 +5026,16 @@ rewrite_reg_reads(dcontext_t *dc, instr_t *instr, reg_id_t old, reg_id_t new,
         opnd_t opnd = instr_get_dst(instr, i);
         if (!opnd_is_base_disp(opnd))
             continue;  /* The only reads in dsts are regs in base/disp opnds. */
-        can_rewrite = rewrite_opnd_reg(dc, instr, &opnd, old, new, check_only);
-        if (check_only) {
-            if (!can_rewrite) return false;
-        } else {
-            DR_ASSERT(can_rewrite);
-            instr_set_dst(instr, i, opnd);
-        }
+        rewrite_opnd_reg(dc, instr, &opnd, old, new, check_only);
+        instr_set_dst(instr, i, opnd);
     }
 
-    return true;
+    encodable = can_encode(instr);
+
+    if (check_only)
+        instr_destroy(dc, instr);
+
+    return encodable;
 }
 
 /* Find the next full clobber of 'reg', if it exists.  If there is a
@@ -5023,20 +5052,20 @@ find_next_full_clobber(dcontext_t *dc, callee_info_t *ci, instr_t *start,
      * leave it alone.  Otherwise, we can rewrite up until that instruction. */
     for (instr = instr_get_next(start); instr != NULL;
          instr = instr_get_next(instr)) {
-        if (instr_writes_to_reg(instr, reg)) {
-            for (i = 0; i < instr_num_dsts(instr); i++) {
-                opnd_t d = instr_get_dst(instr, i);
-                if (opnd_is_reg(d) && reg_overlap(opnd_get_reg(d), reg)) {
-                    opnd_size_t sz = opnd_get_size(d);
-                    if (sz == OPSZ_4 || sz == OPSZ_8) {
-                        /* dst is clobbered by another write, stop rewriting
-                         * here. */
-                        *end = instr;
-                        break;
-                    } else {
-                        /* Subregister write, clobber is not full. */
-                        return false;
-                    }
+        if (!instr_writes_to_reg(instr, reg))
+            continue;
+
+        for (i = 0; i < instr_num_dsts(instr); i++) {
+            opnd_t d = instr_get_dst(instr, i);
+            if (opnd_is_reg(d) && reg_overlap(opnd_get_reg(d), reg)) {
+                opnd_size_t sz = opnd_get_size(d);
+                if (sz == OPSZ_4 || sz == OPSZ_8) {
+                    /* dst is fully clobbered here. */
+                    *end = instr;
+                    break;
+                } else {
+                    /* Subregister write, clobber is not full. */
+                    return false;
                 }
             }
         }
@@ -5046,28 +5075,50 @@ find_next_full_clobber(dcontext_t *dc, callee_info_t *ci, instr_t *start,
     return true;
 }
 
-/* Try to rewrite reads of 'old' after 'start' to 'new', up until the next
- * write of 'old'. */
+/* Rewrite all uses of reg 'old' to 'new' over the live range of 'old' starting
+ * at start.  Rewrites the destination of start, and all reads up until the
+ * next write that fully clobbers 'old'.  Returns false without making any
+ * changes on failure. */
 static bool
-rewrite_live_reads(dcontext_t *dc, callee_info_t *ci, instr_t *start,
+rewrite_live_range(dcontext_t *dc, callee_info_t *ci, instr_t *start,
                    reg_id_t old, reg_id_t new)
 {
     instr_t *instr;
     instr_t *last_instr = NULL;
+    DEBUG_DECLARE(bool ok);
 
     /* We only rewrite up until the next instruction that fully clobbers the
      * destination register.  If the update is not a full clobber (ie a write
      * of a subreg) then we bail. */
     if (!find_next_full_clobber(dc, ci, start, old, &last_instr))
         return false;
+    /* If the write contains any reads, make sure to update them.  For example,
+     * if %rax is old and %rbx is new and the following is last_instr:
+     * lea -24(%rax), %rax
+     * It should be rewritten as well to become:
+     * lea -24(%rbx), %rax
+     */
+    if (last_instr != NULL)
+        last_instr = instr_get_next(last_instr);
 
-    /* Find all reads of old.  First, check if we can rewrite.  If so, do the
-     * modification. */
-    for (instr = start; instr != last_instr; instr = instr_get_next(instr))
+    /* First check if we can rewrite the dst. */
+    if (!rewrite_reg_dst(dc, start, old, new, /*check_only=*/true))
+        return false;
+    /* Find all reads of old and check if we can rewrite. */
+    for (instr = instr_get_next(start); instr != last_instr;
+         instr = instr_get_next(instr))
         if (!rewrite_reg_reads(dc, instr, old, new, /*check_only=*/true))
             return false;
-    for (instr = start; instr != last_instr; instr = instr_get_next(instr))
-        rewrite_reg_reads(dc, instr, old, new, /*check_only=*/false);
+
+    /* Now that we know this will work, actually rewrite the registers. */
+    IF_DEBUG(ok =) rewrite_reg_dst(dc, start, old, new, /*check_only=*/false);
+    ASSERT(ok);
+    for (instr = instr_get_next(start); instr != last_instr;
+         instr = instr_get_next(instr)) {
+        IF_DEBUG(ok =) rewrite_reg_reads(dc, instr, old, new,
+                                         /*check_only=*/false);
+        ASSERT(ok);
+    }
     return true;
 }
 
@@ -5089,7 +5140,7 @@ propagate_copy(dcontext_t *dc, callee_info_t *ci, instr_t *copy)
     LOG(dr_get_logfile(dc), LOG_CLEANCALL, 3,
         "CLEANCALL: propagating copy at "PFX"\n", instr_get_app_pc(copy));
 
-    if (!rewrite_live_reads(dc, ci, copy, dst, src))
+    if (!rewrite_live_range(dc, ci, copy, dst, src))
         return false;
 
     /* Delete the copy. */
@@ -5113,8 +5164,6 @@ try_reuse_register(dcontext_t *dc, callee_info_t *ci, liveness_t *liveness,
     reg_id_t new;
 
     /* Compute registers used before reuse_instr. */
-    /* TODO(rnk): This can cause quadratic behavior if called for every instr
-     * in ilist.  Assumes ilist is short. */
     memset(reg_used, 0, sizeof(reg_used));
     for (instr = instrlist_first(ci->ilist); instr != reuse_instr;
          instr = instr_get_next(instr)) {
@@ -5138,27 +5187,18 @@ try_reuse_register(dcontext_t *dc, callee_info_t *ci, liveness_t *liveness,
     new = DR_REG_XAX + (reg_id_t)i;
     ASSERT(reg_used[i] && IS_DEAD(new));
 
-    if (!rewrite_opnd_reg(dc, reuse_instr, &opnd, dst, new,
-                          /*check_only=*/true))
-        return;
-
     LOG(dr_get_logfile(dc), LOG_CLEANCALL, 3,
         "CLEANCALL: trying to reuse dead register %s instead of %s at "PFX"\n",
         get_register_name(new), get_register_name(dst),
         instr_get_app_pc(reuse_instr));
 
     /* Rewrite dst and all further uses of dst to new. */
-    if (rewrite_live_reads(dc, ci, reuse_instr, dst, new)) {
-        DEBUG_DECLARE(bool ok;)
+    if (rewrite_live_range(dc, ci, reuse_instr, dst, new)) {
         LOG(dr_get_logfile(dc), LOG_CLEANCALL, 3,
             "CLEANCALL: succeeded reusing dead register %s instead of %s at "
             PFX"\n",
             get_register_name(new), get_register_name(dst),
             instr_get_app_pc(reuse_instr));
-        IF_DEBUG(ok =) rewrite_opnd_reg(dc, reuse_instr, &opnd, dst, new,
-                                        /*check_only=*/false);
-        ASSERT(ok);
-        instr_set_dst(reuse_instr, 0, opnd);
     }
 }
 
@@ -5176,7 +5216,8 @@ optimize_callee(dcontext_t *dc, callee_info_t *ci)
     instr_t *instr;
     instr_t *prev_instr;
 
-    LOG(dr_get_logfile(dc), LOG_CLEANCALL, 3, "CLEANCALL: ilist before DCE:\n");
+    LOG(dr_get_logfile(dc), LOG_CLEANCALL, 3,
+        "CLEANCALL: callee ilist before optimization:\n");
     DOLOG(3, LOG_CLEANCALL, {
         instrlist_disassemble(dc, NULL, ilist, dr_get_logfile(dc));
     });
@@ -5254,7 +5295,8 @@ optimize_callee(dcontext_t *dc, callee_info_t *ci)
         liveness_update(dc, ci, liveness, instr);
     }
 
-    LOG(dr_get_logfile(dc), LOG_CLEANCALL, 3, "CLEANCALL: ilist after DCE:\n");
+    LOG(dr_get_logfile(dc), LOG_CLEANCALL, 3,
+        "CLEANCALL: callee ilist after optimization:\n");
     DOLOG(3, LOG_CLEANCALL, {
         instrlist_disassemble(dc, NULL, ilist, dr_get_logfile(dc));
     });
@@ -6263,9 +6305,6 @@ analyze_clean_call_regs(dcontext_t *dcontext, clean_call_info_t *cci)
         if (info->xmm_used[i]) {
             cci->xmm_skip[i] = false;
         } else {
-            LOG(THREAD, LOG_CLEANCALL, 3,
-                "CLEANCALL: if inserting clean call "PFX
-                ", skip saving XMM%d.\n", info->start, i);
             cci->xmm_skip[i] = true;
             cci->num_xmms_skip++;
         }
@@ -6278,10 +6317,6 @@ analyze_clean_call_regs(dcontext_t *dcontext, clean_call_info_t *cci)
         if (info->reg_used[i]) {
             cci->reg_skip[i] = false;
         } else {
-            LOG(THREAD, LOG_CLEANCALL, 3,
-                "CLEANCALL: if inserting clean call "PFX
-                ", skip saving reg %s.\n", 
-                info->start, reg_names[DR_REG_XAX + (reg_id_t)i]);
             cci->reg_skip[i] = true;
             cci->num_regs_skip++;
         }
@@ -6692,7 +6727,8 @@ insert_inline_slowpath(dcontext_t *dc, clean_call_info_t *cci, opnd_t *args)
      * didn't save flags and hence XAX, we will need to save XAX here. */
     if (!ci->reg_used[DR_REG_XAX - DR_REG_XAX] &&
         (ci->read_aflags || ci->write_aflags) &&
-        cci->skip_save_aflags) {
+        cci->skip_save_aflags &&
+        cci->reg_skip[DR_REG_XAX - DR_REG_XAX]) {
         insert_mc_reg_save(dc, ci->framesize, ilist, slowpath_call, DR_REG_XAX);
         insert_mc_reg_restore(dc, ci->framesize, ilist,
                               instr_get_next(slowpath_call), DR_REG_XAX);
@@ -6709,7 +6745,8 @@ insert_inline_slowpath(dcontext_t *dc, clean_call_info_t *cci, opnd_t *args)
         }
     }
 
-    /* Assert that reg_skip and reg_used agree, for now. */
+    /* Assert that reg_skip and reg_used agree, except in the case of XAX,
+     * which we deal with above. */
     for (i = 0; i < NUM_GP_REGS; i++) {
         DR_ASSERT_MSG(ci->reg_used[i] == !cci->reg_skip[i] ||
                       (i == 0 && !cci->reg_skip[i]),

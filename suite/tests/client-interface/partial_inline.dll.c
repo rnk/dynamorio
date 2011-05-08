@@ -103,6 +103,10 @@ event_bb(void *dc, void *entry_pc, instrlist_t *bb, bool for_trace,
 
     for (instr = instrlist_first(bb); instr != NULL;
          instr = instr_get_next(instr)) {
+        /* Some nop instructions have memory operands as a way of varying the
+         * operation size.  We don't want those. */
+        if (instr_is_nop(instr))
+            continue;
         if (instr_get_app_pc(instr) == NULL)
             continue;
         if (instr_reads_memory(instr)) {
