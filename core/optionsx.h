@@ -329,6 +329,9 @@
      */
     OPTION_DEFAULT_INTERNAL(uint, opt_cleancall, 2,
                             "optimization level on optimizing clean call sequences")
+    /* TODO(rnk): File issue and mention number here. */
+    OPTION_DEFAULT_INTERNAL(bool, use_tls_inline, IF_LINUX_ELSE(true, false),
+                            "allocate tls space for usage by inlined clean calls")
     /* i#107: To handle app using same segment register that DR uses, we should
      * mangle the app's segment usage. We disable it by default now. 
      * Will enable it later when the code is more robust.
