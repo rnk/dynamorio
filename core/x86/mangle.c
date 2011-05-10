@@ -79,6 +79,7 @@ extern int num_fragments;
 /****************************************************************************
  * clean call callee info table for i#42 and i#43
  */
+
 static uint tls_scratch_offset;
 #define NUM_SCRATCH_SLOTS 12 /* General purpose spill slots */
 
@@ -247,7 +248,7 @@ clean_call_info_init(clean_call_info_t *cci, void *callee,
     cci->callee        = callee;
     cci->num_args      = num_args;
     cci->save_fpstate  = save_fpstate;
-    cci->save_all_regs = true;
+    cci->arg_reads_reg = true;
     cci->should_align  = true;
     cci->callee_info   = &default_callee_info;
 }
@@ -4531,9 +4532,16 @@ mangle_init(void)
     clean_call_info_init(&default_clean_call_info, NULL, false, 0);
 
     if (INTERNAL_OPTION(use_tls_inline)) {
+#ifdef CLIENT_INTERFACE
+        /* os_tls_alloc is only available if the client interface is enabled. */
         DEBUG_DECLARE(bool ok;)
-        IF_DEBUG(ok =) os_tls_calloc(&tls_scratch_offset, NUM_SCRATCH_SLOTS, 8);
-        DR_ASSERT_MSG(ok, "Unable to allocate scratch space for inlined code");
+        IF_DEBUG(ok =) os_tls_calloc(&tls_scratch_offset, NUM_SCRATCH_SLOTS,
+                                     sizeof(reg_t));
+        ASSERT_MESSAGE("Unable to allocate scratch space for inlined code", ok);
+#else
+        ASSERT_MESSAGE("Cannot implement use_tls_inline ifndef "
+                       "CLIENT_INTERFACE", false);
+#endif
     }
 }
 
@@ -4777,6 +4785,8 @@ static void
 use_scratch_slot_for(callee_info_t *ci, byte kind, byte value)
 {
     if (ci->slots_used < NUM_SCRATCH_SLOTS) {
+        if (kind == SLOT_REG)
+            value = reg_fixer[value];
         ci->scratch_slots[ci->slots_used].kind = kind;
         ci->scratch_slots[ci->slots_used].value = value;
     }
@@ -4787,6 +4797,9 @@ static opnd_t
 scratch_slot_opnd(callee_info_t *ci, byte kind, byte value)
 {
     uint i;
+    ASSERT(INTERNAL_OPTION(use_tls_inline));
+    if (kind == SLOT_REG)
+        value = reg_fixer[value];
     for (i = 0; i < NUM_SCRATCH_SLOTS; i++) {
         if (ci->scratch_slots[i].kind  == kind &&
             ci->scratch_slots[i].value == value) {
@@ -4795,8 +4808,8 @@ scratch_slot_opnd(callee_info_t *ci, byte kind, byte value)
                                              0, disp, OPSZ_PTR);
         }
     }
-    DR_ASSERT_MSG(false, "Tried too find scratch slot for value without calling"
-                  " use_scratch_slot_for for it");
+    ASSERT_MESSAGE("Tried too find scratch slot for value without "
+                   "calling use_scratch_slot_for for it", false);
     return opnd_create_null();
 }
 
@@ -5048,6 +5061,20 @@ analyze_callee_tls(dcontext_t *dcontext, callee_info_t *ci)
     }
 }
 
+/* Returns an operand either pointing to the TLS slot for the local variable,
+ * or the top of the stack, depending on whether inline code is using dstack or
+ * TLS.
+ */
+static opnd_t
+inline_local_var_slot(callee_info_t *ci)
+{
+    if (INTERNAL_OPTION(use_tls_inline)) {
+        return scratch_slot_opnd(ci, SLOT_LOCAL, 0);
+    } else {
+        return OPND_CREATE_MEMPTR(DR_REG_XSP, 0);
+    }
+}
+
 static void
 analyze_callee_inline(dcontext_t *dcontext, callee_info_t *ci)
 {
@@ -5206,8 +5233,8 @@ analyze_callee_inline(dcontext_t *dcontext, callee_info_t *ci)
                         ci->start, instr_get_app_pc(instr));
                     break;
                 }
-                /* replace the stack location with the last stack slot. */
-                slot = scratch_slot_opnd(ci, SLOT_LOCAL, 0);
+                /* replace the stack location with TLS slot or last stack slot. */
+                slot = inline_local_var_slot(ci);
                 opnd_set_size(&slot, opnd_get_size(mem_ref));
                 instr_set_src(instr, i, slot);
             }
@@ -5237,7 +5264,7 @@ analyze_callee_inline(dcontext_t *dcontext, callee_info_t *ci)
                     break;
                 }
                 /* replace the stack location with the last stack slot. */
-                slot = scratch_slot_opnd(ci, SLOT_LOCAL, 0);
+                slot = inline_local_var_slot(ci);
                 opnd_set_size(&slot, opnd_get_size(mem_ref));
                 instr_set_dst(instr, i, slot);
             }
@@ -5366,16 +5393,20 @@ analyze_clean_call_args(dcontext_t *dcontext,
      * the full context switch with priv_mcontext_t layout,
      * in which case we need keep priv_mcontext_t layout.
      */
-    cci->save_all_regs = false;
+    /* FIXME: This should be really easy to fix with the scratch_slots opnd
+     * mapping.  Either we saved the register into a scratch slot at argument
+     * setup time, or the register is still live.  We can rematerialize from
+     * either source. */
+    cci->arg_reads_reg = false;
     for (i = 0; i < cci->num_args; i++) {
         if (opnd_is_reg(args[i]))
-            cci->save_all_regs = true;
+            cci->arg_reads_reg = true;
         for (j = 0; j < num_regparm; j++) {
             if (opnd_uses_reg(args[i], regparms[j]))
-                cci->save_all_regs = true;
+                cci->arg_reads_reg = true;
         }
     }
-    if (cci->save_all_regs) {
+    if (cci->arg_reads_reg) {
         LOG(THREAD, LOG_CLEANCALL, 2,
             "CLEANCALL: inserting clean call "PFX
             ", save all regs in priv_mcontext_t layout.\n",
@@ -5408,6 +5439,12 @@ analyze_clean_call_inline(dcontext_t *dcontext, clean_call_info_t *cci)
     if (cci->save_fpstate) {
         LOG(THREAD, LOG_CLEANCALL, 2,
             "CLEANCALL: fail inlining clean call "PFX", saving fpstate.\n",
+            info->start);
+        opt_inline = false;
+    }
+    if (cci->arg_reads_reg) {
+        LOG(THREAD, LOG_CLEANCALL, 2,
+            "CLEANCALL: fail inlining clean call, arg references register\n",
             info->start);
         opt_inline = false;
     }
@@ -5450,7 +5487,11 @@ analyze_clean_call_inline(dcontext_t *dcontext, clean_call_info_t *cci)
         }
     }
     if (!opt_inline) {
-        if (!cci->save_all_regs) {
+        if (!cci->arg_reads_reg) {
+            /* If we aren't inlining and we don't need to remat registers for
+             * arguments, optimize the clean call sequence by skipping
+             * registers already saved by the callee.
+             */
             uint i;
             for (i = 0; i < NUM_GP_REGS; i++) {
                 if (!cci->reg_skip[i] && info->callee_save_regs[i]) {
@@ -5567,6 +5608,13 @@ insert_inline_reg_save(dcontext_t *dcontext, clean_call_info_t *cci,
             PRE(ilist, where, INSTR_CREATE_pushf(dcontext));
         }
     }
+
+    /* If we had to rewrite a local var stack access, make space for it. */
+    if (!INTERNAL_OPTION(use_tls_inline) && ci->has_locals) {
+        PRE(ilist, where, INSTR_CREATE_lea
+            (dcontext, opnd_create_reg(DR_REG_XSP), OPND_CREATE_MEM_lea
+             (DR_REG_XSP, DR_REG_NULL, 0, -(int)sizeof(reg_t))));
+    }
 }
 
 static void
@@ -5575,6 +5623,13 @@ insert_inline_reg_restore(dcontext_t *dcontext, clean_call_info_t *cci,
 {
     int i;
     callee_info_t *ci = cci->callee_info;
+
+    /* Clear stack space for local var if we had one. */
+    if (!INTERNAL_OPTION(use_tls_inline) && ci->has_locals) {
+        PRE(ilist, where, INSTR_CREATE_lea
+            (dcontext, opnd_create_reg(DR_REG_XSP),
+             OPND_CREATE_MEM_lea(DR_REG_XSP, DR_REG_NULL, 0, sizeof(reg_t))));
+    }
 
     /* aflags is next. */
     if (!cci->skip_save_aflags) {
@@ -5619,7 +5674,9 @@ insert_inline_arg_setup(dcontext_t *dcontext, clean_call_info_t *cci,
                         instrlist_t *ilist, instr_t *where, opnd_t *args)
 {
     reg_id_t reg;
-    DEBUG_DECLARE(callee_info_t *ci = cci->callee_info;)
+#if !defined(X64) || defined(DEBUG)
+    callee_info_t *ci = cci->callee_info;
+#endif
 
     if (cci->num_args == 0)
         return;
@@ -5646,8 +5703,7 @@ insert_inline_arg_setup(dcontext_t *dcontext, clean_call_info_t *cci,
         "CLEANCALL: inlining clean call "PFX", passing arg via slot %d.\n",
         ci->start, NUM_SCRATCH_SLOTS - 1);
     PRE(ilist, where, INSTR_CREATE_mov_st
-        (dcontext, OPND_CREATE_MEMPTR(DR_REG_XSP, 0),
-         opnd_create_reg(DR_REG_XAX)));
+        (dcontext, inline_local_var_slot(ci), opnd_create_reg(DR_REG_XAX)));
 #endif
 }
 
@@ -5696,4 +5752,3 @@ insert_inline_clean_call(dcontext_t *dcontext, clean_call_info_t *cci,
      * leave it for higher optimization level.
      */
 }
-

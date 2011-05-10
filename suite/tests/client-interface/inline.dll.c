@@ -140,24 +140,27 @@ event_exit(void)
 static void
 lookup_pcs(void)
 {
-    module_data_t *exe;
+    dr_module_iterator_t *iter;
     int i;
 
-    exe = dr_lookup_module_by_name(
-#ifdef WINDOWS
-            "client.inline.exe"
-#else
-            "client.inline"
-#endif
-            );
-    for (i = 0; i < N_FUNCS; i++) {
-        app_pc func_pc = (app_pc)dr_get_proc_address(
-                exe->handle, func_names[i]);
-        DR_ASSERT_MSG(func_pc != NULL,
-                      "Unable to find a function we wanted to instrument!");
-        func_app_pcs[i] = func_pc;
+    iter = dr_module_iterator_start();
+    while (dr_module_iterator_hasnext(iter)) {
+        module_data_t *data = dr_module_iterator_next(iter);
+        for (i = 0; i < N_FUNCS; i++) {
+            app_pc func_pc = (app_pc)dr_get_proc_address(
+                    data->handle, func_names[i]);
+            if (func_pc != NULL) {
+                func_app_pcs[i] = func_pc;
+            }
+        }
+        dr_free_module_data(data);
     }
-    dr_free_module_data(exe);
+    dr_module_iterator_stop(iter);
+
+    for (i = 0; i < N_FUNCS; i++) {
+        DR_ASSERT_MSG(func_app_pcs[i] != NULL,
+                      "Unable to find a function we wanted to instrument!");
+    }
 }
 
 /* Generate the instrumentation. */

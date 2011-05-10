@@ -242,7 +242,7 @@ typedef struct _clean_call_info_t {
     bool save_fpstate;
     bool opt_inline;
     bool should_align;
-    bool save_all_regs;
+    bool arg_reads_reg;
     bool skip_save_aflags;
     bool skip_clear_eflags;
     uint num_xmms_skip;
