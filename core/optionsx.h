@@ -329,7 +329,8 @@
      */
     OPTION_DEFAULT_INTERNAL(uint, opt_cleancall, 2,
                             "optimization level on optimizing clean call sequences")
-    /* TODO(rnk): File issue and mention number here. */
+    /* i#456: Improve performance of inline clean calls by not switching to
+     * dstack inline. */
     OPTION_DEFAULT_INTERNAL(bool, use_tls_inline, IF_LINUX_ELSE(true, false),
                             "allocate tls space for usage by inlined clean calls")
     /* i#107: To handle app using same segment register that DR uses, we should
