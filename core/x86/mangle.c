@@ -4893,19 +4893,20 @@ typedef struct _liveness_t {
     (liveness->reg_live[reg_fixer[(r)] - DR_REG_XAX] = (d))
 
 static void
-liveness_init(liveness_t *liveness)
+liveness_init(liveness_t *liveness, const callee_info_t *ci)
 {
     int i;
     /* At callee end, all registers are considered dead except XSP. */
     for (i = 0; i < NUM_GP_REGS; i++)
         liveness->reg_live[i] = false;
     SET_LIVE(DR_REG_XSP, true);
+    if (ci->xbp_is_fp)
+        SET_LIVE(DR_REG_XBP, true);
     liveness->flags_live = 0;
 }
 
 static void
-liveness_update(dcontext_t *dc, callee_info_t *ci, liveness_t *liveness,
-                instr_t *instr)
+liveness_update(liveness_t *liveness, instr_t *instr)
 {
     uint flags = instr_get_eflags(instr);
     int i;
@@ -5042,8 +5043,8 @@ rewrite_reg_reads(dcontext_t *dc, instr_t *instr, reg_id_t old, reg_id_t new,
  * subregister write that does not fully clobber the register, return false.
  */
 static bool
-find_next_full_clobber(dcontext_t *dc, callee_info_t *ci, instr_t *start,
-                       reg_id_t reg, instr_t **end)
+find_next_full_clobber(dcontext_t *dc, instr_t *start, reg_id_t reg,
+                       instr_t **end)
 {
     instr_t *instr;
     int i;
@@ -5062,7 +5063,7 @@ find_next_full_clobber(dcontext_t *dc, callee_info_t *ci, instr_t *start,
                 if (sz == OPSZ_4 || sz == OPSZ_8) {
                     /* dst is fully clobbered here. */
                     *end = instr;
-                    break;
+                    return true;
                 } else {
                     /* Subregister write, clobber is not full. */
                     return false;
@@ -5080,8 +5081,7 @@ find_next_full_clobber(dcontext_t *dc, callee_info_t *ci, instr_t *start,
  * next write that fully clobbers 'old'.  Returns false without making any
  * changes on failure. */
 static bool
-rewrite_live_range(dcontext_t *dc, callee_info_t *ci, instr_t *start,
-                   reg_id_t old, reg_id_t new)
+rewrite_live_range(dcontext_t *dc, instr_t *start, reg_id_t old, reg_id_t new)
 {
     instr_t *instr;
     instr_t *last_instr = NULL;
@@ -5090,7 +5090,7 @@ rewrite_live_range(dcontext_t *dc, callee_info_t *ci, instr_t *start,
     /* We only rewrite up until the next instruction that fully clobbers the
      * destination register.  If the update is not a full clobber (ie a write
      * of a subreg) then we bail. */
-    if (!find_next_full_clobber(dc, ci, start, old, &last_instr))
+    if (!find_next_full_clobber(dc, start, old, &last_instr))
         return false;
     /* If the write contains any reads, make sure to update them.  For example,
      * if %rax is old and %rbx is new and the following is last_instr:
@@ -5127,7 +5127,7 @@ rewrite_live_range(dcontext_t *dc, callee_info_t *ci, instr_t *start,
  * returns false.
  */
 static bool
-propagate_copy(dcontext_t *dc, callee_info_t *ci, instr_t *copy)
+propagate_copy(dcontext_t *dc, instrlist_t *ilist, instr_t *copy)
 {
     reg_id_t src = opnd_get_reg(instr_get_src(copy, 0));
     reg_id_t dst = opnd_get_reg(instr_get_dst(copy, 0));
@@ -5140,12 +5140,129 @@ propagate_copy(dcontext_t *dc, callee_info_t *ci, instr_t *copy)
     LOG(dr_get_logfile(dc), LOG_CLEANCALL, 3,
         "CLEANCALL: propagating copy at "PFX"\n", instr_get_app_pc(copy));
 
-    if (!rewrite_live_range(dc, ci, copy, dst, src))
+    if (!rewrite_live_range(dc, copy, dst, src))
         return false;
 
     /* Delete the copy. */
-    remove_and_destroy(GLOBAL_DCONTEXT, ci->ilist, copy);
+    remove_and_destroy(GLOBAL_DCONTEXT, ilist, copy);
 
+    return true;
+}
+
+static bool
+rewrite_reg_immed(dcontext_t *dc, instr_t *instr, reg_id_t reg,
+                  ptr_int_t val, bool check_only)
+{
+    opnd_t imm = opnd_create_immed_int(val, OPSZ_4);
+    bool failed = false;
+    int i;
+
+    /* Avoid side-effects on original instruction if we're just checking. */
+    if (check_only)
+        instr = instr_clone(dc, instr);
+
+    for (i = 0; i < instr_num_srcs(instr); i++) {
+        opnd_t opnd = instr_get_src(instr, i);
+        if (!opnd_uses_reg(opnd, reg))
+            continue;
+        if (opnd_is_reg(opnd)) {
+            reg_id_t opnd_reg = opnd_get_reg(opnd);
+            /* We can fold if opnd_reg is reg or if it's the 64-bit version of
+             * reg and val is less than INT_MAX.  If it is larger, it will be
+             * sign extended when the code requires zero extension. */
+            if (opnd_reg == reg ||
+                IF_X64_ELSE((opnd_reg == reg_32_to_64(reg) &&
+                             val <= INT_MAX), false)) {
+                instr_set_src(instr, i, imm);
+            } else {
+                LOG(dr_get_logfile(dc), LOG_CLEANCALL, 3,
+                    "CLEANCALL: unable to fold due to subreg use at "PFX"\n",
+                    instr_get_app_pc(instr));
+                failed = true;
+                break;
+            }
+        } else if (opnd_is_base_disp(opnd)) {
+            ptr_int_t disp = opnd_get_disp(opnd);
+            reg_id_t base = opnd_get_base(opnd);
+            reg_id_t index = opnd_get_index(opnd);
+            int scale = opnd_get_scale(opnd);
+            opnd_size_t sz = opnd_get_size(opnd);
+            if (reg == index) {
+                disp += val * scale;
+                index = DR_REG_NULL;
+                scale = 0;
+            } else if (reg == base) {
+                disp += val;
+                if (scale == 1) {
+                    base = index;
+                    index = DR_REG_NULL;
+                    scale = 0;
+                } else if (scale == 2) {
+                    base = index;
+                    index = index;
+                    scale = 1;
+                } else {
+                    LOG(dr_get_logfile(dc), LOG_CLEANCALL, 3,
+                        "CLEANCALL: can't fold immed with scale %d\n", scale);
+                    failed = true;
+                    break;
+                }
+            } else {
+                LOG(dr_get_logfile(dc), LOG_CLEANCALL, 3,
+                    "CLEANCALL: unable to fold immed in subreg use at "PFX"\n",
+                    instr_get_app_pc(instr));
+                failed = true;
+                break;
+            }
+            instr_set_src(instr, i, opnd_create_base_disp
+                          (base, index, scale, disp, sz));
+        } else {
+            LOG(dr_get_logfile(dc), LOG_CLEANCALL, 3,
+                "CLEANCALL: unrecognized use of reg at "PFX"\n",
+                instr_get_app_pc(instr));
+            failed = true;
+            break;
+        }
+        if (!check_only) {
+            LOG(dr_get_logfile(dc), LOG_CLEANCALL, 3,
+                "CLEANCALL: folded immediate into src opnd at "PFX"\n",
+                instr_get_app_pc(instr));
+        }
+    }
+
+    for (i = 0; i < instr_num_dsts(instr); i++) {
+        opnd_t opnd = instr_get_src(instr, i);
+        /* Only base-disp opnds read regs. */
+        if (!opnd_is_base_disp(opnd))
+            continue;
+        if (opnd_uses_reg(opnd, reg)) {
+            LOG(dr_get_logfile(dc), LOG_CLEANCALL, 3,
+                "CLEANCALL: can't yet fold immediate into dst opnd at "PFX"\n",
+                instr_get_app_pc(instr));
+            failed = true;
+            break;
+        }
+    }
+
+    failed |= !can_encode(instr);
+
+    if (check_only)
+        instr_destroy(dc, instr);
+
+    return !failed;
+}
+
+static bool
+rewrite_live_range_immed(dcontext_t *dc, instr_t *start, instr_t *end,
+                         reg_id_t reg, ptr_int_t val, bool check_only)
+{
+    instr_t *instr;
+
+    ASSERT(reg_get_size(reg) == OPSZ_4);
+    for (instr = instr_get_next(start); instr != end;
+         instr = instr_get_next(instr))
+        if (!rewrite_reg_immed(dc, instr, reg, val, check_only))
+            return false;
     return true;
 }
 
@@ -5153,7 +5270,7 @@ propagate_copy(dcontext_t *dc, callee_info_t *ci, instr_t *copy)
  * existing dead registers that we've already used, try to reuse registers.
  * This creates less saves and restores.  */
 static void
-try_reuse_register(dcontext_t *dc, callee_info_t *ci, liveness_t *liveness,
+try_reuse_register(dcontext_t *dc, instrlist_t *ilist, liveness_t *liveness,
                    instr_t *reuse_instr)
 {
     instr_t *instr;
@@ -5165,7 +5282,7 @@ try_reuse_register(dcontext_t *dc, callee_info_t *ci, liveness_t *liveness,
 
     /* Compute registers used before reuse_instr. */
     memset(reg_used, 0, sizeof(reg_used));
-    for (instr = instrlist_first(ci->ilist); instr != reuse_instr;
+    for (instr = instrlist_first(ilist); instr != reuse_instr;
          instr = instr_get_next(instr)) {
         for (i = 0; i < NUM_GP_REGS; i++) {
             if (instr_uses_reg(instr, DR_REG_XAX + (reg_id_t)i))
@@ -5193,7 +5310,7 @@ try_reuse_register(dcontext_t *dc, callee_info_t *ci, liveness_t *liveness,
         instr_get_app_pc(reuse_instr));
 
     /* Rewrite dst and all further uses of dst to new. */
-    if (rewrite_live_range(dc, ci, reuse_instr, dst, new)) {
+    if (rewrite_live_range(dc, reuse_instr, dst, new)) {
         LOG(dr_get_logfile(dc), LOG_CLEANCALL, 3,
             "CLEANCALL: succeeded reusing dead register %s instead of %s at "
             PFX"\n",
@@ -5202,19 +5319,74 @@ try_reuse_register(dcontext_t *dc, callee_info_t *ci, liveness_t *liveness,
     }
 }
 
+/* For movs from immediate to register, try to propagate immediate into
+ * instructions that use it.
+ */
+static bool
+fold_mov_immed(dcontext_t *dc, instrlist_t *ilist, instr_t *mov_imm)
+{
+    opnd_t imm = instr_get_src(mov_imm, 0);
+    opnd_t dst = instr_get_dst(mov_imm, 0);
+    ptr_int_t val = opnd_get_immed_int(imm);
+    reg_id_t reg = opnd_get_reg(dst);
+    instr_t *end = NULL;
+    DEBUG_DECLARE(bool ok;)
+
+    /* For now we only deal with 32-bit immediates, since pointer values are
+     * trickier to rewrite. */
+    /* TODO(rnk): If pointer value is < 4 GB, can use reladdr memory operands
+     * instead of materializing the pointer as an immediate.  */
+    if (opnd_get_size(dst) != OPSZ_4)
+        return false;
+
+    if (!find_next_full_clobber(dc, mov_imm, reg, &end))
+        return false;
+    if (end != NULL)
+        end = instr_get_next(end);
+
+    if (end) {
+        LOG(dr_get_logfile(dc), LOG_CLEANCALL, 3,
+            "CLEANCALL: mov imm live range ends at "PFX"\n",
+            instr_get_app_pc(end));
+    }
+    LOG(dr_get_logfile(dc), LOG_CLEANCALL, 3,
+        "CLEANCALL: attempting to fold mov_imm at "PFX"\n",
+        instr_get_app_pc(mov_imm));
+    if (!rewrite_live_range_immed(dc, mov_imm, end, reg, val, true))
+        return false;
+    IF_DEBUG(ok =) rewrite_live_range_immed(dc, mov_imm, end, reg, val, false);
+    ASSERT(ok);
+    LOG(dr_get_logfile(dc), LOG_CLEANCALL, 3,
+        "CLEANCALL: folded immediate mov at "PFX"\n",
+        instr_get_app_pc(mov_imm));
+    return true;
+}
+
 /* Remove and destroy instructions whose only destinations are dead registers.
  * Assumes there are no calls or backwards branches in ilist.
  * TODO(rnk): What about other control flow?
  */
 static void
-optimize_callee(dcontext_t *dc, callee_info_t *ci)
+optimize_callee(dcontext_t *dc, const callee_info_t *ci)
 {
     liveness_t liveness_;
     liveness_t *liveness = &liveness_;
-    int i;
     instrlist_t *ilist = ci->ilist;
+    int i;
     instr_t *instr;
     instr_t *prev_instr;
+    instr_t *next_instr;
+
+    i = 0;
+    for (instr = instrlist_first(ilist); instr != NULL;
+         instr = instr_get_next(instr)) {
+        i++;
+    }
+    if (i > MAX_NUM_INLINE_INSTRS) {
+        LOG(dr_get_logfile(dc), LOG_CLEANCALL, 3,
+            "CLEANCALL: refusing to attempt to optimize large func\n");
+        return;
+    }
 
     LOG(dr_get_logfile(dc), LOG_CLEANCALL, 3,
         "CLEANCALL: callee ilist before optimization:\n");
@@ -5222,7 +5394,7 @@ optimize_callee(dcontext_t *dc, callee_info_t *ci)
         instrlist_disassemble(dc, NULL, ilist, dr_get_logfile(dc));
     });
 
-    liveness_init(liveness);
+    liveness_init(liveness, ci);
 
     for (instr = instrlist_last(ilist); instr != NULL; instr = prev_instr) {
         bool instr_is_live = false;
@@ -5265,7 +5437,7 @@ optimize_callee(dcontext_t *dc, callee_info_t *ci)
             opnd_is_reg(instr_get_dst(instr, 0))) {
             reg_id_t src_reg = opnd_get_reg(instr_get_src(instr, 0));
             if (IS_DEAD(src_reg)) {
-                if (propagate_copy(dc, ci, instr)) {
+                if (propagate_copy(dc, ilist, instr)) {
                     /* Src reg is live now. */
                     SET_LIVE(src_reg, true);
                     continue;
@@ -5273,13 +5445,13 @@ optimize_callee(dcontext_t *dc, callee_info_t *ci)
             }
         }
 
-        liveness_update(dc, ci, liveness, instr);
+        liveness_update(liveness, instr);
     }
 
     /* Do a second pass and attempt to reuse registers.  We don't do this on
      * the first pass or we may attempt to reuse registers that we don't end up
      * using after DCE. */
-    liveness_init(liveness);
+    liveness_init(liveness, ci);
     for (instr = instrlist_last(ilist); instr != NULL; instr = prev_instr) {
         prev_instr = instr_get_prev(instr);
 
@@ -5289,10 +5461,22 @@ optimize_callee(dcontext_t *dc, callee_info_t *ci)
         if (!instr_is_cti(instr) &&
             instr_num_dsts(instr) == 1 &&
             opnd_is_reg(instr_get_dst(instr, 0))) {
-            try_reuse_register(dc, ci, liveness, instr);
+            try_reuse_register(dc, ilist, liveness, instr);
         }
 
-        liveness_update(dc, ci, liveness, instr);
+        liveness_update(liveness, instr);
+    }
+
+    /* Do a final forward pass to fold immediates moved through registers. */
+    for (instr = instrlist_first(ilist); instr != NULL; instr = next_instr) {
+        next_instr = instr_get_next(instr);
+        if (instr_is_mov(instr) &&
+            opnd_is_immed_int(instr_get_src(instr, 0)) &&
+            opnd_is_reg(instr_get_dst(instr, 0))) {
+            if (fold_mov_immed(dc, ilist, instr)) {
+                remove_and_destroy(GLOBAL_DCONTEXT, ilist, instr);
+            }
+        }
     }
 
     LOG(dr_get_logfile(dc), LOG_CLEANCALL, 3,
@@ -5396,9 +5580,8 @@ analyze_find_exit_instrs(dcontext_t *dc, callee_info_t *ci, instr_t **bots)
     int num_bots = 0;
     instr_t *instr;
 
-    for (instr  = instrlist_first(ci->ilist);
-         instr != NULL;
-         instr  = instr_get_next(instr)) {
+    for (instr = instrlist_first(ci->ilist); instr != NULL;
+         instr = instr_get_next(instr)) {
         instr_t *exit_instr = NULL;
         if (instr_is_return(instr)) {
             exit_instr = instr;
@@ -5627,7 +5810,9 @@ analyze_enter_leave(dcontext_t *dc, callee_info_t *ci, instr_t *top,
         instr_t *bot = bots[i];
         pop_xbp = NULL;
         restore_xsp = NULL;
-        if (instr_get_opcode(bot) == OP_leave) {
+        if (bot == NULL) {
+            /* Do nothing, callee does not touch xbp. */
+        } else if (instr_get_opcode(bot) == OP_leave) {
             /* Leave does both. */
             pop_xbp = bot;
             restore_xsp = bot;
@@ -6452,6 +6637,9 @@ analyze_clean_call_inline(dcontext_t *dcontext, clean_call_info_t *cci)
             STATS_INC(cleancall_aflags_clear_skipped);
         }
     } else {
+        /* TODO(rnk): Which is right!? */
+        /* Use global dcontext, since we apply callee optimizations again,
+         * which assume instrs are allocated using global dcontext. */
         cci->ilist = instrlist_clone(dcontext, info->ilist);
     }
     return opt_inline;
@@ -6759,6 +6947,36 @@ insert_inline_slowpath(dcontext_t *dc, clean_call_info_t *cci, opnd_t *args)
     insert_inline_arg_setup(dc, cci, ilist, slowpath_call, args, true);
 }
 
+/* TODO(rnk): Copied from optimize_callee.  We duplicated it so we can
+ * remove_and_destroy with our thread-local dcontext instead of the global
+ * dcontext.
+ */
+static void
+try_fold_immeds(dcontext_t *dc, instrlist_t *ilist)
+{
+    instr_t *instr, *next_instr;
+    LOG(dr_get_logfile(dc), LOG_CLEANCALL, 3,
+        "CLEANCALL: ilist before fold_immeds:\n");
+    DOLOG(3, LOG_CLEANCALL, {
+        instrlist_disassemble(dc, NULL, ilist, dr_get_logfile(dc));
+    });
+    for (instr = instrlist_first(ilist); instr != NULL; instr = next_instr) {
+        next_instr = instr_get_next(instr);
+        if (instr_is_mov(instr) &&
+            opnd_is_immed_int(instr_get_src(instr, 0)) &&
+            opnd_is_reg(instr_get_dst(instr, 0))) {
+            if (fold_mov_immed(dc, ilist, instr)) {
+                remove_and_destroy(dc, ilist, instr);
+            }
+        }
+    }
+    LOG(dr_get_logfile(dc), LOG_CLEANCALL, 3,
+        "CLEANCALL: ilist after fold_immeds:\n");
+    DOLOG(3, LOG_CLEANCALL, {
+        instrlist_disassemble(dc, NULL, ilist, dr_get_logfile(dc));
+    });
+}
+
 void
 insert_inline_clean_call(dcontext_t *dcontext, clean_call_info_t *cci,
                          instrlist_t *ilist, instr_t *where, opnd_t *args)
@@ -6767,18 +6985,24 @@ insert_inline_clean_call(dcontext_t *dcontext, clean_call_info_t *cci,
     instrlist_t *callee = cci->ilist;
     instr_t *instr;
 
+    /* Insert argument setup.  Do some optimizations to try to fold the
+     * arguments in. */
+    /* TODO(rnk): We can't run the full set of optimizations because they
+     * assume the ilist was allocated from GLOBAL_DCONTEXT, which this is not.
+     */
+    insert_inline_arg_setup(dcontext, cci, callee, instrlist_first(callee),
+                            args, false);
+    try_fold_immeds(dcontext, callee);
+    if (ci->opt_partial) {
+        insert_inline_slowpath(dcontext, cci, args);
+    }
+
     ASSERT(cci->ilist != NULL);
     ASSERT(SCRATCH_ALWAYS_TLS());
     /* 0. update stats */
     STATS_INC(cleancall_inlined);
     /* 1. save registers */
     insert_inline_reg_save(dcontext, cci, ilist, where, args);
-    /* 2. setup parameters */
-    insert_inline_arg_setup(dcontext, cci, ilist, where, args, false);
-    /* 3. if partially inlined, remat args in slowpath */
-    if (ci->opt_partial) {
-        insert_inline_slowpath(dcontext, cci, args);
-    }
     /* 4. inline clean call ilist */
     instr = instrlist_first(callee);
     while (instr != NULL) {

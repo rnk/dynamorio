@@ -237,7 +237,7 @@ static int after_errno;
 static void
 check_count(void)
 {
-    DR_ASSERT(count == 0xDEADBEEF);
+    DR_ASSERT(count == 0xDEAD);
 }
 
 /* Reset count and patch the out-of-line version of the instrumentation function
@@ -528,7 +528,7 @@ event_basic_block(void *dc, void *tag, instrlist_t *bb,
         break;
     case FN_inscount:
         dr_insert_clean_call(dc, bb, entry, func_ptrs[i], false, 1,
-                             OPND_CREATE_INT32((int)0xDEADBEEF));
+                             OPND_CREATE_INT32((int)0xDEAD));
         dr_insert_clean_call(dc, bb, entry, (void*)check_count, false, 0);
         break;
     case FN_nonleaf:
@@ -852,7 +852,7 @@ cond_br:
     mov REG_XBP, REG_XSP
     mov REG_XCX, ARG1
     jecxz Larg_zero
-        mov REG_XAX, HEX(DEADBEEF)
+        mov REG_XAX, HEX(DEAD)
         mov SYMREF(count), REG_XAX
     Larg_zero:
     leave
@@ -865,12 +865,12 @@ codegen_cond_br(void *dc)
     instr_t *arg_zero = INSTR_CREATE_label(dc);
     opnd_t xcx = opnd_create_reg(DR_REG_XCX);
     codegen_prologue(dc, ilist);
-    /* If arg1 is non-zero, write 0xDEADBEEF to count. */
+    /* If arg1 is non-zero, write 0xDEAD to count. */
     APP(ilist, INSTR_CREATE_mov_ld(dc, xcx, codegen_opnd_arg1()));
     APP(ilist, INSTR_CREATE_jecxz(dc, opnd_create_instr(arg_zero)));
     APP(ilist, INSTR_CREATE_mov_imm(dc, xcx, OPND_CREATE_INTPTR(&count)));
     APP(ilist, INSTR_CREATE_mov_st(dc, OPND_CREATE_MEMPTR(DR_REG_XCX, 0),
-                                   OPND_CREATE_INT32((int)0xDEADBEEF)));
+                                   OPND_CREATE_INT32((int)0xDEAD)));
     APP(ilist, arg_zero);
     codegen_epilogue(dc, ilist);
     return ilist;
