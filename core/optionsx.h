@@ -329,7 +329,7 @@
      */
     OPTION_DEFAULT_INTERNAL(uint, opt_cleancall, 2,
                             "optimization level on optimizing clean call sequences")
-    /* i#456: Improve performance of inline clean calls by not switching to
+    /* i#454: Improve performance of inline clean calls by not switching to
      * dstack inline. */
     OPTION_DEFAULT_INTERNAL(bool, use_tls_inline, IF_LINUX_ELSE(true, false),
                             "allocate tls space for usage by inlined clean calls")
