@@ -5598,15 +5598,16 @@ insert_inline_reg_save(dcontext_t *dcontext, clean_call_info_t *cci,
     }
 
     if (!cci->skip_save_aflags) {
+        PRE(ilist, where, INSTR_CREATE_lahf(dcontext));
+        PRE(ilist, where, INSTR_CREATE_setcc
+            (dcontext, OP_seto, opnd_create_reg(DR_REG_AL)));
         if (INTERNAL_OPTION(use_tls_inline)) {
-            PRE(ilist, where, INSTR_CREATE_lahf(dcontext));
-            PRE(ilist, where, INSTR_CREATE_setcc
-                (dcontext, OP_seto, opnd_create_reg(DR_REG_AL)));
             PRE(ilist, where, INSTR_CREATE_mov_st
                 (dcontext, scratch_slot_opnd(ci, SLOT_FLAGS, 0),
                  opnd_create_reg(DR_REG_XAX)));
         } else {
-            PRE(ilist, where, INSTR_CREATE_pushf(dcontext));
+            PRE(ilist, where, INSTR_CREATE_push
+                (dcontext, opnd_create_reg(DR_REG_XAX)));
         }
     }
 
@@ -5638,12 +5639,13 @@ insert_inline_reg_restore(dcontext_t *dcontext, clean_call_info_t *cci,
             PRE(ilist, where, INSTR_CREATE_mov_ld
                 (dcontext, opnd_create_reg(DR_REG_XAX),
                  scratch_slot_opnd(ci, SLOT_FLAGS, 0)));
-            PRE(ilist, where, INSTR_CREATE_add
-                (dcontext, opnd_create_reg(DR_REG_AL), OPND_CREATE_INT8(0x7F)));
-            PRE(ilist, where, INSTR_CREATE_sahf(dcontext));
         } else {
-            PRE(ilist, where, INSTR_CREATE_popf(dcontext));
+            PRE(ilist, where, INSTR_CREATE_pop
+                (dcontext, opnd_create_reg(DR_REG_XAX)));
         }
+        PRE(ilist, where, INSTR_CREATE_add
+            (dcontext, opnd_create_reg(DR_REG_AL), OPND_CREATE_INT8(0x7F)));
+        PRE(ilist, where, INSTR_CREATE_sahf(dcontext));
     }
 
     /* Now restore all registers. */
