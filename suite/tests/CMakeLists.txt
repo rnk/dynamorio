@@ -623,6 +623,19 @@ function(tobuild_ci test source client_ops dr_ops exe_ops)
   set(${test}_client_path ${client_path} PARENT_SCOPE)
 endfunction(tobuild_ci)
 
+# Rerun a client test with different options.
+function(torunonly_ci test realtest source client_ops dr_ops exe_ops)
+  get_target_property(client_path ${realtest}.dll LOCATION${location_suffix})
+
+  set(testlist_ci ${testlist_ci} ${test} PARENT_SCOPE)
+  set(${test}_realtest ${realtest} PARENT_SCOPE)
+  set(${test}_source ${source} PARENT_SCOPE)
+  set(${test}_client_ops ${client_ops} PARENT_SCOPE)
+  set(${test}_dr_ops ${dr_ops} PARENT_SCOPE)
+  set(${test}_exe_ops ${exe_ops} PARENT_SCOPE)
+  set(${test}_client_path ${client_path} PARENT_SCOPE)
+endfunction(torunonly_ci)
+
 # client interface standalone app
 function(tobuild_api test source dr_ops exe_ops)
   add_exe(${test} ${source})
@@ -1081,8 +1094,14 @@ function(torun_ci name test ops)
       set(cli_ops "use_unlink")
     endif ()
   endif ("${test}" MATCHES "client\\.flush")
+  # Handle torunonly_ci tests.
+  if (DEFINED ${test}_realtest)
+    set(exe ${${test}_realtest})
+  else ()
+    set(exe ${test})
+  endif ()
   # note that we cannot use double quotes as they'll be stripped out
-  torun("${name}" ${test} ${test} ${${test}_source} OFF
+  torun("${name}" ${test} ${exe} ${${test}_source} OFF
     " -code_api -client_lib '${${test}_client_path}\;0\;${cli_ops}' ${${test}_dr_ops} ${ops}" "${${test}_exe_ops}")
 endfunction(torun_ci)
 
@@ -1165,10 +1184,10 @@ if (CLIENT_INTERFACE)
   tobuild_ci(client.thread client-interface/thread.c "-paramx -paramy" "" "")
   tobuild_ci(client.truncate client-interface/truncate.c "" "" "")
   tobuild_ci(client.unregister client-interface/unregister.c "" "" "")
-  tobuild_ci(client.inline_tls client-interface/inline.c
-    "" "-opt_cleancall 3 -use_tls_inline" "")
-  tobuild_ci(client.inline_dstack client-interface/inline.c
+  tobuild_ci(client.inline client-interface/inline.c
     "" "-opt_cleancall 3 -no_use_tls_inline" "")
+  torunonly_ci(client.inline_tls client.inline client-interface/inline.c
+    "" "-opt_cleancall 3 -use_tls_inline" "")
 
   tobuild_ci(client.drmgr-test client-interface/drmgr-test.c "" "" "")
   use_DynamoRIO_extension(client.drmgr-test.dll drmgr)
