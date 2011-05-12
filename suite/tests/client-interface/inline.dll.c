@@ -150,6 +150,8 @@ lookup_pcs(void)
             app_pc func_pc = (app_pc)dr_get_proc_address(
                     data->handle, func_names[i]);
             if (func_pc != NULL) {
+                DR_ASSERT_MSG(func_app_pcs[i] == NULL,
+                              "Found two copies of function!");
                 func_app_pcs[i] = func_pc;
             }
         }

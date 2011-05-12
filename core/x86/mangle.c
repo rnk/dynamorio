@@ -90,6 +90,7 @@ enum {
     SLOT_LOCAL,
     SLOT_FLAGS,
 };
+typedef byte slot_kind_t;
 
 /* If kind is:
  * SLOT_REG: value is a reg_id_t
@@ -97,7 +98,7 @@ enum {
  * SLOT_FLAGS: value is meaningless
  */
 typedef struct _slot_t {
-    byte kind;
+    slot_kind_t kind;
     byte value;
 } slot_t;
 
@@ -4782,7 +4783,7 @@ decode_callee_ilist(dcontext_t *dcontext, callee_info_t *ci)
 }
 
 static void
-use_scratch_slot_for(callee_info_t *ci, byte kind, byte value)
+use_scratch_slot_for(callee_info_t *ci, slot_kind_t kind, byte value)
 {
     if (ci->slots_used < NUM_SCRATCH_SLOTS) {
         if (kind == SLOT_REG)
@@ -4794,7 +4795,7 @@ use_scratch_slot_for(callee_info_t *ci, byte kind, byte value)
 }
 
 static opnd_t
-scratch_slot_opnd(callee_info_t *ci, byte kind, byte value)
+scratch_slot_opnd(callee_info_t *ci, slot_kind_t kind, byte value)
 {
     uint i;
     ASSERT(INTERNAL_OPTION(use_tls_inline));
@@ -4808,7 +4809,7 @@ scratch_slot_opnd(callee_info_t *ci, byte kind, byte value)
                                              0, disp, OPSZ_PTR);
         }
     }
-    ASSERT_MESSAGE("Tried too find scratch slot for value without "
+    ASSERT_MESSAGE("Tried to find scratch slot for value without "
                    "calling use_scratch_slot_for for it", false);
     return opnd_create_null();
 }
@@ -5066,7 +5067,7 @@ analyze_callee_tls(dcontext_t *dcontext, callee_info_t *ci)
  * TLS.
  */
 static opnd_t
-inline_local_var_slot(callee_info_t *ci)
+inline_local_var_opnd(callee_info_t *ci)
 {
     if (INTERNAL_OPTION(use_tls_inline)) {
         return scratch_slot_opnd(ci, SLOT_LOCAL, 0);
@@ -5234,7 +5235,7 @@ analyze_callee_inline(dcontext_t *dcontext, callee_info_t *ci)
                     break;
                 }
                 /* replace the stack location with TLS slot or last stack slot. */
-                slot = inline_local_var_slot(ci);
+                slot = inline_local_var_opnd(ci);
                 opnd_set_size(&slot, opnd_get_size(mem_ref));
                 instr_set_src(instr, i, slot);
             }
@@ -5264,7 +5265,7 @@ analyze_callee_inline(dcontext_t *dcontext, callee_info_t *ci)
                     break;
                 }
                 /* replace the stack location with the last stack slot. */
-                slot = inline_local_var_slot(ci);
+                slot = inline_local_var_opnd(ci);
                 opnd_set_size(&slot, opnd_get_size(mem_ref));
                 instr_set_dst(instr, i, slot);
             }
@@ -5703,7 +5704,7 @@ insert_inline_arg_setup(dcontext_t *dcontext, clean_call_info_t *cci,
         "CLEANCALL: inlining clean call "PFX", passing arg via slot %d.\n",
         ci->start, NUM_SCRATCH_SLOTS - 1);
     PRE(ilist, where, INSTR_CREATE_mov_st
-        (dcontext, inline_local_var_slot(ci), opnd_create_reg(DR_REG_XAX)));
+        (dcontext, inline_local_var_opnd(ci), opnd_create_reg(DR_REG_XAX)));
 #endif
 }
 
