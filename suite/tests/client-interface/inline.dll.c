@@ -34,7 +34,6 @@
 
 #include "dr_api.h"
 #include <stddef.h> /* offsetof */
-#include <stdlib.h> /* atoi */
 #include <string.h> /* memset */
 
 #define ALIGN_BACKWARD(x, alignment) \
@@ -50,22 +49,13 @@
 /* List of instrumentation functions. */
 #define FUNCTIONS() \
         FUNCTION(empty) \
-        FUNCTION(empty_push) \
-        FUNCTION(enterleave) \
-        FUNCTION(entermovpop) \
-        FUNCTION(scheduled_prologue) \
         FUNCTION(inscount) \
         FUNCTION(callpic_pop) \
         FUNCTION(callpic_mov) \
-        FUNCTION(callpic_out) \
         FUNCTION(nonleaf) \
         FUNCTION(cond_br) \
         FUNCTION(tls_clobber) \
         FUNCTION(aflags_clobber) \
-        FUNCTION(decode_past_ret) \
-        FUNCTION(decode_loop) \
-        FUNCTION(partial_global) \
-        FUNCTION(optimize_flags) \
         LAST_FUNCTION()
 
 /* Table of function names. */
@@ -211,7 +201,7 @@ codegen_instrumentation_funcs(void)
         pc = (byte*)ALIGN_FORWARD(pc, CALLEE_ALIGNMENT);
         func_ptrs[i] = pc;
         dr_log(dc, LOG_EMIT, 3, "Generated instrumentation function %s at "PFX
-               ":\n", func_names[i], pc);
+               ":", func_names[i], pc);
         instrlist_disassemble(dc, pc, ilists[i], dr_get_logfile(dc));
         pc = instrlist_encode(dc, ilists[i], pc, false);
         instrlist_clear_and_destroy(dc, ilists[i]);
@@ -235,9 +225,15 @@ static dr_mcontext_t after_mcontext = {sizeof(after_mcontext),};
 static int after_errno;
 
 static void
-check_count(void)
+after_inscount(void)
 {
     DR_ASSERT(count == 0xDEAD);
+}
+
+static void
+after_callpic(void)
+{
+    DR_ASSERT(count == 1);
 }
 
 /* Reset count and patch the out-of-line version of the instrumentation function
@@ -506,56 +502,55 @@ event_basic_block(void *dc, void *tag, instrlist_t *bb,
     instr_t *entry = instrlist_first(bb);
     app_pc entry_pc = instr_get_app_pc(entry);
     int i;
-    bool inline_expected = true;
 
     for (i = 0; i < N_FUNCS; i++) {
-        if (entry_pc == func_app_pcs[i])
+        bool inline_expected = true;
+
+        if (entry_pc != func_app_pcs[i])
+            continue;
+
+        func_called[i] = 1;
+        dr_insert_clean_call(dc, bb, entry, (void*)before_callee, false, 2,
+                             OPND_CREATE_INTPTR(func_ptrs[i]),
+                             OPND_CREATE_INTPTR(func_names[i]));
+
+        switch (i) {
+        default:
+            /* Default behavior is to call instrumentation with no-args and
+             * assert it gets inlined. */
+            dr_insert_clean_call(dc, bb, entry, func_ptrs[i], false, 0);
             break;
+        case FN_inscount:
+            dr_insert_clean_call(dc, bb, entry, func_ptrs[i], false, 1,
+                                 OPND_CREATE_INT32(0xDEAD));
+            dr_insert_clean_call(dc, bb, entry, (void*)after_inscount, false,
+                                 0);
+            break;
+        case FN_nonleaf:
+        case FN_cond_br:
+            /* These functions cannot be inlined (yet). */
+            dr_insert_clean_call(dc, bb, entry, func_ptrs[i], false, 0);
+            inline_expected = false;
+            break;
+        case FN_tls_clobber:
+            dr_insert_clean_call(dc, bb, entry, (void*)fill_scratch, false, 0);
+            dr_insert_clean_call(dc, bb, entry, func_ptrs[i], false, 0);
+            dr_insert_clean_call(dc, bb, entry, (void*)check_scratch, false, 0);
+            break;
+        case FN_aflags_clobber:
+            /* ah is: SF:ZF:0:AF:0:PF:1:CF.  If we turn everything on we will
+             * get all 1's except bits 3 and 5, giving a hex mask of 0xD7.
+             * Overflow is in the low byte (al usually) so use use a mask of
+             * 0xD701 first.  If we turn everything off we get 0x0200.
+             */
+            entry = test_aflags(dc, bb, entry, 0xD701);
+            (void)test_aflags(dc, bb, entry, 0x00200);
+            break;
+        }
+        dr_insert_clean_call(dc, bb, entry, (void*)after_callee, false, 2,
+                             OPND_CREATE_INT32(inline_expected),
+                             OPND_CREATE_INTPTR(func_names[i]));
     }
-    if (i >= N_FUNCS)
-        return DR_EMIT_DEFAULT;
-
-    func_called[i] = 1;
-    dr_insert_clean_call(dc, bb, entry, (void*)before_callee, false, 2,
-                         OPND_CREATE_INTPTR(func_ptrs[i]),
-                         OPND_CREATE_INTPTR(func_names[i]));
-
-    switch (i) {
-    default:
-        /* Default behavior is to call instrumentation with no-args and
-         * assert it gets inlined. */
-        dr_insert_clean_call(dc, bb, entry, func_ptrs[i], false, 0);
-        break;
-    case FN_inscount:
-        dr_insert_clean_call(dc, bb, entry, func_ptrs[i], false, 1,
-                             OPND_CREATE_INT32((int)0xDEAD));
-        dr_insert_clean_call(dc, bb, entry, (void*)check_count, false, 0);
-        break;
-    case FN_nonleaf:
-    case FN_decode_past_ret:
-        /* These functions cannot be inlined (yet). */
-        dr_insert_clean_call(dc, bb, entry, func_ptrs[i], false, 0);
-        inline_expected = false;
-        break;
-    case FN_tls_clobber:
-        dr_insert_clean_call(dc, bb, entry, (void*)fill_scratch, false, 0);
-        dr_insert_clean_call(dc, bb, entry, func_ptrs[i], false, 0);
-        dr_insert_clean_call(dc, bb, entry, (void*)check_scratch, false, 0);
-        break;
-    case FN_aflags_clobber:
-        /* ah is: SF:ZF:0:AF:0:PF:1:CF.  If we turn everything on we will
-         * get all 1's except bits 3 and 5, giving a hex mask of 0xD7.
-         * Overflow is in the low byte (al usually) so use use a mask of
-         * 0xD701 first.  If we turn everything off we get 0x0200.
-         */
-        entry = test_aflags(dc, bb, entry, 0xD701);
-        (void)test_aflags(dc, bb, entry, 0x00200);
-        break;
-    }
-    dr_insert_clean_call(dc, bb, entry, (void*)after_callee, false, 2,
-                         OPND_CREATE_INT32(inline_expected),
-                         OPND_CREATE_INTPTR(func_names[i]));
-
     return DR_EMIT_DEFAULT;
 }
 
@@ -599,103 +594,6 @@ codegen_empty(void *dc)
     return ilist;
 }
 
-/*
-empty_push:
-    push xbp
-    mov xbp, xsp
-    push xbx
-    # nothing
-    pop xbx
-    leave
-    ret
-*/
-static instrlist_t *
-codegen_empty_push(void *dc)
-{
-    instrlist_t *ilist = instrlist_create(dc);
-    codegen_prologue(dc, ilist);
-    APP(ilist, INSTR_CREATE_push(dc, opnd_create_reg(DR_REG_XBX)));
-    APP(ilist, INSTR_CREATE_pop(dc, opnd_create_reg(DR_REG_XBX)));
-    codegen_epilogue(dc, ilist);
-    return ilist;
-}
-
-/*
-enterleave:
-    enter 8, 0
-    movl [REG_XSP], -1
-    leave
-    ret
-*/
-static instrlist_t *
-codegen_enterleave(void *dc)
-{
-    instrlist_t *ilist = instrlist_create(dc);
-    APP(ilist, INSTR_CREATE_enter(dc, OPND_CREATE_INT16(8), OPND_CREATE_INT8(0)));
-    APP(ilist, INSTR_CREATE_mov_st
-        (dc, OPND_CREATE_MEMPTR(DR_REG_XSP, 0), OPND_CREATE_INT32(-1)));
-    APP(ilist, INSTR_CREATE_leave(dc));
-    APP(ilist, INSTR_CREATE_ret(dc));
-    return ilist;
-}
-
-/* Checks that inliner can recognize alternate leave pattern with enter.
-entermovpop:
-    enter 8, 0
-    movl [REG_XSP], -1
-    mov REG_XSP, REG_XBP
-    pop REG_XBP
-    ret
-*/
-static instrlist_t *
-codegen_entermovpop(void *dc)
-{
-    instrlist_t *ilist = instrlist_create(dc);
-    opnd_t xbp = opnd_create_reg(DR_REG_XBP);
-    opnd_t xsp = opnd_create_reg(DR_REG_XSP);
-    APP(ilist, INSTR_CREATE_enter(dc, OPND_CREATE_INT16(8), OPND_CREATE_INT8(0)));
-    APP(ilist, INSTR_CREATE_mov_st
-        (dc, OPND_CREATE_MEMPTR(DR_REG_XSP, 0), OPND_CREATE_INT32(-1)));
-    APP(ilist, INSTR_CREATE_mov_st(dc, xsp, xbp));
-    APP(ilist, INSTR_CREATE_pop(dc, xbp));
-    APP(ilist, INSTR_CREATE_ret(dc));
-    return ilist;
-}
-
-/* Checks that the inliner can deal with instructions scheduled into the
- * prologue and epilogue that don't touch the stack.  Compilers does this when
- * instructions use registers that are callee-saved.
-scheduled_prologue:
-    mov REG_XDI, REG_XAX
-    push REG_XBP
-    test REG_XAX, REG_XAX
-    mov REG_XBP, REG_XSP
-    cmovz REG_XAX, REG_XSI
-    mov REG_XSP, REG_XBP
-    nop
-    pop REG_XBP
-    ret
-*/
-static instrlist_t *
-codegen_scheduled_prologue(void *dc)
-{
-    instrlist_t *ilist = instrlist_create(dc);
-    opnd_t xax = opnd_create_reg(DR_REG_XAX);
-    opnd_t xdi = opnd_create_reg(DR_REG_XDI);
-    opnd_t xbp = opnd_create_reg(DR_REG_XBP);
-    opnd_t xsp = opnd_create_reg(DR_REG_XSP);
-    APP(ilist, INSTR_CREATE_mov_st(dc, xax, xdi));
-    APP(ilist, INSTR_CREATE_push(dc, xbp));
-    APP(ilist, INSTR_CREATE_test(dc, xax, xax));
-    APP(ilist, INSTR_CREATE_mov_st(dc, xbp, xsp));
-    APP(ilist, INSTR_CREATE_cmovcc(dc, OP_cmovz, xax, opnd_create_reg(DR_REG_XSI)));
-    APP(ilist, INSTR_CREATE_mov_st(dc, xsp, xbp));
-    APP(ilist, INSTR_CREATE_nop(dc));
-    APP(ilist, INSTR_CREATE_pop(dc, xbp));
-    APP(ilist, INSTR_CREATE_ret(dc));
-    return ilist;
-}
-
 /* Return either a stack access opnd_t or the first regparm.  Assumes frame
  * pointer is not omitted. */
 static opnd_t
@@ -726,7 +624,7 @@ inscount:
     mov REG_XBP, REG_XSP
     mov REG_XAX, ARG1
     mov REG_XDX, &count
-    add [REG_XDX], REG_EAX
+    add [REG_XDX], REG_XAX
     leave
     ret
 */
@@ -735,13 +633,11 @@ codegen_inscount(void *dc)
 {
     instrlist_t *ilist = instrlist_create(dc);
     opnd_t xax = opnd_create_reg(DR_REG_XAX);
-    opnd_t eax = opnd_create_reg(DR_REG_EAX);
     codegen_prologue(dc, ilist);
     APP(ilist, INSTR_CREATE_mov_ld(dc, xax, codegen_opnd_arg1()));
     APP(ilist, INSTR_CREATE_mov_imm
         (dc, opnd_create_reg(DR_REG_XDX), OPND_CREATE_INTPTR(&count)));
-    /* Note: 32-bit add. */
-    APP(ilist, INSTR_CREATE_add(dc, OPND_CREATE_MEM32(DR_REG_XDX, 0), eax));
+    APP(ilist, INSTR_CREATE_add(dc, OPND_CREATE_MEMPTR(DR_REG_XDX, 0), xax));
     codegen_epilogue(dc, ilist);
     return ilist;
 }
@@ -793,35 +689,6 @@ codegen_callpic_mov(void *dc)
     return ilist;
 }
 
-/*
-callpic_out:
-    push REG_XBP
-    mov REG_XBP, REG_XSP
-    call picret
-    leave
-    ret
-
-picret:
-    mov REG_XCX, [REG_XSP]
-    ret
-*/
-static instrlist_t *
-codegen_callpic_out(void *dc)
-{
-    instrlist_t *ilist = instrlist_create(dc);
-    instr_t *picret_label = INSTR_CREATE_label(dc);
-    codegen_prologue(dc, ilist);
-    APP(ilist, INSTR_CREATE_call(dc, opnd_create_instr(picret_label)));
-    codegen_epilogue(dc, ilist);
-
-    /* picret: */
-    APP(ilist, picret_label);
-    APP(ilist, INSTR_CREATE_mov_ld
-        (dc, opnd_create_reg(DR_REG_XCX), OPND_CREATE_MEMPTR(DR_REG_XSP, 0)));
-    APP(ilist, INSTR_CREATE_ret(dc));
-    return ilist;
-}
-
 /* Non-leaf functions cannot be inlined.
 nonleaf:
     push REG_XBP
@@ -845,14 +712,14 @@ codegen_nonleaf(void *dc)
     return ilist;
 }
 
-/* This simple conditional branch code can now be inlined.  Test that it works
- * correctly.
+/* Conditional branches cannot be inlined.  Avoid flags usage to make test case
+ * more specific.
 cond_br:
     push REG_XBP
     mov REG_XBP, REG_XSP
     mov REG_XCX, ARG1
     jecxz Larg_zero
-        mov REG_XAX, HEX(DEAD)
+        mov REG_XAX, HEX(DEADBEEF)
         mov SYMREF(count), REG_XAX
     Larg_zero:
     leave
@@ -865,12 +732,12 @@ codegen_cond_br(void *dc)
     instr_t *arg_zero = INSTR_CREATE_label(dc);
     opnd_t xcx = opnd_create_reg(DR_REG_XCX);
     codegen_prologue(dc, ilist);
-    /* If arg1 is non-zero, write 0xDEAD to count. */
+    /* If arg1 is non-zero, write 0xDEADBEEF to count. */
     APP(ilist, INSTR_CREATE_mov_ld(dc, xcx, codegen_opnd_arg1()));
     APP(ilist, INSTR_CREATE_jecxz(dc, opnd_create_instr(arg_zero)));
     APP(ilist, INSTR_CREATE_mov_imm(dc, xcx, OPND_CREATE_INTPTR(&count)));
     APP(ilist, INSTR_CREATE_mov_st(dc, OPND_CREATE_MEMPTR(DR_REG_XCX, 0),
-                                   OPND_CREATE_INT32((int)0xDEAD)));
+                                   OPND_CREATE_INT32((int)0xDEADBEEF)));
     APP(ilist, arg_zero);
     codegen_epilogue(dc, ilist);
     return ilist;
@@ -925,148 +792,6 @@ codegen_aflags_clobber(void *dc)
     APP(ilist, INSTR_CREATE_add
         (dc, opnd_create_reg(DR_REG_AL), OPND_CREATE_INT8(0x7F)));
     APP(ilist, INSTR_CREATE_sahf(dc));
-    codegen_epilogue(dc, ilist);
-    return ilist;
-}
-
-/* Check that the inliner can decode this jump past the return and back.
-decode_past_ret:
-    push REG_XBP
-    mov REG_XBP, REG_XSP
-
-    mov REG_XCX, ARG1
-    jecxz Lpast
-
-    Lret:
-    leave
-    ret
-
-    Lpast:
-    mov REG_XCX, 1
-    jmp Lret
-*/
-static instrlist_t *
-codegen_decode_past_ret(void *dc)
-{
-    instrlist_t *ilist = instrlist_create(dc);
-    instr_t *l_ret = INSTR_CREATE_label(dc);
-    instr_t *l_past = INSTR_CREATE_label(dc);
-    opnd_t xcx = opnd_create_reg(DR_REG_XCX);
-    codegen_prologue(dc, ilist);
-    APP(ilist, INSTR_CREATE_mov_ld(dc, xcx, codegen_opnd_arg1()));
-    APP(ilist, INSTR_CREATE_jecxz(dc, opnd_create_instr(l_past)));
-    APP(ilist, l_ret);
-    codegen_epilogue(dc, ilist);
-    APP(ilist, l_past);
-    APP(ilist, INSTR_CREATE_mov_imm(dc, xcx, OPND_CREATE_INTPTR(1)));
-    APP(ilist, INSTR_CREATE_jmp(dc, opnd_create_instr(l_ret)));
-    return ilist;
-}
-
-/* Check that the inliner can decode this loop.  Most importantly, we want to be
- * sure that the fallthrough from dec to Lcmp doesn't get decoded twice.
-decode_loop:
-    push REG_XBP
-    mov REG_XBP, REG_XSP
-
-    mov REG_XCX, ARG1
-    jmp Lcmp
-    Lloop:
-        dec REG_XCX
-        Lcmp:
-        test REG_XCX, REG_XCX
-        jnz Lloop
-
-    leave
-    ret
-*/
-static instrlist_t *
-codegen_decode_loop(void *dc)
-{
-    instrlist_t *ilist = instrlist_create(dc);
-    instr_t *l_cmp = INSTR_CREATE_label(dc);
-    instr_t *l_loop = INSTR_CREATE_label(dc);
-    opnd_t xcx = opnd_create_reg(DR_REG_XCX);
-    codegen_prologue(dc, ilist);
-    APP(ilist, INSTR_CREATE_mov_ld(dc, xcx, codegen_opnd_arg1()));
-    APP(ilist, INSTR_CREATE_jmp(dc, opnd_create_instr(l_cmp)));
-    APP(ilist, l_loop);
-    APP(ilist, INSTR_CREATE_dec(dc, xcx));
-    APP(ilist, l_cmp);
-    APP(ilist, INSTR_CREATE_test(dc, xcx, xcx));
-    APP(ilist, INSTR_CREATE_jcc(dc, OP_jnz, opnd_create_instr(l_loop)));
-    codegen_epilogue(dc, ilist);
-    return ilist;
-}
-
-/****************************************************************************/
-/* opt_cleancall >= 3 tests */
-
-/* Simple test case reduced from client.syscall.  Essentially, the
- * instrumentation function looks like:
- * if (monitoring) { -- do stuff -- }
-partial_global:
-    push %rbp
-    mov %rsp, %rbp
-    mov &count, %rax
-    mov (%rax), %rax
-    test %rax, %rax
-    jz done
-        call other_func
-    done:
-    leave
-    ret
-
-other_func:
-    int3  -- should never happen
-*/
-static instrlist_t *
-codegen_partial_global(void *dc)
-{
-    instrlist_t *ilist = instrlist_create(dc);
-    instr_t *l_done = INSTR_CREATE_label(dc);
-    instr_t *l_other_func = INSTR_CREATE_label(dc);
-    opnd_t xax = opnd_create_reg(DR_REG_XAX);
-    codegen_prologue(dc, ilist);
-    APP(ilist, INSTR_CREATE_mov_imm(dc, xax, OPND_CREATE_INTPTR(&count)));
-    APP(ilist, INSTR_CREATE_mov_ld(dc, xax, OPND_CREATE_MEMPTR(DR_REG_XAX, 0)));
-    APP(ilist, INSTR_CREATE_test(dc, xax, xax));
-    APP(ilist, INSTR_CREATE_jcc(dc, OP_jz, opnd_create_instr(l_done)));
-    APP(ilist, INSTR_CREATE_call(dc, opnd_create_instr(l_other_func)));
-    APP(ilist, l_done);
-    codegen_epilogue(dc, ilist);
-
-    APP(ilist, l_other_func);
-    APP(ilist, INSTR_CREATE_ret(dc));
-    return ilist;
-}
-
-/* Test flags optimizations.  Function takes two reg params and optimizer should
- * be able to turn sub and add into lea's to remove flags dependency.
- * TODO(rnk): So far we have no way to assert this, but it's easy to check the
- * logs for it.
-optimize_flags:
-    push %rbp
-    mov %rsp, %rbp
-    sub $-1, %rdi
-    add %rsi, %rdi
-    mov &count, %rax
-    mov %rdi, (%rax)
-    leave
-    ret
-*/
-static instrlist_t *
-codegen_optimize_flags(void *dc)
-{
-    instrlist_t *ilist = instrlist_create(dc);
-    opnd_t xax = opnd_create_reg(DR_REG_XAX);
-    opnd_t xdi = opnd_create_reg(DR_REG_XDI);
-    opnd_t xsi = opnd_create_reg(DR_REG_XSI);
-    codegen_prologue(dc, ilist);
-    APP(ilist, INSTR_CREATE_sub(dc, xdi, OPND_CREATE_INT8(-1)));
-    APP(ilist, INSTR_CREATE_add(dc, xdi, xsi));
-    APP(ilist, INSTR_CREATE_mov_imm(dc, xax, OPND_CREATE_INTPTR(&count)));
-    APP(ilist, INSTR_CREATE_mov_st(dc, OPND_CREATE_MEMPTR(DR_REG_XAX, 0), xdi));
     codegen_epilogue(dc, ilist);
     return ilist;
 }

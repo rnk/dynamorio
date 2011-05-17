@@ -31,6 +31,7 @@
  */
 
 #include "dr_api.h"
+#include "dr_calls.h"
 
 #ifdef WINDOWS
 # define EXPORT __declspec(dllexport)
@@ -78,9 +79,9 @@ instrument_mem(void *dc, instrlist_t *ilist, instr_t *where, int pos,
     dr_save_reg(dc, ilist, where, arg_reg_id, SPILL_SLOT_1);
     instrlist_meta_preinsert(ilist, where,
                              INSTR_CREATE_lea(dc, arg_reg, memop));
-    dr_insert_clean_call(dc, ilist, where, (void*)clean_call, false, 4,
-                         arg_reg, OPND_CREATE_INTPTR(instr_get_app_pc(where)),
-                         OPND_CREATE_INT32(opsize), OPND_CREATE_INT32(write));
+    drcalls_insert_call(dc, ilist, where, (void*)clean_call, false, 4,
+                        arg_reg, OPND_CREATE_INTPTR(instr_get_app_pc(where)),
+                        OPND_CREATE_INT32(opsize), OPND_CREATE_INT32(write));
     dr_restore_reg(dc, ilist, where, arg_reg_id, SPILL_SLOT_1);
 }
 
@@ -132,7 +133,7 @@ DR_EXPORT void
 dr_init(client_id_t id)
 {
     dr_register_bb_event(event_bb);
-    module_data_t *exe = dr_lookup_module_by_name("client.partial_inline");
+    module_data_t *exe = dr_lookup_module_by_name("drcalls.partial_inline");
     start_pc = (app_pc)dr_get_proc_address(exe->handle, "start_monitor");
     stop_pc = (app_pc)dr_get_proc_address(exe->handle, "stop_monitor");
     dr_free_module_data(exe);

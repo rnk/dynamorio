@@ -1191,12 +1191,6 @@ if (CLIENT_INTERFACE)
   tobuild_ci(client.truncate client-interface/truncate.c "" "" "")
   tobuild_ci(client.unregister client-interface/unregister.c "" "" "")
   tobuild_ci(client.inline client-interface/inline.c "" "-opt_cleancall 3" "")
-  tobuild_ci(client.preserve_mcontext client-interface/preserve_mcontext.c
-    "" "-opt_cleancall 3" "")
-  tobuild_ci(client.partial_inline client-interface/partial_inline.c
-    "" "-opt_cleancall 3" "")
-  # Optimize the client to make clean call inlining easier.
-  enable_target_optimization(client.partial_inline.dll)
 
   tobuild_ci(client.drmgr-test client-interface/drmgr-test.c "" "" "")
   use_DynamoRIO_extension(client.drmgr-test.dll drmgr)
@@ -1506,6 +1500,12 @@ if (BUILD_DRCALLS)
   tobuild_drcalls(drcalls.args "ext-drcalls/args.c" "" "" "")
   tobuild_drcalls(drcalls.inline "ext-drcalls/inline.c"
     "" "-opt_cleancall 3" "")
+  tobuild_drcalls(drcalls.preserve_mcontext "ext-drcalls/preserve_mcontext.c"
+    "" "-opt_cleancall 3" "")
+  tobuild_drcalls(drcalls.partial_inline "ext-drcalls/partial_inline.c"
+    "" "-opt_cleancall 3" "")
+  # Optimize the client to make clean call inlining easier.
+  enable_target_optimization(drcalls.partial_inline.dll)
 endif (BUILD_DRCALLS)
 
 ###########################################################################

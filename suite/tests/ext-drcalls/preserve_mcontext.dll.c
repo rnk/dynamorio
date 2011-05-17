@@ -47,7 +47,7 @@ event_basic_block(void *dc, void *entry_pc, instrlist_t *bb,
     instr_t *where = instrlist_first(bb);
     if (entry_pc == app_func_pc) {
         dr_fprintf(STDERR, "instrumenting app_func entry\n");
-        dr_insert_clean_call(dc, bb, where, instrumentation_pc, false, 0);
+        drcalls_insert_call(dc, bb, where, instrumentation_pc, false, 0);
     }
 }
 
@@ -131,7 +131,7 @@ dr_init(client_id_t id)
     dr_register_exit_event(event_exit);
 
     /* Lookup pcs. */
-    module_data_t *exe = dr_lookup_module_by_name("client.preserve_mcontext");
+    module_data_t *exe = dr_lookup_module_by_name("drcalls.preserve_mcontext");
     app_func_pc = (app_pc)dr_get_proc_address(exe->handle, "app_func");
     dr_free_module_data(exe);
 

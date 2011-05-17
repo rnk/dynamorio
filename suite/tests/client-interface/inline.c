@@ -40,22 +40,13 @@
 /* List of instrumented functions. */
 #define FUNCTIONS() \
         FUNCTION(empty) \
-        FUNCTION(empty_push) \
-        FUNCTION(enterleave) \
-        FUNCTION(entermovpop) \
-        FUNCTION(scheduled_prologue) \
         FUNCTION(inscount) \
         FUNCTION(callpic_pop) \
         FUNCTION(callpic_mov) \
-        FUNCTION(callpic_out) \
         FUNCTION(nonleaf) \
         FUNCTION(cond_br) \
         FUNCTION(tls_clobber) \
         FUNCTION(aflags_clobber) \
-        FUNCTION(decode_past_ret) \
-        FUNCTION(decode_loop) \
-        FUNCTION(partial_global) \
-        FUNCTION(optimize_flags) \
         LAST_FUNCTION()
 
 /* Definitions for every function. */
