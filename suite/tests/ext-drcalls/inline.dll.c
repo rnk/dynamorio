@@ -33,6 +33,8 @@
 /* Test the clean call inliner. */
 
 #include "dr_api.h"
+#include "dr_calls.h"
+
 #include <stddef.h> /* offsetof */
 #include <stdlib.h> /* atoi */
 #include <string.h> /* memset */
@@ -150,24 +152,29 @@ event_exit(void)
 static void
 lookup_pcs(void)
 {
-    module_data_t *exe;
+    dr_module_iterator_t *iter;
     int i;
 
-    exe = dr_lookup_module_by_name(
-#ifdef WINDOWS
-            "client.inline.exe"
-#else
-            "client.inline"
-#endif
-            );
-    for (i = 0; i < N_FUNCS; i++) {
-        app_pc func_pc = (app_pc)dr_get_proc_address(
-                exe->handle, func_names[i]);
-        DR_ASSERT_MSG(func_pc != NULL,
-                      "Unable to find a function we wanted to instrument!");
-        func_app_pcs[i] = func_pc;
+    iter = dr_module_iterator_start();
+    while (dr_module_iterator_hasnext(iter)) {
+        module_data_t *data = dr_module_iterator_next(iter);
+        for (i = 0; i < N_FUNCS; i++) {
+            app_pc func_pc = (app_pc)dr_get_proc_address(
+                    data->handle, func_names[i]);
+            if (func_pc != NULL) {
+                DR_ASSERT_MSG(func_app_pcs[i] == NULL,
+                              "Found two copies of function!");
+                func_app_pcs[i] = func_pc;
+            }
+        }
+        dr_free_module_data(data);
     }
-    dr_free_module_data(exe);
+    dr_module_iterator_stop(iter);
+
+    for (i = 0; i < N_FUNCS; i++) {
+        DR_ASSERT_MSG(func_app_pcs[i] != NULL,
+                      "Unable to find a function we wanted to instrument!");
+    }
 }
 
 /* Generate the instrumentation. */
@@ -401,9 +408,13 @@ after_callee(bool inline_expected, const char *func_name)
     }
 
     if (inline_expected) {
-        DR_ASSERT_MSG(callee_inlined, "Function was not inlined!");
+        if (!callee_inlined) {
+            dr_fprintf(STDERR, "Function was not inlined!\n");
+        }
     } else {
-        DR_ASSERT_MSG(!callee_inlined, "Function was inlined unexpectedly!");
+        if (callee_inlined) {
+            dr_fprintf(STDERR, "Function was inlined unexpectedly!\n");
+        }
     }
 
     dr_fprintf(STDERR, "Called func %s.\n", func_name);
@@ -473,7 +484,7 @@ test_aflags(void *dc, instrlist_t *bb, instr_t *where, int aflags)
     PRE(bb, where, INSTR_CREATE_add(dc, al, OPND_CREATE_INT8(0x7F)));
     PRE(bb, where, INSTR_CREATE_sahf(dc));
 
-    dr_insert_clean_call(dc, bb, where, func_ptrs[FN_aflags_clobber], false, 0);
+    drcalls_insert_call(dc, bb, where, func_ptrs[FN_aflags_clobber], false, 0);
 
     /* Get the flags back into XAX, and then to SPILL_SLOT_2:
      * mov REG_XAX, 0
@@ -488,7 +499,7 @@ test_aflags(void *dc, instrlist_t *bb, instr_t *where, int aflags)
         (dc, dr_reg_spill_slot_opnd(dc, SPILL_SLOT_2), xax));
 
     /* Assert that they match the original flags. */
-    dr_insert_clean_call(dc, bb, where, (void*)check_aflags, false, 2,
+    drcalls_insert_call(dc, bb, where, (void*)check_aflags, false, 2,
                          dr_reg_spill_slot_opnd(dc, SPILL_SLOT_2),
                          OPND_CREATE_INT32(aflags));
 
@@ -516,7 +527,7 @@ event_basic_block(void *dc, void *tag, instrlist_t *bb,
         return DR_EMIT_DEFAULT;
 
     func_called[i] = 1;
-    dr_insert_clean_call(dc, bb, entry, (void*)before_callee, false, 2,
+    drcalls_insert_call(dc, bb, entry, (void*)before_callee, false, 2,
                          OPND_CREATE_INTPTR(func_ptrs[i]),
                          OPND_CREATE_INTPTR(func_names[i]));
 
@@ -524,23 +535,23 @@ event_basic_block(void *dc, void *tag, instrlist_t *bb,
     default:
         /* Default behavior is to call instrumentation with no-args and
          * assert it gets inlined. */
-        dr_insert_clean_call(dc, bb, entry, func_ptrs[i], false, 0);
+        drcalls_insert_call(dc, bb, entry, func_ptrs[i], false, 0);
         break;
     case FN_inscount:
-        dr_insert_clean_call(dc, bb, entry, func_ptrs[i], false, 1,
+        drcalls_insert_call(dc, bb, entry, func_ptrs[i], false, 1,
                              OPND_CREATE_INT32((int)0xDEAD));
-        dr_insert_clean_call(dc, bb, entry, (void*)check_count, false, 0);
+        drcalls_insert_call(dc, bb, entry, (void*)check_count, false, 0);
         break;
     case FN_nonleaf:
     case FN_decode_past_ret:
         /* These functions cannot be inlined (yet). */
-        dr_insert_clean_call(dc, bb, entry, func_ptrs[i], false, 0);
+        drcalls_insert_call(dc, bb, entry, func_ptrs[i], false, 0);
         inline_expected = false;
         break;
     case FN_tls_clobber:
-        dr_insert_clean_call(dc, bb, entry, (void*)fill_scratch, false, 0);
-        dr_insert_clean_call(dc, bb, entry, func_ptrs[i], false, 0);
-        dr_insert_clean_call(dc, bb, entry, (void*)check_scratch, false, 0);
+        drcalls_insert_call(dc, bb, entry, (void*)fill_scratch, false, 0);
+        drcalls_insert_call(dc, bb, entry, func_ptrs[i], false, 0);
+        drcalls_insert_call(dc, bb, entry, (void*)check_scratch, false, 0);
         break;
     case FN_aflags_clobber:
         /* ah is: SF:ZF:0:AF:0:PF:1:CF.  If we turn everything on we will
@@ -552,7 +563,7 @@ event_basic_block(void *dc, void *tag, instrlist_t *bb,
         (void)test_aflags(dc, bb, entry, 0x00200);
         break;
     }
-    dr_insert_clean_call(dc, bb, entry, (void*)after_callee, false, 2,
+    drcalls_insert_call(dc, bb, entry, (void*)after_callee, false, 2,
                          OPND_CREATE_INT32(inline_expected),
                          OPND_CREATE_INTPTR(func_names[i]));
 

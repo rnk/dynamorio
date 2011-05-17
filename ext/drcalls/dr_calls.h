@@ -55,4 +55,11 @@ DR_EXPORT
 void drcalls_shared_call(void *drcontext, instrlist_t *ilist, instr_t *where,
                          void *callee, uint num_args, ...);
 
+DR_EXPORT
+/* Insert an optimized clean call to a function before the provided instruction.
+ */
+void drcalls_insert_call(void *drcontext, instrlist_t *ilist, instr_t *where,
+                         void *callee, bool fpstate, uint num_args, ...);
+
+
 #endif /* _DRCALLS_CALLS_H_ */

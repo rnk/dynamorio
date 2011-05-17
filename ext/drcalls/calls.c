@@ -82,12 +82,12 @@ static code_cache_t *code_cache;
 /* Returns an upper bound on the encoded length of the instructions in bytes.
  */
 static uint
-instrlist_length(void *drcontext, instrlist_t *ilist)
+instrlist_length(void *dc, instrlist_t *ilist)
 {
     instr_t *inst;
     uint len = 0;
     for (inst = instrlist_first(ilist); inst; inst = instr_get_next(inst)) {
-        len += instr_length(drcontext, inst);
+        len += instr_length(dc, inst);
     }
     return len;
 }
@@ -110,12 +110,12 @@ code_cache_memprotect(code_cache_block_t *block, uint prot)
 /* Add a block to the linked list of blocks in our code cache and update the
  * current pc and block. */
 static void
-code_cache_grow(void *drcontext, code_cache_t *code_cache)
+code_cache_grow(void *dc, code_cache_t *code_cache)
 {
     code_cache_block_t *prev_block;
     code_cache_block_t *new_block;
 
-    dr_log(drcontext, LOG_CACHE, 3,
+    dr_log(dc, LOG_CACHE, 3,
            "drcalls: growing shared clean call code cache\n");
 
     new_block = (code_cache_block_t *)dr_nonheap_alloc(
@@ -141,62 +141,62 @@ code_cache_grow(void *drcontext, code_cache_t *code_cache)
  * point.  Grows the code cache as necessary.  Assumes that the code cache lock
  * is held. */
 static byte *
-emit_shared_call(void *drcontext, void *callee, uint num_args)
+emit_shared_call(void *dc, void *callee, uint num_args)
 {
     byte *entry;
     instrlist_t *ilist;
     opnd_t args[2];
 
-    dr_log(drcontext, LOG_CACHE, 3,
+    dr_log(dc, LOG_CACHE, 3,
            "drcalls: emitting new shared clean call\n");
 
     /* Generate the clean call ilist. */
-    ilist = instrlist_create(drcontext);
+    ilist = instrlist_create(dc);
     switch (num_args) {
     default:
         DR_ASSERT_MSG(false, "Cannot do shared clean call with >= 2 args");
         return NULL;
     case 2:
-        args[1] = dr_reg_spill_slot_opnd(drcontext, SPILL_SLOT_3);
+        args[1] = dr_reg_spill_slot_opnd(dc, SPILL_SLOT_3);
         /* FALLTHROUGH */
     case 1:
-        args[0] = dr_reg_spill_slot_opnd(drcontext, SPILL_SLOT_2);
+        args[0] = dr_reg_spill_slot_opnd(dc, SPILL_SLOT_2);
         /* FALLTHROUGH */
     case 0:
         break;
     }
-    dr_insert_clean_call_vargs(drcontext, ilist, NULL, callee, false, num_args,
+    dr_insert_clean_call_vargs(dc, ilist, NULL, callee, false, num_args,
                                &args[0]);
 
     /* Clean call return. */
     APP(ilist, INSTR_CREATE_jmp_ind
-        (drcontext, dr_reg_spill_slot_opnd(drcontext, SPILL_SLOT_1)));
+        (dc, dr_reg_spill_slot_opnd(dc, SPILL_SLOT_1)));
 
     /* Check that there's space to encode the ilist.  Clean calls on x86_64 use
      * about 469 bytes, so we can usually pack about 8 calls per page. */
     entry = align_to_cacheline(code_cache->cur_pc);
     if (code_cache->cur_block == NULL ||
-        (entry + instrlist_length(drcontext, ilist) >
+        (entry + instrlist_length(dc, ilist) >
          (byte*)code_cache->cur_block + CODE_CACHE_BLOCK_SIZE)) {
-        code_cache_grow(drcontext, code_cache);
+        code_cache_grow(dc, code_cache);
         entry = align_to_cacheline(code_cache->cur_pc);
-        DR_ASSERT_MSG(entry + instrlist_length(drcontext, ilist) <=
+        DR_ASSERT_MSG(entry + instrlist_length(dc, ilist) <=
                       (byte*)code_cache->cur_block + CODE_CACHE_BLOCK_SIZE,
                       "Clean call did not fit in single code cache block!");
     }
 
     /* Unprotect the page, encode the instructions, and reprotect it. */
     code_cache_memprotect(code_cache->cur_block, CODE_RWX);
-    code_cache->cur_pc = instrlist_encode(drcontext, ilist, entry, false);
+    code_cache->cur_pc = instrlist_encode(dc, ilist, entry, false);
     code_cache_memprotect(code_cache->cur_block, CODE_RX);
 
 #if VERBOSE
-    dr_log(drcontext, LOG_CACHE, 3,
+    dr_log(dc, LOG_CACHE, 3,
            "drcalls: shared call ilist:\n");
-    instrlist_disassemble(drcontext, entry, ilist, dr_get_logfile(drcontext));
+    instrlist_disassemble(dc, entry, ilist, dr_get_logfile(dc));
 #endif
 
-    instrlist_clear_and_destroy(drcontext, ilist);
+    instrlist_clear_and_destroy(dc, ilist);
 
     return entry;
 }
@@ -255,7 +255,7 @@ pick_scratch_reg(uint num_args, opnd_t *args)
 }
 
 static void
-materialize_args(void *drcontext, instrlist_t *ilist, instr_t *where,
+materialize_args(void *dc, instrlist_t *ilist, instr_t *where,
                  uint num_args, opnd_t *args)
 {
     uint i;
@@ -265,14 +265,14 @@ materialize_args(void *drcontext, instrlist_t *ilist, instr_t *where,
 
     for (i = 0; i < num_args; i++) {
         opnd_t arg = args[i];
-        opnd_t arg_spill = dr_reg_spill_slot_opnd(drcontext, SPILL_SLOT_2 + i);
+        opnd_t arg_spill = dr_reg_spill_slot_opnd(dc, SPILL_SLOT_2 + i);
 
         if ((opnd_is_immed_int(arg) && opnd_get_size(arg) <= OPSZ_4) ||
             opnd_is_reg(arg)) {
             /* If the argument is a 32-bit immediate or register, can
              * materialize into argument spill slot without a scratch reg. */
             PRE(ilist, where,
-                INSTR_CREATE_mov_st(drcontext, arg_spill, arg));
+                INSTR_CREATE_mov_st(dc, arg_spill, arg));
         } else if (opnd_is_far_base_disp(arg) &&
                    opnd_get_segment(arg) == opnd_get_segment(arg_spill) &&
                    opnd_get_disp(arg) == opnd_get_disp(arg_spill)) {
@@ -289,17 +289,17 @@ materialize_args(void *drcontext, instrlist_t *ilist, instr_t *where,
             /* Materialize arg into scratch reg. */
             if (opnd_is_immed_int(arg)) {
                 PRE(ilist, where,
-                    INSTR_CREATE_mov_imm(drcontext, scratch_reg, arg));
+                    INSTR_CREATE_mov_imm(dc, scratch_reg, arg));
             } else if (opnd_is_memory_reference(arg)) {
                 PRE(ilist, where,
-                    INSTR_CREATE_mov_ld(drcontext, scratch_reg, arg));
+                    INSTR_CREATE_mov_ld(dc, scratch_reg, arg));
             } else {
                 DR_ASSERT_MSG(false, "Unsupported operand type!");
             }
 
             /* Store scratch reg to arg spill slot. */
             PRE(ilist, where,
-                INSTR_CREATE_mov_st(drcontext, arg_spill, scratch_reg));
+                INSTR_CREATE_mov_st(dc, arg_spill, scratch_reg));
         }
     }
 
@@ -308,8 +308,8 @@ materialize_args(void *drcontext, instrlist_t *ilist, instr_t *where,
         instr_t *first = (before_args != NULL ?
                           instr_get_next(before_args) :
                           instrlist_first(ilist));
-        dr_save_reg(drcontext, ilist, first, scratch_reg_num, SPILL_SLOT_1);
-        dr_restore_reg(drcontext, ilist, where, scratch_reg_num, SPILL_SLOT_1);
+        dr_save_reg(dc, ilist, first, scratch_reg_num, SPILL_SLOT_1);
+        dr_restore_reg(dc, ilist, where, scratch_reg_num, SPILL_SLOT_1);
     }
 }
 
@@ -325,7 +325,27 @@ convert_va_list_to_opnd(opnd_t *args, uint num_args, va_list ap)
 }
 
 void
-drcalls_shared_call(void *drcontext, instrlist_t *ilist, instr_t *where,
+drcalls_insert_call(void *dc, instrlist_t *ilist, instr_t *where, void *callee,
+                    bool fpstate, uint num_args, ...)
+{
+    va_list ap;
+    opnd_t *args = NULL;
+
+    if (num_args > 0)
+        args = dr_thread_alloc(dc, sizeof(opnd_t) * num_args);
+
+    va_start(ap, num_args);
+    convert_va_list_to_opnd(args, num_args, ap);
+    va_end(ap);
+
+    dr_insert_clean_call_vargs(dc, ilist, where, callee, fpstate, num_args, args);
+
+    if (num_args > 0)
+        dr_thread_free(dc, args, sizeof(opnd_t) * num_args);
+}
+
+void
+drcalls_shared_call(void *dc, instrlist_t *ilist, instr_t *where,
                     void *callee, uint num_args, ...)
 {
     va_list ap;
@@ -338,20 +358,20 @@ drcalls_shared_call(void *drcontext, instrlist_t *ilist, instr_t *where,
     if (num_args > 2) {
         opnd_t *args;
         size_t arg_alloc_size = sizeof(opnd_t) * num_args;
-        args = dr_thread_alloc(drcontext, arg_alloc_size);
+        args = dr_thread_alloc(dc, arg_alloc_size);
         va_start(ap, num_args);
         convert_va_list_to_opnd(args, num_args, ap);
         va_end(ap);
 
-        dr_log(drcontext, LOG_ALL, 3,
+        dr_log(dc, LOG_ALL, 3,
                "drcalls: unable to share clean call save/restore code, "
                "performance may suffer\n");
         /* FIXME(rnk): save_fpstate should be determined via static analysis of
          * the machine code.  We assume it will usually be false, so I've left
          * it false here to match expected future performance. */
-        dr_insert_clean_call_vargs(drcontext, ilist, where, callee, false,
+        dr_insert_clean_call_vargs(dc, ilist, where, callee, false,
                                    num_args, args);
-        dr_thread_free(drcontext, args, arg_alloc_size);
+        dr_thread_free(dc, args, arg_alloc_size);
         return;
     }
 
@@ -365,7 +385,7 @@ drcalls_shared_call(void *drcontext, instrlist_t *ilist, instr_t *where,
         shared_entry = hashtable_lookup(&code_cache->entry_point_table, callee);
         if (shared_entry == NULL) {
             bool success;
-            shared_entry = emit_shared_call(drcontext, callee, num_args);
+            shared_entry = emit_shared_call(dc, callee, num_args);
             success = hashtable_add(&code_cache->entry_point_table, callee,
                                     shared_entry);
             DR_ASSERT_MSG(success,
@@ -379,16 +399,16 @@ drcalls_shared_call(void *drcontext, instrlist_t *ilist, instr_t *where,
     va_start(ap, num_args);
     convert_va_list_to_opnd(&stack_args[0], num_args, ap);
     va_end(ap);
-    materialize_args(drcontext, ilist, where, num_args, &stack_args[0]);
+    materialize_args(dc, ilist, where, num_args, &stack_args[0]);
 
     /* Store the return label in a spill slot, and jump to the shared clean
      * call sequence. */
-    return_label = INSTR_CREATE_label(drcontext);
+    return_label = INSTR_CREATE_label(dc);
     PRE(ilist, where,
-        INSTR_CREATE_mov_imm(drcontext,
-                             dr_reg_spill_slot_opnd(drcontext, SPILL_SLOT_1),
+        INSTR_CREATE_mov_imm(dc,
+                             dr_reg_spill_slot_opnd(dc, SPILL_SLOT_1),
                              opnd_create_instr(return_label)));
     PRE(ilist, where,
-        INSTR_CREATE_jmp(drcontext, opnd_create_pc(shared_entry)));
+        INSTR_CREATE_jmp(dc, opnd_create_pc(shared_entry)));
     PRE(ilist, where, return_label);
 }

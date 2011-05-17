@@ -1504,6 +1504,8 @@ endif ()
 if (BUILD_DRCALLS)
   tobuild_drcalls(drcalls.outofline "ext-drcalls/outofline.c" "" "" "")
   tobuild_drcalls(drcalls.args "ext-drcalls/args.c" "" "" "")
+  tobuild_drcalls(drcalls.inline "ext-drcalls/inline.c"
+    "" "-opt_cleancall 3" "")
 endif (BUILD_DRCALLS)
 
 ###########################################################################
