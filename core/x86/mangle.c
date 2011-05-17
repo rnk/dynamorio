@@ -5150,6 +5150,17 @@ propagate_copy(dcontext_t *dc, instrlist_t *ilist, instr_t *copy)
 }
 
 static bool
+can_use_immed_for_opnd_reg(ptr_int_t val, reg_id_t dst_reg, reg_id_t opnd_reg)
+{
+    /* We can fold if opnd_reg is dst_reg or if it's the 64-bit version of
+     * dst_reg and val is less than INT_MAX.  If it is larger, it will be sign
+     * extended when the code requires zero extension. */
+    return (opnd_reg == dst_reg ||
+            IF_X64_ELSE((opnd_reg == reg_32_to_64(dst_reg) &&
+                         val <= INT_MAX), false));
+}
+
+static bool
 rewrite_reg_immed(dcontext_t *dc, instr_t *instr, reg_id_t reg,
                   ptr_int_t val, bool check_only)
 {
@@ -5167,12 +5178,7 @@ rewrite_reg_immed(dcontext_t *dc, instr_t *instr, reg_id_t reg,
             continue;
         if (opnd_is_reg(opnd)) {
             reg_id_t opnd_reg = opnd_get_reg(opnd);
-            /* We can fold if opnd_reg is reg or if it's the 64-bit version of
-             * reg and val is less than INT_MAX.  If it is larger, it will be
-             * sign extended when the code requires zero extension. */
-            if (opnd_reg == reg ||
-                IF_X64_ELSE((opnd_reg == reg_32_to_64(reg) &&
-                             val <= INT_MAX), false)) {
+            if (can_use_immed_for_opnd_reg(val, reg, opnd_reg)) {
                 instr_set_src(instr, i, imm);
             } else {
                 LOG(dr_get_logfile(dc), LOG_CLEANCALL, 3,
@@ -5187,11 +5193,11 @@ rewrite_reg_immed(dcontext_t *dc, instr_t *instr, reg_id_t reg,
             reg_id_t index = opnd_get_index(opnd);
             int scale = opnd_get_scale(opnd);
             opnd_size_t sz = opnd_get_size(opnd);
-            if (reg == index) {
+            if (can_use_immed_for_opnd_reg(val, reg, index)) {
                 disp += val * scale;
                 index = DR_REG_NULL;
                 scale = 0;
-            } else if (reg == base) {
+            } else if (can_use_immed_for_opnd_reg(val, reg, base)) {
                 disp += val;
                 if (scale == 1) {
                     base = index;
@@ -5266,19 +5272,14 @@ rewrite_live_range_immed(dcontext_t *dc, instr_t *start, instr_t *end,
     return true;
 }
 
-/* If this is a reg-to-reg instruction that uses a new register when there are
- * existing dead registers that we've already used, try to reuse registers.
- * This creates less saves and restores.  */
-static void
-try_reuse_register(dcontext_t *dc, instrlist_t *ilist, liveness_t *liveness,
+static reg_id_t
+pick_used_dead_reg(dcontext_t *dc, instrlist_t *ilist, liveness_t *liveness,
                    instr_t *reuse_instr)
 {
+    bool reg_used[NUM_GP_REGS];
     instr_t *instr;
     uint i;
-    bool reg_used[NUM_GP_REGS];
-    opnd_t opnd = instr_get_dst(reuse_instr, 0);
-    reg_id_t dst = opnd_get_reg(opnd);
-    reg_id_t new;
+    reg_id_t reg;
 
     /* Compute registers used before reuse_instr. */
     memset(reg_used, 0, sizeof(reg_used));
@@ -5300,9 +5301,39 @@ try_reuse_register(dcontext_t *dc, instrlist_t *ilist, liveness_t *liveness,
         if (reg_used[i] && IS_DEAD(DR_REG_XAX + (reg_id_t)i))
             break;
     if (i == NUM_GP_REGS)
+        return DR_REG_NULL;
+    reg = DR_REG_XAX + (reg_id_t)i;
+    ASSERT(reg_used[i] && IS_DEAD(reg));
+    return reg;
+}
+
+static reg_id_t
+pick_dead_reg(dcontext_t *dc, liveness_t *liveness)
+{
+    int i;
+
+    for (i = 0; i < NUM_GP_REGS; i++) {
+        reg_id_t reg = DR_REG_XAX + (reg_id_t)i;
+        if (IS_DEAD(reg))
+            return reg;
+    }
+    return DR_REG_NULL;
+}
+
+/* If this is a reg-to-reg instruction that uses a new register when there are
+ * existing dead registers that we've already used, try to reuse registers.
+ * This creates less saves and restores.  */
+static void
+try_reuse_register(dcontext_t *dc, instrlist_t *ilist, liveness_t *liveness,
+                   instr_t *reuse_instr)
+{
+    opnd_t opnd = instr_get_dst(reuse_instr, 0);
+    reg_id_t dst = opnd_get_reg(opnd);
+    reg_id_t new;
+
+    new = pick_used_dead_reg(dc, ilist, liveness, reuse_instr);
+    if (new == DR_REG_NULL)
         return;
-    new = DR_REG_XAX + (reg_id_t)i;
-    ASSERT(reg_used[i] && IS_DEAD(new));
 
     LOG(dr_get_logfile(dc), LOG_CLEANCALL, 3,
         "CLEANCALL: trying to reuse dead register %s instead of %s at "PFX"\n",
@@ -5359,6 +5390,137 @@ fold_mov_immed(dcontext_t *dc, instrlist_t *ilist, instr_t *mov_imm)
     LOG(dr_get_logfile(dc), LOG_CLEANCALL, 3,
         "CLEANCALL: folded immediate mov at "PFX"\n",
         instr_get_app_pc(mov_imm));
+    return true;
+}
+
+static bool
+addsub_to_lea(dcontext_t *dc, const callee_info_t *ci, liveness_t *liveness,
+              instr_t *instr, bool check_only)
+{
+    opnd_t src = instr_get_src(instr, 0);
+    opnd_t dst = instr_get_dst(instr, 0);
+    reg_id_t dst_reg;
+    ASSERT(opnd_same(dst, instr_get_src(instr, 1)));
+    if (check_only) {
+        LOG(dr_get_logfile(dc), LOG_CLEANCALL, 3,
+            "CLEANCALL: attempting add -> lea for: ");
+        instr_disassemble(dc, instr, dr_get_logfile(dc));
+        LOG(dr_get_logfile(dc), LOG_CLEANCALL, 3, "\n");
+    }
+
+    /* Extract memory operands from add into temp register loads and stores. */
+    if (opnd_is_memory_reference(src) || opnd_is_memory_reference(dst)) {
+        reg_id_t tmp_reg;
+        opnd_t tmp;
+        opnd_t memref = opnd_is_memory_reference(src) ? src : dst;
+
+        ASSERT(!(opnd_is_memory_reference(src) &&
+                 opnd_is_memory_reference(dst)));
+        tmp_reg = pick_used_dead_reg(dc, ci->ilist, liveness, instr);
+        if (tmp_reg == DR_REG_NULL) {
+            if (check_only) {
+                LOG(dr_get_logfile(dc), LOG_CLEANCALL, 3,
+                    "CLEANCALL: can't steal used dead reg, getting unused\n");
+            }
+            tmp_reg = pick_dead_reg(dc, liveness);
+            if (tmp_reg == DR_REG_NULL) {
+                LOG(dr_get_logfile(dc), LOG_CLEANCALL, 3,
+                    "CLEANCALL: can't steal dead reg, add -> lea failed\n");
+                return false;
+            }
+        }
+        /* Match the register size to the memref size. */
+        IF_X64(tmp_reg = reg_64_to_32(tmp_reg);)
+        tmp_reg = reg_32_to_opsz(tmp_reg, opnd_get_size(memref));
+        tmp = opnd_create_reg(tmp_reg);
+
+        if (!check_only) {
+            /* Insert load in either case. */
+            PRE(ci->ilist, instr, INSTR_CREATE_mov_ld
+                (GLOBAL_DCONTEXT, tmp, memref));
+            /* Insert store if memref is dst. */
+            if (opnd_is_memory_reference(dst)) {
+                POST(ci->ilist, instr, INSTR_CREATE_mov_st
+                     (GLOBAL_DCONTEXT, memref, tmp));
+            }
+        }
+
+        /* Replace memref w/ tmp. */
+        src = opnd_is_memory_reference(src) ? tmp : src;
+        dst = opnd_is_memory_reference(dst) ? tmp : dst;
+    }
+
+    /* Should be of form: add r/i, r */
+    dst_reg = opnd_get_reg(dst);
+    if (opnd_is_immed_int(src)) {
+        /* lea +/-IMM(%dst), %dst */
+        if (!check_only) {
+            ptr_int_t disp = opnd_get_immed_int(src);
+            if (instr_get_opcode(instr) == OP_sub)
+                disp = -disp;
+            PRE(ci->ilist, instr, INSTR_CREATE_lea
+                (GLOBAL_DCONTEXT, dst,
+                 OPND_CREATE_MEM_lea(dst_reg, DR_REG_NULL, 0, disp)));
+            remove_and_destroy(GLOBAL_DCONTEXT, ci->ilist, instr);
+        }
+    } else if (opnd_is_reg(src)) {
+        reg_id_t src_reg = opnd_get_reg(src);
+        if (instr_get_opcode(instr) == OP_sub && !IS_DEAD(src_reg)) {
+            LOG(dr_get_logfile(dc), LOG_CLEANCALL, 3,
+                "CLEANCALL: sub -> lea failed, needs dead src reg\n");
+            return false;
+        }
+        if (!check_only) {
+            /* lea 0(%src, %dst, 1), %dst */
+            PRE(ci->ilist, instr, INSTR_CREATE_lea
+                (GLOBAL_DCONTEXT, dst,
+                 OPND_CREATE_MEM_lea(dst_reg, src_reg, 1, 0)));
+            remove_and_destroy(GLOBAL_DCONTEXT, ci->ilist, instr);
+        }
+    } else {
+        LOG(dr_get_logfile(dc), LOG_CLEANCALL, 3,
+            "CLEANCALL: add -> lea failed, unrecognized src opnd\n");
+        return false;
+    }
+    return true;
+}
+
+static bool
+optimize_avoid_flags(dcontext_t *dc, const callee_info_t *ci, bool check_only)
+{
+    liveness_t liveness_;
+    liveness_t *liveness = &liveness_;
+    instrlist_t *ilist = ci->ilist;
+    instr_t *instr, *prev_instr;
+
+    liveness_init(liveness, ci);
+    for (instr = instrlist_last(ilist); instr != NULL; instr = prev_instr) {
+        prev_instr = instr_get_prev(instr);
+
+        /* Update before analysis to consider registers live-in to this
+         * instruction to be live.  We can't use them as temp registers. */
+        liveness_update(liveness, instr);
+
+        switch (instr_get_opcode(instr)) {
+        case OP_sub:
+        case OP_add:
+            if (!addsub_to_lea(dc, ci, liveness, instr, check_only))
+                return false;
+            break;
+        case OP_jz:
+            /* TODO(rnk): Do cmp -> not+lea trick. */
+            return false;
+        default:
+            if (TESTANY(EFLAGS_WRITE_6, instr_get_arith_flags(instr)) ||
+                TESTANY(EFLAGS_READ_6, instr_get_arith_flags(instr))) {
+                LOG(dr_get_logfile(dc), LOG_CLEANCALL, 3,
+                    "CLEANCALL: flags required for instr at "PFX", "
+                    "flags avoidance not profitable\n",
+                    instr_get_app_pc(instr));
+                return false;
+            }
+        }
+    }
     return true;
 }
 
@@ -5467,6 +5629,13 @@ optimize_callee(dcontext_t *dc, const callee_info_t *ci)
         liveness_update(liveness, instr);
     }
 
+    /* Do another pass to see if we can rewrite arithmetic to avoid the use of
+     * flags registers. */
+    if (optimize_avoid_flags(dc, ci, true)) {
+        IF_DEBUG(bool ok =) optimize_avoid_flags(dc, ci, false);
+        ASSERT(ok);
+    }
+
     /* Do a final forward pass to fold immediates moved through registers. */
     for (instr = instrlist_first(ilist); instr != NULL; instr = next_instr) {
         next_instr = instr_get_next(instr);
@@ -5560,6 +5729,7 @@ analyze_callee_regs_usage(dcontext_t *dcontext, callee_info_t *ci)
             break;
         if (instr_is_return(instr))
             break;
+        /* TODO(rnk): Is this necessary?  Catches jrcxz. */
         if (instr_is_cti(instr)) {
             ci->read_aflags = true;
             break;
