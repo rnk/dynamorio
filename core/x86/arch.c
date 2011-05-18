@@ -102,7 +102,7 @@ emit_syscall_routines(dcontext_t *dcontext, generated_code_t *code, byte *pc,
 
 /* Maps DR_REG_* enums to offsets into dr_mcontext_t.  Relies on register enum
  * ordering in instr.h.  Indexed by DR_REG_X* - DR_REG_XAX. */
-const int reg_mc_offset[NUM_GP_REGS] = {
+const uint reg_mc_offset[NUM_GP_REGS] = {
     XAX_OFFSET,
     XCX_OFFSET,
     XDX_OFFSET,

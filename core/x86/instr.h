@@ -679,6 +679,23 @@ opnd_create_far_base_disp_ex(reg_id_t seg, reg_id_t base_reg, reg_id_t index_reg
 
 DR_API
 /**
+ * Returns a pointer-sized memory reference to DynamoRIO's TLS segment plus an
+ * offset.
+ */
+opnd_t
+opnd_create_tls_slot(int offs);
+
+DR_API
+/**
+ * Returns a memory reference to DynamoRIO's TLS segment plus an offset.
+ *
+ * \p size is an OPSZ_ constant specifying the memory access size.
+ */
+opnd_t
+opnd_create_sized_tls_slot(int offs, opnd_size_t size);
+
+DR_API
+/**
  * Returns a memory reference operand that refers to the address \p addr.
  * The operand has data size \p data_size (must be a OPSZ_ constant).
  *
@@ -3075,9 +3092,6 @@ instr_t * instr_create_save_dynamo_return_stack(dcontext_t *dcontext);
 #endif
 opnd_t update_dcontext_address(opnd_t op, dcontext_t *old_dcontext,
                              dcontext_t *new_dcontext);
-opnd_t opnd_create_tls_slot(int offs);
-/* For size, use a OPSZ_ value from decode.h, typically OPSZ_1 or OPSZ_4 */
-opnd_t opnd_create_sized_tls_slot(int offs, opnd_size_t size);
 bool instr_raw_is_tls_spill(byte *pc, reg_id_t reg, ushort offs);
 bool instr_is_tls_spill(instr_t *instr, reg_id_t reg, ushort offs);
 bool instr_is_tls_xcx_spill(instr_t *instr);
@@ -3231,7 +3245,9 @@ enum { /* FIXME: vs RAW_OPCODE_* enum */
 /* length of our mangling of jecxz/loop* */
 #define CTI_SHORT_REWRITE_LENGTH 9
 
+#ifdef AVOID_API_EXPORT
 /* This should be kept in sync w/ the defines in x86/x86.asm */
+#endif
 enum {
 #ifdef X64
 # ifdef LINUX
@@ -3269,6 +3285,19 @@ enum {
 #endif
 };
 extern const reg_id_t regparms[];
+
+/* DR_API EXPORT TOFILE dr_ir_utils.h */
+/* DR_API EXPORT BEGIN */
+
+DR_API
+/** Returns the number of registers used to pass parameters.  */
+uint dr_num_reg_parm(void);
+
+DR_API
+/** Returns the register used for passing the nth parameter.  */
+reg_id_t dr_reg_parm(uint n);
+
+/* DR_API EXPORT END */
 
 /* DR_API EXPORT TOFILE dr_ir_opcodes.h */
 /* DR_API EXPORT BEGIN */

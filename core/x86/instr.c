@@ -780,6 +780,21 @@ const reg_id_t regparms[] = {
     REG_INVALID
 };
 
+uint
+dr_num_reg_parm(void)
+{
+    return NUM_REGPARM;
+}
+
+reg_id_t
+dr_reg_parm(uint n)
+{
+    if (n < NUM_REGPARM)
+        return regparms[n];
+    else
+        return DR_REG_INVALID;
+}
+
 /* Maps sub-registers to their containing register. */
 const reg_id_t reg_fixer[]={
     REG_NULL,

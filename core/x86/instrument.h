@@ -2459,7 +2459,9 @@ dr_log(void *drcontext, uint mask, uint level, const char *fmt, ...);
 #define LOG_HOT_PATCHING   0x00200000  /**< Log data related to hot patching. */ 
 #define LOG_HTABLE         0x00400000  /**< Log data related to hash tables. */ 
 #define LOG_MODULEDB       0x00800000  /**< Log data related to the module database. */ 
-#define LOG_ALL            0x00ffffff  /**< Log all data. */
+#define LOG_LOADER         0x01000000  /**< Log data related to the private loader. */
+#define LOG_CLEANCALL      0x02000000  /**< Log data related to clean call optimization. */
+#define LOG_ALL            0x03ffffff  /**< Log all data. */
 /* DR_API EXPORT END */
 #endif
 
