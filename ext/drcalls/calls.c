@@ -208,10 +208,11 @@ static void code_cache_destroy(void);
 void
 drcalls_init(void)
 {
-    code_cache_init();
     callee_info_init(&default_callee_info);
-    callee_info_table_init();
     clean_call_info_init(&default_clean_call_info, NULL, false, 0);
+
+    code_cache_init();
+    callee_info_table_init();
 }
 
 void
@@ -250,6 +251,27 @@ code_cache_init(void)
     hashtable_init(&code_cache->entry_point_table, ENTRY_TABLE_BITS,
                    HASH_INTPTR, false);
     code_cache->lock = dr_mutex_create();
+}
+
+static void
+code_cache_destroy(void)
+{
+    code_cache_block_t *block;
+    code_cache_block_t *block_next;
+
+    /* Hashtable points into code cache, which we free below, so we don't need
+     * to free the elements. */
+    hashtable_delete(&code_cache->entry_point_table);
+
+    /* Free the linked list of code cache blocks. */
+    for (block = code_cache->root; block != NULL; block = block_next) {
+        block_next = block->next;
+        dr_nonheap_free(block, CODE_CACHE_BLOCK_SIZE);
+    }
+
+    dr_mutex_destroy(code_cache->lock);
+    dr_global_free(code_cache, sizeof(code_cache_t));
+    code_cache = NULL;
 }
 
 /* Adjust the permissions on a code cache block to prot. */
@@ -430,6 +452,7 @@ callee_info_table_destroy(void)
 {
     callee_info_table_exit = true;
     hashtable_delete(callee_info_table);
+    dr_global_free(callee_info_table, sizeof(*callee_info_table));
 }
 
 static callee_info_t *
@@ -478,28 +501,6 @@ clean_call_info_init(clean_call_info_t *cci, void *callee,
     cci->save_all_regs = true;
     cci->should_align  = true;
     cci->callee_info   = &default_callee_info;
-}
-
-
-static void
-code_cache_destroy(void)
-{
-    code_cache_block_t *block;
-    code_cache_block_t *block_next;
-
-    /* Hashtable points into code cache, which we free below, so we don't need
-     * to free the elements. */
-    hashtable_delete(&code_cache->entry_point_table);
-
-    /* Free the linked list of code cache blocks. */
-    for (block = code_cache->root; block != NULL; block = block_next) {
-        block_next = block->next;
-        dr_nonheap_free(block, CODE_CACHE_BLOCK_SIZE);
-    }
-
-    dr_mutex_destroy(code_cache->lock);
-    dr_global_free(code_cache, sizeof(code_cache_t));
-    code_cache = NULL;
 }
 
 static reg_id_t
