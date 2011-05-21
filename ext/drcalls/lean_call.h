@@ -30,11 +30,13 @@
  * DAMAGE.
  */
 
-#ifndef DRCALLS_CODE_CACHE_H
-#define DRCALLS_CODE_CACHE_H
+#ifndef DRCALLS_LEAN_CALL_H
+#define DRCALLS_LEAN_CALL_H
 
-void code_cache_init(void);
-void code_cache_destroy(void);
-app_pc code_cache_emit(void *dc, instrlist_t *ilist);
+void lean_call_init(void);
+void lean_call_exit(void);
+void lean_call_insert(void *dc, instrlist_t *ilist, instr_t *where,
+                      void *callee, bool fpstate, uint num_args,
+                      opnd_t *args);
 
-#endif /* DRCALLS_CODE_CACHE_H */
+#endif /* DRCALLS_LEAN_CALL_H */

@@ -40,8 +40,9 @@
 #include <string.h> /* for memcmp */
 
 /* internal includes */
-#include "core_compat.h"
 #include "code_cache.h"
+#include "core_compat.h"
+#include "lean_call.h"
 
 #define VERBOSE 0
 
@@ -66,6 +67,7 @@ typedef struct _callee_info_t {
     bool tls_used;            /* application accesses TLS (errno, etc.) */
     bool has_cti;             /* true if callee has any control flow */
     bool is_leaf;             /* true if all control flow is within callee */
+    bool stack_complex;       /* true if the stack usage is complicated */
     instrlist_t *ilist;       /* instruction list of function for inline. */
     instr_t *partial_label;   /* label of slowpath entry */
     app_pc partial_pc;      /* pc of slowpath entry */
@@ -94,7 +96,7 @@ static callee_info_t     default_callee_info;
 static clean_call_info_t default_clean_call_info;
 
 /* Optimization level of calls. */
-/* TODO(rnk): Expose this. */
+/* TODO(rnk): Expose this via flags. */
 static uint opt_cleancall = 3;
 
 /* Prototypes for analysis data structures. */
@@ -109,12 +111,6 @@ static hashtable_t *callee_info_table;
 /* We only free callee info at exit, when callee_info_table_exit is true. */
 static bool callee_info_table_exit = false;
 #define CALLEE_INFO_TABLE_BITS 6
-
-/* Hashtable for lean callees.  Maps callee pointer to lean clean call trace. */
-static hashtable_t *lean_callee_table;
-#define LEAN_CALLEE_TABLE_BITS 6
-static void lean_callee_table_init(void);
-static void lean_callee_table_destroy(void);
 
 static bool drcalls_initialized = false;
 
@@ -134,7 +130,7 @@ drcalls_init(void)
 
     code_cache_init();
     callee_info_table_init();
-    lean_callee_table_init();
+    lean_call_init();
 
     drcalls_initialized = true;
 }
@@ -151,72 +147,86 @@ drcalls_exit(void)
 {
     check_init();
     callee_info_table_destroy();
-    lean_callee_table_destroy();
+    lean_call_exit();
     code_cache_destroy();
     drcalls_initialized = false;
 }
 
 static void
-lean_callee_table_init(void)
+convert_va_list_to_opnd(opnd_t *args, uint num_args, va_list ap)
 {
-    lean_callee_table = dr_global_alloc(sizeof(*lean_callee_table));
-    hashtable_init_ex(lean_callee_table,
-                      LEAN_CALLEE_TABLE_BITS,
-                      HASH_INTPTR,
-                      /* str_dup */ false,
-                      /* sync */ false,
-                      /* free */ NULL,
-                      /* hash key */ NULL,
-                      /* cmp key */ NULL
-                      );
-}
-
-static void
-lean_callee_table_destroy(void)
-{
-    hashtable_delete(lean_callee_table);
-    dr_global_free(lean_callee_table, sizeof(*lean_callee_table));
-}
-
-/* Emit the lean call code into the code cache and return the entry point.
- */
-static byte *
-emit_lean_call(void *dc, void *callee, uint num_args)
-{
-    byte *entry;
-    instrlist_t *ilist;
-    opnd_t args[2];
-
-    dr_log(dc, LOG_CACHE, 3,
-           "drcalls: emitting new lean clean call\n");
-
-    /* Generate the clean call ilist. */
-    ilist = instrlist_create(dc);
-    switch (num_args) {
-    default:
-        DR_ASSERT_MSG(false, "Cannot do lean call with >= 2 args");
-        return NULL;
-    case 2:
-        args[1] = dr_reg_spill_slot_opnd(dc, SPILL_SLOT_3);
-        /* FALLTHROUGH */
-    case 1:
-        args[0] = dr_reg_spill_slot_opnd(dc, SPILL_SLOT_2);
-        /* FALLTHROUGH */
-    case 0:
-        break;
+    uint i;
+    /* There's no way to check num_args vs actual args passed in, or publicly
+     * check opnd_t for validity. */
+    for (i = 0; i < num_args; i++) {
+        args[i] = va_arg(ap, opnd_t);
     }
-    dr_insert_clean_call_vargs(dc, ilist, NULL, callee, false, num_args,
-                               &args[0]);
+}
 
-    /* Clean call return. */
-    APP(ilist, INSTR_CREATE_jmp_ind
-        (dc, dr_reg_spill_slot_opnd(dc, SPILL_SLOT_1)));
+void
+drcalls_insert_call(void *dc, instrlist_t *ilist, instr_t *where, void *callee,
+                    bool fpstate, uint num_args, ...)
+{
+    va_list ap;
+    opnd_t *args = NULL;
+    clean_call_info_t cci; /* information for clean call insertion. */
 
-    entry = code_cache_emit(dc, ilist);
+    check_init();
 
-    instrlist_clear_and_destroy(dc, ilist);
+    /* Read arguments. */
+    if (num_args > 0)
+        args = dr_thread_alloc(dc, sizeof(opnd_t) * num_args);
+    va_start(ap, num_args);
+    convert_va_list_to_opnd(args, num_args, ap);
+    va_end(ap);
 
-    return entry;
+    if (analyze_clean_call(dc, &cci, where, callee, fpstate, num_args, args)) {
+        /* See if we can inline. */
+        insert_inline_clean_call(dc, &cci, ilist, where, args);
+        dr_log(dc, LOG_CLEANCALL, 2,
+               "CLEANCALL: inlined callee "PFX"\n", callee);
+    } else {
+        /* Otherwise, just use a clean call. */
+        dr_insert_clean_call_vargs(dc, ilist, where, callee, fpstate, num_args,
+                                   args);
+    }
+
+    if (num_args > 0)
+        dr_thread_free(dc, args, sizeof(opnd_t) * num_args);
+}
+
+/* TODO(rnk): Should take save_fpstate. */
+void
+drcalls_lean_call(void *dc, instrlist_t *ilist, instr_t *where, void *callee,
+                  uint num_args, ...)
+{
+    va_list ap;
+    opnd_t *args = NULL;
+    bool fpstate = false;
+
+    check_init();
+
+    if (num_args > 0) {
+        args = dr_thread_alloc(dc, sizeof(opnd_t) * num_args);
+        va_start(ap, num_args);
+        convert_va_list_to_opnd(args, num_args, ap);
+        va_end(ap);
+    }
+
+    /* If there are more args than TLS spill slots, give up and insert a normal
+     * clean call. */
+    if (num_args > 2) {
+        dr_log(dc, LOG_ALL, 1, "drcalls: too many arguments for lean call, "
+               "performance may suffer.\n");
+        dr_insert_clean_call_vargs(dc, ilist, where, callee, fpstate, num_args,
+                                   args);
+    } else {
+        lean_call_insert(dc, ilist, where, callee, fpstate, num_args, args);
+    }
+
+    if (num_args > 0) {
+        dr_thread_free(dc, args, sizeof(opnd_t) * num_args);
+    }
 }
 
 /****************************************************************************/
@@ -229,10 +239,12 @@ callee_info_init(callee_info_t *ci)
     memset(ci, 0, sizeof(*ci));
     ci->bailout = true;
     /* to be conservative */
-    ci->has_locals   = true;
-    ci->write_aflags = true;
-    ci->read_aflags  = true;
-    ci->tls_used   = true;
+    ci->has_locals    = true;
+    ci->write_aflags  = true;
+    ci->read_aflags   = true;
+    ci->tls_used      = true;
+    ci->stack_complex = true;
+    ci->has_cti       = true;
     /* We use loop here and memset in analyze_callee_regs_usage later.
      * We could reverse the logic and use memset to set the value below,
      * but then later in analyze_callee_regs_usage, we have to use the loop.
@@ -345,192 +357,6 @@ clean_call_info_init(clean_call_info_t *cci, void *callee,
     cci->callee_info   = &default_callee_info;
 }
 
-static reg_id_t
-pick_scratch_reg(uint num_args, opnd_t *args)
-{
-    reg_id_t scratch_reg_num;
-    bool scratch_reg_conflicts = true;
-    /* Find a reg that does not conflict with any registers used by argument
-     * operands. */
-    for (scratch_reg_num = DR_REG_XAX; scratch_reg_conflicts; scratch_reg_num++) {
-        uint i;
-        scratch_reg_conflicts = false;
-        for (i = 0; i < num_args; i++) {
-            if (opnd_uses_reg(args[i], scratch_reg_num)) {
-                scratch_reg_conflicts = true;
-                break;
-            }
-        }
-    }
-    return scratch_reg_num;
-}
-
-static void
-materialize_args(void *dc, instrlist_t *ilist, instr_t *where,
-                 uint num_args, opnd_t *args)
-{
-    uint i;
-    reg_id_t scratch_reg_num = DR_REG_NULL;  /* Not null if we needed one. */
-    opnd_t scratch_reg = {0,};  /* Silence uninitialized warnings. */
-    instr_t *before_args = instr_get_prev(where);
-
-    for (i = 0; i < num_args; i++) {
-        opnd_t arg = args[i];
-        opnd_t arg_spill = dr_reg_spill_slot_opnd(dc, SPILL_SLOT_2 + i);
-
-        if ((opnd_is_immed_int(arg) && opnd_get_size(arg) <= OPSZ_4) ||
-            opnd_is_reg(arg)) {
-            /* If the argument is a 32-bit immediate or register, can
-             * materialize into argument spill slot without a scratch reg. */
-            PRE(ilist, where,
-                INSTR_CREATE_mov_st(dc, arg_spill, arg));
-        } else if (opnd_is_far_base_disp(arg) &&
-                   opnd_get_segment(arg) == opnd_get_segment(arg_spill) &&
-                   opnd_get_disp(arg) == opnd_get_disp(arg_spill)) {
-            /* The argument already is the appropriate spill slot, so we don't
-             * touch it. */
-        } else {
-            /* Otherwise, we'll need to pick a saved and restored scratch reg
-             * if we haven't yet. */
-            if (scratch_reg_num == DR_REG_NULL) {
-                scratch_reg_num = pick_scratch_reg(num_args, args);
-                scratch_reg = opnd_create_reg(scratch_reg_num);
-            }
-
-            /* Materialize arg into scratch reg. */
-            if (opnd_is_immed_int(arg)) {
-                PRE(ilist, where,
-                    INSTR_CREATE_mov_imm(dc, scratch_reg, arg));
-            } else if (opnd_is_memory_reference(arg)) {
-                PRE(ilist, where,
-                    INSTR_CREATE_mov_ld(dc, scratch_reg, arg));
-            } else {
-                DR_ASSERT_MSG(false, "Unsupported operand type!");
-            }
-
-            /* Store scratch reg to arg spill slot. */
-            PRE(ilist, where,
-                INSTR_CREATE_mov_st(dc, arg_spill, scratch_reg));
-        }
-    }
-
-    if (scratch_reg_num != DR_REG_NULL) {
-        /* Save and restore our scratch reg only if we ended up picking one. */
-        instr_t *first = (before_args != NULL ?
-                          instr_get_next(before_args) :
-                          instrlist_first(ilist));
-        dr_save_reg(dc, ilist, first, scratch_reg_num, SPILL_SLOT_1);
-        dr_restore_reg(dc, ilist, where, scratch_reg_num, SPILL_SLOT_1);
-    }
-}
-
-static void
-convert_va_list_to_opnd(opnd_t *args, uint num_args, va_list ap)
-{
-    uint i;
-    /* There's no way to check num_args vs actual args passed in, or publicly
-     * check opnd_t for validity. */
-    for (i = 0; i < num_args; i++) {
-        args[i] = va_arg(ap, opnd_t);
-    }
-}
-
-void
-drcalls_insert_call(void *dc, instrlist_t *ilist, instr_t *where, void *callee,
-                    bool fpstate, uint num_args, ...)
-{
-    va_list ap;
-    opnd_t *args = NULL;
-    clean_call_info_t cci; /* information for clean call insertion. */
-
-    check_init();
-
-    /* Read arguments. */
-    if (num_args > 0)
-        args = dr_thread_alloc(dc, sizeof(opnd_t) * num_args);
-    va_start(ap, num_args);
-    convert_va_list_to_opnd(args, num_args, ap);
-    va_end(ap);
-
-    if (analyze_clean_call(dc, &cci, where, callee, fpstate, num_args, args)) {
-        /* See if we can inline. */
-        insert_inline_clean_call(dc, &cci, ilist, where, args);
-        dr_log(dc, LOG_CLEANCALL, 2,
-               "CLEANCALL: inlined callee "PFX"\n", callee);
-    } else {
-        /* Otherwise, just use a clean call. */
-        dr_insert_clean_call_vargs(dc, ilist, where, callee, fpstate, num_args,
-                                   args);
-    }
-
-    if (num_args > 0)
-        dr_thread_free(dc, args, sizeof(opnd_t) * num_args);
-}
-
-void
-drcalls_lean_call(void *dc, instrlist_t *ilist, instr_t *where, void *callee,
-                  uint num_args, ...)
-{
-    va_list ap;
-    instr_t *return_label;
-    byte *lean_entry;
-    opnd_t stack_args[2];
-
-    check_init();
-
-    /* If there are more args than TLS spill slots, give up and insert a normal
-     * clean call. */
-    if (num_args > 2) {
-        opnd_t *args;
-        size_t arg_alloc_size = sizeof(opnd_t) * num_args;
-        args = dr_thread_alloc(dc, arg_alloc_size);
-        va_start(ap, num_args);
-        convert_va_list_to_opnd(args, num_args, ap);
-        va_end(ap);
-
-        dr_log(dc, LOG_ALL, 3,
-               "drcalls: unable to share clean call save/restore code, "
-               "performance may suffer\n");
-        /* FIXME(rnk): save_fpstate should be determined via static analysis of
-         * the machine code.  We assume it will usually be false, so I've left
-         * it false here to match expected future performance. */
-        dr_insert_clean_call_vargs(dc, ilist, where, callee, false,
-                                   num_args, args);
-        dr_thread_free(dc, args, arg_alloc_size);
-        return;
-    }
-
-    /* If we haven't seen this callee, emit the lean call entry/exit sequence to
-     * the code cache. */
-    hashtable_lock(lean_callee_table);
-    lean_entry = hashtable_lookup(lean_callee_table, callee);
-    if (lean_entry == NULL) {
-        bool success;
-        dr_log(dc, LOG_CACHE, 3, "drcalls: emitting lean call\n");
-        lean_entry = emit_lean_call(dc, callee, num_args);
-        success = hashtable_add(lean_callee_table, callee, lean_entry);
-        DR_ASSERT_MSG(success, "Unable to insert into lean callee table");
-    }
-    hashtable_unlock(lean_callee_table);
-
-    /* Store the arguments in spill slots.  We materialize the opnd_t values
-     * into XAX and then save XAX to the appropriate spill slot. */
-    va_start(ap, num_args);
-    convert_va_list_to_opnd(&stack_args[0], num_args, ap);
-    va_end(ap);
-    materialize_args(dc, ilist, where, num_args, &stack_args[0]);
-
-    /* Store the return label in a spill slot, and jump to the lean call
-     * sequence. */
-    return_label = INSTR_CREATE_label(dc);
-    PRE(ilist, where,
-        INSTR_CREATE_mov_imm(dc, dr_reg_spill_slot_opnd(dc, SPILL_SLOT_1),
-                             opnd_create_instr(return_label)));
-    PRE(ilist, where,
-        INSTR_CREATE_jmp(dc, opnd_create_pc(lean_entry)));
-    PRE(ilist, where, return_label);
-}
-
 /****************************************************************************/
 /* clean call optimization code */
 
@@ -598,9 +424,7 @@ resolve_internal_brs(void *dcontext, callee_info_t *ci)
     /* Check that no target pc of any branch is in a middle of an instruction,
      * and replace target pc with label before the target instr.
      */
-    for (cti  = instrlist_first(ilist);
-         cti != NULL;
-         cti  = instr_get_next(cti)) {
+    for (cti = instrlist_first(ilist); cti != NULL; cti = instr_get_next(cti)) {
         instr_t *label;
         /* Ignore indirect branches, syscalls, calls, etc for now.  They may be
          * part of code that we choose not to inline. */
@@ -871,12 +695,6 @@ decode_callee_ilist(void *dc, callee_info_t *ci)
         instrlist_clear_and_destroy(GLOBAL_DCONTEXT, ci->ilist);
         ci->ilist = NULL;
         return;
-    }
-
-    /* Apply generally useful modifications to the ilist. */
-    resolve_internal_brs(dc, ci);
-    if (opt_cleancall >= 1) {
-        rewrite_pic_code(dc, ci);
     }
 }
 
@@ -2149,13 +1967,9 @@ analyze_callee_setup(void *dcontext, callee_info_t *ci)
             break;  /* top was not a register save. */
         }
 
-        /* TODO(rnk): Check forwards and backwards from the save/restore
-         * instructions that the register is not used as a destination. */
+        /* TODO(rnk): Check that register was not clobbered before push. */
 
         /* it is callee save reg. */
-        /* Note, cannot change ci->reg_used now, because we still need
-         * save those callee-save registers if inline.
-         */
         dr_log(dcontext, LOG_CLEANCALL, 2,
                "CLEANCALL: callee "PFX" callee-saves reg %s at "PFX"\n",
                ci->start, get_register_name(reg_id), instr_get_app_pc(top));
@@ -2176,22 +1990,17 @@ analyze_callee_tls(void *dcontext, callee_info_t *ci)
     instr_t *instr;
     int i;
     ci->tls_used = false;
-    for (instr  = instrlist_first(ci->ilist);
-         instr != NULL;
-         instr  = instr_get_next(instr)) {
+    for (instr = instrlist_first(ci->ilist); instr != NULL;
+         instr = instr_get_next(instr)) {
         /* we assume any access via app's tls is to app errno. */
         for (i = 0; i < instr_num_srcs(instr); i++) {
             opnd_t opnd = instr_get_src(instr, i);
-            if (opnd_is_far_base_disp(opnd) &&
-                (opnd_get_segment(opnd) == DR_SEG_FS ||
-                 opnd_get_segment(opnd) == DR_SEG_GS))
+            if (opnd_is_far_base_disp(opnd))
                 ci->tls_used = true;
         }
         for (i = 0; i < instr_num_dsts(instr); i++) {
             opnd_t opnd = instr_get_dst(instr, i);
-            if (opnd_is_far_base_disp(opnd) &&
-                (opnd_get_segment(opnd) == DR_SEG_FS ||
-                 opnd_get_segment(opnd) == DR_SEG_GS))
+            if (opnd_is_far_base_disp(opnd))
                 ci->tls_used = true;
         }
     }
@@ -2251,7 +2060,7 @@ analyze_callee_partial(void *dc, callee_info_t *ci)
             break;
         }
     }
-    if (first_cti == NULL) {
+    if (first_cti == NULL || instr_is_return(first_cti)) {
         return;  /* No control flow, can't partial inline. */
     }
     if (!instr_is_cbr(first_cti)) {
@@ -2348,16 +2157,196 @@ analyze_callee_partial(void *dc, callee_info_t *ci)
     }
 }
 
+static bool
+opnd_is_stack_access(callee_info_t *ci, opnd_t opnd)
+{
+    return (opnd_is_base_disp(opnd) &&
+            (ci->xbp_is_fp ?
+             opnd_get_base(opnd) == DR_REG_XBP :
+             opnd_get_base(opnd) == DR_REG_XSP));
+}
+
+/* Look for stack accesses.  Convert them to use our scratch slots. */
 static void
-analyze_callee_inline(void *dcontext, callee_info_t *ci)
+analyze_callee_stack_usage(void *dcontext, callee_info_t *ci)
 {
     instr_t *instr;
     instr_t *next_instr;
     opnd_t opnd, mem_ref, slot;
-    bool opt_inline = true;
     int i;
 
     mem_ref = opnd_create_null();
+    ci->stack_complex = false;
+    ci->has_locals = false;
+    for (instr  = instrlist_first(ci->ilist);
+         instr != NULL;
+         instr  = next_instr) {
+        uint opc = instr_get_opcode(instr);
+        next_instr = instr_get_next(instr);
+
+        if (opc == OP_ret) {
+            /* Ignore writes to XSP from returns. */
+            continue;
+        }
+
+        /* sanity checks on stack usage */
+        if (instr_writes_to_reg(instr, DR_REG_XBP) && ci->xbp_is_fp) {
+            /* xbp must not be changed if xbp is used for frame pointer */
+            dr_log(dcontext, LOG_CLEANCALL, 1,
+                   "CLEANCALL: callee "PFX" cannot be inlined: XBP is updated.\n",
+                   ci->start);
+            ci->stack_complex = true;
+            break;
+        } else if (instr_writes_to_reg(instr, DR_REG_XSP)) {
+            /* TODO(rnk): For partial inlining, it would be best to pull this
+             * analysis code out so we can know the frame size.  For now we
+             * cannot partially inline callees that adjust the stack in the
+             * prologue. */
+            /* stack pointer update, we only allow:
+             * lea [xsp, disp] => xsp
+             * xsp + imm_int => xsp
+             * xsp - imm_int => xsp
+             */
+            if (ci->has_locals) {
+                /* we do not allow stack adjustment after accessing the stack */
+                ci->stack_complex = true;
+            }
+            if (opc == OP_lea) {
+                /* lea [xsp, disp] => xsp */
+                opnd = instr_get_src(instr, 0);
+                if (!opnd_is_base_disp(opnd)           ||
+                    opnd_get_base(opnd)  != DR_REG_XSP ||
+                    opnd_get_index(opnd) != DR_REG_NULL)
+                    ci->stack_complex = true;
+            } else if (opc == OP_sub || opc == OP_add) {
+                /* xsp +/- int => xsp */
+                if (!opnd_is_immed_int(instr_get_src(instr, 0)))
+                    ci->stack_complex = true;
+            } else if (opc == OP_call && ci->opt_partial) {
+                opnd = instr_get_target(instr);
+                if (opnd_is_instr(opnd) &&
+                    opnd_get_instr(opnd) == ci->partial_label) {
+                    /* Don't let the rest of this loop examine this call
+                     * instruction for local variable reads/writes; it won't
+                     * understand it. */
+                    continue;
+                }
+            } else {
+                /* other cases like push/pop are not allowed */
+                ci->stack_complex = true;
+            }
+            if (!ci->stack_complex) {
+                /* Delete frame adjust, we do our own. */
+                dr_log(dcontext, LOG_CLEANCALL, 3,
+                       "CLEANCALL: removing frame adjustment at "PFX".\n",
+                       instr_get_app_pc(instr));
+                remove_and_destroy(GLOBAL_DCONTEXT, ci->ilist, instr);
+                continue;
+            } else {
+                dr_log(dcontext, LOG_CLEANCALL, 1,
+                       "CLEANCALL: callee "PFX" cannot be inlined: "
+                       "complicated stack pointer update at "PFX".\n",
+                    ci->start, instr_get_app_pc(instr));
+                break;
+            }
+        } else if (instr_reg_in_src(instr, DR_REG_XSP) ||
+                   (instr_reg_in_src(instr, DR_REG_XBP) && ci->xbp_is_fp)) {
+            /* Detect stack address leakage */
+            /* lea [xsp/xbp] */
+            if (opc == OP_lea)
+                ci->stack_complex = true;
+            /* any direct use reg xsp or xbp */
+            for (i = 0; i < instr_num_srcs(instr); i++) {
+                opnd_t src = instr_get_src(instr, i);
+                if (opnd_is_reg(src)) {
+                    reg_id_t src_reg = opnd_get_reg(src);
+                    if (reg_overlap(DR_REG_XSP, src_reg)  ||
+                        (reg_overlap(DR_REG_XBP, src_reg) && ci->xbp_is_fp))
+                        break;
+                }
+            }
+            if (i != instr_num_srcs(instr))
+                ci->stack_complex = true;
+            if (ci->stack_complex) {
+                dr_log(dcontext, LOG_CLEANCALL, 1,
+                       "CLEANCALL: callee "PFX" cannot be inlined: "
+                       "stack pointer leaked "PFX".\n",
+                    ci->start, instr_get_app_pc(instr));
+                break;
+            }
+        }
+
+        /* Check how many stack variables the callee has.  We will not inline
+         * the callee if it has more than one stack variable.  */
+        if (instr_reads_memory(instr)) {
+            for (i = 0; i < instr_num_srcs(instr); i++) {
+                opnd = instr_get_src(instr, i);
+                if (!opnd_is_stack_access(ci, opnd))
+                    continue;
+                if (!ci->has_locals) {
+                    /* We see the first one, rembmer it. */
+                    mem_ref = opnd;
+                    ci->has_locals = true;
+                } else if (!opnd_same(opnd, mem_ref)) {
+                    /* Check if it is the same stack var as the one we saw.
+                     * If different, no inline. 
+                     */
+                    dr_log(dcontext, LOG_CLEANCALL, 1,
+                           "CLEANCALL: callee "PFX" cannot be inlined: "
+                           "more than one stack location is accessed "PFX".\n",
+                        ci->start, instr_get_app_pc(instr));
+                    break;
+                }
+                /* replace the stack location with the last stack slot. */
+                slot = OPND_CREATE_MEMPTR(DR_REG_XSP, 0);
+                opnd_set_size(&slot, opnd_get_size(mem_ref));
+                instr_set_src(instr, i, slot);
+            }
+            if (i != instr_num_srcs(instr)) {
+                ci->stack_complex = true;
+                break;
+            }
+        }
+        if (instr_writes_memory(instr)) {
+            for (i = 0; i < instr_num_dsts(instr); i++) {
+                opnd = instr_get_dst(instr, i);
+                if (!opnd_is_stack_access(ci, opnd))
+                    continue;
+                if (!ci->has_locals) {
+                    mem_ref = opnd;
+                    ci->has_locals = true;
+                } else if (!opnd_same(opnd, mem_ref)) {
+                    /* currently we only allows one stack refs */
+                    dr_log(dcontext, LOG_CLEANCALL, 1,
+                           "CLEANCALL: callee "PFX" cannot be inlined: "
+                           "more than one stack location is accessed "PFX".\n",
+                        ci->start, instr_get_app_pc(instr));
+                    break;
+                }
+                /* replace the stack location with the last stack slot. */
+                slot = OPND_CREATE_MEMPTR(DR_REG_XSP, 0);
+                opnd_set_size(&slot, opnd_get_size(mem_ref));
+                instr_set_dst(instr, i, slot);
+            }
+            if (i != instr_num_dsts(instr)) {
+                ci->stack_complex = true;
+                break;
+            }
+        }
+    }
+
+    if (ci->has_locals) {
+        ci->framesize += sizeof(reg_t);
+    }
+    ci->framesize = ALIGN_FORWARD_UINT(ci->framesize, 16);
+}
+
+static void
+analyze_callee_inline(void *dcontext, callee_info_t *ci)
+{
+    bool opt_inline = true;
+    instr_t *instr;
+
     /* a set of condition checks */
     if (opt_cleancall < 2) {
         dr_log(dcontext, LOG_CLEANCALL, 1,
@@ -2393,13 +2382,14 @@ analyze_callee_inline(void *dcontext, callee_info_t *ci)
         dr_log(dcontext, LOG_CLEANCALL, 1,
                "CLEANCALL: callee "PFX" cannot be inlined: "
                "uses too many scratch slots: %d > %d.\n",
-            ci->start, ci->num_regs_used, NUM_SCRATCH_SLOTS);
+               ci->start, ci->num_regs_used, NUM_SCRATCH_SLOTS);
         opt_inline = false;
     }
-    if (!opt_inline) {
-        instrlist_clear_and_destroy(GLOBAL_DCONTEXT, ci->ilist);
-        ci->ilist = NULL;
-        return;
+    if (ci->stack_complex) {
+        dr_log(dcontext, LOG_CLEANCALL, 1,
+               "CLEANCALL: callee "PFX" cannot be inlined: "
+               "complex stack usage.\n", ci->start);
+        opt_inline = false;
     }
 
     /* Remove trailing ret if we're going to inline. */
@@ -2407,183 +2397,19 @@ analyze_callee_inline(void *dcontext, callee_info_t *ci)
      * Idea: Create label at last ilist instruction and insert short jumps to
      * it. */
     instr = instrlist_last(ci->ilist);
-    if (instr != NULL && instr_is_return(instr)) {
-        remove_and_destroy(GLOBAL_DCONTEXT, ci->ilist, instr);
-    }
-
-    /* Now we need scan instructions in the list,
-     * check if possible for inline, and convert memory reference
-     */
-    ci->has_locals = false;
-    for (instr  = instrlist_first(ci->ilist);
-         instr != NULL;
-         instr  = next_instr) {
-        uint opc = instr_get_opcode(instr);
-        next_instr = instr_get_next(instr);
-        /* sanity checks on stack usage */
-        if (instr_writes_to_reg(instr, DR_REG_XBP) && ci->xbp_is_fp) {
-            /* xbp must not be changed if xbp is used for frame pointer */
+    if (instr != NULL) {
+        if (instr_is_return(instr)) {
+            remove_and_destroy(GLOBAL_DCONTEXT, ci->ilist, instr);
+        } else {
             dr_log(dcontext, LOG_CLEANCALL, 1,
-                   "CLEANCALL: callee "PFX" cannot be inlined: XBP is updated.\n",
-                   ci->start);
+                   "CLEANCALL: callee "PFX" cannot be inlined: "
+                   "last instruction is not return.\n", ci->start);
             opt_inline = false;
-            break;
-        } else if (instr_writes_to_reg(instr, DR_REG_XSP)) {
-            /* TODO(rnk): For partial inlining, it would be best to pull this
-             * analysis code out so we can know the frame size.  For now we
-             * cannot partially inline callees that adjust the stack in the
-             * prologue. */
-            /* stack pointer update, we only allow:
-             * lea [xsp, disp] => xsp
-             * xsp + imm_int => xsp
-             * xsp - imm_int => xsp
-             */
-            if (ci->has_locals) {
-                /* we do not allow stack adjustment after accessing the stack */
-                opt_inline = false;
-            }
-            if (opc == OP_lea) {
-                /* lea [xsp, disp] => xsp */
-                opnd = instr_get_src(instr, 0);
-                if (!opnd_is_base_disp(opnd)           ||
-                    opnd_get_base(opnd)  != DR_REG_XSP ||
-                    opnd_get_index(opnd) != DR_REG_NULL)
-                    opt_inline = false;
-            } else if (opc == OP_sub || opc == OP_add) {
-                /* xsp +/- int => xsp */
-                if (!opnd_is_immed_int(instr_get_src(instr, 0)))
-                    opt_inline = false;
-            } else if (opc == OP_call && ci->opt_partial) {
-                opnd = instr_get_target(instr);
-                if (opnd_is_instr(opnd) &&
-                    opnd_get_instr(opnd) == ci->partial_label) {
-                    /* Don't let the rest of this loop examine this call
-                     * instruction for local variable reads/writes; it won't
-                     * understand it. */
-                    continue;
-                }
-            } else {
-                /* other cases like push/pop are not allowed */
-                opt_inline = false;
-            }
-            if (opt_inline) {
-                /* Delete frame adjust, we do our own. */
-                dr_log(dcontext, LOG_CLEANCALL, 3,
-                       "CLEANCALL: removing frame adjustment at "PFX".\n",
-                       instr_get_app_pc(instr));
-                remove_and_destroy(GLOBAL_DCONTEXT, ci->ilist, instr);
-                continue;
-            } else {
-                dr_log(dcontext, LOG_CLEANCALL, 1,
-                       "CLEANCALL: callee "PFX" cannot be inlined: "
-                       "complicated stack pointer update at "PFX".\n",
-                    ci->start, instr_get_app_pc(instr));
-                break;
-            }
-        } else if (instr_reg_in_src(instr, DR_REG_XSP) ||
-                   (instr_reg_in_src(instr, DR_REG_XBP) && ci->xbp_is_fp)) {
-            /* Detect stack address leakage */
-            /* lea [xsp/xbp] */
-            if (opc == OP_lea)
-                opt_inline = false;
-            /* any direct use reg xsp or xbp */
-            for (i = 0; i < instr_num_srcs(instr); i++) {
-                opnd_t src = instr_get_src(instr, i);
-                if (opnd_is_reg(src)) {
-                    reg_id_t src_reg = opnd_get_reg(src);
-                    if (reg_overlap(DR_REG_XSP, src_reg)  ||
-                        (reg_overlap(DR_REG_XBP, src_reg) && ci->xbp_is_fp))
-                        break;
-                }
-            }
-            if (i != instr_num_srcs(instr))
-                opt_inline = false;
-            if (!opt_inline) {
-                dr_log(dcontext, LOG_CLEANCALL, 1,
-                       "CLEANCALL: callee "PFX" cannot be inlined: "
-                       "stack pointer leaked "PFX".\n",
-                    ci->start, instr_get_app_pc(instr));
-                break;
-            }
-        }
-        /* Check how many stack variables the callee has.
-         * We will not inline the callee if it has more than one stack variable.
-         */
-        if (instr_reads_memory(instr)) {
-            for (i = 0; i < instr_num_srcs(instr); i++) {
-                opnd = instr_get_src(instr, i);
-                if (!opnd_is_base_disp(opnd))
-                    continue;
-                if (opnd_get_base(opnd) != DR_REG_XSP &&
-                    (opnd_get_base(opnd) != DR_REG_XBP || !ci->xbp_is_fp))
-                    continue;
-                if (!ci->has_locals) {
-                    /* We see the first one, rembmer it. */
-                    mem_ref = opnd;
-                    ci->has_locals = true;
-                } else if (!opnd_same(opnd, mem_ref)) {
-                    /* Check if it is the same stack var as the one we saw.
-                     * If different, no inline. 
-                     */
-                    dr_log(dcontext, LOG_CLEANCALL, 1,
-                           "CLEANCALL: callee "PFX" cannot be inlined: "
-                           "more than one stack location is accessed "PFX".\n",
-                        ci->start, instr_get_app_pc(instr));
-                    break;
-                }
-                /* replace the stack location with the last stack slot. */
-                slot = OPND_CREATE_MEMPTR(DR_REG_XSP, 0);
-                opnd_set_size(&slot, opnd_get_size(mem_ref));
-                instr_set_src(instr, i, slot);
-            }
-            if (i != instr_num_srcs(instr)) {
-                opt_inline = false;
-                break;
-            }
-        }
-        if (instr_writes_memory(instr)) {
-            for (i = 0; i < instr_num_dsts(instr); i++) {
-                opnd = instr_get_dst(instr, i);
-                if (!opnd_is_base_disp(opnd))
-                    continue;
-                if (opnd_get_base(opnd) != DR_REG_XSP &&
-                    (opnd_get_base(opnd) != DR_REG_XBP || !ci->xbp_is_fp))
-                    continue;
-                if (!ci->has_locals) {
-                    mem_ref = opnd;
-                    ci->has_locals = true;
-                } else if (!opnd_same(opnd, mem_ref)) {
-                    /* currently we only allows one stack refs */
-                    dr_log(dcontext, LOG_CLEANCALL, 1,
-                           "CLEANCALL: callee "PFX" cannot be inlined: "
-                           "more than one stack location is accessed "PFX".\n",
-                        ci->start, instr_get_app_pc(instr));
-                    break;
-                }
-                /* replace the stack location with the last stack slot. */
-                slot = OPND_CREATE_MEMPTR(DR_REG_XSP, 0);
-                opnd_set_size(&slot, opnd_get_size(mem_ref));
-                instr_set_dst(instr, i, slot);
-            }
-            if (i != instr_num_dsts(instr)) {
-                opt_inline = false;
-                break;
-            }
         }
     }
-    if (ci->has_locals) {
-        ci->framesize += sizeof(reg_t);
-    }
-    ci->framesize = ALIGN_FORWARD_UINT(ci->framesize, 16);
 
-    if (instr == NULL && opt_inline) {
-        ci->opt_inline = true;
-        dr_log(dcontext, LOG_CLEANCALL, 1,
-               "CLEANCALL: callee "PFX" can be inlined.\n", ci->start);
-    } else {
-        /* not inline callee, so ilist is not needed. */
-        dr_log(dcontext, LOG_CLEANCALL, 1,
-               "CLEANCALL: callee "PFX" cannot be inlined.\n", ci->start);
+    ci->opt_inline = opt_inline;
+    if (!opt_inline) {
         instrlist_clear_and_destroy(GLOBAL_DCONTEXT, ci->ilist);
         ci->ilist = NULL;
         return;
@@ -2612,23 +2438,34 @@ analyze_callee_inline(void *dcontext, callee_info_t *ci)
 }
 
 static void
-analyze_callee_ilist(void *dcontext, callee_info_t *ci)
+analyze_callee_ilist(void *dc, callee_info_t *ci)
 {
     ASSERT(!ci->bailout && ci->ilist != NULL);
     if (opt_cleancall < 1) {
-        analyze_callee_regs_usage(dcontext, ci);
+        /* Only optimization at opt 0 is skipping unused registers. */
+        analyze_callee_regs_usage(dc, ci);
         instrlist_clear_and_destroy(GLOBAL_DCONTEXT, ci->ilist);
         ci->ilist = NULL;
     } else {
-        analyze_callee_cti(dcontext, ci);
-        analyze_callee_setup(dcontext, ci);
-        if (opt_cleancall >= 3) {
-            analyze_callee_partial(dcontext, ci);
-            optimize_callee(dcontext, ci);
+        resolve_internal_brs(dc, ci);
+        if (ci->bailout) {
+            /* Happens for internal branches.  We let indirect branches through
+             * for further analysis. */
+            instrlist_clear_and_destroy(GLOBAL_DCONTEXT, ci->ilist);
+            ci->ilist = NULL;
+            return;
         }
-        analyze_callee_regs_usage(dcontext, ci);
-        analyze_callee_tls(dcontext, ci);
-        analyze_callee_inline(dcontext, ci);
+        rewrite_pic_code(dc, ci);
+        analyze_callee_cti(dc, ci);
+        analyze_callee_setup(dc, ci);
+        if (opt_cleancall >= 3) {
+            analyze_callee_partial(dc, ci);
+            optimize_callee(dc, ci);
+        }
+        analyze_callee_regs_usage(dc, ci);
+        analyze_callee_tls(dc, ci);
+        analyze_callee_stack_usage(dc, ci);
+        analyze_callee_inline(dc, ci);
     }
 }
 
