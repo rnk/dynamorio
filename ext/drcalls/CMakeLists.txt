@@ -49,7 +49,7 @@ endif (UNIX)
 # Clients used for benchmarking.
 set(INSCOUNT_CLIENTS
   inscount_cleancall
-  inscount_sharedcall
+  inscount_leancall
   inscount_manual)
 foreach (client ${INSCOUNT_CLIENTS})
   set(src "bench_clients/${client}.c")
