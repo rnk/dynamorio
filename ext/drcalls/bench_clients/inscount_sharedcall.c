@@ -43,7 +43,7 @@ event_basic_block(void *drcontext, void *tag, instrlist_t *bb,
                   bool for_trace, bool translating)
 {
     uint num_instrs = count_instrs(bb);
-    drcalls_shared_call(drcontext, bb, instrlist_first(bb),
-                        (void *)inscount, 1, OPND_CREATE_INT32(num_instrs));
+    drcalls_lean_call(drcontext, bb, instrlist_first(bb), (void *)inscount, 1,
+                      OPND_CREATE_INT32(num_instrs));
     return DR_EMIT_DEFAULT;
 }

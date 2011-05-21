@@ -52,8 +52,8 @@ DR_EXPORT
  * pass SPILL_SLOT_2 as argument 1 and/or SPILL_SLOT_3 as argument 2.  Any
  * other arrangment of spill slots will corrupt the arguments.
  */
-void drcalls_shared_call(void *drcontext, instrlist_t *ilist, instr_t *where,
-                         void *callee, uint num_args, ...);
+void drcalls_lean_call(void *drcontext, instrlist_t *ilist, instr_t *where,
+                       void *callee, uint num_args, ...);
 
 DR_EXPORT
 /* Insert an optimized clean call to a function before the provided instruction.

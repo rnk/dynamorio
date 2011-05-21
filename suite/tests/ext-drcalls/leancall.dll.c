@@ -91,6 +91,6 @@ event_basic_block(void *drcontext, void *tag, instrlist_t *bb,
                   bool for_trace, bool translating)
 {
     /* If we used a regular clean call here, the return addrs don't match. */
-    drcalls_shared_call(drcontext, bb, instrlist_first(bb), check_caller, 0);
+    drcalls_lean_call(drcontext, bb, instrlist_first(bb), check_caller, 0);
     return DR_EMIT_DEFAULT;
 }

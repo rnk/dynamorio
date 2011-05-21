@@ -201,26 +201,26 @@ event_basic_block(void *drcontext, void *tag, instrlist_t *bb,
     instr_t *entry = instrlist_first(bb);
     app_pc entry_pc = instr_get_app_pc(entry);
     if (entry_pc == foo_pc) {
-        drcalls_shared_call(drcontext, bb, entry, foo_call, 1,
-                            OPND_CREATE_INTPTR(entry_pc));
+        drcalls_lean_call(drcontext, bb, entry, foo_call, 1,
+                          OPND_CREATE_INTPTR(entry_pc));
     }
     if (entry_pc == bar_pc) {
-        drcalls_shared_call(drcontext, bb, entry, bar_call, 2,
-                            OPND_CREATE_INTPTR(entry_pc),
-                            opnd_create_arg(0));
+        drcalls_lean_call(drcontext, bb, entry, bar_call, 2,
+                          OPND_CREATE_INTPTR(entry_pc),
+                          opnd_create_arg(0));
     }
     if (entry_pc == baz_pc) {
-        drcalls_shared_call(drcontext, bb, entry, baz_call, 2,
-                            opnd_create_arg(0),
-                            opnd_create_arg(1));
+        drcalls_lean_call(drcontext, bb, entry, baz_call, 2,
+                          opnd_create_arg(0),
+                          opnd_create_arg(1));
     }
     if (entry_pc == qux_pc) {
         /* We have an 8-arg function which forces the x86_64 sys V calling
          * convention to start pushing args to the stack.  This tests
          * materializing memref operands. */
-        drcalls_shared_call(drcontext, bb, entry, qux_call, 2,
-                            opnd_create_arg(6),
-                            opnd_create_arg(7));
+        drcalls_lean_call(drcontext, bb, entry, qux_call, 2,
+                          opnd_create_arg(6),
+                          opnd_create_arg(7));
     }
     if (entry_pc == reg_pc) {
         /* Try setting RAX and RCX and calling.  Pretty much evey x86 calling
@@ -234,8 +234,8 @@ event_basic_block(void *drcontext, void *tag, instrlist_t *bb,
                                             OPND_CREATE_INT32((int)0xdeadbeef)));
         PRE(bb, entry, INSTR_CREATE_mov_imm(drcontext, reg_xax,
                                             OPND_CREATE_INT32((int)0xcafebabe)));
-        drcalls_shared_call(drcontext, bb, entry, reg_call, 2,
-                            reg_xcx, reg_xax);
+        drcalls_lean_call(drcontext, bb, entry, reg_call, 2,
+                          reg_xcx, reg_xax);
     }
     if (entry_pc == tls_pc) {
         /* If we're careful to pass spill slots to the clean call in the way
@@ -246,8 +246,8 @@ event_basic_block(void *drcontext, void *tag, instrlist_t *bb,
                                            OPND_CREATE_INT32(0x12345678)));
         PRE(bb, entry, INSTR_CREATE_mov_st(drcontext, spill_3,
                                            OPND_CREATE_INT32(0x76543210)));
-        drcalls_shared_call(drcontext, bb, entry, tls_call, 2,
-                            spill_2, spill_3);
+        drcalls_lean_call(drcontext, bb, entry, tls_call, 2,
+                          spill_2, spill_3);
     }
     return DR_EMIT_DEFAULT;
 }

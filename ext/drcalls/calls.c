@@ -110,11 +110,11 @@ static hashtable_t *callee_info_table;
 static bool callee_info_table_exit = false;
 #define CALLEE_INFO_TABLE_BITS 6
 
-/* Hashtable for shared callees.  Maps callee pointer to shared clean call trace. */
-static hashtable_t *shared_callee_table;
-#define SHARED_CALLEE_TABLE_BITS 6 /* should remain small */
-static void shared_callee_table_init(void);
-static void shared_callee_table_destroy(void);
+/* Hashtable for lean callees.  Maps callee pointer to lean clean call trace. */
+static hashtable_t *lean_callee_table;
+#define LEAN_CALLEE_TABLE_BITS 6
+static void lean_callee_table_init(void);
+static void lean_callee_table_destroy(void);
 
 static bool drcalls_initialized = false;
 
@@ -134,7 +134,7 @@ drcalls_init(void)
 
     code_cache_init();
     callee_info_table_init();
-    shared_callee_table_init();
+    lean_callee_table_init();
 
     drcalls_initialized = true;
 }
@@ -151,17 +151,17 @@ drcalls_exit(void)
 {
     check_init();
     callee_info_table_destroy();
-    shared_callee_table_destroy();
+    lean_callee_table_destroy();
     code_cache_destroy();
     drcalls_initialized = false;
 }
 
 static void
-shared_callee_table_init(void)
+lean_callee_table_init(void)
 {
-    shared_callee_table = dr_global_alloc(sizeof(*shared_callee_table));
-    hashtable_init_ex(shared_callee_table,
-                      SHARED_CALLEE_TABLE_BITS,
+    lean_callee_table = dr_global_alloc(sizeof(*lean_callee_table));
+    hashtable_init_ex(lean_callee_table,
+                      LEAN_CALLEE_TABLE_BITS,
                       HASH_INTPTR,
                       /* str_dup */ false,
                       /* sync */ false,
@@ -172,30 +172,29 @@ shared_callee_table_init(void)
 }
 
 static void
-shared_callee_table_destroy(void)
+lean_callee_table_destroy(void)
 {
-    hashtable_delete(shared_callee_table);
-    dr_global_free(shared_callee_table, sizeof(*shared_callee_table));
+    hashtable_delete(lean_callee_table);
+    dr_global_free(lean_callee_table, sizeof(*lean_callee_table));
 }
 
-/* Emit the shared clean call code into the code cache and return the entry
- * point.  Grows the code cache as necessary.  Assumes that the code cache lock
- * is held. */
+/* Emit the lean call code into the code cache and return the entry point.
+ */
 static byte *
-emit_shared_call(void *dc, void *callee, uint num_args)
+emit_lean_call(void *dc, void *callee, uint num_args)
 {
     byte *entry;
     instrlist_t *ilist;
     opnd_t args[2];
 
     dr_log(dc, LOG_CACHE, 3,
-           "drcalls: emitting new shared clean call\n");
+           "drcalls: emitting new lean clean call\n");
 
     /* Generate the clean call ilist. */
     ilist = instrlist_create(dc);
     switch (num_args) {
     default:
-        DR_ASSERT_MSG(false, "Cannot do shared clean call with >= 2 args");
+        DR_ASSERT_MSG(false, "Cannot do lean call with >= 2 args");
         return NULL;
     case 2:
         args[1] = dr_reg_spill_slot_opnd(dc, SPILL_SLOT_3);
@@ -469,12 +468,12 @@ drcalls_insert_call(void *dc, instrlist_t *ilist, instr_t *where, void *callee,
 }
 
 void
-drcalls_shared_call(void *dc, instrlist_t *ilist, instr_t *where,
-                    void *callee, uint num_args, ...)
+drcalls_lean_call(void *dc, instrlist_t *ilist, instr_t *where, void *callee,
+                  uint num_args, ...)
 {
     va_list ap;
     instr_t *return_label;
-    byte *shared_entry;
+    byte *lean_entry;
     opnd_t stack_args[2];
 
     check_init();
@@ -501,18 +500,18 @@ drcalls_shared_call(void *dc, instrlist_t *ilist, instr_t *where,
         return;
     }
 
-    /* If we haven't seen this callee, emit the shared clean call entry/exit
-     * sequence to the code cache. */
-    hashtable_lock(shared_callee_table);
-    shared_entry = hashtable_lookup(shared_callee_table, callee);
-    if (shared_entry == NULL) {
+    /* If we haven't seen this callee, emit the lean call entry/exit sequence to
+     * the code cache. */
+    hashtable_lock(lean_callee_table);
+    lean_entry = hashtable_lookup(lean_callee_table, callee);
+    if (lean_entry == NULL) {
         bool success;
-        dr_log(dc, LOG_CACHE, 3, "drcalls: emitting shared call\n");
-        shared_entry = emit_shared_call(dc, callee, num_args);
-        success = hashtable_add(shared_callee_table, callee, shared_entry);
-        DR_ASSERT_MSG(success, "Unable to insert into shared callee table");
+        dr_log(dc, LOG_CACHE, 3, "drcalls: emitting lean call\n");
+        lean_entry = emit_lean_call(dc, callee, num_args);
+        success = hashtable_add(lean_callee_table, callee, lean_entry);
+        DR_ASSERT_MSG(success, "Unable to insert into lean callee table");
     }
-    hashtable_unlock(shared_callee_table);
+    hashtable_unlock(lean_callee_table);
 
     /* Store the arguments in spill slots.  We materialize the opnd_t values
      * into XAX and then save XAX to the appropriate spill slot. */
@@ -521,14 +520,14 @@ drcalls_shared_call(void *dc, instrlist_t *ilist, instr_t *where,
     va_end(ap);
     materialize_args(dc, ilist, where, num_args, &stack_args[0]);
 
-    /* Store the return label in a spill slot, and jump to the shared clean
-     * call sequence. */
+    /* Store the return label in a spill slot, and jump to the lean call
+     * sequence. */
     return_label = INSTR_CREATE_label(dc);
     PRE(ilist, where,
         INSTR_CREATE_mov_imm(dc, dr_reg_spill_slot_opnd(dc, SPILL_SLOT_1),
                              opnd_create_instr(return_label)));
     PRE(ilist, where,
-        INSTR_CREATE_jmp(dc, opnd_create_pc(shared_entry)));
+        INSTR_CREATE_jmp(dc, opnd_create_pc(lean_entry)));
     PRE(ilist, where, return_label);
 }
 
