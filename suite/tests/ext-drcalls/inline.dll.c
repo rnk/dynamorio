@@ -127,6 +127,8 @@ static void free_instrumentation_funcs(void);
 DR_EXPORT void
 dr_init(client_id_t id)
 {
+    drcalls_init();
+
     dr_register_exit_event(event_exit);
     dr_register_bb_event(event_basic_block);
     dr_fprintf(STDERR, "INIT\n");
@@ -140,6 +142,7 @@ static void
 event_exit(void)
 {
     int i;
+    drcalls_exit();
     free_instrumentation_funcs();
 
     for (i = 0; i < N_FUNCS; i++) {

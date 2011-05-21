@@ -54,6 +54,7 @@ event_basic_block(void *dc, void *entry_pc, instrlist_t *bb,
 static void
 event_exit(void)
 {
+    drcalls_exit();
     dr_nonheap_free(instrumentation_pc, 4096);
 }
 
@@ -126,6 +127,8 @@ DR_EXPORT void
 dr_init(client_id_t id)
 {
     void *dc = dr_get_current_drcontext();
+
+    drcalls_init();
 
     dr_register_bb_event(event_basic_block);
     dr_register_exit_event(event_exit);

@@ -132,7 +132,9 @@ event_bb(void *dc, void *entry_pc, instrlist_t *bb, bool for_trace,
 DR_EXPORT void
 dr_init(client_id_t id)
 {
+    drcalls_init();
     dr_register_bb_event(event_bb);
+    dr_register_exit_event(drcalls_exit);
     module_data_t *exe = dr_lookup_module_by_name("drcalls.partial_inline");
     start_pc = (app_pc)dr_get_proc_address(exe->handle, "start_monitor");
     stop_pc = (app_pc)dr_get_proc_address(exe->handle, "stop_monitor");

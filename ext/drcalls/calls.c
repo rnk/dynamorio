@@ -200,10 +200,19 @@ typedef struct _code_cache_t {
 } code_cache_t;
 
 static code_cache_t *code_cache;
+static bool drcalls_initialized = false;
 
 /* Code cache prototypes. */
 static void code_cache_init(void);
 static void code_cache_destroy(void);
+
+/* Inlining prototypes. */
+static bool analyze_clean_call(void *dcontext, clean_call_info_t *cci,
+                               instr_t *where, void *callee, bool save_fpstate,
+                               uint num_args, opnd_t *args);
+static void insert_inline_clean_call(void *dcontext, clean_call_info_t *cci,
+                                     instrlist_t *ilist, instr_t *where,
+                                     opnd_t *args);
 
 void
 drcalls_init(void)
@@ -213,13 +222,24 @@ drcalls_init(void)
 
     code_cache_init();
     callee_info_table_init();
+
+    drcalls_initialized = true;
+}
+
+static void
+check_init(void)
+{
+    DR_ASSERT_MSG(drcalls_initialized,
+                  "Used drcalls before calling drcalls_init\n");
 }
 
 void
 drcalls_exit(void)
 {
+    check_init();
     callee_info_table_destroy();
     code_cache_destroy();
+    drcalls_initialized = false;
 }
 
 /* Returns an upper bound on the encoded length of the instructions in bytes.
@@ -599,15 +619,27 @@ drcalls_insert_call(void *dc, instrlist_t *ilist, instr_t *where, void *callee,
 {
     va_list ap;
     opnd_t *args = NULL;
+    clean_call_info_t cci; /* information for clean call insertion. */
 
+    check_init();
+
+    /* Read arguments. */
     if (num_args > 0)
         args = dr_thread_alloc(dc, sizeof(opnd_t) * num_args);
-
     va_start(ap, num_args);
     convert_va_list_to_opnd(args, num_args, ap);
     va_end(ap);
 
-    dr_insert_clean_call_vargs(dc, ilist, where, callee, fpstate, num_args, args);
+    if (analyze_clean_call(dc, &cci, where, callee, fpstate, num_args, args)) {
+        /* See if we can inline. */
+        insert_inline_clean_call(dc, &cci, ilist, where, args);
+        dr_log(dc, LOG_CLEANCALL, 2,
+               "CLEANCALL: inlined callee "PFX"\n", callee);
+    } else {
+        /* Otherwise, just use a clean call. */
+        dr_insert_clean_call_vargs(dc, ilist, where, callee, fpstate, num_args,
+                                   args);
+    }
 
     if (num_args > 0)
         dr_thread_free(dc, args, sizeof(opnd_t) * num_args);
@@ -621,6 +653,8 @@ drcalls_shared_call(void *dc, instrlist_t *ilist, instr_t *where,
     instr_t *return_label;
     byte *shared_entry;
     opnd_t stack_args[2];
+
+    check_init();
 
     /* If there are more args than TLS spill slots, give up and insert a normal
      * clean call. */
@@ -2983,7 +3017,7 @@ analyze_clean_call_inline(void *dcontext, clean_call_info_t *cci)
     return opt_inline;
 }
 
-bool
+static bool
 analyze_clean_call(void *dcontext, clean_call_info_t *cci, instr_t *where,
                    void *callee, bool save_fpstate, uint num_args, opnd_t *args)
 {
@@ -3429,7 +3463,7 @@ try_fold_immeds(void *dc, instrlist_t *ilist)
     });
 }
 
-void
+static void
 insert_inline_clean_call(void *dcontext, clean_call_info_t *cci,
                          instrlist_t *ilist, instr_t *where, opnd_t *args)
 {
