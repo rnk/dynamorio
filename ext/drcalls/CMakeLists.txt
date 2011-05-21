@@ -32,7 +32,9 @@ cmake_minimum_required(VERSION 2.6)
 
 # High level library used by clients to insert instrumentation.
 add_library(drcalls STATIC
-  calls.c
+  calls.c       # exported routines go here
+  code_cache.c
+  #inline.c
   # add more here
   )
 configure_DynamoRIO_client(drcalls)

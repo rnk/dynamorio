@@ -1,5 +1,5 @@
 /* *******************************************************************************
- * Copyright (c) 2010 Massachusetts Institute of Technology  All rights reserved.
+ * Copyright (c) 2010-2011 Massachusetts Institute of Technology  All rights reserved.
  * *******************************************************************************/
 
 /*
@@ -39,81 +39,11 @@
 #include <stddef.h> /* for offsetof */
 #include <string.h> /* for memcmp */
 
+/* internal includes */
+#include "core_compat.h"
+#include "code_cache.h"
+
 #define VERBOSE 0
-
-/* Standard alignment hack. */
-#define ALIGN_FORWARD(x, alignment) \
-    ((((ptr_uint_t)x) + ((alignment)-1)) & (~((alignment)-1)))
-#define ALIGN_FORWARD_UINT(x, alignment) \
-    ((((uint)x) + ((alignment)-1)) & (~((alignment)-1)))
-
-#define MAX(x, y) ((x) >= (y) ? (x) : (y))
-
-#define TESTANY(mask, var) (((mask) & (var)) != 0)
-#define TESTALL(mask, var) (((mask) & (var)) == (mask))
-
-/* Make code more readable by shortening long lines.  We mark all as meta to
- * avoid client interface asserts.
- */
-#define POST instrlist_meta_postinsert
-#define PRE  instrlist_meta_preinsert
-#define APP  instrlist_meta_append
-
-#define ASSERT DR_ASSERT
-/* TODO(rnk): Maybe expose curiosity assertions to clients. */
-#define ASSERT_CURIOSITY DR_ASSERT
-#define CLIENT_ASSERT DR_ASSERT_MSG
-
-/* TODO(rnk): Maybe expose DEBUG and other build mode macros. */
-#define DOLOG(level, mask, stmt) stmt
-#define DEBUG_DECLARE(decl) decl
-#define IF_DEBUG(stmt) stmt
-#define IF_DEBUG(stmt) stmt
-
-/* TODO(rnk): We use this to allocate thread-shared instrlists, but it violates
- * the abstraction barrier. */
-#define GLOBAL_DCONTEXT  ((void*)(ptr_uint_t)-1)
-
-/* TODO(rnk): Expose TRY/EXCEPT/FINALLY utils to clients. */
-#define TRY_EXCEPT(dc, try_stmt, except_stmt) try_stmt
-
-/* TODO(rnk): Clients can't do this, but maybe it's OK for us to do it since
- * we're an extension. */
-#define TLS_XAX_SLOT 0
-
-#define STATS_INC(stat)
-
-#define CODE_CACHE_BLOCK_SIZE PAGE_SIZE
-
-/* The memory protections we use for the code cache. */
-#define CODE_RWX (DR_MEMPROT_READ|DR_MEMPROT_WRITE|DR_MEMPROT_EXEC)
-#define CODE_RX  (DR_MEMPROT_READ|DR_MEMPROT_EXEC)
-
-/* Maps callee addresses to shared clean call entry points. */
-#define ENTRY_TABLE_BITS 6
-
-/* TODO(rnk): DR should export this. */
-#ifdef X64
-# define NUM_XMM_REGS 16
-# define NUM_GP_REGS  16
-#else
-# define NUM_XMM_REGS 8
-# define NUM_GP_REGS  8
-#endif
-
-#ifdef WINDOWS
-# define NUM_XMM_SAVED 6 /* xmm0-5; for 32-bit we have space for xmm0-7 */
-#else
-# ifdef X64
-#  define NUM_XMM_SAVED 16 /* xmm0-15 */
-# else
-/* i#139: save xmm0-7 registers in 32-bit Linux. */
-#  define NUM_XMM_SAVED 8 /* xmm0-7 */
-# endif
-#endif
-
-#define YMM_ENABLED() (proc_has_feature(FEATURE_AVX))
-#define REG_SAVED_XMM0 (YMM_ENABLED() ? DR_REG_YMM0 : DR_REG_XMM0)
 
 /* Analysis results for functions called. */
 typedef struct _callee_info_t {
@@ -174,37 +104,19 @@ static void callee_info_table_destroy(void);
 static void clean_call_info_init(clean_call_info_t *cci, void *callee,
                                  bool save_fpstate, uint num_args);
 
-/* hashtable for storing analyzed callee info */
+/* Hashtable for storing callee analysis info. */
 static hashtable_t *callee_info_table;
-/* we only free callee info at exit, when callee_info_table_exit is true. */
+/* We only free callee info at exit, when callee_info_table_exit is true. */
 static bool callee_info_table_exit = false;
-#define INIT_CALLEE_HASH_BITS 6 /* should remain small */
+#define CALLEE_INFO_TABLE_BITS 6
 
-/* Linked list node present at the start of every block of code cache memory.
- */
-typedef struct _code_cache_block_t code_cache_block_t;
-struct _code_cache_block_t {
-    code_cache_block_t *next;
-};
+/* Hashtable for shared callees.  Maps callee pointer to shared clean call trace. */
+static hashtable_t *shared_callee_table;
+#define SHARED_CALLEE_TABLE_BITS 6 /* should remain small */
+static void shared_callee_table_init(void);
+static void shared_callee_table_destroy(void);
 
-/* Code cache data. */
-/* TODO(rnk): For now we assume that there will be roughly a constant number of
- * callees, so the clean call context switch sequences live forever.  It may be
- * worth revisiting this later if the role of this code cache expands. */
-typedef struct _code_cache_t {
-    code_cache_block_t *root;
-    code_cache_block_t *cur_block;
-    byte *cur_pc;
-    hashtable_t entry_point_table;
-    void *lock;
-} code_cache_t;
-
-static code_cache_t *code_cache;
 static bool drcalls_initialized = false;
-
-/* Code cache prototypes. */
-static void code_cache_init(void);
-static void code_cache_destroy(void);
 
 /* Inlining prototypes. */
 static bool analyze_clean_call(void *dcontext, clean_call_info_t *cci,
@@ -222,6 +134,7 @@ drcalls_init(void)
 
     code_cache_init();
     callee_info_table_init();
+    shared_callee_table_init();
 
     drcalls_initialized = true;
 }
@@ -238,99 +151,31 @@ drcalls_exit(void)
 {
     check_init();
     callee_info_table_destroy();
+    shared_callee_table_destroy();
     code_cache_destroy();
     drcalls_initialized = false;
 }
 
-/* Returns an upper bound on the encoded length of the instructions in bytes.
- */
-static uint
-instrlist_length(void *dc, instrlist_t *ilist)
+static void
+shared_callee_table_init(void)
 {
-    instr_t *inst;
-    uint len = 0;
-    for (inst = instrlist_first(ilist); inst; inst = instr_get_next(inst)) {
-        len += instr_length(dc, inst);
-    }
-    return len;
-}
-
-static byte *
-align_to_cacheline(byte *pc)
-{
-    return (byte *)ALIGN_FORWARD(pc, proc_get_cache_line_size());
+    shared_callee_table = dr_global_alloc(sizeof(*shared_callee_table));
+    hashtable_init_ex(shared_callee_table,
+                      SHARED_CALLEE_TABLE_BITS,
+                      HASH_INTPTR,
+                      /* str_dup */ false,
+                      /* sync */ false,
+                      /* free */ NULL,
+                      /* hash key */ NULL,
+                      /* cmp key */ NULL
+                      );
 }
 
 static void
-code_cache_init(void)
+shared_callee_table_destroy(void)
 {
-    code_cache = dr_global_alloc(sizeof(code_cache_t));
-    code_cache->root = NULL;
-    code_cache->cur_block = NULL;
-    code_cache->cur_pc = NULL;
-    hashtable_init(&code_cache->entry_point_table, ENTRY_TABLE_BITS,
-                   HASH_INTPTR, false);
-    code_cache->lock = dr_mutex_create();
-}
-
-static void
-code_cache_destroy(void)
-{
-    code_cache_block_t *block;
-    code_cache_block_t *block_next;
-
-    /* Hashtable points into code cache, which we free below, so we don't need
-     * to free the elements. */
-    hashtable_delete(&code_cache->entry_point_table);
-
-    /* Free the linked list of code cache blocks. */
-    for (block = code_cache->root; block != NULL; block = block_next) {
-        block_next = block->next;
-        dr_nonheap_free(block, CODE_CACHE_BLOCK_SIZE);
-    }
-
-    dr_mutex_destroy(code_cache->lock);
-    dr_global_free(code_cache, sizeof(code_cache_t));
-    code_cache = NULL;
-}
-
-/* Adjust the permissions on a code cache block to prot. */
-static void
-code_cache_memprotect(code_cache_block_t *block, uint prot)
-{
-    bool ok;
-    ok = dr_memory_protect(block, CODE_CACHE_BLOCK_SIZE, prot);
-    DR_ASSERT_MSG(ok, "Changing code cache protection bits failed");
-}
-
-/* Add a block to the linked list of blocks in our code cache and update the
- * current pc and block. */
-static void
-code_cache_grow(void *dc, code_cache_t *code_cache)
-{
-    code_cache_block_t *prev_block;
-    code_cache_block_t *new_block;
-
-    dr_log(dc, LOG_CACHE, 3,
-           "drcalls: growing shared clean call code cache\n");
-
-    new_block = (code_cache_block_t *)dr_nonheap_alloc(
-        CODE_CACHE_BLOCK_SIZE, CODE_RWX);
-    new_block->next = NULL;
-
-    prev_block = code_cache->cur_block;
-    code_cache->cur_block = new_block;
-
-    /* If this was the first block we allocated, set the root to it.
-     * Otherwise, link it with the previous block. */
-    if (prev_block == NULL) {
-        code_cache->root = new_block;
-    } else {
-        code_cache_memprotect(prev_block, CODE_RWX);
-        prev_block->next = new_block;
-        code_cache_memprotect(prev_block, CODE_RX);
-    }
-    code_cache->cur_pc = (byte *)(new_block + 1);
+    hashtable_delete(shared_callee_table);
+    dr_global_free(shared_callee_table, sizeof(*shared_callee_table));
 }
 
 /* Emit the shared clean call code into the code cache and return the entry
@@ -368,29 +213,7 @@ emit_shared_call(void *dc, void *callee, uint num_args)
     APP(ilist, INSTR_CREATE_jmp_ind
         (dc, dr_reg_spill_slot_opnd(dc, SPILL_SLOT_1)));
 
-    /* Check that there's space to encode the ilist.  Clean calls on x86_64 use
-     * about 469 bytes, so we can usually pack about 8 calls per page. */
-    entry = align_to_cacheline(code_cache->cur_pc);
-    if (code_cache->cur_block == NULL ||
-        (entry + instrlist_length(dc, ilist) >
-         (byte*)code_cache->cur_block + CODE_CACHE_BLOCK_SIZE)) {
-        code_cache_grow(dc, code_cache);
-        entry = align_to_cacheline(code_cache->cur_pc);
-        DR_ASSERT_MSG(entry + instrlist_length(dc, ilist) <=
-                      (byte*)code_cache->cur_block + CODE_CACHE_BLOCK_SIZE,
-                      "Clean call did not fit in single code cache block!");
-    }
-
-    /* Unprotect the page, encode the instructions, and reprotect it. */
-    code_cache_memprotect(code_cache->cur_block, CODE_RWX);
-    code_cache->cur_pc = instrlist_encode(dc, ilist, entry, false);
-    code_cache_memprotect(code_cache->cur_block, CODE_RX);
-
-#if VERBOSE
-    dr_log(dc, LOG_CACHE, 3,
-           "drcalls: shared call ilist:\n");
-    instrlist_disassemble(dc, entry, ilist, dr_get_logfile(dc));
-#endif
+    entry = code_cache_emit(dc, ilist);
 
     instrlist_clear_and_destroy(dc, ilist);
 
@@ -457,7 +280,7 @@ callee_info_table_init(void)
 {
     callee_info_table = dr_global_alloc(sizeof(*callee_info_table));
     hashtable_init_ex(callee_info_table,
-                      INIT_CALLEE_HASH_BITS,
+                      CALLEE_INFO_TABLE_BITS,
                       HASH_INTPTR,
                       /* str_dup */ false,
                       /* sync */ false,
@@ -680,22 +503,16 @@ drcalls_shared_call(void *dc, instrlist_t *ilist, instr_t *where,
 
     /* If we haven't seen this callee, emit the shared clean call entry/exit
      * sequence to the code cache. */
-    shared_entry = hashtable_lookup(&code_cache->entry_point_table, callee);
+    hashtable_lock(shared_callee_table);
+    shared_entry = hashtable_lookup(shared_callee_table, callee);
     if (shared_entry == NULL) {
-        dr_mutex_lock(code_cache->lock);
-        /* Now that we have the lock, make sure no one added the callee while we
-         * were waiting. */
-        shared_entry = hashtable_lookup(&code_cache->entry_point_table, callee);
-        if (shared_entry == NULL) {
-            bool success;
-            shared_entry = emit_shared_call(dc, callee, num_args);
-            success = hashtable_add(&code_cache->entry_point_table, callee,
-                                    shared_entry);
-            DR_ASSERT_MSG(success,
-                          "Unable to insert into code cache hashtable");
-        }
-        dr_mutex_unlock(code_cache->lock);
+        bool success;
+        dr_log(dc, LOG_CACHE, 3, "drcalls: emitting shared call\n");
+        shared_entry = emit_shared_call(dc, callee, num_args);
+        success = hashtable_add(shared_callee_table, callee, shared_entry);
+        DR_ASSERT_MSG(success, "Unable to insert into shared callee table");
     }
+    hashtable_unlock(shared_callee_table);
 
     /* Store the arguments in spill slots.  We materialize the opnd_t values
      * into XAX and then save XAX to the appropriate spill slot. */
@@ -708,8 +525,7 @@ drcalls_shared_call(void *dc, instrlist_t *ilist, instr_t *where,
      * call sequence. */
     return_label = INSTR_CREATE_label(dc);
     PRE(ilist, where,
-        INSTR_CREATE_mov_imm(dc,
-                             dr_reg_spill_slot_opnd(dc, SPILL_SLOT_1),
+        INSTR_CREATE_mov_imm(dc, dr_reg_spill_slot_opnd(dc, SPILL_SLOT_1),
                              opnd_create_instr(return_label)));
     PRE(ilist, where,
         INSTR_CREATE_jmp(dc, opnd_create_pc(shared_entry)));
@@ -3660,27 +3476,8 @@ emit_partial_slowpath(void *dc, callee_info_t *ci)
         (dc, xsp, OPND_CREATE_MEM_lea(DR_REG_XSP, DR_REG_NULL, 0, realignment)));
     APP(ilist, INSTR_CREATE_ret(dc));
 
-    /* Check that there's space to encode the ilist.  Clean calls on x86_64 use
-     * about 469 bytes, so we can usually pack about 8 calls per page. */
-    entry = align_to_cacheline(code_cache->cur_pc);
-    if (code_cache->cur_block == NULL ||
-        (entry + instrlist_length(dc, ilist) >
-         (byte*)code_cache->cur_block + CODE_CACHE_BLOCK_SIZE)) {
-        code_cache_grow(dc, code_cache);
-        entry = align_to_cacheline(code_cache->cur_pc);
-        DR_ASSERT_MSG(entry + instrlist_length(dc, ilist) <=
-                      (byte*)code_cache->cur_block + CODE_CACHE_BLOCK_SIZE,
-                      "Clean call did not fit in single code cache block!");
-    }
-
-    /* Unprotect the page, encode the instructions, and reprotect it. */
-    code_cache_memprotect(code_cache->cur_block, CODE_RWX);
-    code_cache->cur_pc = instrlist_encode(dc, ilist, entry, false);
-    code_cache_memprotect(code_cache->cur_block, CODE_RX);
-
-    dr_log(dc, LOG_CLEANCALL, 3,
-           "CLEANCALL: emitted partial inline slowpath:\n");
-    instrlist_disassemble(dc, entry, ilist, dr_get_logfile(dc));
+    dr_log(dc, LOG_CACHE, 3, "drcalls: emitting partial slowpath\n");
+    entry = code_cache_emit(dc, ilist);
 
     instrlist_clear_and_destroy(dc, ilist);
 

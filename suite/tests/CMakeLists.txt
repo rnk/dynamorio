@@ -1498,12 +1498,9 @@ endif ()
 if (BUILD_DRCALLS)
   tobuild_drcalls(drcalls.outofline "ext-drcalls/outofline.c" "" "" "")
   tobuild_drcalls(drcalls.args "ext-drcalls/args.c" "" "" "")
-  tobuild_drcalls(drcalls.inline "ext-drcalls/inline.c"
-    "" "-opt_cleancall 3" "")
-  tobuild_drcalls(drcalls.preserve_mcontext "ext-drcalls/preserve_mcontext.c"
-    "" "-opt_cleancall 3" "")
-  tobuild_drcalls(drcalls.partial_inline "ext-drcalls/partial_inline.c"
-    "" "-opt_cleancall 3" "")
+  tobuild_drcalls(drcalls.inline "ext-drcalls/inline.c" "" "" "")
+  tobuild_drcalls(drcalls.preserve_mcontext "ext-drcalls/preserve_mcontext.c" "" "" "")
+  tobuild_drcalls(drcalls.partial_inline "ext-drcalls/partial_inline.c" "" "" "")
   # Optimize the client to make clean call inlining easier.
   enable_target_optimization(drcalls.partial_inline.dll)
 endif (BUILD_DRCALLS)
