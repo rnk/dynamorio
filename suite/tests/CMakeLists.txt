@@ -1496,8 +1496,8 @@ if (NOT X64 OR TEST_SUITE) # fail on x64 so run only in suite
 endif ()
 
 if (BUILD_DRCALLS)
-  tobuild_drcalls(drcalls.outofline "ext-drcalls/outofline.c" "" "" "")
-  tobuild_drcalls(drcalls.args "ext-drcalls/args.c" "" "" "")
+  tobuild_drcalls(drcalls.leancall "ext-drcalls/leancall.c" "" "" "")
+  tobuild_drcalls(drcalls.lean_args "ext-drcalls/lean_args.c" "" "" "")
   tobuild_drcalls(drcalls.inline "ext-drcalls/inline.c" "" "" "")
   tobuild_drcalls(drcalls.preserve_mcontext "ext-drcalls/preserve_mcontext.c" "" "" "")
   tobuild_drcalls(drcalls.partial_inline "ext-drcalls/partial_inline.c" "" "" "")
