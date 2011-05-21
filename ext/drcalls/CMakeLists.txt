@@ -35,6 +35,7 @@ add_library(drcalls STATIC
   calls.c       # exported routines go here
   code_cache.c
   lean_call.c
+  inline.c      # too much code here, how to break up?
   # add more here
   )
 configure_DynamoRIO_client(drcalls)
