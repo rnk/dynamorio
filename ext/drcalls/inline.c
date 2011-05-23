@@ -1216,6 +1216,33 @@ optimize_avoid_flags(void *dc, const callee_info_t *ci, bool check_only)
     return true;
 }
 
+static bool
+liveness_instr_is_live(liveness_t *liveness, instr_t *instr)
+{
+    bool instr_is_live = false;
+    int i;
+    uint flags_written;
+
+    /* If only dsts are regs, and all dsts are dead, can delete instr. */
+    for (i = 0; i < instr_num_dsts(instr); i++) {
+        opnd_t dst = instr_get_dst(instr, i);
+        /* Our callers handle memory writes separately. */
+        if (opnd_is_memory_reference(dst)) continue;
+        if (!opnd_is_reg(dst)) break;
+        if (!IS_DEAD(opnd_get_reg(dst))) break;
+    }
+    /* If the loop exited before completion, then the destinations are
+     * live. */
+    if (i < instr_num_dsts(instr))
+        instr_is_live |= true;
+    /* If the instr writes live flags it's live. */
+    flags_written =
+            EFLAGS_WRITE_TO_READ(EFLAGS_WRITE_ALL & instr_get_eflags(instr));
+    if (TESTANY(liveness->flags_live, flags_written))
+        instr_is_live |= true;
+    return instr_is_live;
+}
+
 /* Remove and destroy instructions whose only destinations are dead registers.
  * Assumes there are no calls or backwards branches in ilist.
  * TODO(rnk): What about other control flow?
@@ -1226,40 +1253,23 @@ dce_and_copy_prop(void *dc, const callee_info_t *ci)
     liveness_t liveness_;
     liveness_t *liveness = &liveness_;
     instrlist_t *ilist = ci->ilist;
-    int i;
     instr_t *instr;
     instr_t *prev_instr;
 
     liveness_init(liveness, ci);
 
     for (instr = instrlist_last(ilist); instr != NULL; instr = prev_instr) {
-        bool instr_is_live = false;
-        prev_instr = instr_get_prev(instr);
         int opc;
-        uint flags_written;
+        bool is_live;
+        prev_instr = instr_get_prev(instr);
 
-        /* If only dsts are regs, and all dsts are dead, can delete instr. */
-        for (i = 0; i < instr_num_dsts(instr); i++) {
-            opnd_t dst = instr_get_dst(instr, i);
-            if (!opnd_is_reg(dst)) break;
-            if (!IS_DEAD(opnd_get_reg(dst))) break;
-        }
-        /* If the loop exited before completion, then the destinations are
-         * live. */
-        if (i < instr_num_dsts(instr))
-            instr_is_live |= true;
-        /* If the instr writes live flags it's live. */
-        flags_written =
-            EFLAGS_WRITE_TO_READ(EFLAGS_WRITE_ALL & instr_get_eflags(instr));
-        if (TESTANY(liveness->flags_live, flags_written))
-            instr_is_live |= true;
-        /* If the instr is a cti, a label, or writes memory then it's live. */
-        if (instr_writes_memory(instr) || instr_is_cti(instr) ||
-            instr_is_label(instr)) {
-            instr_is_live |= true;
-        }
-
-        if (!instr_is_live) {
+        /* If the instr writes live regs, writes live flags, is a cti, is a
+         * label, or writes memory then it's live.  */
+        is_live = (liveness_instr_is_live(liveness, instr) ||
+                   instr_writes_memory(instr) ||
+                   instr_is_cti(instr) ||
+                   instr_is_label(instr));
+        if (!is_live) {
             dr_log(dc, LOG_CLEANCALL, 3,
                    "drcalls: removing dead instr at "PFX".\n",
                    instr_get_app_pc(instr));
@@ -1886,27 +1896,27 @@ is_fastpath(instr_t *instr)
     return false;
 }
 
-static reg_id_t
-get_fp_reg(callee_info_t *ci)
-{
-    return (ci->xbp_is_fp ? DR_REG_XBP : DR_REG_XSP);
-}
-
-static bool
-opnd_is_stack_access(callee_info_t *ci, opnd_t opnd)
-{
-    return (opnd_is_base_disp(opnd) && opnd_get_base(opnd) == get_fp_reg(ci));
-}
-
-static bool
-instr_writes_nonstack_mem(callee_info_t *ci, instr_t *instr)
+/* Update clobber set with register writes by instr. */
+static void
+clobbered_update(bool clobbered[NUM_GP_REGS], instr_t *instr)
 {
     int i;
-    if (!instr_writes_memory(instr))
-        return false;
     for (i = 0; i < instr_num_dsts(instr); i++) {
         opnd_t opnd = instr_get_dst(instr, i);
-        if (opnd_is_memory_reference(opnd) && !opnd_is_stack_access(ci, opnd))
+        if (opnd_is_reg(opnd)) {
+            reg_id_t reg = reg_to_pointer_sized(opnd_get_reg(opnd));
+            clobbered[reg - DR_REG_XAX] = true;
+        }
+    }
+}
+
+static bool
+clobbered_reads(bool clobbered[NUM_GP_REGS], instr_t *instr)
+{
+    int i;
+    for (i = 0; i < NUM_GP_REGS; i++) {
+        reg_id_t reg = DR_REG_XAX + (reg_id_t)i;
+        if (clobbered[i] && instr_reads_from_reg(instr, reg))
             return true;
     }
     return false;
@@ -1914,55 +1924,96 @@ instr_writes_nonstack_mem(callee_info_t *ci, instr_t *instr)
 
 /* Defers non-stack writes into the fastpath, allowing the partial inline check
  * to occur before any stores.
+ *
+ * We need to be careful that we don't move any reads across writes to the same
+ * location.  For memory, we stop at the first memory read.  For registers, we
+ * maintain two sets: a liveness set for the check, and a clobber set for things
+ * that were left in the entry block.
+ *
+ * The live set starts at the jcc with everything dead, since we remat args and
+ * start again from scratch, and is updated with every instruction left in the
+ * entry block.
+ *
+ * The clobber set is updated with register destinations left in the entry
+ * block, since any instruction that reads a clobbered reg cannot be deferred.
+ *
+ * An instruction can be deferred if it is dead it reads no clobbered registers.
  */
+/* TODO(rnk): Are there any side-effects aside from memory writes? */
 static bool
 defer_side_effects(void *dc, callee_info_t *ci, instr_t *jcc, instr_t *fastpath,
                    bool check_only)
 {
     instr_t *instr;
     instr_t *prev_instr;
+    liveness_t liveness_;
+    liveness_t *liveness = &liveness_;
+    /* For now, we don't track clobbering flags, and cannot defer any flags
+     * reading or writing instructions. */
+    bool clobbered[NUM_GP_REGS];
+    bool crossed_read = false;
 
     if (!check_only) {
         dr_log(dc, LOG_CLEANCALL, 3,
-               "drcalls: defering nonstack writes for real\n");
+               "drcalls: defering memory writes for real\n");
     }
 
+    liveness_init(liveness, ci);
+    memset(clobbered, 0, sizeof(clobbered));
+
     for (instr = jcc; instr != NULL; instr = prev_instr) {
+        bool is_live;
+        bool can_defer = !crossed_read;
+
         prev_instr = instr_get_prev(instr);
-        /* TODO(rnk): Are there any side-effects aside from memory writes? */
-        if (instr_reads_memory(instr)) {
+        if (!crossed_read && instr_reads_memory(instr)) {
             if (check_only) {
                 dr_log(dc, LOG_CLEANCALL, 3,
                        "drcalls: stopped defer, found mem read at "PFX"\n",
                        instr_get_app_pc(instr));
             }
-            break;
+            crossed_read = true;
         }
-        if (instr_writes_nonstack_mem(ci, instr)) {
-            if (instr_num_dsts(instr) != 1) {
+
+        /* In this case, we don't consider memory writes "live" since we won't
+         * cross any dependent memory reads.
+         */
+        is_live = (liveness_instr_is_live(liveness, instr) ||
+                   instr_is_cti(instr) || instr_is_label(instr));
+        if (is_live) {
+            dr_log(dc, LOG_CLEANCALL, 3,
+                   "drcalls: can't defer instr, is live for jcc at "PFX"\n",
+                   instr_get_app_pc(instr));
+            can_defer = false;
+        }
+
+        /* Check if this instr uses clobbered regs. */
+        /* TODO(rnk): DTRT wrt flags. */
+        if (clobbered_reads(clobbered, instr)) {
+            dr_log(dc, LOG_CLEANCALL, 3,
+                   "drcalls: can't defer instr, reads clobbered reg at "PFX"\n",
+                   instr_get_app_pc(instr));
+            can_defer = false;
+        }
+
+        if (can_defer) {
+            dr_log(dc, LOG_CLEANCALL, 3, "drcalls: deferred instr at "PFX"\n",
+                   instr_get_app_pc(instr));
+            instrlist_remove(ci->ilist, instr);
+            POST(ci->ilist, fastpath, instr);
+        } else {
+            if (instr_writes_memory(instr)) {
                 dr_log(dc, LOG_CLEANCALL, 3,
-                       "drcalls: can't defer multi-dst mem write at "PFX"\n",
+                       "drcalls: found un-deferable memory write at "PFX"\n",
                        instr_get_app_pc(instr));
                 return false;
             }
-            if (!check_only) {
-                /* Move after fastpath label. */
-                dr_log(dc, LOG_CLEANCALL, 3,
-                       "drcalls: deferred mem write at "PFX"\n",
-                       instr_get_app_pc(instr));
-                instrlist_remove(ci->ilist, instr);
-                POST(ci->ilist, fastpath, instr);
-            }
+            clobbered_update(clobbered, instr);
+            liveness_update(liveness, instr);
         }
     }
 
     for (; instr != NULL; instr = instr_get_prev(instr)) {
-        if (instr_writes_nonstack_mem(ci, instr)) {
-            dr_log(dc, LOG_CLEANCALL, 3,
-                   "drcalls: found un-deferable nonstack write at "PFX"\n",
-                   instr_get_app_pc(instr));
-            return false;
-        }
     }
     return true;
 }
@@ -2161,6 +2212,18 @@ analyze_callee_partial(void *dc, callee_info_t *ci)
         if (!instr_is_label(instr))
             ci->num_instrs++;
     }
+}
+
+static reg_id_t
+get_fp_reg(callee_info_t *ci)
+{
+    return (ci->xbp_is_fp ? DR_REG_XBP : DR_REG_XSP);
+}
+
+static bool
+opnd_is_stack_access(callee_info_t *ci, opnd_t opnd)
+{
+    return (opnd_is_base_disp(opnd) && opnd_get_base(opnd) == get_fp_reg(ci));
 }
 
 /* Look for stack accesses.  Convert them to use our scratch slots. */
