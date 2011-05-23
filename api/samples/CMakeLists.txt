@@ -133,6 +133,9 @@ foreach (src ${srcs})
     if ("${tgt}" STREQUAL "wrap")
       use_DynamoRIO_extension(${tgt} drwrap)
     endif ()
+    if ("${tgt}" STREQUAL "alignment")
+      use_DynamoRIO_extension(${tgt} drcalls)
+    endif ()
 
     get_target_property(tgtnm ${tgt} LOCATION)
     add_custom_command(TARGET ${tgt}

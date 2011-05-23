@@ -36,15 +36,21 @@
 #include "dr_api.h"
 
 DR_EXPORT
-/* Initialize the drcalls extension. */
+/** Initialize the drcalls extension. */
 void drcalls_init(void);
 
 DR_EXPORT
-/* Uninitialize the drcalls extension. */
+/** Uninitialize the drcalls extension. */
 void drcalls_exit(void);
 
 DR_EXPORT
-/* Insert a clean call to a function before the provided instruction using a
+/* Set the optimization level for calls. */
+/* TODO(rnk): Document. */
+void drcalls_set_optimization(uint opt_level);
+
+DR_EXPORT
+/**
+ * Insert a clean call to a function before the provided instruction using a
  * shared, out-of-line save and restore routine.
  *
  * This clobbers SPILL_SLOT_1, and SPILL_SLOT_2 and SPILL_SLOT_3 are used for
@@ -56,10 +62,24 @@ void drcalls_lean_call(void *drcontext, instrlist_t *ilist, instr_t *where,
                        void *callee, uint num_args, ...);
 
 DR_EXPORT
-/* Insert an optimized clean call to a function before the provided instruction.
+/**
+ * Insert an optimized clean call to a function before the provided instruction.
  */
 void drcalls_insert_call(void *drcontext, instrlist_t *ilist, instr_t *where,
                          void *callee, bool fpstate, uint num_args, ...);
 
+/**
+ * Registers a bb event callback that automatically calls drcalls_done on the bb
+ * after the callback returns.
+ */
+//void drcalls_register_bb_event(dr_emit_flags_t (*func)
+                               //(void *drcontext, void *tag, instrlist_t *bb,
+                                //bool for_trace, bool translating));
+
+/**
+ * Expands pseudo-instructions inserted by drcalls and performs optimizations.
+ * Must be called with the same dcontext used to construct the ilist.
+ */
+void drcalls_done(void *drcontext, instrlist_t *bb);
 
 #endif /* _DRCALLS_CALLS_H_ */

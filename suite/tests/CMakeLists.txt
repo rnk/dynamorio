@@ -461,18 +461,19 @@ function (set_cflags source)
 endfunction (set_cflags)
 
 # Sets O2 for a given target.
-function (enable_target_optimization target)
+function (optimize_target_size target)
   get_target_property(CFLAGS "${target}" COMPILE_FLAGS)
   if (CFLAGS EQUAL "NOTFOUND")
     message(ERROR "Refusing to set COMPILE_FLAGS for target ${target} that has none, it will override global compile flags.")
   endif()
   if (UNIX)
+    #set(CFLAGS "${CFLAGS} -Os")
     set(CFLAGS "${CFLAGS} -O2")
   else ()
-    set(CFLAGS "${CFLAGS} /O2")
+    set(CFLAGS "${CFLAGS} /Os")
   endif ()
   set_target_properties("${target}" PROPERTIES COMPILE_FLAGS "${CFLAGS}")
-endfunction (enable_target_optimization)
+endfunction (optimize_target_size)
 
 function(add_exe test source)
   get_filename_component(srcbase ${source} NAME_WE)
@@ -1496,13 +1497,15 @@ if (NOT X64 OR TEST_SUITE) # fail on x64 so run only in suite
 endif ()
 
 if (BUILD_DRCALLS)
-  tobuild_drcalls(drcalls.leancall "ext-drcalls/leancall.c" "" "" "")
-  tobuild_drcalls(drcalls.lean_args "ext-drcalls/lean_args.c" "" "" "")
-  tobuild_drcalls(drcalls.inline "ext-drcalls/inline.c" "" "" "")
+  tobuild_drcalls(drcalls.leancall          "ext-drcalls/leancall.c" "" "" "")
+  tobuild_drcalls(drcalls.lean_args         "ext-drcalls/lean_args.c" "" "" "")
+  tobuild_drcalls(drcalls.inline            "ext-drcalls/inline.c" "" "" "")
   tobuild_drcalls(drcalls.preserve_mcontext "ext-drcalls/preserve_mcontext.c" "" "" "")
-  tobuild_drcalls(drcalls.partial_inline "ext-drcalls/partial_inline.c" "" "" "")
+  tobuild_drcalls(drcalls.partial_inline    "ext-drcalls/partial_inline.c" "" "" "")
+  tobuild_drcalls(drcalls.mem_buffer        "ext-drcalls/mem_buffer.c" "count_only" "" "")
   # Optimize the client to make clean call inlining easier.
-  enable_target_optimization(drcalls.partial_inline.dll)
+  optimize_target_size(drcalls.partial_inline.dll)
+  optimize_target_size(drcalls.mem_buffer.dll)
 endif (BUILD_DRCALLS)
 
 ###########################################################################

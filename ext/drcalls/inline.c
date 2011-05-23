@@ -48,8 +48,7 @@ static callee_info_t     default_callee_info;
 static clean_call_info_t default_clean_call_info;
 
 /* Optimization level of calls. */
-/* TODO(rnk): Expose this via flags. */
-static uint opt_cleancall = 3;
+uint opt_cleancall = 3;
 
 /* Hashtable for storing callee analysis info. */
 static hashtable_t *callee_info_table;
@@ -215,7 +214,7 @@ static app_pc emit_partial_slowpath(void *dc, callee_info_t *ci);
 #define MAX_NUM_FUNC_INSTRS 1024
 /* the max number of instructions the callee can have for inline. */
 #define MAX_NUM_INLINE_INSTRS 20
-#define NUM_SCRATCH_SLOTS 6 /* XXX: Can support more now that we use dstack. */
+#define NUM_SCRATCH_SLOTS 10 /* XXX: Can support more now that we use dstack. */
 
 /* Decode instruction from callee and return the next_pc to be decoded. */
 static app_pc
@@ -232,7 +231,7 @@ decode_callee_instr(void *dcontext, callee_info_t *ci, app_pc instr_pc)
         next_pc = decode(GLOBAL_DCONTEXT, instr_pc, instr);
     }, { /* EXCEPT */
         dr_log(dcontext, LOG_CLEANCALL, 2,
-               "CLEANCALL: crash on decoding callee instruction at: "PFX"\n",
+               "drcalls: crash on decoding callee instruction at: "PFX"\n",
                instr_pc);
         ASSERT_CURIOSITY(false && "crashed while decoding clean call");
         ci->bailout = true;
@@ -240,7 +239,7 @@ decode_callee_instr(void *dcontext, callee_info_t *ci, app_pc instr_pc)
     });
     if (!instr_valid(instr)) {
         dr_log(dcontext, LOG_CLEANCALL, 2,
-               "CLEANCALL: decoding invalid instruction at: "PFX"\n", instr_pc);
+               "drcalls: decoding invalid instruction at: "PFX"\n", instr_pc);
         ci->bailout = true;
         return NULL;
     }
@@ -261,6 +260,18 @@ tgt_pc_in_callee(app_pc tgt_pc, callee_info_t *ci)
 {
     return ((ptr_uint_t)ci->start <= (ptr_uint_t)tgt_pc &&
             (ptr_uint_t)tgt_pc < (ptr_uint_t)ci->start + 4096);
+}
+
+/* Create and insert a new label before 'where'.  Sets the app_pc of label to
+ * the app_pc of where.
+ */
+static instr_t *
+insert_new_label(void *dc, instrlist_t *ilist, instr_t *where)
+{
+    instr_t *label = INSTR_CREATE_label(dc);
+    instr_set_translation(label, instr_get_app_pc(where));
+    PRE(ilist, where, label);
+    return label;
 }
 
 static void
@@ -291,14 +302,15 @@ resolve_internal_brs(void *dcontext, callee_info_t *ci)
         if (tgt == NULL) {
             /* cannot find a target instruction, bail out */
             dr_log(dcontext, LOG_CLEANCALL, 2,
-                   "CLEANCALL: bail out on strange internal branch at: "PFX
+                   "drcalls: bail out on strange internal branch at: "PFX
                    " to "PFX"\n", instr_get_app_pc(cti), tgt_pc);
             ci->bailout = true;
             break;
         }
-        label = INSTR_CREATE_label(GLOBAL_DCONTEXT);
-        instr_set_translation(label, instr_get_app_pc(tgt));
-        instrlist_preinsert(ilist, tgt, label);
+        /* TODO(rnk): This creates unique label for every jump target in some
+         * unspecified order.  Is that bad?
+         */
+        label = insert_new_label(GLOBAL_DCONTEXT, ilist, tgt);
         instr_set_target(cti, opnd_create_instr(label));
     }
 }
@@ -315,7 +327,7 @@ analyze_callee_cti(void *dc, callee_info_t *ci)
          instr = instr_get_next(instr)) {
         if (instr_is_syscall(instr) || instr_is_interrupt(instr)) {
             dr_log(dc, LOG_CLEANCALL, 2,
-                   "CLEANCALL: not leaf, syscall or interrupt at "PFX"\n",
+                   "drcalls: not leaf, syscall or interrupt at "PFX"\n",
                    instr_get_app_pc(instr));
             is_leaf = false;
             has_cti = true;  /* syscalls etc. count as control flow. */
@@ -329,14 +341,14 @@ analyze_callee_cti(void *dc, callee_info_t *ci)
         has_cti = true;
         if (instr_is_call(instr) || instr_is_mbr(instr)) {
             dr_log(dc, LOG_CLEANCALL, 2,
-                   "CLEANCALL: not leaf, call or indirect jump at "PFX"\n",
+                   "drcalls: not leaf, call or indirect jump at "PFX"\n",
                    instr_get_app_pc(instr));
             is_leaf = false;
         }
         if ((instr_is_cbr(instr) || instr_is_ubr(instr)) &&
             opnd_is_pc(instr_get_target(instr))) {
             dr_log(dc, LOG_CLEANCALL, 2,
-                   "CLEANCALL: not leaf, unresolved jump at "PFX"\n",
+                   "drcalls: not leaf, unresolved jump at "PFX"\n",
                    instr_get_app_pc(instr));
             is_leaf = false;
         }
@@ -431,7 +443,7 @@ rewrite_pic_code(void *dcontext, callee_info_t *ci)
 
         ASSERT(opnd_is_reg(pic_reg));
         dr_log(dcontext, LOG_CLEANCALL, 2,
-               "CLEANCALL: special PIC code at: "PFX"\n", cur_pc);
+               "drcalls: special PIC code at: "PFX"\n", cur_pc);
 
         /* Insert "mov next_pc r1". */
         /* XXX: The memory on top of stack will not be next_pc, and the stack
@@ -460,7 +472,7 @@ decode_callee_ilist(void *dc, callee_info_t *ci)
     bool decode_next = true;
 
     dr_log(dc, LOG_CLEANCALL, 2,
-           "CLEANCALL: decoding callee starting at: "PFX"\n", ci->start);
+           "drcalls: decoding callee starting at: "PFX"\n", ci->start);
     ci->ilist = instrlist_create(GLOBAL_DCONTEXT);
     ci->bailout = false;
     cur_pc = ci->start;
@@ -473,7 +485,7 @@ decode_callee_ilist(void *dc, callee_info_t *ci)
         /* Sanity check whether we want to decode this pc. */
         if (!tgt_pc_in_callee(cur_pc, ci)) {
             dr_log(dc, LOG_CLEANCALL, 2,
-                   "CLEANCALL: jump target "PFX" too far, bailing from decode\n",
+                   "drcalls: jump target "PFX" too far, bailing from decode\n",
                    cur_pc);
             ci->bailout = true;
             break;
@@ -482,12 +494,12 @@ decode_callee_ilist(void *dc, callee_info_t *ci)
         next_pc = decode_callee_instr(dc, ci, cur_pc);
         if (next_pc == NULL) {  /* bailout */
             dr_log(dc, LOG_CLEANCALL, 2,
-                   "CLEANCALL: decode returned NULL\n");
+                   "drcalls: decode returned NULL\n");
             break;
         }
         if (ci->num_instrs > MAX_NUM_FUNC_INSTRS) {
             dr_log(dc, LOG_CLEANCALL, 2,
-                   "CLEANCALL: too many instructions, bailing from decode\n");
+                   "drcalls: too many instructions, bailing from decode\n");
             ci->bailout = true;
             break;
         }
@@ -510,7 +522,7 @@ decode_callee_ilist(void *dc, callee_info_t *ci)
         /* Stop decoding after a ret. */
         if (instr_is_return(instr)) {
             dr_log(dc, LOG_CLEANCALL, 2,
-                   "CLEANCALL: stop decode for ret\n");
+                   "drcalls: stop decode for ret\n");
             decode_next = false;
         }
 
@@ -518,7 +530,7 @@ decode_callee_ilist(void *dc, callee_info_t *ci)
             /* Stop decoding after backwards jmps. */
             if ((ptr_uint_t)tgt_pc < (ptr_uint_t)cur_pc) {
                 dr_log(dc, LOG_CLEANCALL, 2,
-                       "CLEANCALL: stop decode for bwds jmp from "PFX" to "PFX"\n",
+                       "drcalls: stop decode for bwds jmp from "PFX" to "PFX"\n",
                        cur_pc, tgt_pc);
                 decode_next = false;
             }
@@ -526,7 +538,7 @@ decode_callee_ilist(void *dc, callee_info_t *ci)
             /* Stop decoding after tail calls */
             if (!tgt_pc_in_callee(tgt_pc, ci)) {
                 dr_log(dc, LOG_CLEANCALL, 2,
-                       "CLEANCALL: stop decode for probable tail call at "PFX
+                       "drcalls: stop decode for probable tail call at "PFX
                        " to tgt "PFX"\n", cur_pc, tgt_pc);
                 decode_next = false;
             }
@@ -635,7 +647,7 @@ rewrite_opnd_reg(void *dc, instr_t *instr, opnd_t *opnd,
             reg_id_t new_sized = reg_32_to_opsz(new, reg_get_size(reg_used));
             if (!check_only) {
                 dr_log(dc, LOG_CLEANCALL, 3,
-                       "CLEANCALL: rewriting reg %s to %s at "PFX"\n",
+                       "drcalls: rewriting reg %s to %s at "PFX"\n",
                        get_register_name(reg_used), get_register_name(new_sized),
                        instr_get_app_pc(instr));
             }
@@ -818,7 +830,7 @@ propagate_copy(void *dc, instrlist_t *ilist, instr_t *copy)
         return false;
 
     dr_log(dc, LOG_CLEANCALL, 3,
-           "CLEANCALL: propagating copy at "PFX"\n", instr_get_app_pc(copy));
+           "drcalls: propagating copy at "PFX"\n", instr_get_app_pc(copy));
 
     if (!rewrite_live_range(dc, copy, dst, src))
         return false;
@@ -862,7 +874,7 @@ rewrite_reg_immed(void *dc, instr_t *instr, reg_id_t reg,
                 instr_set_src(instr, i, imm);
             } else {
                 dr_log(dc, LOG_CLEANCALL, 3,
-                       "CLEANCALL: unable to fold due to subreg use at "PFX"\n",
+                       "drcalls: unable to fold due to subreg use at "PFX"\n",
                        instr_get_app_pc(instr));
                 failed = true;
                 break;
@@ -889,13 +901,13 @@ rewrite_reg_immed(void *dc, instr_t *instr, reg_id_t reg,
                     scale = 1;
                 } else {
                     dr_log(dc, LOG_CLEANCALL, 3,
-                           "CLEANCALL: can't fold immed with scale %d\n", scale);
+                           "drcalls: can't fold immed with scale %d\n", scale);
                     failed = true;
                     break;
                 }
             } else {
                 dr_log(dc, LOG_CLEANCALL, 3,
-                       "CLEANCALL: unable to fold immed in subreg use at "PFX"\n",
+                       "drcalls: unable to fold immed in subreg use at "PFX"\n",
                        instr_get_app_pc(instr));
                 failed = true;
                 break;
@@ -904,14 +916,14 @@ rewrite_reg_immed(void *dc, instr_t *instr, reg_id_t reg,
                           (base, index, scale, disp, sz));
         } else {
             dr_log(dc, LOG_CLEANCALL, 3,
-                   "CLEANCALL: unrecognized use of reg at "PFX"\n",
+                   "drcalls: unrecognized use of reg at "PFX"\n",
                    instr_get_app_pc(instr));
             failed = true;
             break;
         }
         if (!check_only) {
             dr_log(dc, LOG_CLEANCALL, 3,
-                   "CLEANCALL: folded immediate into src opnd at "PFX"\n",
+                   "drcalls: folded immediate into src opnd at "PFX"\n",
                    instr_get_app_pc(instr));
         }
     }
@@ -923,7 +935,7 @@ rewrite_reg_immed(void *dc, instr_t *instr, reg_id_t reg,
             continue;
         if (opnd_uses_reg(opnd, reg)) {
             dr_log(dc, LOG_CLEANCALL, 3,
-                   "CLEANCALL: can't yet fold immediate into dst opnd at "PFX"\n",
+                   "drcalls: can't yet fold immediate into dst opnd at "PFX"\n",
                    instr_get_app_pc(instr));
             failed = true;
             break;
@@ -1016,14 +1028,14 @@ try_reuse_register(void *dc, instrlist_t *ilist, liveness_t *liveness,
         return;
 
     dr_log(dc, LOG_CLEANCALL, 3,
-           "CLEANCALL: trying to reuse dead register %s instead of %s at "PFX"\n",
+           "drcalls: trying to reuse dead register %s instead of %s at "PFX"\n",
            get_register_name(new), get_register_name(dst),
            instr_get_app_pc(reuse_instr));
 
     /* Rewrite dst and all further uses of dst to new. */
     if (rewrite_live_range(dc, reuse_instr, dst, new)) {
         dr_log(dc, LOG_CLEANCALL, 3,
-               "CLEANCALL: succeeded reusing dead register %s instead of %s at "
+               "drcalls: succeeded reusing dead register %s instead of %s at "
                PFX"\n",
                get_register_name(new), get_register_name(dst),
                instr_get_app_pc(reuse_instr));
@@ -1057,18 +1069,18 @@ fold_mov_immed(void *dc, instrlist_t *ilist, instr_t *mov_imm)
 
     if (end) {
         dr_log(dc, LOG_CLEANCALL, 3,
-               "CLEANCALL: mov imm live range ends at "PFX"\n",
+               "drcalls: mov imm live range ends at "PFX"\n",
                instr_get_app_pc(end));
     }
     dr_log(dc, LOG_CLEANCALL, 3,
-           "CLEANCALL: attempting to fold mov_imm at "PFX"\n",
+           "drcalls: attempting to fold mov_imm at "PFX"\n",
            instr_get_app_pc(mov_imm));
     if (!rewrite_live_range_immed(dc, mov_imm, end, reg, val, true))
         return false;
     IF_DEBUG(ok =) rewrite_live_range_immed(dc, mov_imm, end, reg, val, false);
     ASSERT(ok);
     dr_log(dc, LOG_CLEANCALL, 3,
-           "CLEANCALL: folded immediate mov at "PFX"\n",
+           "drcalls: folded immediate mov at "PFX"\n",
            instr_get_app_pc(mov_imm));
     return true;
 }
@@ -1083,7 +1095,7 @@ addsub_to_lea(void *dc, const callee_info_t *ci, liveness_t *liveness,
     ASSERT(opnd_same(dst, instr_get_src(instr, 1)));
     if (check_only) {
         dr_log(dc, LOG_CLEANCALL, 3,
-               "CLEANCALL: attempting add -> lea for: ");
+               "drcalls: attempting add -> lea for: ");
         instr_disassemble(dc, instr, dr_get_logfile(dc));
         dr_log(dc, LOG_CLEANCALL, 3, "\n");
     }
@@ -1100,12 +1112,12 @@ addsub_to_lea(void *dc, const callee_info_t *ci, liveness_t *liveness,
         if (tmp_reg == DR_REG_NULL) {
             if (check_only) {
                 dr_log(dc, LOG_CLEANCALL, 3,
-                       "CLEANCALL: can't steal used dead reg, getting unused\n");
+                       "drcalls: can't steal used dead reg, getting unused\n");
             }
             tmp_reg = pick_dead_reg(dc, liveness);
             if (tmp_reg == DR_REG_NULL) {
                 dr_log(dc, LOG_CLEANCALL, 3,
-                       "CLEANCALL: can't steal dead reg, add -> lea failed\n");
+                       "drcalls: can't steal dead reg, add -> lea failed\n");
                 return false;
             }
         }
@@ -1147,7 +1159,7 @@ addsub_to_lea(void *dc, const callee_info_t *ci, liveness_t *liveness,
         reg_id_t src_reg = opnd_get_reg(src);
         if (instr_get_opcode(instr) == OP_sub && !IS_DEAD(src_reg)) {
             dr_log(dc, LOG_CLEANCALL, 3,
-                   "CLEANCALL: sub -> lea failed, needs dead src reg\n");
+                   "drcalls: sub -> lea failed, needs dead src reg\n");
             return false;
         }
         if (!check_only) {
@@ -1159,7 +1171,7 @@ addsub_to_lea(void *dc, const callee_info_t *ci, liveness_t *liveness,
         }
     } else {
         dr_log(dc, LOG_CLEANCALL, 3,
-               "CLEANCALL: add -> lea failed, unrecognized src opnd\n");
+               "drcalls: add -> lea failed, unrecognized src opnd\n");
         return false;
     }
     return true;
@@ -1194,7 +1206,7 @@ optimize_avoid_flags(void *dc, const callee_info_t *ci, bool check_only)
             if (TESTANY(EFLAGS_WRITE_6, instr_get_arith_flags(instr)) ||
                 TESTANY(EFLAGS_READ_6, instr_get_arith_flags(instr))) {
                 dr_log(dc, LOG_CLEANCALL, 3,
-                       "CLEANCALL: flags required for instr at "PFX", "
+                       "drcalls: flags required for instr at "PFX", "
                        "flags avoidance not profitable\n",
                        instr_get_app_pc(instr));
                 return false;
@@ -1241,13 +1253,15 @@ dce_and_copy_prop(void *dc, const callee_info_t *ci)
             EFLAGS_WRITE_TO_READ(EFLAGS_WRITE_ALL & instr_get_eflags(instr));
         if (TESTANY(liveness->flags_live, flags_written))
             instr_is_live |= true;
-        /* If the instr is cti or label it's live. */
-        if (instr_is_cti(instr) || instr_is_label(instr))
+        /* If the instr is a cti, a label, or writes memory then it's live. */
+        if (instr_writes_memory(instr) || instr_is_cti(instr) ||
+            instr_is_label(instr)) {
             instr_is_live |= true;
+        }
 
         if (!instr_is_live) {
             dr_log(dc, LOG_CLEANCALL, 3,
-                   "CLEANCALL: removing dead instr at "PFX".\n",
+                   "drcalls: removing dead instr at "PFX".\n",
                    instr_get_app_pc(instr));
             remove_and_destroy(GLOBAL_DCONTEXT, ilist, instr);
             continue;
@@ -1355,7 +1369,7 @@ analyze_callee_regs_usage(void *dcontext, callee_info_t *ci)
             if (!ci->xmm_used[i] &&
                 instr_uses_reg(instr, (DR_REG_XMM0 + (reg_id_t)i))) {
                 dr_log(dcontext, LOG_CLEANCALL, 2,
-                       "CLEANCALL: callee "PFX" uses XMM%d at "PFX"\n", 
+                       "drcalls: callee "PFX" uses XMM%d at "PFX"\n", 
                        ci->start, i, instr_get_app_pc(instr));
                 ci->xmm_used[i] = true;
                 ci->num_xmms_used++;
@@ -1366,7 +1380,7 @@ analyze_callee_regs_usage(void *dcontext, callee_info_t *ci)
             if (!ci->reg_used[i] &&
                 instr_uses_reg(instr, (DR_REG_XAX + (reg_id_t)i))) {
                 dr_log(dcontext, LOG_CLEANCALL, 2,
-                       "CLEANCALL: callee "PFX" uses REG %s at "PFX"\n", 
+                       "drcalls: callee "PFX" uses REG %s at "PFX"\n", 
                        ci->start, get_register_name(DR_REG_XAX + (reg_id_t)i),
                     instr_get_app_pc(instr));
                 ci->reg_used[i] = true;
@@ -1377,7 +1391,7 @@ analyze_callee_regs_usage(void *dcontext, callee_info_t *ci)
         if (!ci->write_aflags) {
             if (TESTANY(EFLAGS_WRITE_6, instr_get_arith_flags(instr))) {
                 dr_log(dcontext, LOG_CLEANCALL, 2,
-                       "CLEANCALL: callee "PFX" updates aflags\n", ci->start);
+                       "drcalls: callee "PFX" updates aflags\n", ci->start);
                 ci->write_aflags = true;
             }
         }
@@ -1411,7 +1425,7 @@ analyze_callee_regs_usage(void *dcontext, callee_info_t *ci)
     }
     if (ci->read_aflags) {
         dr_log(dcontext, LOG_CLEANCALL, 2,
-               "CLEANCALL: callee "PFX" reads aflags from caller\n", ci->start);
+               "drcalls: callee "PFX" reads aflags from caller\n", ci->start);
     }
 }
 
@@ -1645,7 +1659,7 @@ analyze_enter_leave(void *dc, callee_info_t *ci, instr_t *top,
     }
     if (push_xbp == NULL) {
         dr_log(dc, LOG_CLEANCALL, 2,
-               "CLEANCALL: callee does not save xbp before using stack at "PFX"\n",
+               "drcalls: callee does not save xbp before using stack at "PFX"\n",
                instr_get_app_pc(top));
     }
 
@@ -1674,12 +1688,12 @@ analyze_enter_leave(void *dc, callee_info_t *ci, instr_t *top,
     }
 
     dr_log(dc, LOG_CLEANCALL, 2,
-           "CLEANCALL: prologue pushes %%xbp at "PFX", sets fp at "PFX"\n",
+           "drcalls: prologue pushes %%xbp at "PFX", sets fp at "PFX"\n",
            push_xbp == NULL ? NULL : instr_get_app_pc(push_xbp),
            save_xsp == NULL ? NULL : instr_get_app_pc(save_xsp));
     for (i = 0; i < num_bots; i++) {
         dr_log(dc, LOG_CLEANCALL, 2,
-               "CLEANCALL: epilogue sets sp to fp at "PFX" pops %%xbp at "PFX"\n",
+               "drcalls: epilogue sets sp to fp at "PFX" pops %%xbp at "PFX"\n",
                restore_xsps[i] == NULL ? NULL : instr_get_app_pc(restore_xsps[i]),
                pop_xbps    [i] == NULL ? NULL : instr_get_app_pc(pop_xbps    [i]));
     }
@@ -1713,7 +1727,7 @@ analyze_enter_leave(void *dc, callee_info_t *ci, instr_t *top,
     }
     else {
         dr_log(dc, LOG_CLEANCALL, 2,
-               "CLEANCALL: Unable to match prologue to epilogue.\n");
+               "drcalls: Unable to match prologue to epilogue.\n");
         push_xbp = NULL;
         save_xsp = NULL;
     }
@@ -1760,7 +1774,7 @@ analyze_callee_setup(void *dcontext, callee_info_t *ci)
     num_bots = analyze_find_exit_instrs(dcontext, ci, bots);
     if (num_bots >= MAX_EXIT_POINTS) {
         dr_log(dcontext, LOG_CLEANCALL, 2,
-               "CLEANCALL: bailing from setup analysis, too many exits\n");
+               "drcalls: bailing from setup analysis, too many exits\n");
         return;
     }
 
@@ -1814,7 +1828,7 @@ analyze_callee_setup(void *dcontext, callee_info_t *ci)
 
         /* it is callee save reg. */
         dr_log(dcontext, LOG_CLEANCALL, 2,
-               "CLEANCALL: callee "PFX" callee-saves reg %s at "PFX"\n",
+               "drcalls: callee "PFX" callee-saves reg %s at "PFX"\n",
                ci->start, get_register_name(reg_id), instr_get_app_pc(top));
         ci->callee_save_regs[reg_id - DR_REG_XAX] = true;
 
@@ -1849,7 +1863,7 @@ analyze_callee_tls(void *dcontext, callee_info_t *ci)
     }
     if (ci->tls_used) {
         dr_log(dcontext, LOG_CLEANCALL, 2,
-               "CLEANCALL: callee "PFX" accesses far memory\n", ci->start);
+               "drcalls: callee "PFX" accesses far memory\n", ci->start);
     }
 }
 
@@ -1872,6 +1886,99 @@ is_fastpath(instr_t *instr)
     return false;
 }
 
+static reg_id_t
+get_fp_reg(callee_info_t *ci)
+{
+    return (ci->xbp_is_fp ? DR_REG_XBP : DR_REG_XSP);
+}
+
+static bool
+opnd_is_stack_access(callee_info_t *ci, opnd_t opnd)
+{
+    return (opnd_is_base_disp(opnd) && opnd_get_base(opnd) == get_fp_reg(ci));
+}
+
+static bool
+instr_writes_nonstack_mem(callee_info_t *ci, instr_t *instr)
+{
+    int i;
+    if (!instr_writes_memory(instr))
+        return false;
+    for (i = 0; i < instr_num_dsts(instr); i++) {
+        opnd_t opnd = instr_get_dst(instr, i);
+        if (opnd_is_memory_reference(opnd) && !opnd_is_stack_access(ci, opnd))
+            return true;
+    }
+    return false;
+}
+
+/* Defers non-stack writes into the fastpath, allowing the partial inline check
+ * to occur before any stores.
+ */
+static bool
+defer_side_effects(void *dc, callee_info_t *ci, instr_t *jcc, instr_t *fastpath,
+                   bool check_only)
+{
+    instr_t *instr;
+    instr_t *prev_instr;
+
+    if (!check_only) {
+        dr_log(dc, LOG_CLEANCALL, 3,
+               "drcalls: defering nonstack writes for real\n");
+    }
+
+    for (instr = jcc; instr != NULL; instr = prev_instr) {
+        prev_instr = instr_get_prev(instr);
+        /* TODO(rnk): Are there any side-effects aside from memory writes? */
+        if (instr_reads_memory(instr)) {
+            if (check_only) {
+                dr_log(dc, LOG_CLEANCALL, 3,
+                       "drcalls: stopped defer, found mem read at "PFX"\n",
+                       instr_get_app_pc(instr));
+            }
+            break;
+        }
+        if (instr_writes_nonstack_mem(ci, instr)) {
+            if (instr_num_dsts(instr) != 1) {
+                dr_log(dc, LOG_CLEANCALL, 3,
+                       "drcalls: can't defer multi-dst mem write at "PFX"\n",
+                       instr_get_app_pc(instr));
+                return false;
+            }
+            if (!check_only) {
+                /* Move after fastpath label. */
+                dr_log(dc, LOG_CLEANCALL, 3,
+                       "drcalls: deferred mem write at "PFX"\n",
+                       instr_get_app_pc(instr));
+                instrlist_remove(ci->ilist, instr);
+                POST(ci->ilist, fastpath, instr);
+            }
+        }
+    }
+
+    for (; instr != NULL; instr = instr_get_prev(instr)) {
+        if (instr_writes_nonstack_mem(ci, instr)) {
+            dr_log(dc, LOG_CLEANCALL, 3,
+                   "drcalls: found un-deferable nonstack write at "PFX"\n",
+                   instr_get_app_pc(instr));
+            return false;
+        }
+    }
+    return true;
+}
+
+/* Return true if instr is Jcc instruction.  These are known to be easy to
+ * logically invert.
+ */
+static bool
+instr_is_jcc(instr_t *instr)
+{
+    uint opc = instr_get_opcode(instr);
+    /* Relies on opcode ordering. */
+    return ((opc >= OP_jo && opc <= OP_jnle) ||
+            (opc >= OP_jo_short && opc <= OP_jnle_short));
+}
+
 /* Turns callees with a fast path into an ilist that can be inlined.  Relies on
  * control flow being resolved, but rets still being present.
  */
@@ -1890,9 +1997,9 @@ analyze_callee_partial(void *dc, callee_info_t *ci)
 
     if (opt_cleancall < 2) {
         dr_log(dc, LOG_CLEANCALL, 3,
-               "CLEANCALL: partial inlining disabled: opt_cleancall: %d.\n",
+               "drcalls: partial inlining disabled: opt_cleancall: %d.\n",
                opt_cleancall);
-        ci->opt_partial = false;
+        return;
     }
 
     /* Find first branch target or control flow instruction. */
@@ -1908,7 +2015,7 @@ analyze_callee_partial(void *dc, callee_info_t *ci)
     }
     if (!instr_is_cbr(first_cti)) {
         dr_log(dc, LOG_CLEANCALL, 2,
-               "CLEANCALL: cannot partially inline calllee "PFX": "
+               "drcalls: cannot partially inline calllee "PFX": "
                "first cti is not cbr at "PFX".\n",
                ci->start, instr_get_app_pc(first_cti));
         return;
@@ -1918,7 +2025,7 @@ analyze_callee_partial(void *dc, callee_info_t *ci)
     tgt = instr_get_target(first_cti);
     if (!opnd_is_instr(tgt)) {
         dr_log(dc, LOG_CLEANCALL, 2,
-               "CLEANCALL: cannot partially inline calllee "PFX": "
+               "drcalls: cannot partially inline calllee "PFX": "
                "control flow to non-label at "PFX".\n",
                ci->start, instr_get_app_pc(first_cti));
         return;
@@ -1931,7 +2038,7 @@ analyze_callee_partial(void *dc, callee_info_t *ci)
     fallthrough_fast = is_fastpath(fallthrough_instr);
     if (taken_fast && fallthrough_fast) {
         dr_log(dc, LOG_CLEANCALL, 2,
-               "CLEANCALL: both paths at "PFX" and "PFX" are fast.\n",
+               "drcalls: both paths at "PFX" and "PFX" are fast.\n",
                instr_get_app_pc(fallthrough_instr), instr_get_app_pc(tgt_instr));
         return;
     } else if (taken_fast) {
@@ -1942,7 +2049,7 @@ analyze_callee_partial(void *dc, callee_info_t *ci)
         slowpath_start = tgt_instr;
     } else {
         dr_log(dc, LOG_CLEANCALL, 2,
-               "CLEANCALL: cannot partially inline calllee "PFX": "
+               "drcalls: cannot partially inline calllee "PFX": "
                "neither path is fast for cbr at "PFX".\n",
                ci->start, instr_get_app_pc(first_cti));
         return;
@@ -1952,9 +2059,8 @@ analyze_callee_partial(void *dc, callee_info_t *ci)
      * is slow.  We set a note on the label so different call sites can find it
      * to handle call site specific saves, restores, or arg setup. */
     if (!fallthrough_fast && !instr_is_label(slowpath_start)) {
-        instr_t *label = INSTR_CREATE_label(GLOBAL_DCONTEXT);
-        PRE(ci->ilist, slowpath_start, label);
-        slowpath_start = label;
+        slowpath_start =
+            insert_new_label(GLOBAL_DCONTEXT, ci->ilist, slowpath_start);
     }
     DR_ASSERT(instr_is_label(slowpath_start));
 
@@ -1973,43 +2079,88 @@ analyze_callee_partial(void *dc, callee_info_t *ci)
         remove_and_destroy(GLOBAL_DCONTEXT, ci->ilist, instr);
     }
 
-    /* Emit slowpath transition code and insert jmp into slowpath.  We need to
-     * rematerialize args here, but those are different for every call site.
+    /* If the target was the slowpath, that means 'ret' is not the last
+     * instruction.  Try to invert the condition to put the slowpath on the
+     * fallthrough path:
+     *
+     * ... entry
+     * jle tgt
+     * ... fastpath_start
+     * ret
+     * tgt:
+     * ... slowpath_start
+     *
+     * To:
+     *
+     * ... entry
+     * jg tgt
+     * ... slowpath_start
+     * tgt:
+     * ... fastpath_start
+     * ret
      */
+    if (fallthrough_fast && instr_is_jcc(first_cti)) {
+        if (!instr_is_label(fastpath_start)) {
+            fastpath_start =
+                insert_new_label(GLOBAL_DCONTEXT, ci->ilist, fastpath_start);
+        }
+        /* Move the slowpath to be right after the jcc. */
+        instrlist_remove(ci->ilist, slowpath_start);
+        POST(ci->ilist, first_cti, slowpath_start);
+        /* Invert the jcc and set the target to the fast path. */
+        instr_invert_cbr(first_cti);
+        instr_set_target(first_cti, opnd_create_instr(fastpath_start));
+        dr_log(dc, LOG_CLEANCALL, 3,
+               "drcalls: inverted jcc for partial inlining\n");
+    }
+
+    /* Defer all side effects until after the check. */
+    if (defer_side_effects(dc, ci, first_cti, fastpath_start, /*check=*/true)) {
+        defer_side_effects(dc, ci, first_cti, fastpath_start, /*check=*/false);
+    } else {
+        dr_log(dc, LOG_CLEANCALL, 3, "drcalls: failed partial inline: "
+               "unable to defer entry side effects to fast path\n");
+        return;
+    }
+
     dr_log(dc, LOG_CLEANCALL, 2,
-           "CLEANCALL: callee is a candidate for partial inlining.\n");
+           "drcalls: callee is a candidate for partial inlining.\n");
     ci->opt_partial = true;
 
     /* Circular dependency issue: we can't emit the slowpath for the partially
      * inlined code until we've done further analysis of register and stack
-     * usage.  We leave this call to a label and fix it up later.
+     * usage.  We leave this call to the end label and fix it up later.
+     *
+     * Code should look like:
+     * jcc fastpath
+     *   call outofline
+     *   jmp done
+     * fastpath:
+     *   ...
+     * done:
+     * ret
      */
+    instr = instr_get_next(slowpath_start);
     ci->partial_label = INSTR_CREATE_label(GLOBAL_DCONTEXT);
-    POST(ci->ilist, slowpath_start, INSTR_CREATE_call
+    PRE(ci->ilist, instr, INSTR_CREATE_call
         (GLOBAL_DCONTEXT, opnd_create_instr(ci->partial_label)));
-    /* XXX: Insert the label into the ilist to avoid memory leaks if inlining
-     * fails.  This makes the disassembly confusing. */
-    POST(ci->ilist, slowpath_start, ci->partial_label);
+    PRE(ci->ilist, instr, INSTR_CREATE_jmp_short
+        (GLOBAL_DCONTEXT, opnd_create_instr(ci->partial_label)));
+    /* Put label before ret. */
+    for (instr = instrlist_last(ci->ilist); instr != NULL;
+         instr = instr_get_prev(instr))
+        if (instr_is_return(instr)) break;
+    /* Even if instr == NULL, this will append, which is OK. */
+    PRE(ci->ilist, instr, ci->partial_label);
 
     /* Re-calculate the number of instructions, since we just deleted a bunch.
      */
     ci->num_instrs = 0;
     for (instr = instrlist_first(ci->ilist); instr != NULL;
          instr = instr_get_next(instr)) {
-        ci->num_instrs++;
+        if (!instr_is_label(instr))
+            ci->num_instrs++;
     }
-}
-
-static reg_id_t
-get_fp_reg(callee_info_t *ci)
-{
-    return (ci->xbp_is_fp ? DR_REG_XBP : DR_REG_XSP);
-}
-
-static bool
-opnd_is_stack_access(callee_info_t *ci, opnd_t opnd)
-{
-    return (opnd_is_base_disp(opnd) && opnd_get_base(opnd) == get_fp_reg(ci));
 }
 
 /* Look for stack accesses.  Convert them to use our scratch slots. */
@@ -2039,7 +2190,7 @@ analyze_callee_stack_usage(void *dcontext, callee_info_t *ci)
         if (instr_writes_to_reg(instr, DR_REG_XBP) && ci->xbp_is_fp) {
             /* xbp must not be changed if xbp is used for frame pointer */
             dr_log(dcontext, LOG_CLEANCALL, 1,
-                   "CLEANCALL: callee "PFX" cannot be inlined: XBP is updated.\n",
+                   "drcalls: callee "PFX" cannot be inlined: XBP is updated.\n",
                    ci->start);
             ci->stack_complex = true;
             break;
@@ -2084,13 +2235,13 @@ analyze_callee_stack_usage(void *dcontext, callee_info_t *ci)
             if (!ci->stack_complex) {
                 /* Delete frame adjust, we do our own. */
                 dr_log(dcontext, LOG_CLEANCALL, 3,
-                       "CLEANCALL: removing frame adjustment at "PFX".\n",
+                       "drcalls: removing frame adjustment at "PFX".\n",
                        instr_get_app_pc(instr));
                 remove_and_destroy(GLOBAL_DCONTEXT, ci->ilist, instr);
                 continue;
             } else {
                 dr_log(dcontext, LOG_CLEANCALL, 1,
-                       "CLEANCALL: callee "PFX" cannot be inlined: "
+                       "drcalls: callee "PFX" cannot be inlined: "
                        "complicated stack pointer update at "PFX".\n",
                     ci->start, instr_get_app_pc(instr));
                 break;
@@ -2113,7 +2264,7 @@ analyze_callee_stack_usage(void *dcontext, callee_info_t *ci)
                 ci->stack_complex = true;
             if (ci->stack_complex) {
                 dr_log(dcontext, LOG_CLEANCALL, 1,
-                       "CLEANCALL: callee "PFX" cannot be inlined: "
+                       "drcalls: callee "PFX" cannot be inlined: "
                        "stack pointer leaked "PFX".\n",
                     ci->start, instr_get_app_pc(instr));
                 break;
@@ -2136,7 +2287,7 @@ analyze_callee_stack_usage(void *dcontext, callee_info_t *ci)
                      * If different, no inline. 
                      */
                     dr_log(dcontext, LOG_CLEANCALL, 1,
-                           "CLEANCALL: callee "PFX" cannot be inlined: "
+                           "drcalls: callee "PFX" cannot be inlined: "
                            "more than one stack location is accessed "PFX".\n",
                         ci->start, instr_get_app_pc(instr));
                     break;
@@ -2162,7 +2313,7 @@ analyze_callee_stack_usage(void *dcontext, callee_info_t *ci)
                 } else if (!opnd_same(opnd, mem_ref)) {
                     /* currently we only allows one stack refs */
                     dr_log(dcontext, LOG_CLEANCALL, 1,
-                           "CLEANCALL: callee "PFX" cannot be inlined: "
+                           "drcalls: callee "PFX" cannot be inlined: "
                            "more than one stack location is accessed "PFX".\n",
                         ci->start, instr_get_app_pc(instr));
                     break;
@@ -2194,44 +2345,44 @@ analyze_callee_inline(void *dcontext, callee_info_t *ci)
     /* a set of condition checks */
     if (opt_cleancall < 2) {
         dr_log(dcontext, LOG_CLEANCALL, 1,
-               "CLEANCALL: callee "PFX" cannot be inlined: opt_cleancall: %d.\n",
+               "drcalls: callee "PFX" cannot be inlined: opt_cleancall: %d.\n",
                ci->start, opt_cleancall);
         opt_inline = false;
     }
     if (ci->num_instrs > MAX_NUM_INLINE_INSTRS) {
         dr_log(dcontext, LOG_CLEANCALL, 1,
-               "CLEANCALL: callee "PFX" cannot be inlined: num of instrs: %d.\n",
+               "drcalls: callee "PFX" cannot be inlined: num of instrs: %d.\n",
                ci->start, ci->num_instrs);
         opt_inline = false;
     }
     if (!ci->is_leaf && !ci->opt_partial) {
         dr_log(dcontext, LOG_CLEANCALL, 1,
-               "CLEANCALL: callee "PFX" cannot be inlined: "
+               "drcalls: callee "PFX" cannot be inlined: "
                "has complex control flow.\n", ci->start);
         opt_inline = false;
     }
     if (ci->num_xmms_used != 0) {
         dr_log(dcontext, LOG_CLEANCALL, 1,
-               "CLEANCALL: callee "PFX" cannot be inlined: uses XMM.\n",
+               "drcalls: callee "PFX" cannot be inlined: uses XMM.\n",
                ci->start);
         opt_inline = false;
     }
     if (ci->tls_used) {
         dr_log(dcontext, LOG_CLEANCALL, 1,
-               "CLEANCALL: callee "PFX" cannot be inlined: accesses TLS.\n",
+               "drcalls: callee "PFX" cannot be inlined: accesses TLS.\n",
                ci->start);
         opt_inline = false;
     }
     if (ci->num_regs_used > NUM_SCRATCH_SLOTS) {
         dr_log(dcontext, LOG_CLEANCALL, 1,
-               "CLEANCALL: callee "PFX" cannot be inlined: "
+               "drcalls: callee "PFX" cannot be inlined: "
                "uses too many scratch slots: %d > %d.\n",
                ci->start, ci->num_regs_used, NUM_SCRATCH_SLOTS);
         opt_inline = false;
     }
     if (ci->stack_complex) {
         dr_log(dcontext, LOG_CLEANCALL, 1,
-               "CLEANCALL: callee "PFX" cannot be inlined: "
+               "drcalls: callee "PFX" cannot be inlined: "
                "complex stack usage.\n", ci->start);
         opt_inline = false;
     }
@@ -2246,7 +2397,7 @@ analyze_callee_inline(void *dcontext, callee_info_t *ci)
             remove_and_destroy(GLOBAL_DCONTEXT, ci->ilist, instr);
         } else {
             dr_log(dcontext, LOG_CLEANCALL, 1,
-                   "CLEANCALL: callee "PFX" cannot be inlined: "
+                   "drcalls: callee "PFX" cannot be inlined: "
                    "last instruction is not return.\n", ci->start);
             opt_inline = false;
         }
@@ -2271,9 +2422,6 @@ analyze_callee_inline(void *dcontext, callee_info_t *ci)
                 /* TODO(rnk): Reachability on X64, or does MAP_32BIT take care
                  * of this? */
                 instr_set_target(instr, opnd_create_pc(slowpath_pc));
-                /* Label is no longer needed. */
-                remove_and_destroy(GLOBAL_DCONTEXT, ci->ilist,
-                                   ci->partial_label);
                 ci->partial_label = NULL;
                 break;
             }
@@ -2306,7 +2454,10 @@ analyze_callee_ilist(void *dc, callee_info_t *ci)
             analyze_callee_partial(dc, ci);
             /* Optimizations are expensive, avoid wasting time on huge callees.
              */
-            if (ci->num_instrs < MAX_NUM_INLINE_INSTRS) {
+            if (ci->num_instrs > 2 * MAX_NUM_INLINE_INSTRS) {
+                dr_log(dc, LOG_CLEANCALL, 3,
+                       "drcalls: skipping optimizing huge callee ilist.\n");
+            } else {
                 dce_and_copy_prop(dc, ci);
                 reuse_registers(dc, ci);
                 fold_mov_immediates(dc, ci);
@@ -2316,13 +2467,11 @@ analyze_callee_ilist(void *dc, callee_info_t *ci)
         analyze_callee_tls(dc, ci);
         analyze_callee_stack_usage(dc, ci);
         analyze_callee_inline(dc, ci);
-    }
-    if (ci->ilist != NULL) {
-        dr_log(dc, LOG_CLEANCALL, 3,
-               "CLEANCALL: callee ilist after optimization:\n");
-        DOLOG(3, LOG_CLEANCALL, {
+        if (ci->ilist != NULL) {
+            dr_log(dc, LOG_CLEANCALL, 3,
+                   "drcalls: callee ilist after optimization/analysis:\n");
             instrlist_disassemble(dc, NULL, ci->ilist, dr_get_logfile(dc));
-        });
+        }
     }
 }
 
@@ -2351,7 +2500,7 @@ analyze_clean_call_aflags(void *dcontext, clean_call_info_t *cci,
                 break;
             if (TESTALL(EFLAGS_WRITE_6, flags)) {
                 dr_log(dcontext, LOG_CLEANCALL, 2,
-                       "CLEANCALL: inserting clean call "PFX
+                       "drcalls: inserting clean call "PFX
                        ", skip saving aflags.\n", ci->start);
                 cci->skip_save_aflags = true;
                 break;
@@ -2390,7 +2539,7 @@ analyze_clean_call_regs(void *dcontext, clean_call_info_t *cci)
     /* we need save/restore rax if save aflags because rax is used */
     if (!cci->skip_save_aflags && cci->reg_skip[0]) {
         dr_log(dcontext, LOG_CLEANCALL, 3,
-               "CLEANCALL: if inserting clean call "PFX
+               "drcalls: if inserting clean call "PFX
                ", cannot skip saving reg xax.\n", info->start);
         cci->reg_skip[0] = false;
         cci->num_regs_skip--;
@@ -2421,7 +2570,7 @@ analyze_clean_call_args(void *dcontext,
     }
     if (!ci->is_leaf) {
         dr_log(dcontext, LOG_CLEANCALL, 2,
-               "CLEANCALL: callee "PFX" is not a leaf, "
+               "drcalls: callee "PFX" is not a leaf, "
                "save all regs in dr_mcontext_t layout.\n",
             ci->start);
         cci->save_all_regs = true;
@@ -2437,26 +2586,26 @@ analyze_clean_call_inline(void *dcontext, clean_call_info_t *cci)
 
     if (opt_cleancall <= 1) {
         dr_log(dcontext, LOG_CLEANCALL, 2,
-               "CLEANCALL: fail inlining clean call "PFX", opt_cleancall %d.\n",
+               "drcalls: fail inlining clean call "PFX", opt_cleancall %d.\n",
                info->start, opt_cleancall);
         opt_inline = false;
     }
     if (cci->num_args > IF_X64_ELSE(dr_num_reg_parm(), 1)) {
         dr_log(dcontext, LOG_CLEANCALL, 2,
-               "CLEANCALL: fail inlining clean call "PFX", "
+               "drcalls: fail inlining clean call "PFX", "
                "number of args %d > IF_X64_ELSE(NUM_REGPARM, 1).\n",
             info->start, cci->num_args);
         opt_inline = false;
     }
     if (cci->save_fpstate) {
         dr_log(dcontext, LOG_CLEANCALL, 2,
-               "CLEANCALL: fail inlining clean call "PFX", saving fpstate.\n",
+               "drcalls: fail inlining clean call "PFX", saving fpstate.\n",
                info->start);
         opt_inline = false;
     }
     if (!info->opt_inline) {
         dr_log(dcontext, LOG_CLEANCALL, 2,
-               "CLEANCALL: fail inlining clean call "PFX", complex callee.\n",
+               "drcalls: fail inlining clean call "PFX", complex callee.\n",
                info->start);
         opt_inline = false;
     }
@@ -2481,7 +2630,7 @@ analyze_clean_call_inline(void *dcontext, clean_call_info_t *cci)
 #endif
         if (num_slots > NUM_SCRATCH_SLOTS) {
             dr_log(dcontext, LOG_CLEANCALL, 2,
-                   "CLEANCALL: fail inlining clean call "PFX
+                   "drcalls: fail inlining clean call "PFX
                    " need %d slots > available slots.\n",
                    info->start, num_slots, NUM_SCRATCH_SLOTS);
             opt_inline = false;
@@ -2490,7 +2639,7 @@ analyze_clean_call_inline(void *dcontext, clean_call_info_t *cci)
     if (!opt_inline) {
         if (cci->save_all_regs) {
             dr_log(dcontext, LOG_CLEANCALL, 2,
-                   "CLEANCALL: inserting clean call "PFX
+                   "drcalls: inserting clean call "PFX
                    ", save all regs in dr_mcontext_t layout.\n",
                    info->start);
             cci->num_regs_skip = 0;
@@ -2544,7 +2693,7 @@ analyze_clean_call(void *dcontext, clean_call_info_t *cci, instr_t *where,
     if (ci == NULL) {
         STATS_INC(cleancall_analyzed);
         dr_log(dcontext, LOG_CLEANCALL, 2,
-               "CLEANCALL: analyze callee "PFX"\n", callee);
+               "drcalls: analyze callee "PFX"\n", callee);
         /* 4.1. create func_info */
         ci = callee_info_create((app_pc)callee, num_args);
         /* 4.2. decode the callee */
@@ -2557,7 +2706,7 @@ analyze_clean_call(void *dcontext, clean_call_info_t *cci, instr_t *where,
     }
     if (ci->num_args != num_args) {
         dr_log(dcontext, LOG_CLEANCALL, 2,
-               "CLEANCALL: failing to inline callee "PFX": "
+               "drcalls: failing to inline callee "PFX": "
                "originally called with %d args now called with %d args\n",
                callee, ci->num_args, num_args);
         return false;
@@ -2771,7 +2920,7 @@ insert_inline_reg_save(void *dc, clean_call_info_t *cci,
         if (!cci->reg_skip[i]) {
             reg_id_t reg = DR_REG_XAX + (reg_id_t)i;
             dr_log(dc, LOG_CLEANCALL, 2,
-                   "CLEANCALL: inlining clean call "PFX", saving reg %s.\n",
+                   "drcalls: inlining clean call "PFX", saving reg %s.\n",
                    ci->start, get_register_name(reg));
             insert_mc_reg_save(dc, ci->framesize, ilist, where, reg);
         }
@@ -2801,7 +2950,7 @@ insert_inline_reg_restore(void *dc, clean_call_info_t *cci,
         if (!cci->reg_skip[i]) {
             reg_id_t reg = DR_REG_XAX + (reg_id_t)i;
             dr_log(dc, LOG_CLEANCALL, 2,
-                   "CLEANCALL: inlining clean call "PFX", restoring reg %s.\n",
+                   "drcalls: inlining clean call "PFX", restoring reg %s.\n",
                    ci->start, get_register_name(reg));
             insert_mc_reg_restore(dc, ci->framesize, ilist, where, reg);
         }
@@ -2828,11 +2977,10 @@ shrink_reg_for_param(reg_id_t regular, opnd_t arg)
 }
 
 static void
-insert_inline_arg_setup(void *dcontext, clean_call_info_t *cci,
+insert_inline_arg_setup(void *dc, clean_call_info_t *cci,
                         instrlist_t *ilist, instr_t *where, opnd_t *args,
                         bool is_slowpath)
 {
-    reg_id_t reg;
     uint i;
     callee_info_t *ci = cci->callee_info;
 
@@ -2841,25 +2989,45 @@ insert_inline_arg_setup(void *dcontext, clean_call_info_t *cci,
 
     ASSERT(cci->num_args <= IF_X64_ELSE(dr_num_reg_parm(), 1));
     for (i = 0; i < cci->num_args; i++) {
-        reg = IF_X64_ELSE(dr_reg_parm(i), DR_REG_XAX);
+        reg_id_t reg = IF_X64_ELSE(dr_reg_parm(i), DR_REG_XAX);
+        opnd_t dst_opnd = opnd_create_reg(reg);
         if (!ci->reg_used[reg - DR_REG_XAX]) {
             if (!is_slowpath) {
-                dr_log(dcontext, LOG_CLEANCALL, 2,
-                       "CLEANCALL: skipping arg setup for dead reg %s\n",
+                dr_log(dc, LOG_CLEANCALL, 2,
+                       "drcalls: skipping arg setup for dead reg %s\n",
                        get_register_name(reg));
                 continue;
             }
         }
         reg = shrink_reg_for_param(reg, args[i]);
-        dr_log(dcontext, LOG_CLEANCALL, 2,
-               "CLEANCALL: inlining clean call "PFX", passing arg via reg %s.\n",
+        dr_log(dc, LOG_CLEANCALL, 2,
+               "drcalls: inlining clean call "PFX", passing arg via reg %s.\n",
                ci->start, get_register_name(reg));
         if (opnd_is_immed_int(args[i])) {
-            PRE(ilist, where, INSTR_CREATE_mov_imm
-                (dcontext, opnd_create_reg(reg), args[i]));
+            PRE(ilist, where, INSTR_CREATE_mov_imm (dc, dst_opnd, args[i]));
+        } else if (opnd_is_reg(args[i])) {
+            reg_id_t src = reg_to_pointer_sized(opnd_get_reg(args[i]));
+            if (src == DR_REG_XSP) {
+                DR_ASSERT_MSG(false, "Not yet tested");
+                PRE(ilist, where, INSTR_CREATE_mov_ld
+                    (dc, dst_opnd, opnd_get_tls_xax(dc)));
+            } else {
+                if (is_slowpath && ci->reg_used[src - DR_REG_XAX]) {
+                    /* If we used src in the inline code, we need to restore it
+                     * to the application value before reading it again.
+                     */
+                    opnd_t mc_src = mc_frame_opnd
+                        (ci->framesize, reg_mc_offset[src - DR_REG_XAX]);
+                    PRE(ilist, where,
+                        INSTR_CREATE_mov_ld(dc, dst_opnd, mc_src));
+                    DR_ASSERT_MSG(false, "Not yet tested");
+                } else {
+                    PRE(ilist, where,
+                        INSTR_CREATE_mov_ld(dc, dst_opnd, args[i]));
+                }
+            }
         } else {
-            PRE(ilist, where, INSTR_CREATE_mov_ld
-                (dcontext, opnd_create_reg(reg), args[i]));
+            PRE(ilist, where, INSTR_CREATE_mov_ld(dc, dst_opnd, args[i]));
         }
     }
 #ifndef X64
@@ -2869,12 +3037,11 @@ insert_inline_arg_setup(void *dcontext, clean_call_info_t *cci,
      * access, so callee either does not use the argument, or the local stack
      * access is the arg.
      */
-    dr_log(dcontext, LOG_CLEANCALL, 2,
-           "CLEANCALL: inlining clean call "PFX", passing arg via slot %d.\n",
+    dr_log(dc, LOG_CLEANCALL, 2,
+           "drcalls: inlining clean call "PFX", passing arg via slot %d.\n",
            ci->start, NUM_SCRATCH_SLOTS - 1);
     PRE(ilist, where, INSTR_CREATE_mov_st
-        (dcontext, OPND_CREATE_MEMPTR(DR_REG_XSP, 0),
-         opnd_create_reg(DR_REG_XAX)));
+        (dc, OPND_CREATE_MEMPTR(DR_REG_XSP, 0), opnd_create_reg(DR_REG_XAX)));
 #endif
 }
 
@@ -2951,7 +3118,7 @@ try_fold_immeds(void *dc, instrlist_t *ilist)
 {
     instr_t *instr, *next_instr;
     dr_log(dc, LOG_CLEANCALL, 3,
-           "CLEANCALL: ilist before fold_immeds:\n");
+           "drcalls: ilist before fold_immeds:\n");
     DOLOG(3, LOG_CLEANCALL, {
         instrlist_disassemble(dc, NULL, ilist, dr_get_logfile(dc));
     });
@@ -2966,7 +3133,7 @@ try_fold_immeds(void *dc, instrlist_t *ilist)
         }
     }
     dr_log(dc, LOG_CLEANCALL, 3,
-           "CLEANCALL: ilist after fold_immeds:\n");
+           "drcalls: ilist after fold_immeds:\n");
     DOLOG(3, LOG_CLEANCALL, {
         instrlist_disassemble(dc, NULL, ilist, dr_get_logfile(dc));
     });
@@ -3041,6 +3208,9 @@ insert_slowpath_mc_regs(void *dc, callee_info_t *ci, bool save,
         bool is_arg;
         /* If the register was used inline it was saved inline. */
         if (ci->reg_used[reg - DR_REG_XAX])
+            continue;
+        /* If the register is XSP, we treat it separately. */
+        if (reg == DR_REG_XSP)
             continue;
         /* XXX: If flags had to be saved, then XAX was saved inline and
          * clobbered, so we should *not* save it. */
@@ -3148,9 +3318,10 @@ emit_partial_slowpath(void *dc, callee_info_t *ci)
     instrlist_t *ilist;
     opnd_t xsp = opnd_create_reg(DR_REG_XSP);
     uint realignment;
+    //DEBUG_DECLARE(bool ok;)
 
     dr_log(dc, LOG_CLEANCALL, 3,
-           "CLEANCALL: emitting partial inline slowpath\n");
+           "drcalls: emitting partial inline slowpath\n");
 
     /* Generate the clean call ilist.  Arguments should be materialized into
      * registers at the callsite.  Application register values are already on
@@ -3161,7 +3332,13 @@ emit_partial_slowpath(void *dc, callee_info_t *ci)
     APP(ilist, INSTR_CREATE_lea
         (dc, xsp, OPND_CREATE_MEM_lea(DR_REG_XSP, DR_REG_NULL, 0, -realignment)));
     insert_slowpath_mc(dc, ci, /*save=*/true, ilist);
+
+    /* Emit side-entry code based on original callee entry. */
+    //IF_DEBUG(ok =)
+        //remove_partial_side_effects(dc, ci, [>check=<]false);
+    //DR_ASSERT(ok);
     APP(ilist, INSTR_CREATE_call(dc, opnd_create_pc(ci->start)));
+
     insert_slowpath_mc(dc, ci, /*save=*/false, ilist);
     /* Un-align stack to get back to ret addr. */
     APP(ilist, INSTR_CREATE_lea
@@ -3175,4 +3352,10 @@ emit_partial_slowpath(void *dc, callee_info_t *ci)
 
     ci->partial_pc = entry;
     return entry;
+}
+
+void
+expand_and_optimize_bb(void *dc, instrlist_t *bb)
+{
+    /* NYI */
 }

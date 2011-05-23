@@ -105,7 +105,7 @@ drcalls_insert_call(void *dc, instrlist_t *ilist, instr_t *where, void *callee,
         /* See if we can inline. */
         insert_inline_clean_call(dc, &cci, ilist, where, args);
         dr_log(dc, LOG_CLEANCALL, 2,
-               "CLEANCALL: inlined callee "PFX"\n", callee);
+               "drcalls: inlined callee "PFX"\n", callee);
     } else {
         /* Otherwise, just use a clean call. */
         dr_insert_clean_call_vargs(dc, ilist, where, callee, fpstate, num_args,
@@ -148,4 +148,16 @@ drcalls_lean_call(void *dc, instrlist_t *ilist, instr_t *where, void *callee,
     if (num_args > 0) {
         dr_thread_free(dc, args, sizeof(opnd_t) * num_args);
     }
+}
+
+void
+drcalls_set_optimization(uint opt_level)
+{
+    opt_cleancall = opt_level;
+}
+
+void
+drcalls_done(void *dc, instrlist_t *bb)
+{
+    expand_and_optimize_bb(dc, bb);
 }

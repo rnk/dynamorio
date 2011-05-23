@@ -32,7 +32,8 @@
 
 #include "tools.h"
 
-#define NUM_ITERATIONS 10
+/* Enough to flush the buffer a few times. */
+#define NUM_ITERATIONS 1024
 
 #ifdef WINDOWS
 # define EXPORT __declspec(dllexport)
