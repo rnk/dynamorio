@@ -1333,21 +1333,23 @@ reuse_registers(void *dc, callee_info_t *ci)
     }
 }
 
+/* Folds "mov $imm -> %reg ; use %reg" to use $imm in place of %reg if possible.
+ * dc_alloc is the dcontext used to allocate the ilist, usually either global or
+ * thread local.
+ */
 static void
-fold_mov_immediates(void *dc, callee_info_t *ci)
+try_fold_immeds(void *dc, void *dc_alloc, instrlist_t *ilist)
 {
-    instrlist_t *ilist = ci->ilist;
     instr_t *instr;
     instr_t *next_instr;
 
-    /* Do a final forward pass to fold immediates moved through registers. */
     for (instr = instrlist_first(ilist); instr != NULL; instr = next_instr) {
         next_instr = instr_get_next(instr);
         if (instr_is_mov(instr) &&
             opnd_is_immed_int(instr_get_src(instr, 0)) &&
             opnd_is_reg(instr_get_dst(instr, 0))) {
             if (fold_mov_immed(dc, ilist, instr)) {
-                remove_and_destroy(GLOBAL_DCONTEXT, ilist, instr);
+                remove_and_destroy(dc_alloc, ilist, instr);
             }
         }
     }
@@ -2523,7 +2525,7 @@ analyze_callee_ilist(void *dc, callee_info_t *ci)
             } else {
                 dce_and_copy_prop(dc, ci);
                 reuse_registers(dc, ci);
-                fold_mov_immediates(dc, ci);
+                try_fold_immeds(dc, GLOBAL_DCONTEXT, ci->ilist);
             }
         }
         analyze_callee_regs_usage(dc, ci);
@@ -3040,9 +3042,8 @@ shrink_reg_for_param(reg_id_t regular, opnd_t arg)
 }
 
 static void
-insert_inline_arg_setup(void *dc, clean_call_info_t *cci,
-                        instrlist_t *ilist, instr_t *where, opnd_t *args,
-                        bool is_slowpath)
+insert_inline_arg_setup(void *dc, clean_call_info_t *cci, instrlist_t *ilist,
+                        instr_t *where, opnd_t *args, bool is_slowpath)
 {
     uint i;
     callee_info_t *ci = cci->callee_info;
@@ -3053,7 +3054,7 @@ insert_inline_arg_setup(void *dc, clean_call_info_t *cci,
     ASSERT(cci->num_args <= IF_X64_ELSE(dr_num_reg_parm(), 1));
     for (i = 0; i < cci->num_args; i++) {
         reg_id_t reg = IF_X64_ELSE(dr_reg_parm(i), DR_REG_XAX);
-        opnd_t dst_opnd = opnd_create_reg(reg);
+        opnd_t dst_opnd;
         if (!ci->reg_used[reg - DR_REG_XAX]) {
             if (!is_slowpath) {
                 dr_log(dc, LOG_CLEANCALL, 2,
@@ -3063,6 +3064,7 @@ insert_inline_arg_setup(void *dc, clean_call_info_t *cci,
             }
         }
         reg = shrink_reg_for_param(reg, args[i]);
+        dst_opnd = opnd_create_reg(reg);
         dr_log(dc, LOG_CLEANCALL, 2,
                "drcalls: inlining clean call "PFX", passing arg via reg %s.\n",
                ci->start, get_register_name(reg));
@@ -3172,36 +3174,6 @@ insert_inline_slowpath(void *dc, clean_call_info_t *cci, opnd_t *args)
     insert_inline_arg_setup(dc, cci, ilist, slowpath_call, args, true);
 }
 
-/* TODO(rnk): Copied from optimize_callee.  We duplicated it so we can
- * remove_and_destroy with our thread-local dcontext instead of the global
- * dcontext.
- */
-static void
-try_fold_immeds(void *dc, instrlist_t *ilist)
-{
-    instr_t *instr, *next_instr;
-    dr_log(dc, LOG_CLEANCALL, 3,
-           "drcalls: ilist before fold_immeds:\n");
-    DOLOG(3, LOG_CLEANCALL, {
-        instrlist_disassemble(dc, NULL, ilist, dr_get_logfile(dc));
-    });
-    for (instr = instrlist_first(ilist); instr != NULL; instr = next_instr) {
-        next_instr = instr_get_next(instr);
-        if (instr_is_mov(instr) &&
-            opnd_is_immed_int(instr_get_src(instr, 0)) &&
-            opnd_is_reg(instr_get_dst(instr, 0))) {
-            if (fold_mov_immed(dc, ilist, instr)) {
-                remove_and_destroy(dc, ilist, instr);
-            }
-        }
-    }
-    dr_log(dc, LOG_CLEANCALL, 3,
-           "drcalls: ilist after fold_immeds:\n");
-    DOLOG(3, LOG_CLEANCALL, {
-        instrlist_disassemble(dc, NULL, ilist, dr_get_logfile(dc));
-    });
-}
-
 void
 insert_inline_clean_call(void *dcontext, clean_call_info_t *cci,
                          instrlist_t *ilist, instr_t *where, opnd_t *args)
@@ -3217,7 +3189,7 @@ insert_inline_clean_call(void *dcontext, clean_call_info_t *cci,
      */
     insert_inline_arg_setup(dcontext, cci, callee, instrlist_first(callee),
                             args, false);
-    try_fold_immeds(dcontext, callee);
+    try_fold_immeds(dcontext, dcontext, callee);
     if (ci->opt_partial) {
         insert_inline_slowpath(dcontext, cci, args);
     }
