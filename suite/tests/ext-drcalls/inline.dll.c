@@ -531,8 +531,8 @@ event_basic_block(void *dc, void *tag, instrlist_t *bb,
 
     func_called[i] = 1;
     drcalls_insert_call(dc, bb, entry, (void*)before_callee, false, 2,
-                         OPND_CREATE_INTPTR(func_ptrs[i]),
-                         OPND_CREATE_INTPTR(func_names[i]));
+                        OPND_CREATE_INTPTR(func_ptrs[i]),
+                        OPND_CREATE_INTPTR(func_names[i]));
 
     switch (i) {
     default:
@@ -542,7 +542,7 @@ event_basic_block(void *dc, void *tag, instrlist_t *bb,
         break;
     case FN_inscount:
         drcalls_insert_call(dc, bb, entry, func_ptrs[i], false, 1,
-                             OPND_CREATE_INT32((int)0xDEAD));
+                            OPND_CREATE_INT32((int)0xDEAD));
         drcalls_insert_call(dc, bb, entry, (void*)check_count, false, 0);
         break;
     case FN_nonleaf:
@@ -567,9 +567,10 @@ event_basic_block(void *dc, void *tag, instrlist_t *bb,
         break;
     }
     drcalls_insert_call(dc, bb, entry, (void*)after_callee, false, 2,
-                         OPND_CREATE_INT32(inline_expected),
-                         OPND_CREATE_INTPTR(func_names[i]));
+                        OPND_CREATE_INT32(inline_expected),
+                        OPND_CREATE_INTPTR(func_names[i]));
 
+    drcalls_done(dc, bb);
     return DR_EMIT_DEFAULT;
 }
 

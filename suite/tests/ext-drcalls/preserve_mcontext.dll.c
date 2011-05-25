@@ -49,6 +49,9 @@ event_basic_block(void *dc, void *entry_pc, instrlist_t *bb,
         dr_fprintf(STDERR, "instrumenting app_func entry\n");
         drcalls_insert_call(dc, bb, where, instrumentation_pc, false, 0);
     }
+
+    drcalls_done(dc, bb);
+    return DR_EMIT_DEFAULT;
 }
 
 static void

@@ -90,7 +90,7 @@ drcalls_insert_call(void *dc, instrlist_t *ilist, instr_t *where, void *callee,
 {
     va_list ap;
     opnd_t *args = NULL;
-    clean_call_info_t cci; /* information for clean call insertion. */
+    clean_call_info_t *cci; /* information for clean call insertion. */
 
     check_init();
 
@@ -101,13 +101,16 @@ drcalls_insert_call(void *dc, instrlist_t *ilist, instr_t *where, void *callee,
     convert_va_list_to_opnd(args, num_args, ap);
     va_end(ap);
 
-    if (analyze_clean_call(dc, &cci, where, callee, fpstate, num_args, args)) {
-        /* See if we can inline. */
-        insert_inline_clean_call(dc, &cci, ilist, where, args);
-        dr_log(dc, LOG_CLEANCALL, 2,
-               "drcalls: inlined callee "PFX"\n", callee);
+    cci = analyze_clean_call(dc, where, callee, fpstate, num_args, args);
+    if (cci->opt_inline) {
+        /* If we can inline, insert an invalid instr with a note pointing to
+         * cci. */
+        instr_t *pseudo_call = instr_create_0dst_0src(dc, OP_AFTER_LAST);
+        instr_set_note(pseudo_call, cci);
+        PRE(ilist, where, pseudo_call);
     } else {
         /* Otherwise, just use a clean call. */
+        clean_call_info_destroy(dc, cci);
         dr_insert_clean_call_vargs(dc, ilist, where, callee, fpstate, num_args,
                                    args);
     }
