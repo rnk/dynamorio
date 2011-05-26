@@ -1,6 +1,6 @@
-/* *******************************************************************************
+/* ******************************************************************************
  * Copyright (c) 2011 Massachusetts Institute of Technology  All rights reserved.
- * *******************************************************************************/
+ * ******************************************************************************/
 
 /*
  * Redistribution and use in source and binary forms, with or without
@@ -30,32 +30,58 @@
  * DAMAGE.
  */
 
-#ifndef DRCALLS_OPTIMIZE_H
-#define DRCALLS_OPTIMIZE_H
+/* inscount client that relies on DynamoRIO inlining the clean call. */
 
-/* Dead register analysis abstraction.  Drive it by looping over instructions in
- * reverse.  At end of loop body, call liveness_update. */
-typedef struct _liveness_t {
-    bool reg_live[NUM_GP_REGS];
-    /* Flags that are live.  Uses EFLAGS_READ_* form of the masks. */
-    uint flags_live;
-} liveness_t;
+#include "dr_api.h"
+#include "dr_calls.h"
 
-#define IS_LIVE(r) (liveness->reg_live[reg_to_pointer_sized(r) - DR_REG_XAX])
-#define IS_DEAD(r) !IS_LIVE(r)
-#define SET_LIVE(r, d) \
-    (liveness->reg_live[reg_to_pointer_sized(r) - DR_REG_XAX] = (d))
+static dr_emit_flags_t
+event_basic_block(void *dc, void *tag, instrlist_t *bb, bool for_trace,
+                  bool translating);
 
-void liveness_init(liveness_t *liveness, const callee_info_t *ci);
-void liveness_update(liveness_t *liveness, instr_t *instr);
-bool liveness_instr_is_live(liveness_t *liveness, instr_t *instr);
+/* We only have a global count. */
+static uint64 global_count;
 
-/* Optimizations. */
-void dce_and_copy_prop(void *dc, const callee_info_t *ci);
-void reuse_registers(void *dc, const callee_info_t *ci);
-void try_avoid_flags(void *dc, const callee_info_t *ci);
-void try_fold_immeds(void *dc, void *dc_alloc, instrlist_t *ilist);
-void redundant_load_elim(void *dc, void *dc_alloc, instrlist_t *ilist);
-void dead_store_elim(void *dc, void *dc_alloc, instrlist_t *ilist);
+/* A simple clean call that will be automatically inlined because it has only
+ * one argument and contains no calls to other functions.
+ */
+static void event_exit(void);
 
-#endif /* DRCALLS_OPTIMIZE_H */
+DR_EXPORT void
+dr_init(client_id_t id)
+{
+    drcalls_init();
+    /* register events */
+    dr_register_exit_event(event_exit);
+    dr_register_bb_event(event_basic_block);
+}
+
+static void
+event_exit(void)
+{
+    dr_fprintf(STDERR, "%llu instructions executed\n", global_count);
+    drcalls_exit();
+}
+
+/* inscount callback used for clean calls. */
+static void
+inscount(void)
+{
+    global_count++;
+}
+
+static dr_emit_flags_t
+event_basic_block(void *dc, void *tag, instrlist_t *bb,
+                  bool for_trace, bool translating)
+{
+    instr_t *instr;
+
+    for (instr = instrlist_first(bb); instr != NULL;
+         instr = instr_get_next(instr)) {
+        drcalls_insert_call(dc, bb, instr, (void *)inscount,
+                            false /* save fpstate */, 0);
+    }
+
+    drcalls_done(dc, bb);
+    return DR_EMIT_DEFAULT;
+}

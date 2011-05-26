@@ -105,7 +105,7 @@ drcalls_insert_call(void *dc, instrlist_t *ilist, instr_t *where, void *callee,
     if (cci->opt_inline) {
         /* If we can inline, insert an invalid instr with a note pointing to
          * cci. */
-        instr_t *pseudo_call = instr_create_0dst_0src(dc, OP_AFTER_LAST);
+        instr_t *pseudo_call = instr_create_0dst_0src(dc, DRC_OP_call);
         instr_set_note(pseudo_call, cci);
         PRE(ilist, where, pseudo_call);
     } else {

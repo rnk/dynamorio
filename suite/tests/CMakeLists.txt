@@ -1501,6 +1501,7 @@ if (BUILD_DRCALLS)
   tobuild_drcalls(drcalls.lean_args         "ext-drcalls/lean_args.c" "" "" "")
   tobuild_drcalls(drcalls.inline            "ext-drcalls/inline.c" "" "" "")
   tobuild_drcalls(drcalls.preserve_mcontext "ext-drcalls/preserve_mcontext.c" "" "" "")
+  tobuild_drcalls(drcalls.coalesce_inscount "ext-drcalls/coalesce_inscount.c" "" "" "")
   tobuild_drcalls(drcalls.partial_inline    "ext-drcalls/partial_inline.c" "" "" "")
   tobuild_drcalls(drcalls.mem_buffer        "ext-drcalls/mem_buffer.c" "count_only" "" "")
   # Optimize the client to make clean call inlining easier.

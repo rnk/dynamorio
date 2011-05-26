@@ -816,3 +816,198 @@ try_fold_immeds(void *dc, void *dc_alloc, instrlist_t *ilist)
     }
 }
 
+/* Idea:
+ * Store ; Load ; Store to Mov reg -> reg ; Store
+ * st r1 -> rel/abs
+ * ...  # no writes of r1
+ * ld rel/abs -> r1
+ * ...  # no cti
+ * st r1 -> rel/abs
+ *
+ * To:
+ * ...
+ * ...
+ * st r1 -> rel/abs
+ *
+ * Use RLE and DSE.
+ */
+
+/* Eliminate redundant loads.
+ *
+ * Before:
+ * st r1 -> rel/abs
+ * ...  # no writes of r1 or memory
+ * ld rel/abs -> r2
+ *
+ * After:
+ * st r1 -> rel/abs
+ * ...
+ * mov r1 -> r2  # or nothing if r1 == r2
+ */
+void
+redundant_load_elim(void *dc, void *dc_alloc, instrlist_t *ilist)
+{
+    instr_t *instr;
+    instr_t *next_instr;
+    instr_t *store = NULL;
+    instr_t *load = NULL;
+    opnd_t src = opnd_create_null();
+    opnd_t mem_ref = opnd_create_null();
+    opnd_t dst_reg = opnd_create_null();
+    reg_id_t base_reg = DR_REG_NULL;
+    reg_id_t idx_reg = DR_REG_NULL;
+
+    for (instr = instrlist_first(ilist); instr != NULL;
+         instr = next_instr) {
+        next_instr = instr_get_next(instr);
+
+        /* If it's an app instruction, ignore it, only touch instrumentation. */
+        if (instr_ok_to_mangle(instr)) {
+            store = NULL;
+            continue;
+        }
+
+        if (store == NULL) {
+            if (instr_get_opcode(instr) == OP_mov_st) {
+                store = instr;
+                src = instr_get_src(instr, 0);
+                mem_ref = instr_get_dst(instr, 0);
+
+                /* If the memory operand reads any operands, we need to make
+                 * sure those aren't udpated between the store and the load. */
+                if (opnd_is_base_disp(mem_ref)) {
+                    base_reg = opnd_get_base(mem_ref);
+                    idx_reg = opnd_get_index(mem_ref);
+                }
+            }
+        } else {
+            if (instr_get_opcode(instr) == OP_mov_ld &&
+                opnd_same(mem_ref, instr_get_src(instr, 0))) {
+                load = instr;
+                dst_reg = instr_get_dst(load, 0);
+                if (opnd_same(src, dst_reg)) {
+                    /* Can delete load. */
+                    dr_log(dc, LOG_CLEANCALL, 3,
+                           "drcalls: RLE: deleted redundant load: ");
+                    instr_disassemble(dc, load, dr_get_logfile(dc));
+                    dr_log(dc, LOG_CLEANCALL, 3, "\n");
+
+                    remove_and_destroy(dc_alloc, ilist, load);
+                } else {
+                    /* Can change to mov r1 -> r2. */
+                    dr_log(dc, LOG_CLEANCALL, 3,
+                           "drcalls: RLE: changed load to reg copy: ");
+                    instr_disassemble(dc, load, dr_get_logfile(dc));
+                    dr_log(dc, LOG_CLEANCALL, 3, "\n");
+
+                    instr_set_src(load, 0, src);
+                }
+                continue;
+            }
+
+            /* To avoid aliasing issues, we punt on any intermediate store, as
+             * well as any cti or label, or clobbering or read registers. */
+            if (instr_writes_memory(instr) ||
+                instr_is_label(instr) ||
+                instr_is_cti(instr) ||
+                instr_writes_to_reg(instr, base_reg) ||
+                instr_writes_to_reg(instr, idx_reg) ||
+                (opnd_is_reg(src) &&
+                 instr_writes_to_reg(instr, opnd_get_reg(src)))) {
+                store = NULL;
+            }
+        }
+    }
+}
+
+/* Dead store elimination.
+ *
+ * Before:
+ * st op1 -> rel/abs
+ * ...  # no cti
+ * st op2 -> rel/abs
+ *
+ * After:
+ * ...
+ * st op2 -> rel/abs
+ */
+void
+dead_store_elim(void *dc, void *dc_alloc, instrlist_t *ilist)
+{
+    instr_t *instr;
+    instr_t *next_instr;
+    instr_t *store = NULL;
+    opnd_t mem_ref = opnd_create_null();
+    reg_id_t base_reg = DR_REG_NULL;
+    reg_id_t idx_reg = DR_REG_NULL;
+
+    for (instr = instrlist_first(ilist); instr != NULL;
+         instr = next_instr) {
+        next_instr = instr_get_next(instr);
+
+        /* If it's an app instruction, ignore it, only touch instrumentation. */
+        if (instr_ok_to_mangle(instr)) {
+            if (store != NULL) {
+#ifdef VERBOSE
+                dr_log(dc, LOG_CLEANCALL, 3,
+                       "drcalls: DSE: blocked by non-meta instr: ");
+                instr_disassemble(dc, instr, dr_get_logfile(dc));
+                dr_log(dc, LOG_CLEANCALL, 3, "\n");
+#endif
+                store = NULL;
+            }
+            continue;
+        }
+
+        if (instr_get_opcode(instr) == OP_mov_st) {
+            if (store == NULL) {
+                store = instr;
+                mem_ref = instr_get_dst(instr, 0);
+
+                /* If the memory operand reads any operands, we need to make
+                 * sure those aren't udpated between the store and the load. */
+                if (opnd_is_base_disp(mem_ref)) {
+                    base_reg = opnd_get_base(mem_ref);
+                    idx_reg = opnd_get_index(mem_ref);
+                }
+
+#ifdef VERBOSE
+                dr_log(dc, LOG_CLEANCALL, 3,
+                       "drcalls: DSE: found store: ");
+                instr_disassemble(dc, store, dr_get_logfile(dc));
+                dr_log(dc, LOG_CLEANCALL, 3, "\n");
+#endif
+                continue;
+            } else if (opnd_same(mem_ref, instr_get_dst(instr, 0))) {
+                /* Can delete load. */
+                dr_log(dc, LOG_CLEANCALL, 3,
+                       "drcalls: DSE: deleted dead store: ");
+                instr_disassemble(dc, store, dr_get_logfile(dc));
+                dr_log(dc, LOG_CLEANCALL, 3, "\n");
+
+                remove_and_destroy(dc_alloc, ilist, store);
+                /* Note, this is store to the same mem_ref, base_reg, and
+                 * idx_reg, try to DSE it next. */
+                store = instr;
+                continue;
+            }
+        }
+
+        if (store != NULL &&
+            (instr_is_label(instr) ||
+             instr_is_cti(instr) ||
+             instr_reads_memory(instr) ||
+             instr_writes_memory(instr) ||
+             instr_writes_to_reg(instr, base_reg) ||
+             instr_writes_to_reg(instr, idx_reg))) {
+#ifdef VERBOSE
+            dr_log(dc, LOG_CLEANCALL, 3,
+                   "drcalls: DSE: blocked by clobber: ");
+            instr_disassemble(dc, instr, dr_get_logfile(dc));
+            dr_log(dc, LOG_CLEANCALL, 3, "\n");
+#endif
+
+            store = NULL;
+        }
+    }
+}

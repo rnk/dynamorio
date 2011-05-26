@@ -1,6 +1,6 @@
-/* *******************************************************************************
+/* ******************************************************************************
  * Copyright (c) 2011 Massachusetts Institute of Technology  All rights reserved.
- * *******************************************************************************/
+ * ******************************************************************************/
 
 /*
  * Redistribution and use in source and binary forms, with or without
@@ -30,32 +30,21 @@
  * DAMAGE.
  */
 
-#ifndef DRCALLS_OPTIMIZE_H
-#define DRCALLS_OPTIMIZE_H
+/* Some instructions in multiple basic blocks to count. */
 
-/* Dead register analysis abstraction.  Drive it by looping over instructions in
- * reverse.  At end of loop body, call liveness_update. */
-typedef struct _liveness_t {
-    bool reg_live[NUM_GP_REGS];
-    /* Flags that are live.  Uses EFLAGS_READ_* form of the masks. */
-    uint flags_live;
-} liveness_t;
+#ifdef WINDOWS
+# define NOINLINE __declspec(noinline)
+#else
+# define NOINLINE __attribute__((noinline))
+#endif
 
-#define IS_LIVE(r) (liveness->reg_live[reg_to_pointer_sized(r) - DR_REG_XAX])
-#define IS_DEAD(r) !IS_LIVE(r)
-#define SET_LIVE(r, d) \
-    (liveness->reg_live[reg_to_pointer_sized(r) - DR_REG_XAX] = (d))
+NOINLINE static void foo(void) { }
 
-void liveness_init(liveness_t *liveness, const callee_info_t *ci);
-void liveness_update(liveness_t *liveness, instr_t *instr);
-bool liveness_instr_is_live(liveness_t *liveness, instr_t *instr);
-
-/* Optimizations. */
-void dce_and_copy_prop(void *dc, const callee_info_t *ci);
-void reuse_registers(void *dc, const callee_info_t *ci);
-void try_avoid_flags(void *dc, const callee_info_t *ci);
-void try_fold_immeds(void *dc, void *dc_alloc, instrlist_t *ilist);
-void redundant_load_elim(void *dc, void *dc_alloc, instrlist_t *ilist);
-void dead_store_elim(void *dc, void *dc_alloc, instrlist_t *ilist);
-
-#endif /* DRCALLS_OPTIMIZE_H */
+int
+main(void)
+{
+    int i;
+    for (i = 0; i < 10000; i++) {
+        foo();
+    }
+}

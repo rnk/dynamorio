@@ -44,6 +44,7 @@
 #include "code_cache.h"
 #include "core_compat.h"
 #include "inline.h"
+#include "optimize.h"
 #include "instr_builder.h"
 
 static callee_info_t     default_callee_info;
@@ -515,24 +516,60 @@ get_dstack_offset(void)
 }
 
 static void
+insert_switch_to_dstack(void *dc, const callee_info_t *ci, instrlist_t *ilist,
+                        instr_t *where)
+{
+    PRE(ilist, where, instr_create_0dst_1src
+        (dc, DRC_OP_dstack, OPND_CREATE_INT32(ci->framesize)));
+}
+
+static uint
+get_framesize(instr_t *instr)
+{
+    ASSERT(instr_get_opcode(instr) == DRC_OP_dstack ||
+           instr_get_opcode(instr) == DRC_OP_appstack);
+    return (uint)opnd_get_immed_int(instr_get_src(instr, 0));
+}
+
+static void
+expand_op_dstack(void *dc, instrlist_t *ilist, instr_t *where)
+{
+    opnd_t xsp = opnd_create_reg(DR_REG_XSP);
+    uint framesize = get_framesize(where);
+
+    /* Spill XSP to TLS_XAX_SLOT because it's not exposed to the client. */
+    PRE(ilist, where, INSTR_CREATE_mov_st(dc, opnd_get_tls_xax(dc), xsp));
+    /* Switch to dstack. */
+    PRE(ilist, where, INSTR_CREATE_mov_ld(dc, xsp, opnd_get_tls_dcontext(dc)));
+    PRE(ilist, where, INSTR_CREATE_mov_ld
+        (dc, xsp, OPND_CREATE_MEMPTR(DR_REG_XSP, get_dstack_offset())));
+    /* Make room for a partially initialized mcontext
+     * structure. */
+    PRE(ilist, where, INSTR_CREATE_lea
+        (dc, xsp, OPND_CREATE_MEM_lea(DR_REG_XSP, DR_REG_NULL, 0, -framesize)));
+}
+
+static void
+insert_switch_to_appstack(void *dc, const callee_info_t *ci, instrlist_t *ilist,
+                          instr_t *where)
+{
+    PRE(ilist, where, instr_create_0dst_1src
+        (dc, DRC_OP_appstack, OPND_CREATE_INT32(ci->framesize)));
+}
+
+static void
+expand_op_appstack(void *dc, instrlist_t *ilist, instr_t *where)
+{
+    opnd_t xsp = opnd_create_reg(DR_REG_XSP);
+    PRE(ilist, where, INSTR_CREATE_mov_ld(dc, xsp, opnd_get_tls_xax(dc)));
+}
+
+static void
 insert_inline_reg_save(void *dc, clean_call_info_t *cci,
                        instrlist_t *ilist, instr_t *where, opnd_t *args)
 {
     callee_info_t *ci = cci->callee_info;
     int i;
-    opnd_t xsp = opnd_create_reg(DR_REG_XSP);
-
-    /* Spill XSP to TLS_XAX_SLOT because it's not exposed to the client. */
-    PRE(ilist, where, INSTR_CREATE_mov_st(dc, opnd_get_tls_xax(dc), xsp));
-
-    /* Switch to dstack and make room for a partially initialized mcontext
-     * structure. */
-    PRE(ilist, where, INSTR_CREATE_mov_ld(dc, xsp, opnd_get_tls_dcontext(dc)));
-    PRE(ilist, where, INSTR_CREATE_mov_ld
-        (dc, xsp, OPND_CREATE_MEMPTR(DR_REG_XSP, get_dstack_offset())));
-    PRE(ilist, where, INSTR_CREATE_lea
-        (dc, opnd_create_reg(DR_REG_XSP),
-         OPND_CREATE_MEM_lea(DR_REG_XSP, DR_REG_NULL, 0, -ci->framesize)));
 
     ASSERT(cci->num_xmms_skip == NUM_XMM_REGS);
     for (i = 0; i < NUM_GP_REGS; i++) {
@@ -557,7 +594,6 @@ insert_inline_reg_restore(void *dc, clean_call_info_t *cci,
 {
     int i;
     callee_info_t *ci = cci->callee_info;
-    opnd_t xsp = opnd_create_reg(DR_REG_XSP);
 
     /* aflags is first because it uses XAX. */
     if (!cci->skip_save_aflags) {
@@ -574,9 +610,6 @@ insert_inline_reg_restore(void *dc, clean_call_info_t *cci,
             insert_mc_reg_restore(dc, ci->framesize, ilist, where, reg);
         }
     }
-
-    /* Switch back to app stack. */
-    PRE(ilist, where, INSTR_CREATE_mov_ld(dc, xsp, opnd_get_tls_xax(dc)));
 }
 
 static reg_id_t
@@ -750,11 +783,8 @@ insert_inline_clean_call(void *dcontext, clean_call_info_t *cci,
     }
 
     ASSERT(cci->ilist != NULL);
-    /* 0. update stats */
-    STATS_INC(cleancall_inlined);
-    /* 1. save registers */
+    insert_switch_to_dstack(dcontext, ci, ilist, where);
     insert_inline_reg_save(dcontext, cci, ilist, where, args);
-    /* 4. inline clean call ilist */
     instr = instrlist_first(callee);
     while (instr != NULL) {
         instrlist_remove(callee, instr);
@@ -768,21 +798,8 @@ insert_inline_clean_call(void *dcontext, clean_call_info_t *cci,
     }
     instrlist_destroy(dcontext, callee);
     cci->ilist = NULL;
-    /* 5. restore registers */
     insert_inline_reg_restore(dcontext, cci, ilist, where);
-    /* XXX: the inlined code looks like this 
-     *   mov    %rax -> %gs:0x00 
-     *   mov    %rdi -> %gs:0x01 
-     *   mov    $0x00000003 -> %edi 
-     *   mov    <rel> 0x0000000072200c00 -> %rax 
-     *   movsxd %edi -> %rdi 
-     *   add    %rdi (%rax) -> (%rax) 
-     *   mov    %gs:0x00 -> %rax 
-     *   mov    %gs:0x01 -> %rdi 
-     *   ...
-     * we can do some constant propagation optimization here,
-     * leave it for higher optimization level.
-     */
+    insert_switch_to_appstack(dcontext, ci, ilist, where);
 }
 
 /* Save or restore all application registers that weren't saved inline. */
@@ -941,18 +958,149 @@ emit_partial_slowpath(void *dc, callee_info_t *ci)
 }
 
 void
+schedule_call_upwards(void *dc, clean_call_info_t *cci, instrlist_t *ilist,
+                      instr_t *call)
+{
+    instr_t *instr;
+    bool regs_in_args[NUM_GP_REGS];
+    int i, j;
+
+    memset(regs_in_args, 0, sizeof(regs_in_args));
+    for (i = 0; i < cci->num_args; i++) {
+        opnd_t arg = cci->args[i];
+        for (j = 0; j < opnd_num_regs_used(arg); j++) {
+            reg_id_t reg = opnd_get_reg_used(arg, j);
+            reg = reg_to_pointer_sized(reg);
+            regs_in_args[reg - DR_REG_XAX] = true;
+        }
+    }
+
+    for (instr = instr_get_prev(call); instr != NULL;
+         instr = instr_get_prev(instr)) {
+        if (instr_get_opcode(instr) == DRC_OP_call) {
+            /* Move the call after the one we found. */
+            instrlist_remove(ilist, call);
+            POST(ilist, instr, call);
+            break;
+        }
+
+        /* We can't move a call that reads a register across one that uses it.
+         */
+        for (i = 0; i < NUM_GP_REGS; i++) {
+            reg_id_t reg = DR_REG_XAX + (reg_id_t)i;
+            if (regs_in_args[i] && instr_writes_to_reg(instr, reg)) {
+                dr_log(dc, LOG_CLEANCALL, 3,
+                       "drcalls: stopping call reschedule for write of arg reg\n");
+                break;
+            }
+        }
+    }
+}
+
+void
 expand_and_optimize_bb(void *dc, instrlist_t *bb)
 {
     instr_t *instr;
     instr_t *next_instr;
+    bool found_call = false;
+
+    /* Reschedule. */
+    for (instr = instrlist_first(bb); instr != NULL; instr = next_instr) {
+        clean_call_info_t *cci; 
+        callee_info_t *ci;
+        opnd_t *args;
+
+        next_instr = instr_get_next(instr);
+        if (instr_get_opcode(instr) != DRC_OP_call)
+            continue;
+        if (!found_call) {
+            /* Don't touch the first call.  We could try to schedule it
+             * downwards, but we don't yet. */
+            found_call = true;
+            continue;
+        }
+
+        cci = (clean_call_info_t *)instr_get_note(instr);
+        ci = (callee_info_t *)cci->callee_info;
+        args = cci->args;
+
+        /* For now we only touch non-partially inlined calls, since we might
+         * disturb the values in mcontext. */
+        if (ci->opt_partial) {
+            continue;
+        }
+
+        schedule_call_upwards(dc, cci, bb, instr);
+    }
 
     for (instr = instrlist_first(bb); instr != NULL; instr = next_instr) {
         next_instr = instr_get_next(instr);
-        if (instr_get_opcode(instr) == OP_AFTER_LAST) {
+
+        if (instr_get_opcode(instr) == DRC_OP_call) {
             clean_call_info_t *cci = (clean_call_info_t *)instr_get_note(instr);
             insert_inline_clean_call(dc, cci, bb, next_instr);
             remove_and_destroy(dc, bb, instr);
             clean_call_info_destroy(dc, cci);
         }
     }
+
+    for (instr = instrlist_first(bb); instr != NULL; instr = next_instr) {
+        bool pseudo_instr;
+        uint opc = instr_get_opcode(instr);
+        next_instr = instr_get_next(instr);
+
+        if (next_instr != NULL) {
+            uint next_opc = instr_get_opcode(next_instr);
+
+            if (opc == DRC_OP_appstack &&
+                next_opc == DRC_OP_dstack &&
+                get_framesize(instr) == get_framesize(next_instr)) {
+                /* If we switch to appstack and immediately back to dstack with the
+                 * same framesizes, just stay on dstack. */
+                instr_t *tmp = instr_get_prev(instr);
+                dr_log(dc, LOG_CLEANCALL, 3,
+                       "drcalls: deleting appstack/dstack pair\n");
+                remove_and_destroy(dc, bb, instr);
+                remove_and_destroy(dc, bb, next_instr);
+                next_instr = tmp;
+                continue;
+            }
+            /* TODO(rnk): This is incorrect, should have pseudo-op.  Also
+             * restore might be needed if reg is live-in to call. */
+            if (opc == OP_mov_ld && next_opc == OP_mov_st) {
+                /* Match "reg restore ; reg save". */
+                opnd_t reg = instr_get_dst(instr, 0);
+                opnd_t mem = instr_get_src(instr, 0);
+                if (opnd_same(reg, instr_get_src(next_instr, 0)) &&
+                    opnd_same(mem, instr_get_dst(next_instr, 0))) {
+                    instr_t *tmp = instr_get_prev(instr);
+                    dr_log(dc, LOG_CLEANCALL, 3,
+                           "drcalls: deleting restore/save pair\n");
+                    remove_and_destroy(dc, bb, instr);
+                    remove_and_destroy(dc, bb, next_instr);
+                    next_instr = tmp;
+                    continue;
+                }
+            }
+        }
+
+        pseudo_instr = true;
+        switch (opc) {
+        case DRC_OP_dstack:
+            expand_op_dstack(dc, bb, instr);
+            break;
+        case DRC_OP_appstack:
+            expand_op_appstack(dc, bb, instr);
+            break;
+        default:
+            pseudo_instr = false;
+            break;
+        }
+        if (pseudo_instr) {
+            remove_and_destroy(dc, bb, instr);
+        }
+    }
+
+    redundant_load_elim(dc, dc, bb);
+    dead_store_elim(dc, dc, bb);
 }

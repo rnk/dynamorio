@@ -70,12 +70,6 @@ void callee_info_table_init(void);
 void callee_info_table_destroy(void);
 callee_info_t *callee_info_analyze(void *dc, void *callee, uint num_args);
 
-/* Optimization prototypes. */
-/* TODO(rnk): Break these out too. */
-/* TODO(rnk): Have optimizations only work on thread local ilists.  If we want
- * the result to be a GLOBAL_DCONTEXT ilist, we can clone it. */
-void try_fold_immeds(void *dc, void *dc_alloc, instrlist_t *ilist);
-
 /* TODO(rnk): Create and move to instr_builder.h or utils.h. */
 void remove_and_destroy(void *dc, instrlist_t *ilist, instr_t *instr);
 
