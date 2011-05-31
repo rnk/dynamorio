@@ -816,22 +816,6 @@ try_fold_immeds(void *dc, void *dc_alloc, instrlist_t *ilist)
     }
 }
 
-/* Idea:
- * Store ; Load ; Store to Mov reg -> reg ; Store
- * st r1 -> rel/abs
- * ...  # no writes of r1
- * ld rel/abs -> r1
- * ...  # no cti
- * st r1 -> rel/abs
- *
- * To:
- * ...
- * ...
- * st r1 -> rel/abs
- *
- * Use RLE and DSE.
- */
-
 /* Eliminate redundant loads.
  *
  * Before:
@@ -1008,6 +992,37 @@ dead_store_elim(void *dc, void *dc_alloc, instrlist_t *ilist)
 #endif
 
             store = NULL;
+        }
+    }
+}
+
+/* Remove jumps to the next instruction.  This comes up with partial inlining,
+ * where we generate the code, but don't know that the code between the jmp and
+ * the label is dead yet.
+ */
+void
+remove_jmp_next_instr(void *dc, void *dc_alloc, instrlist_t *ilist)
+{
+    instr_t *instr;
+    instr_t *next_instr;
+
+    for (instr = instrlist_first(ilist); instr != NULL;
+         instr = next_instr) {
+        next_instr = instr_get_next(instr);
+
+        if (instr_is_ubr(instr) &&
+            next_instr != NULL &&
+            instr_is_label(next_instr)) {
+            opnd_t tgt = instr_get_target(instr);
+            if (opnd_is_instr(tgt) &&
+                opnd_get_instr(tgt) == next_instr) {
+                instr_t *tmp = instr_get_prev(instr);
+                dr_log(dc, LOG_CLEANCALL, 3,
+                       "drcalls: removed jmp to next instr.\n");
+                remove_and_destroy(dc_alloc, ilist, instr);
+                remove_and_destroy(dc_alloc, ilist, next_instr);
+                next_instr = tmp;
+            }
         }
     }
 }

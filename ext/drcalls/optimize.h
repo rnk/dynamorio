@@ -57,5 +57,6 @@ void try_avoid_flags(void *dc, const callee_info_t *ci);
 void try_fold_immeds(void *dc, void *dc_alloc, instrlist_t *ilist);
 void redundant_load_elim(void *dc, void *dc_alloc, instrlist_t *ilist);
 void dead_store_elim(void *dc, void *dc_alloc, instrlist_t *ilist);
+void remove_jmp_next_instr(void *dc, void *dc_alloc, instrlist_t *ilist);
 
 #endif /* DRCALLS_OPTIMIZE_H */

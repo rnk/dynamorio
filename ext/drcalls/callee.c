@@ -1236,6 +1236,7 @@ analyze_callee_partial(void *dc, callee_info_t *ci)
     instr_t *fallthrough_instr;
     instr_t *fastpath_start;
     instr_t *slowpath_start;
+    instr_t *slowpath_end;
     instr_t *instr;
     instr_t *next_instr;
     opnd_t tgt;
@@ -1386,18 +1387,30 @@ analyze_callee_partial(void *dc, callee_info_t *ci)
      * done:
      * ret
      */
-    instr = instr_get_next(slowpath_start);
+    /* Put done label before ret. */
+
+    /* Insert call. */
+    slowpath_end = instr_get_next(slowpath_start);
     ci->partial_label = INSTR_CREATE_label(GLOBAL_DCONTEXT);
-    PRE(ci->ilist, instr, INSTR_CREATE_call
+    PRE(ci->ilist, slowpath_end, INSTR_CREATE_call
         (GLOBAL_DCONTEXT, opnd_create_instr(ci->partial_label)));
-    PRE(ci->ilist, instr, INSTR_CREATE_jmp_short
-        (GLOBAL_DCONTEXT, opnd_create_instr(ci->partial_label)));
-    /* Put label before ret. */
-    for (instr = instrlist_last(ci->ilist); instr != NULL;
-         instr = instr_get_prev(instr))
-        if (instr_is_return(instr)) break;
-    /* Even if instr == NULL, this will append, which is OK. */
-    PRE(ci->ilist, instr, ci->partial_label);
+    /* We insert partial_label to avoid memory leaks on bailout. */
+    PRE(ci->ilist, slowpath_end, ci->partial_label);
+
+    /* We need a jmp if slowpath_end is not right before ret. */
+    for (instr = slowpath_end; instr != NULL; instr = instr_get_next(instr))
+        if (!instr_is_label(instr)) break;
+    if (instr != NULL && !instr_is_return(instr)) {
+        instr_t *done_label;
+        /* Find the return instruction from the end. */
+        for (instr = instrlist_last(ci->ilist); instr != NULL;
+             instr = instr_get_prev(instr))
+            if (instr_is_return(instr)) break;
+        /* Insert a label before it. */
+        done_label = insert_new_label(GLOBAL_DCONTEXT, ci->ilist, instr);
+        PRE(ci->ilist, slowpath_end, INSTR_CREATE_jmp_short
+            (GLOBAL_DCONTEXT, opnd_create_instr(done_label)));
+    }
 
     /* Re-calculate the number of instructions, since we just deleted a bunch.
      */
@@ -1723,6 +1736,10 @@ analyze_callee_ilist(void *dc, callee_info_t *ci)
                 reuse_registers(dc, ci);
                 try_fold_immeds(dc, GLOBAL_DCONTEXT, ci->ilist);
                 try_avoid_flags(dc, ci);
+                redundant_load_elim(dc, GLOBAL_DCONTEXT, ci->ilist);
+                dead_store_elim(dc, GLOBAL_DCONTEXT, ci->ilist);
+                dce_and_copy_prop(dc, ci);
+                remove_jmp_next_instr(dc, GLOBAL_DCONTEXT, ci->ilist);
             }
         }
         analyze_callee_regs_usage(dc, ci);
