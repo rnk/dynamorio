@@ -50,11 +50,54 @@ void liveness_init(liveness_t *liveness, const callee_info_t *ci);
 void liveness_update(liveness_t *liveness, instr_t *instr);
 bool liveness_instr_is_live(liveness_t *liveness, instr_t *instr);
 
+void rewrite_opnd_table_init(void);
+
 /* Optimizations. */
+
+/* copy prop, mov imm, and lea fold all of form:
+ * OP OPND -> REG
+ * USE REG
+ * CLOBBER REG
+ *
+ * To:
+ * USE OPND
+ * CLOBBER REG
+ *
+ * Reg reuse is similar:
+ * USED DEAD R1
+ * OP ... -> R2
+ * USE R2
+ * CLOBBER R2
+ *
+ * To:
+ * USED DEAD R1
+ * OP ... -> R1
+ * USE R1
+ * CLOBBER R2
+ *
+ * Common theme: replace all uses of register over live range.
+ * Difference: replace register with register, immediate, or memref.
+ *
+ * bool rewrite_live_range(dc, def, end, reg, opnd, check)
+ *
+ * Many kinds of folding:
+ * reg into reg
+ * reg into memref
+ * immed into reg
+ * immed into memref
+ * memref into reg  (ie lea memref, reg ; add reg, reg)
+ * memref into memref  (ie lea 1(rax), rax ; lea 1(rax), rax --> lea 2(rax), rax)
+ *
+ * API:
+ * rewrite_reg_into_reg, rewrite_immed_into_reg, rewrite_immed_into_memref..
+ *
+ * opnd rewrite_*_into_*(dc, reg, new_opnd, old_opnd)
+ */
+
 void dce_and_copy_prop(void *dc, const callee_info_t *ci);
 void reuse_registers(void *dc, const callee_info_t *ci);
-void try_avoid_flags(void *dc, const callee_info_t *ci);
 void try_fold_immeds(void *dc, void *dc_alloc, instrlist_t *ilist);
+void try_avoid_flags(void *dc, const callee_info_t *ci);
 void redundant_load_elim(void *dc, void *dc_alloc, instrlist_t *ilist);
 void dead_store_elim(void *dc, void *dc_alloc, instrlist_t *ilist);
 void remove_jmp_next_instr(void *dc, void *dc_alloc, instrlist_t *ilist);

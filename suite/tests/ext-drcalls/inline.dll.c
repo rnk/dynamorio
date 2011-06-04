@@ -132,6 +132,9 @@ dr_init(client_id_t id)
     dr_register_exit_event(event_exit);
     dr_register_bb_event(event_basic_block);
     dr_fprintf(STDERR, "INIT\n");
+    /* Disable partial inlining and DCE optimizations, since they make many of
+     * these test cases trivial. */
+    drcalls_set_optimization(2);
 
     /* Lookup pcs. */
     lookup_pcs();
@@ -546,6 +549,7 @@ event_basic_block(void *dc, void *tag, instrlist_t *bb,
         drcalls_insert_call(dc, bb, entry, (void*)check_count, false, 0);
         break;
     case FN_nonleaf:
+    case FN_partial_global:
     case FN_decode_past_ret:
         /* These functions cannot be inlined (yet). */
         drcalls_insert_call(dc, bb, entry, func_ptrs[i], false, 0);

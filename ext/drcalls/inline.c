@@ -63,6 +63,7 @@ inline_init(void)
     callee_info_init(&default_callee_info);
     clean_call_info_init(&default_clean_call_info, NULL, false, NULL, 0);
     callee_info_table_init();
+    rewrite_opnd_table_init();
 }
 
 void

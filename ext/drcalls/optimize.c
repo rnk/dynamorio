@@ -300,22 +300,148 @@ propagate_copy(void *dc, instrlist_t *ilist, instr_t *copy)
     return true;
 }
 
+/******************************************************************************
+ * Operand rewriting support.
+ */
+
+/* We can fold if use_reg is exactly imm_reg or if it's the 64-bit version of
+ * imm_reg and val is less than INT_MAX.  If it is larger, it will be sign
+ * extended when the code requires zero extension. */
 static bool
-can_use_immed_for_opnd_reg(ptr_int_t val, reg_id_t dst_reg, reg_id_t opnd_reg)
+can_use_immed_for_opnd_reg(ptr_int_t val, reg_id_t imm_reg, reg_id_t use_reg)
 {
-    /* We can fold if opnd_reg is dst_reg or if it's the 64-bit version of
-     * dst_reg and val is less than INT_MAX.  If it is larger, it will be sign
-     * extended when the code requires zero extension. */
-    return (opnd_reg == dst_reg ||
-            IF_X64_ELSE((opnd_reg == reg_32_to_64(dst_reg) &&
+    return (use_reg == imm_reg ||
+            IF_X64_ELSE((use_reg == reg_32_to_64(imm_reg) &&
                          val <= INT_MAX), false));
 }
 
-static bool
-rewrite_reg_immed(void *dc, instr_t *instr, reg_id_t reg,
-                  ptr_int_t val, bool check_only)
+/* Operand types.  We're outside of DR core, so we can't use opnd.kind.
+ * Therefore, we make our own. */
+typedef enum {
+    OPND_REG,
+    OPND_IMMED_INT,
+    OPND_BASE_DISP,
+    OPND_OTHER,
+    OPND_LAST
+} rewrite_opnd_kind_t;
+
+static rewrite_opnd_kind_t
+rewrite_opnd_kind(opnd_t opnd)
 {
-    opnd_t imm = opnd_create_immed_int(val, OPSZ_4);
+    if (opnd_is_reg(opnd))       return OPND_REG;
+    if (opnd_is_immed_int(opnd)) return OPND_IMMED_INT;
+    if (opnd_is_base_disp(opnd)) return OPND_BASE_DISP;
+    return OPND_OTHER;
+}
+
+typedef opnd_t (*rewrite_opnd_fn_t)(void *dc, reg_id_t reg, opnd_t new_opnd,
+                                    opnd_t old_opnd);
+static rewrite_opnd_fn_t rewrite_table[OPND_LAST][OPND_LAST];
+
+/******************************************************************************
+ * Operand rewriting functions.
+ */
+
+static opnd_t
+rewrite_reg_into_reg(void *dc, reg_id_t reg, opnd_t new_opnd, opnd_t old_opnd)
+{
+    DR_ASSERT_MSG(false, "NYI");
+    return opnd_create_null();
+}
+
+static opnd_t
+rewrite_reg_into_memref(void *dc, reg_id_t reg, opnd_t new_opnd, opnd_t old_opnd)
+{
+    DR_ASSERT_MSG(false, "NYI");
+    return opnd_create_null();
+}
+
+static opnd_t
+rewrite_immed_into_reg(void *dc, reg_id_t reg, opnd_t new_opnd, opnd_t old_opnd)
+{
+    ptr_int_t imm_val = opnd_get_immed_int(new_opnd);
+    reg_id_t use_reg = opnd_get_reg(old_opnd);
+    if (can_use_immed_for_opnd_reg(imm_val, reg, use_reg)) {
+        return new_opnd;
+    } else {
+        return opnd_create_null();
+    }
+}
+
+static opnd_t
+rewrite_immed_into_memref(void *dc, reg_id_t reg, opnd_t new_opnd, opnd_t old_opnd)
+{
+    ptr_int_t imm_val = opnd_get_immed_int(new_opnd);
+    int disp = opnd_get_disp(old_opnd);
+    reg_id_t base = opnd_get_base(old_opnd);
+    reg_id_t index = opnd_get_index(old_opnd);
+    int scale = opnd_get_scale(old_opnd);
+    opnd_size_t sz = opnd_get_size(old_opnd);
+
+    if (can_use_immed_for_opnd_reg(imm_val, reg, index)) {
+        /* If reg was used as the index register, we can drop the index,
+         * multiply immediate by scale, and encode that. */
+        disp += imm_val * scale;
+        index = DR_REG_NULL;
+        scale = 0;
+    } else if (can_use_immed_for_opnd_reg(imm_val, reg, base)) {
+        /* If reg was used as the base register, we can drop the base and add
+         * imm_val to disp. */
+        disp += imm_val;
+        base = DR_REG_NULL;
+    } else {
+        return opnd_create_null();
+    }
+
+    return opnd_create_base_disp(base, index, scale, disp, sz);
+}
+
+static opnd_t
+rewrite_memref_into_reg(void *dc, reg_id_t reg, opnd_t new_opnd, opnd_t old_opnd)
+{
+    DR_ASSERT_MSG(false, "NYI");
+    return opnd_create_null();
+}
+
+static opnd_t
+rewrite_memref_into_memref(void *dc, reg_id_t reg, opnd_t new_opnd, opnd_t old_opnd)
+{
+    DR_ASSERT_MSG(false, "NYI");
+    return opnd_create_null();
+}
+
+/*****************************************************************************/
+
+void
+rewrite_opnd_table_init(void)
+{
+    rewrite_table[OPND_REG      ][OPND_REG      ] = rewrite_reg_into_reg;
+    rewrite_table[OPND_REG      ][OPND_BASE_DISP] = rewrite_reg_into_memref;
+    rewrite_table[OPND_IMMED_INT][OPND_REG      ] = rewrite_immed_into_reg;
+    rewrite_table[OPND_IMMED_INT][OPND_BASE_DISP] = rewrite_immed_into_memref;
+    rewrite_table[OPND_BASE_DISP][OPND_REG      ] = rewrite_memref_into_reg;
+    rewrite_table[OPND_BASE_DISP][OPND_BASE_DISP] = rewrite_memref_into_memref;
+}
+
+static opnd_t
+rewrite_reg_in_opnd(void *dc, reg_id_t reg, opnd_t new_opnd, opnd_t old_opnd)
+{
+    rewrite_opnd_kind_t new_kind = rewrite_opnd_kind(new_opnd);
+    rewrite_opnd_kind_t old_kind = rewrite_opnd_kind(old_opnd);
+    rewrite_opnd_fn_t rewrite_fn = rewrite_table[new_kind][old_kind];
+
+    if (rewrite_fn == NULL) {
+        return opnd_create_null();
+    } else {
+        return rewrite_fn(dc, reg, new_opnd, old_opnd);
+    }
+}
+
+static bool
+rewrite_reg_in_instr(void *dc, instr_t *instr, reg_id_t reg, opnd_t new_opnd,
+                     bool check_only)
+{
+    opnd_t combined_opnd;
     bool failed = false;
     int i;
 
@@ -323,82 +449,32 @@ rewrite_reg_immed(void *dc, instr_t *instr, reg_id_t reg,
     if (check_only)
         instr = instr_clone(dc, instr);
 
+    /* Iterate all opnds that read reg, and rewrite the ones that do. */
     for (i = 0; i < instr_num_srcs(instr); i++) {
-        opnd_t opnd = instr_get_src(instr, i);
-        if (!opnd_uses_reg(opnd, reg))
+        opnd_t old_opnd = instr_get_src(instr, i);
+        if (!opnd_uses_reg(old_opnd, reg))
             continue;
-        if (opnd_is_reg(opnd)) {
-            reg_id_t opnd_reg = opnd_get_reg(opnd);
-            if (can_use_immed_for_opnd_reg(val, reg, opnd_reg)) {
-                instr_set_src(instr, i, imm);
-            } else {
-                dr_log(dc, LOG_CLEANCALL, 3,
-                       "drcalls: unable to fold due to subreg use at "PFX"\n",
-                       instr_get_app_pc(instr));
-                failed = true;
-                break;
-            }
-        } else if (opnd_is_base_disp(opnd)) {
-            ptr_int_t disp = opnd_get_disp(opnd);
-            reg_id_t base = opnd_get_base(opnd);
-            reg_id_t index = opnd_get_index(opnd);
-            int scale = opnd_get_scale(opnd);
-            opnd_size_t sz = opnd_get_size(opnd);
-            if (can_use_immed_for_opnd_reg(val, reg, index)) {
-                disp += val * scale;
-                index = DR_REG_NULL;
-                scale = 0;
-            } else if (can_use_immed_for_opnd_reg(val, reg, base)) {
-                disp += val;
-                if (scale == 1) {
-                    base = index;
-                    index = DR_REG_NULL;
-                    scale = 0;
-                } else if (scale == 2) {
-                    base = index;
-                    index = index;
-                    scale = 1;
-                } else {
-                    dr_log(dc, LOG_CLEANCALL, 3,
-                           "drcalls: can't fold immed with scale %d\n", scale);
-                    failed = true;
-                    break;
-                }
-            } else {
-                dr_log(dc, LOG_CLEANCALL, 3,
-                       "drcalls: unable to fold immed in subreg use at "PFX"\n",
-                       instr_get_app_pc(instr));
-                failed = true;
-                break;
-            }
-            instr_set_src(instr, i, opnd_create_base_disp
-                          (base, index, scale, disp, sz));
-        } else {
-            dr_log(dc, LOG_CLEANCALL, 3,
-                   "drcalls: unrecognized use of reg at "PFX"\n",
-                   instr_get_app_pc(instr));
+        combined_opnd = rewrite_reg_in_opnd(dc, reg, new_opnd, old_opnd);
+        if (opnd_is_null(combined_opnd)) {
             failed = true;
             break;
         }
-        if (!check_only) {
-            dr_log(dc, LOG_CLEANCALL, 3,
-                   "drcalls: folded immediate into src opnd at "PFX"\n",
-                   instr_get_app_pc(instr));
-        }
+        instr_set_src(instr, i, combined_opnd);
     }
 
     for (i = 0; i < instr_num_dsts(instr); i++) {
-        opnd_t opnd = instr_get_src(instr, i);
+        opnd_t old_opnd = instr_get_dst(instr, i);
         /* Only base-disp opnds read regs. */
-        if (!opnd_is_base_disp(opnd))
+        if (!opnd_is_base_disp(old_opnd))
             continue;
-        if (opnd_uses_reg(opnd, reg)) {
-            dr_log(dc, LOG_CLEANCALL, 3,
-                   "drcalls: can't yet fold immediate into dst opnd at "PFX"\n",
-                   instr_get_app_pc(instr));
+        if (!opnd_uses_reg(old_opnd, reg))
+            continue;
+        combined_opnd = rewrite_reg_in_opnd(dc, reg, new_opnd, old_opnd);
+        if (opnd_is_null(combined_opnd)) {
             failed = true;
             break;
         }
+        instr_set_dst(instr, i, combined_opnd);
     }
 
     failed |= !can_encode(instr);
@@ -410,15 +486,14 @@ rewrite_reg_immed(void *dc, instr_t *instr, reg_id_t reg,
 }
 
 static bool
-rewrite_live_range_immed(void *dc, instr_t *start, instr_t *end,
-                         reg_id_t reg, ptr_int_t val, bool check_only)
+rewrite_live_range_opnd(void *dc, instr_t *def, instr_t *end, reg_id_t reg,
+                        opnd_t opnd, bool check_only)
 {
     instr_t *instr;
 
-    ASSERT(reg_get_size(reg) == OPSZ_4);
-    for (instr = instr_get_next(start); instr != end;
+    for (instr = instr_get_next(def); instr != end;
          instr = instr_get_next(instr))
-        if (!rewrite_reg_immed(dc, instr, reg, val, check_only))
+        if (!rewrite_reg_in_instr(dc, instr, reg, opnd, check_only))
             return false;
     return true;
 }
@@ -509,7 +584,6 @@ fold_mov_immed(void *dc, instrlist_t *ilist, instr_t *mov_imm)
 {
     opnd_t imm = instr_get_src(mov_imm, 0);
     opnd_t dst = instr_get_dst(mov_imm, 0);
-    ptr_int_t val = opnd_get_immed_int(imm);
     reg_id_t reg = opnd_get_reg(dst);
     instr_t *end = NULL;
     DEBUG_DECLARE(bool ok;)
@@ -534,9 +608,9 @@ fold_mov_immed(void *dc, instrlist_t *ilist, instr_t *mov_imm)
     dr_log(dc, LOG_CLEANCALL, 3,
            "drcalls: attempting to fold mov_imm at "PFX"\n",
            instr_get_app_pc(mov_imm));
-    if (!rewrite_live_range_immed(dc, mov_imm, end, reg, val, true))
+    if (!rewrite_live_range_opnd(dc, mov_imm, end, reg, imm, true))
         return false;
-    IF_DEBUG(ok =) rewrite_live_range_immed(dc, mov_imm, end, reg, val, false);
+    IF_DEBUG(ok =) rewrite_live_range_opnd(dc, mov_imm, end, reg, imm, false);
     ASSERT(ok);
     dr_log(dc, LOG_CLEANCALL, 3,
            "drcalls: folded immediate mov at "PFX"\n",
@@ -827,6 +901,8 @@ try_fold_immeds(void *dc, void *dc_alloc, instrlist_t *ilist)
  * st r1 -> rel/abs
  * ...
  * mov r1 -> r2  # or nothing if r1 == r2
+ *
+ * Could also match ld ... no st ... ld.
  */
 void
 redundant_load_elim(void *dc, void *dc_alloc, instrlist_t *ilist)

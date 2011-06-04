@@ -1242,7 +1242,7 @@ analyze_callee_partial(void *dc, callee_info_t *ci)
     opnd_t tgt;
     bool taken_fast, fallthrough_fast;
 
-    if (opt_cleancall < 2) {
+    if (opt_cleancall < 3) {
         dr_log(dc, LOG_CLEANCALL, 3,
                "drcalls: partial inlining disabled: opt_cleancall: %d.\n",
                opt_cleancall);
