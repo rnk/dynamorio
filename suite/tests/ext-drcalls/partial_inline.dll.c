@@ -108,8 +108,6 @@ event_bb(void *dc, void *entry_pc, instrlist_t *bb, bool for_trace,
          * operation size.  We don't want those. */
         if (instr_is_nop(instr))
             continue;
-        if (instr_get_app_pc(instr) == NULL)
-            continue;
         if (instr_reads_memory(instr)) {
             for (i = 0; i < instr_num_srcs(instr); i++) {
                 if (opnd_is_memory_reference(instr_get_src(instr, i))) {

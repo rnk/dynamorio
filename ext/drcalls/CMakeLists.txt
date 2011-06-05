@@ -53,13 +53,33 @@ endif (UNIX)
 set(INSCOUNT_CLIENTS
   inscount_cleancall
   inscount_leancall
-  inscount_manual)
+  inscount_manual
+  )
 foreach (client ${INSCOUNT_CLIENTS})
   set(src "bench_clients/${client}.c")
   add_library(${client} SHARED ${src} "bench_clients/inscount_common.c")
   configure_DynamoRIO_client(${client})
   use_DynamoRIO_extension(${client} drcalls)
 endforeach ()
+
+if (BUILD_TESTS)
+  # Unit tests.  These are finer grained than the system tests in suite/tests.
+  # They also break the abstraction barrier, and if we go to shared libraries, may
+  # need macro magic or an export list to get access to internal functions.
+  set(UNIT_TESTS
+    optimize_test
+    )
+  foreach (test ${UNIT_TESTS})
+    # exe and test targets must have different names or things explode.
+    set(src "${test}.c")
+    set(exe "drcalls.${test}")
+    set(test "unittest|drcalls.${test}")
+    add_executable(${exe} ${src})
+    configure_DynamoRIO_standalone(${exe})
+    target_link_libraries(${exe} drcalls)
+    add_test(NAME ${test} COMMAND ${exe})
+  endforeach ()
+endif ()
 
 export(TARGETS drcalls
   FILE ${PROJECT_BINARY_DIR}/cmake/${exported_targets_name}.cmake

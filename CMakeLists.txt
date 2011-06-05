@@ -1260,6 +1260,11 @@ DR_install(FILES
   DESTINATION ${INSTALL_CMAKE}
 )
 
+if (BUILD_TESTS)
+  # Comes before adding subdirectories to allow them to have tests.
+  enable_testing()
+endif ()
+
 # Extensions (i#277/PR 540817)
 if (BUILD_EXT)
   add_subdirectory(ext)
@@ -1278,7 +1283,6 @@ if (BUILD_SAMPLES)
 endif (BUILD_SAMPLES)
 
 if (BUILD_TESTS)
-  enable_testing()
   add_subdirectory(suite/tests)
   # add Dashboard support
   include(CTest)

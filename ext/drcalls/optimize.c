@@ -311,7 +311,7 @@ static bool
 can_use_immed_for_opnd_reg(ptr_int_t val, reg_id_t imm_reg, reg_id_t use_reg)
 {
     return (use_reg == imm_reg ||
-            IF_X64_ELSE((use_reg == reg_32_to_64(imm_reg) &&
+            IF_X64_ELSE((use_reg == reg_to_pointer_sized(imm_reg) &&
                          val <= INT_MAX), false));
 }
 
@@ -389,6 +389,13 @@ rewrite_immed_into_memref(void *dc, reg_id_t reg, opnd_t new_opnd, opnd_t old_op
          * imm_val to disp. */
         disp += imm_val;
         base = DR_REG_NULL;
+        /* If we don't need scale, we can use plain base disp for a simpler
+         * operand. */
+        if (scale == 1) {
+            base = index;
+            index = DR_REG_NULL;
+            scale = 0;
+        }
     } else {
         return opnd_create_null();
     }
@@ -586,14 +593,17 @@ fold_mov_immed(void *dc, instrlist_t *ilist, instr_t *mov_imm)
     opnd_t dst = instr_get_dst(mov_imm, 0);
     reg_id_t reg = opnd_get_reg(dst);
     instr_t *end = NULL;
-    DEBUG_DECLARE(bool ok;)
+    ptr_int_t val = opnd_get_immed_int(imm);
+    DEBUG_DECLARE(bool ok);
 
     /* For now we only deal with 32-bit immediates, since pointer values are
      * trickier to rewrite. */
-    /* TODO(rnk): If pointer value is < 4 GB, can use reladdr memory operands
-     * instead of materializing the pointer as an immediate.  */
-    if (opnd_get_size(dst) != OPSZ_4)
+    /* TODO(rnk): Worry about overflow when combining with other displacements.
+     */
+#ifdef X64
+    if (val < INT_MIN || val > INT_MAX)
         return false;
+#endif
 
     if (!find_next_full_clobber(dc, mov_imm, reg, &end))
         return false;
