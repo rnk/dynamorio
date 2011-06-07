@@ -36,16 +36,17 @@
 #include "dr_api.h"
 #include "hashtable.h"
 
-#include <stddef.h> /* for offsetof */
+#include <stddef.h> /* offsetof */
 #include <string.h> /* for memcmp */
 
 /* internal includes */
 #include "callee.h"
+#include "clean_call.h"
 #include "code_cache.h"
 #include "core_compat.h"
 #include "inline.h"
+#include "mcontext.h"
 #include "optimize.h"
-#include "instr_builder.h"
 
 static callee_info_t     default_callee_info;
 static clean_call_info_t default_clean_call_info;
@@ -355,216 +356,6 @@ analyze_clean_call(void *dcontext, instr_t *where, void *callee,
     return cci;
 }
 
-/* Maps DR_REG_* enums to offsets into dr_mcontext_t.  Relies on register enum
- * ordering in instr.h.  Indexed by DR_REG_X* - DR_REG_XAX. */
-const uint reg_mc_offset[NUM_GP_REGS] = {
-    offsetof(dr_mcontext_t, xax),
-    offsetof(dr_mcontext_t, xcx),
-    offsetof(dr_mcontext_t, xdx),
-    offsetof(dr_mcontext_t, xbx),
-    offsetof(dr_mcontext_t, xsp),
-    offsetof(dr_mcontext_t, xbp),
-    offsetof(dr_mcontext_t, xsi),
-    offsetof(dr_mcontext_t, xdi)
-#ifdef X64
-    ,
-    offsetof(dr_mcontext_t, r8 ),
-    offsetof(dr_mcontext_t, r9 ),
-    offsetof(dr_mcontext_t, r10),
-    offsetof(dr_mcontext_t, r11),
-    offsetof(dr_mcontext_t, r12),
-    offsetof(dr_mcontext_t, r13),
-    offsetof(dr_mcontext_t, r14),
-    offsetof(dr_mcontext_t, r15)
-#endif
-};
-
-#define XFLAGS_OFFSET offsetof(dr_mcontext_t, xflags)
-
-/* Turn an offset into dr_mcontext_t into an opnd_t that will access that slot
- * for this callee.  For example, mc_frame_opnd(ci, XAX_OFFSET) gets a memory
- * operand for the XAX slot.
- */
-static opnd_t
-mc_frame_opnd(uint framesize, uint mc_offset)
-{
-    uint frame_offset = framesize - sizeof(dr_mcontext_t) + mc_offset;
-    return OPND_CREATE_MEMPTR(DR_REG_XSP, frame_offset);
-}
-
-/* Saves a register to the mcontext at the base of the stack.  Assumes XSP is
- * at dstack - framesize.
- */
-static void
-insert_mc_reg_save(void *dc, uint framesize, instrlist_t *ilist,
-                   instr_t *where, reg_id_t reg)
-{
-    PRE(ilist, where, INSTR_CREATE_mov_st
-        (dc, mc_frame_opnd(framesize, reg_mc_offset[reg - DR_REG_XAX]),
-         opnd_create_reg(reg)));
-}
-
-/* Loads a register from the mcontext at the base of the stack.  Assumes XSP is
- * at dstack - framesize.
- */
-static void
-insert_mc_reg_restore(void *dc, uint framesize, instrlist_t *ilist,
-                      instr_t *where, reg_id_t reg)
-{
-    PRE(ilist, where, INSTR_CREATE_mov_ld
-        (dc, opnd_create_reg(reg),
-         mc_frame_opnd(framesize, reg_mc_offset[reg - DR_REG_XAX])));
-}
-
-/* Saves aflags to the mcontext at the base of the stack.  Assumes XSP is at
- * dstack - framesize.  Assumes that XAX is dead and can be used as scratch.
- */
-static void
-insert_mc_flags_save(void *dc, uint framesize, instrlist_t *ilist,
-                     instr_t *where)
-{
-    PRE(ilist, where, INSTR_CREATE_lahf(dc));
-    PRE(ilist, where, INSTR_CREATE_setcc
-        (dc, OP_seto, opnd_create_reg(DR_REG_AL)));
-    PRE(ilist, where, INSTR_CREATE_mov_st
-        (dc, mc_frame_opnd(framesize, XFLAGS_OFFSET),
-         opnd_create_reg(DR_REG_XAX)));
-}
-
-/* Saves aflags to the mcontext at the base of the stack.  Assumes XSP is at
- * dstack - framesize.  Assumes that XAX is dead and can be used as scratch.
- */
-static void
-insert_mc_flags_restore(void *dc, uint framesize, instrlist_t *ilist,
-                        instr_t *where)
-{
-    PRE(ilist, where, INSTR_CREATE_mov_ld
-        (dc, opnd_create_reg(DR_REG_XAX),
-         mc_frame_opnd(framesize, XFLAGS_OFFSET)));
-    PRE(ilist, where, INSTR_CREATE_add
-        (dc, opnd_create_reg(DR_REG_AL), OPND_CREATE_INT8(0x7F)));
-    PRE(ilist, where, INSTR_CREATE_sahf(dc));
-}
-
-static opnd_t
-opnd_get_tls_xax(void *dc)
-{
-    /* XXX: We access the XAX slot by first requesting an opnd for slot 3, which
-     * is xbx's slot, and we know xax is one before xbx, so we subtract the size
-     * of a slot from the displacement. */
-    /* TODO(rnk): This is a shameful way to access XAX, but I don't
-     * actually want to expose this information to clients.  */
-    opnd_t slot = dr_reg_spill_slot_opnd(dc, SPILL_SLOT_3);
-    opnd_set_disp(&slot, opnd_get_disp(slot) - sizeof(reg_t));
-    return slot;
-}
-
-static opnd_t
-opnd_get_tls_dcontext(void *dc)
-{
-    /* XXX: We access the dcontext slot by first requesting an opnd for slot 1,
-     * which is xdx's slot, and we know xdx is one before dcontext, so we add
-     * the size of a slot to the displacement. */
-    opnd_t slot = dr_reg_spill_slot_opnd(dc, SPILL_SLOT_1);
-    opnd_set_disp(&slot, opnd_get_disp(slot) + sizeof(reg_t));
-    return slot;
-}
-
-static uint
-get_dstack_offset(void)
-{
-    /* XXX: Relying on undocumented DynamoRIO internals: dcontext is not exposed
-     * to extensions, but dstack is part of the offset-critical portion of
-     * dcontext, so it's offset is unlikely to change.  We hardcode the size
-     * here.
-     *
-     * Layout is the following:
-     * dcontext {
-     *   upcontext {
-     *     priv_mcontext {
-     *       gprs
-     *       flags
-     *       pc
-     *       padding
-     *       SSE
-     *     }
-     *     int
-     *     bool
-     *   }
-     *   ptr
-     *   ptr
-     *   ptr
-     *   dstack
-     * }
-     */
-#ifdef X64
-# ifdef WINDOWS
-#  define NUM_XMM_SLOTS 6 /* xmm0-5 */
-# else
-#  define NUM_XMM_SLOTS 16 /* xmm0-15 */
-# endif
-# define PRE_XMM_PADDING 16
-#else
-# define NUM_XMM_SLOTS 8 /* xmm0-7 */
-# define PRE_XMM_PADDING 24
-#endif
-#define XMM_SAVED_REG_SIZE  32
-    uint psz = sizeof(reg_t);
-    uint priv_size = IF_X64_ELSE(16, 8) * psz + 2 * psz;
-    priv_size += PRE_XMM_PADDING + NUM_XMM_SLOTS * XMM_SAVED_REG_SIZE;
-    priv_size = ALIGN_FORWARD_UINT(priv_size + sizeof(int) + sizeof(bool), psz);
-    return priv_size + 3 * psz;
-}
-
-static void
-insert_switch_to_dstack(void *dc, const callee_info_t *ci, instrlist_t *ilist,
-                        instr_t *where)
-{
-    PRE(ilist, where, instr_create_0dst_1src
-        (dc, DRC_OP_dstack, OPND_CREATE_INT32(ci->framesize)));
-}
-
-static uint
-get_framesize(instr_t *instr)
-{
-    ASSERT(instr_get_opcode(instr) == DRC_OP_dstack ||
-           instr_get_opcode(instr) == DRC_OP_appstack);
-    return (uint)opnd_get_immed_int(instr_get_src(instr, 0));
-}
-
-static void
-expand_op_dstack(void *dc, instrlist_t *ilist, instr_t *where)
-{
-    opnd_t xsp = opnd_create_reg(DR_REG_XSP);
-    uint framesize = get_framesize(where);
-
-    /* Spill XSP to TLS_XAX_SLOT because it's not exposed to the client. */
-    PRE(ilist, where, INSTR_CREATE_mov_st(dc, opnd_get_tls_xax(dc), xsp));
-    /* Switch to dstack. */
-    PRE(ilist, where, INSTR_CREATE_mov_ld(dc, xsp, opnd_get_tls_dcontext(dc)));
-    PRE(ilist, where, INSTR_CREATE_mov_ld
-        (dc, xsp, OPND_CREATE_MEMPTR(DR_REG_XSP, get_dstack_offset())));
-    /* Make room for a partially initialized mcontext
-     * structure. */
-    PRE(ilist, where, INSTR_CREATE_lea
-        (dc, xsp, OPND_CREATE_MEM_lea(DR_REG_XSP, DR_REG_NULL, 0, -framesize)));
-}
-
-static void
-insert_switch_to_appstack(void *dc, const callee_info_t *ci, instrlist_t *ilist,
-                          instr_t *where)
-{
-    PRE(ilist, where, instr_create_0dst_1src
-        (dc, DRC_OP_appstack, OPND_CREATE_INT32(ci->framesize)));
-}
-
-static void
-expand_op_appstack(void *dc, instrlist_t *ilist, instr_t *where)
-{
-    opnd_t xsp = opnd_create_reg(DR_REG_XSP);
-    PRE(ilist, where, INSTR_CREATE_mov_ld(dc, xsp, opnd_get_tls_xax(dc)));
-}
-
 static void
 insert_inline_reg_save(void *dc, clean_call_info_t *cci,
                        instrlist_t *ilist, instr_t *where, opnd_t *args)
@@ -613,36 +404,28 @@ insert_inline_reg_restore(void *dc, clean_call_info_t *cci,
     }
 }
 
-static reg_id_t
-shrink_reg_for_param(reg_id_t regular, opnd_t arg)
-{
-#ifdef X64
-    if (opnd_get_size(arg) == OPSZ_4) { /* we ignore var-sized */
-        /* PR 250976 #2: leave 64-bit only if an immed w/ top bit set (we
-         * assume user wants sign-extension; that is after all what happens
-         * on a push of a 32-bit immed) */
-        if (!opnd_is_immed_int(arg) ||
-            (opnd_get_immed_int(arg) & 0x80000000) == 0)
-            return reg_64_to_32(regular);
-    }
-#endif
-    return regular;
-}
-
 static void
 insert_inline_arg_setup(void *dc, clean_call_info_t *cci, instrlist_t *ilist,
                         instr_t *where, opnd_t *args, bool is_slowpath)
 {
     uint i;
     callee_info_t *ci = cci->callee_info;
+    bool regs_from_mc[NUM_GP_REGS];
 
     if (cci->num_args == 0)
         return;
 
+    if (is_slowpath) {
+        /* If we're in the slowpath, any registers used inline will have been
+         * saved and possibly clobbered, so we reload them from the mcontext. */
+        memcpy(regs_from_mc, ci->reg_used, sizeof(regs_from_mc));
+    } else {
+        memset(regs_from_mc, 0, sizeof(regs_from_mc));
+    }
+
     ASSERT(cci->num_args <= IF_X64_ELSE(dr_num_reg_parm(), 1));
     for (i = 0; i < cci->num_args; i++) {
         reg_id_t reg = IF_X64_ELSE(dr_reg_parm(i), DR_REG_XAX);
-        opnd_t dst_opnd;
         if (!ci->reg_used[reg - DR_REG_XAX]) {
             if (!is_slowpath) {
                 dr_log(dc, LOG_CLEANCALL, 2,
@@ -651,37 +434,11 @@ insert_inline_arg_setup(void *dc, clean_call_info_t *cci, instrlist_t *ilist,
                 continue;
             }
         }
-        reg = shrink_reg_for_param(reg, args[i]);
-        dst_opnd = opnd_create_reg(reg);
         dr_log(dc, LOG_CLEANCALL, 2,
                "drcalls: inlining clean call "PFX", passing arg via reg %s.\n",
                ci->start, get_register_name(reg));
-        if (opnd_is_immed_int(args[i])) {
-            PRE(ilist, where, INSTR_CREATE_mov_imm (dc, dst_opnd, args[i]));
-        } else if (opnd_is_reg(args[i])) {
-            reg_id_t src = reg_to_pointer_sized(opnd_get_reg(args[i]));
-            if (src == DR_REG_XSP) {
-                DR_ASSERT_MSG(false, "Not yet tested");
-                PRE(ilist, where, INSTR_CREATE_mov_ld
-                    (dc, dst_opnd, opnd_get_tls_xax(dc)));
-            } else {
-                if (is_slowpath && ci->reg_used[src - DR_REG_XAX]) {
-                    /* If we used src in the inline code, we need to restore it
-                     * to the application value before reading it again.
-                     */
-                    opnd_t mc_src = mc_frame_opnd
-                        (ci->framesize, reg_mc_offset[src - DR_REG_XAX]);
-                    PRE(ilist, where,
-                        INSTR_CREATE_mov_ld(dc, dst_opnd, mc_src));
-                    DR_ASSERT_MSG(false, "Not yet tested");
-                } else {
-                    PRE(ilist, where,
-                        INSTR_CREATE_mov_ld(dc, dst_opnd, args[i]));
-                }
-            }
-        } else {
-            PRE(ilist, where, INSTR_CREATE_mov_ld(dc, dst_opnd, args[i]));
-        }
+        materialize_arg_into_reg(dc, ilist, where, ci->framesize, regs_from_mc,
+                                 args[i], reg);
     }
 #ifndef X64
     ASSERT(!cci->reg_skip[0]);
@@ -784,7 +541,7 @@ insert_inline_clean_call(void *dcontext, clean_call_info_t *cci,
     }
 
     ASSERT(cci->ilist != NULL);
-    insert_switch_to_dstack(dcontext, ci, ilist, where);
+    insert_switch_to_dstack(dcontext, ci->framesize, ilist, where);
     insert_inline_reg_save(dcontext, cci, ilist, where, args);
     instr = instrlist_first(callee);
     while (instr != NULL) {
@@ -800,18 +557,39 @@ insert_inline_clean_call(void *dcontext, clean_call_info_t *cci,
     instrlist_destroy(dcontext, callee);
     cci->ilist = NULL;
     insert_inline_reg_restore(dcontext, cci, ilist, where);
-    insert_switch_to_appstack(dcontext, ci, ilist, where);
+    insert_switch_to_appstack(dcontext, ci->framesize, ilist, where);
 }
 
-/* Save or restore all application registers that weren't saved inline. */
+/* Save or restore flags if it wasn't saved inline. */
 static void
-insert_slowpath_mc_regs(void *dc, callee_info_t *ci, bool save,
-                        instrlist_t *ilist)
+insert_slowpath_mc_flags(void *dc, callee_info_t *ci, bool save,
+                         instrlist_t *ilist)
 {
+    /* Save flags, but only if they weren't already saved, which happens if
+     * there was either a read or a write (a read implies a clear, which is a
+     * write). */
+    /* TODO(rnk): Unduplicate this logic with cci->skip_save_aflags. */
+    if (!(ci->read_aflags || ci->write_aflags)) {
+        /* TODO(rnk): This clobbers XAX, which could be used to pass args into
+         * slowpath. */
+        /* The + 16 is for ret addr + alignment. */
+        if (save)
+            insert_mc_flags_save(dc, ci->framesize + 16, ilist, NULL);
+        else
+            insert_mc_flags_restore(dc, ci->framesize + 16, ilist, NULL);
+    }
+}
+
+static void
+insert_slowpath_mc(void *dc, callee_info_t *ci, bool save, instrlist_t *ilist)
+{
+    uint framesize = ci->framesize + 16;  /* ret addr + alignment */
+    bool save_regs[NUM_GP_REGS];
     reg_id_t reg;
     int i;
-    uint framesize = ci->framesize + 16;  /* ret addr + alignment */
 
+    /* Calculate which GPRs to save in the slowpath. */
+    memset(save_regs, 0, sizeof(save_regs));  /* Default to none. */
     for (reg = DR_REG_XAX; reg < DR_REG_XAX + NUM_GP_REGS; reg++) {
         bool is_arg;
         /* If the register was used inline it was saved inline. */
@@ -836,85 +614,20 @@ insert_slowpath_mc_regs(void *dc, callee_info_t *ci, bool save,
         }
         if (is_arg)
             continue;
-
-        if (save)
-            insert_mc_reg_save(dc, framesize, ilist, NULL, reg);
-        else
-            insert_mc_reg_restore(dc, framesize, ilist, NULL, reg);
+        save_regs[reg - DR_REG_XAX] = true;
     }
-}
-
-/* Save or restore flags if it wasn't saved inline. */
-static void
-insert_slowpath_mc_flags(void *dc, callee_info_t *ci, bool save,
-                         instrlist_t *ilist)
-{
-    /* Save flags, but only if they weren't already saved, which happens if
-     * there was either a read or a write (a read implies a clear, which is a
-     * write). */
-    /* TODO(rnk): Unduplicate this logic with cci->skip_save_aflags. */
-    if (!(ci->read_aflags || ci->write_aflags)) {
-        /* TODO(rnk): This clobbers XAX, which could be used to pass args into
-         * slowpath. */
-        /* The + 16 is for ret addr + alignment. */
-        if (save)
-            insert_mc_flags_save(dc, ci->framesize + 16, ilist, NULL);
-        else
-            insert_mc_flags_restore(dc, ci->framesize + 16, ilist, NULL);
-    }
-}
-
-static uint
-move_mm_reg_opcode(bool aligned16, bool aligned32)
-{
-    if (YMM_ENABLED()) {
-        /* must preserve ymm registers */
-        return (aligned32 ? OP_vmovdqa : OP_vmovdqu);
-    }
-    else if (proc_has_feature(FEATURE_SSE2)) {
-        return (aligned16 ? OP_movdqa : OP_movdqu);
-    } else {
-        CLIENT_ASSERT(proc_has_feature(FEATURE_SSE), "running on unsupported processor");
-        return (aligned16 ? OP_movaps : OP_movups);
-    }
-}
-
-static void
-insert_slowpath_mc(void *dc, callee_info_t *ci, bool save,
-                   instrlist_t *ilist)
-{
-    uint framesize = ci->framesize + 16;  /* ret addr + alignment */
 
     /* Save/restore flags uses XAX, so on save it must come after regs, and on
      * restore it must come first. */
     if (save) {
-        insert_slowpath_mc_regs(dc, ci, save, ilist);
+        insert_mc_regs(dc, framesize, save, save_regs, ilist, NULL);
         insert_slowpath_mc_flags(dc, ci, save, ilist);
+        insert_mc_xmm_regs(dc, framesize, save, ilist, NULL);
     } else {
+        insert_mc_xmm_regs(dc, framesize, save, ilist, NULL);
         insert_slowpath_mc_flags(dc, ci, save, ilist);
-        insert_slowpath_mc_regs(dc, ci, save, ilist);
+        insert_mc_regs(dc, framesize, save, save_regs, ilist, NULL);
     }
-
-    /* Save XMM regs, if appropriate. */
-    if (dr_mcontext_xmm_fields_valid()) {
-        /* PR 264138: we must preserve xmm0-5 if on a 64-bit kernel */
-        /* We align the stack ourselves, so we assume aligned SSE ops are OK. */
-        int i;
-        uint opcode = move_mm_reg_opcode(/*aligned16=*/true, /*aligned32=*/true);
-        for (i = 0; i < NUM_XMM_SAVED; i++) {
-            uint mc_offset = offsetof(dr_mcontext_t, ymm) + i * XMM_SAVED_REG_SIZE;
-            uint frame_offset = framesize - sizeof(dr_mcontext_t) + mc_offset;
-            opnd_t reg = opnd_create_reg(REG_SAVED_XMM0 + (reg_id_t)i);
-            opnd_t mem = opnd_create_base_disp(DR_REG_XSP, DR_REG_NULL, 0,
-                                               frame_offset, OPSZ_16);
-            /* If we're saving, it's reg -> mem, otherwise mem -> reg. */
-            opnd_t src = save ? reg : mem;
-            opnd_t dst = save ? mem : reg;
-            APP(ilist, instr_create_1dst_1src(dc, opcode, dst, src));
-        }
-    }
-
-    /* FIXME i#433: need DR cxt switch and clean call to preserve ymm */
 }
 
 /* Emit the slowpath back to the callee for partially inlined functions.

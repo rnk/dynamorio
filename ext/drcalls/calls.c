@@ -37,6 +37,7 @@
 #include <stdarg.h> /* for varargs */
 
 /* internal includes */
+#include "clean_call.h"
 #include "code_cache.h"
 #include "core_compat.h"
 #include "lean_call.h"
@@ -111,8 +112,9 @@ drcalls_insert_call(void *dc, instrlist_t *ilist, instr_t *where, void *callee,
     } else {
         /* Otherwise, just use a clean call. */
         clean_call_info_destroy(dc, cci);
-        dr_insert_clean_call_vargs(dc, ilist, where, callee, fpstate, num_args,
-                                   args);
+        //dr_insert_clean_call_vargs(dc, ilist, where, callee, fpstate, num_args,
+                                   //args);
+        insert_clean_call(dc, ilist, where, callee, fpstate, num_args, args);
     }
 
     if (num_args > 0)

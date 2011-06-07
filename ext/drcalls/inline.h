@@ -73,6 +73,7 @@ struct _callee_info_t;
 app_pc emit_partial_slowpath(void *dc, struct _callee_info_t *ci);
 
 /* Pseudo-instruction opcodes. */
+/* TODO(rnk): Do these really belong here? */
 enum {
     DRC_OP_call = OP_AFTER_LAST,
     DRC_OP_dstack,

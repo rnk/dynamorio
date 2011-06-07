@@ -99,5 +99,8 @@
 
 #define YMM_ENABLED() (proc_has_feature(FEATURE_AVX))
 #define REG_SAVED_XMM0 (YMM_ENABLED() ? DR_REG_YMM0 : DR_REG_XMM0)
+#define XMM_SAVED_REG_SIZE  32
+
+#define MIN(x,y) ((x) <= (y) ? (x) : (y))
 
 #endif /* DRCALLS_EXT_COMPAT_H */

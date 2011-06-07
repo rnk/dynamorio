@@ -40,6 +40,10 @@
 #include <limits.h> /* for INT_MAX */
 #include <string.h>
 
+/* We don't have a good solution for conditionally disassembling to the log, so
+ * this ifdef VERBOSE controls the more verbose optimization logging. */
+//#define VERBOSE
+
 /* Dead register analysis abstraction.  Drive it by looping over instructions
  * in reverse.  At end of loop body, call reg_dead_update. */
 
@@ -89,31 +93,9 @@ liveness_update(liveness_t *liveness, instr_t *instr)
      */
 }
 
-/* Rewrite all reads of 'old' in 'opnd' to 'new', or return false.
+/******************************************************************************
+ * Operand rewriting support.
  */
-/* TODO(rnk): This doesn't handle al/ah type stuff.  ie, if we want to replace
- * RAX w/ RBX we need to rewrite BH to AH and not AL. */
-static void
-rewrite_opnd_reg(void *dc, instr_t *instr, opnd_t *opnd,
-                 reg_id_t old, reg_id_t new, bool check_only)
-{
-    int i;
-    new = reg_to_pointer_sized(new);
-    IF_X64(new = reg_64_to_32(new);)
-    for (i = 0; i < opnd_num_regs_used(*opnd); i++) {
-        reg_id_t reg_used = opnd_get_reg_used(*opnd, i);
-        if (reg_overlap(reg_used, old)) {
-            reg_id_t new_sized = reg_32_to_opsz(new, reg_get_size(reg_used));
-            if (!check_only) {
-                dr_log(dc, LOG_CLEANCALL, 3,
-                       "drcalls: rewriting reg %s to %s at "PFX"\n",
-                       get_register_name(reg_used), get_register_name(new_sized),
-                       instr_get_app_pc(instr));
-            }
-            opnd_replace_reg(opnd, reg_used, new_sized);
-        }
-    }
-}
 
 /* Wrapper for instr_is_encoding_possible that works on labels. */
 static bool
@@ -121,188 +103,6 @@ can_encode(instr_t *instr)
 {
     return instr_is_label(instr) || instr_is_encoding_possible(instr);
 }
-
-static bool
-rewrite_reg_dst(void *dc, instr_t *instr, reg_id_t old, reg_id_t new,
-                bool check_only)
-{
-    bool encodable;
-    opnd_t opnd;
-
-    /* Only rewrite instrs writing a single reg dst. */
-    if (!instr_num_dsts(instr) == 1)
-        return false;
-    opnd = instr_get_dst(instr, 0);
-    if (!opnd_is_reg(opnd))
-        return false;
-
-    /* Avoid side-effects on original instruction if we're just checking. */
-    if (check_only)
-        instr = instr_clone(dc, instr);
-
-    opnd = instr_get_dst(instr, 0);
-    rewrite_opnd_reg(dc, instr, &opnd, old, new, check_only);
-    instr_set_dst(instr, 0, opnd);
-
-    encodable = can_encode(instr);
-
-    if (check_only)
-        instr_destroy(dc, instr);
-
-    return encodable;
-}
-
-/* Rewrite reads from in instr from 'old' to 'new'.  Returns true or false if
- * the resulting instruction is encodable.  If check_only is true, the
- * instruction will not be modified regardless of success or failure. */
-static bool
-rewrite_reg_reads(void *dc, instr_t *instr, reg_id_t old, reg_id_t new,
-                  bool check_only)
-{
-    bool encodable;
-    int i;
-
-    /* Avoid side-effects on original instruction if we're just checking. */
-    if (check_only)
-        instr = instr_clone(dc, instr);
-
-    /* srcs */
-    for (i = 0; i < instr_num_srcs(instr); i++) {
-        opnd_t opnd = instr_get_src(instr, i);
-        rewrite_opnd_reg(dc, instr, &opnd, old, new, check_only);
-        instr_set_src(instr, i, opnd);
-    }
-
-    /* dsts */
-    for (i = 0; i < instr_num_dsts(instr); i++) {
-        opnd_t opnd = instr_get_dst(instr, i);
-        if (!opnd_is_base_disp(opnd))
-            continue;  /* The only reads in dsts are regs in base/disp opnds. */
-        rewrite_opnd_reg(dc, instr, &opnd, old, new, check_only);
-        instr_set_dst(instr, i, opnd);
-    }
-
-    encodable = can_encode(instr);
-
-    if (check_only)
-        instr_destroy(dc, instr);
-
-    return encodable;
-}
-
-/* Find the next full clobber of 'reg', if it exists.  If there is a
- * subregister write that does not fully clobber the register, return false.
- */
-static bool
-find_next_full_clobber(void *dc, instr_t *start, reg_id_t reg,
-                       instr_t **end)
-{
-    instr_t *instr;
-    int i;
-
-    /* Find the next write of dst.  If it's a complicated subregister write, we
-     * leave it alone.  Otherwise, we can rewrite up until that instruction. */
-    for (instr = instr_get_next(start); instr != NULL;
-         instr = instr_get_next(instr)) {
-        if (!instr_writes_to_reg(instr, reg))
-            continue;
-
-        for (i = 0; i < instr_num_dsts(instr); i++) {
-            opnd_t d = instr_get_dst(instr, i);
-            if (opnd_is_reg(d) && reg_overlap(opnd_get_reg(d), reg)) {
-                opnd_size_t sz = opnd_get_size(d);
-                if (sz == OPSZ_4 || sz == OPSZ_8) {
-                    /* dst is fully clobbered here. */
-                    *end = instr;
-                    return true;
-                } else {
-                    /* Subregister write, clobber is not full. */
-                    return false;
-                }
-            }
-        }
-    }
-    if (instr == NULL)
-        *end = NULL;
-    return true;
-}
-
-/* Rewrite all uses of reg 'old' to 'new' over the live range of 'old' starting
- * at start.  Rewrites the destination of start, and all reads up until the
- * next write that fully clobbers 'old'.  Returns false without making any
- * changes on failure. */
-static bool
-rewrite_live_range(void *dc, instr_t *start, reg_id_t old, reg_id_t new)
-{
-    instr_t *instr;
-    instr_t *last_instr = NULL;
-    DEBUG_DECLARE(bool ok);
-
-    /* We only rewrite up until the next instruction that fully clobbers the
-     * destination register.  If the update is not a full clobber (ie a write
-     * of a subreg) then we bail. */
-    if (!find_next_full_clobber(dc, start, old, &last_instr))
-        return false;
-    /* If the write contains any reads, make sure to update them.  For example,
-     * if %rax is old and %rbx is new and the following is last_instr:
-     * lea -24(%rax), %rax
-     * It should be rewritten as well to become:
-     * lea -24(%rbx), %rax
-     */
-    if (last_instr != NULL)
-        last_instr = instr_get_next(last_instr);
-
-    /* First check if we can rewrite the dst. */
-    if (!rewrite_reg_dst(dc, start, old, new, /*check_only=*/true))
-        return false;
-    /* Find all reads of old and check if we can rewrite. */
-    for (instr = instr_get_next(start); instr != last_instr;
-         instr = instr_get_next(instr))
-        if (!rewrite_reg_reads(dc, instr, old, new, /*check_only=*/true))
-            return false;
-
-    /* Now that we know this will work, actually rewrite the registers. */
-    IF_DEBUG(ok =) rewrite_reg_dst(dc, start, old, new, /*check_only=*/false);
-    ASSERT(ok);
-    for (instr = instr_get_next(start); instr != last_instr;
-         instr = instr_get_next(instr)) {
-        IF_DEBUG(ok =) rewrite_reg_reads(dc, instr, old, new,
-                                         /*check_only=*/false);
-        ASSERT(ok);
-    }
-    return true;
-}
-
-/* Propagate copies from dead source registers to reduce register pressure.
- * Removes and destroys 'copy' and returns true if successful, otherwise
- * returns false.
- */
-static bool
-propagate_copy(void *dc, instrlist_t *ilist, instr_t *copy)
-{
-    reg_id_t src = opnd_get_reg(instr_get_src(copy, 0));
-    reg_id_t dst = opnd_get_reg(instr_get_dst(copy, 0));
-    opnd_size_t copy_sz = reg_get_size(dst);
-
-    /* Let's not get into copy sizes that don't clobber the entire GPR. */
-    if (!(copy_sz == OPSZ_4 || copy_sz == OPSZ_8))
-        return false;
-
-    dr_log(dc, LOG_CLEANCALL, 3,
-           "drcalls: propagating copy at "PFX"\n", instr_get_app_pc(copy));
-
-    if (!rewrite_live_range(dc, copy, dst, src))
-        return false;
-
-    /* Delete the copy. */
-    remove_and_destroy(GLOBAL_DCONTEXT, ilist, copy);
-
-    return true;
-}
-
-/******************************************************************************
- * Operand rewriting support.
- */
 
 /* We can fold if use_reg is exactly imm_reg or if it's the 64-bit version of
  * imm_reg and val is less than INT_MAX.  If it is larger, it will be sign
@@ -342,18 +142,43 @@ static rewrite_opnd_fn_t rewrite_table[OPND_LAST][OPND_LAST];
  * Operand rewriting functions.
  */
 
+/* TODO(rnk): This doesn't handle al/ah type stuff.  ie, if we want to replace
+ * RAX w/ RBX we need to rewrite AH to BH and not BL. */
 static opnd_t
 rewrite_reg_into_reg(void *dc, reg_id_t reg, opnd_t new_opnd, opnd_t old_opnd)
 {
-    DR_ASSERT_MSG(false, "NYI");
-    return opnd_create_null();
+    reg_id_t new = opnd_get_reg(new_opnd);
+    reg_id_t old = opnd_get_reg(old_opnd);
+    opnd_size_t sz = opnd_get_size(old_opnd);
+
+    ASSERT(reg_overlap(reg, old));
+
+    new = reg_to_pointer_sized(new);
+    IF_X64(new = reg_64_to_32(new));
+    new = reg_32_to_opsz(new, sz);
+    return opnd_create_reg(new);
 }
 
 static opnd_t
 rewrite_reg_into_memref(void *dc, reg_id_t reg, opnd_t new_opnd, opnd_t old_opnd)
 {
-    DR_ASSERT_MSG(false, "NYI");
-    return opnd_create_null();
+    reg_id_t new = opnd_get_reg(new_opnd);
+
+    reg_id_t base  = opnd_get_base(old_opnd);
+    reg_id_t index = opnd_get_index(old_opnd);
+    int      scale = opnd_get_scale(old_opnd);
+    int      disp  = opnd_get_disp(old_opnd);
+    opnd_size_t sz = opnd_get_size(old_opnd);
+
+    new = reg_to_pointer_sized(new);
+    IF_X64(new = reg_64_to_32(new));
+
+    if (reg_overlap(base, reg))
+        base = reg_32_to_opsz(new, reg_get_size(base));
+    if (reg_overlap(index, reg))
+        index = reg_32_to_opsz(new, reg_get_size(index));
+
+    return opnd_create_base_disp(base, index, scale, disp, sz);
 }
 
 static opnd_t
@@ -372,10 +197,10 @@ static opnd_t
 rewrite_immed_into_memref(void *dc, reg_id_t reg, opnd_t new_opnd, opnd_t old_opnd)
 {
     ptr_int_t imm_val = opnd_get_immed_int(new_opnd);
-    int disp = opnd_get_disp(old_opnd);
-    reg_id_t base = opnd_get_base(old_opnd);
+    reg_id_t base  = opnd_get_base(old_opnd);
     reg_id_t index = opnd_get_index(old_opnd);
-    int scale = opnd_get_scale(old_opnd);
+    int      scale = opnd_get_scale(old_opnd);
+    int      disp  = opnd_get_disp(old_opnd);
     opnd_size_t sz = opnd_get_size(old_opnd);
 
     if (can_use_immed_for_opnd_reg(imm_val, reg, index)) {
@@ -418,6 +243,7 @@ rewrite_memref_into_memref(void *dc, reg_id_t reg, opnd_t new_opnd, opnd_t old_o
 }
 
 /*****************************************************************************/
+/* Live range rewriting. */
 
 void
 rewrite_opnd_table_init(void)
@@ -493,15 +319,132 @@ rewrite_reg_in_instr(void *dc, instr_t *instr, reg_id_t reg, opnd_t new_opnd,
 }
 
 static bool
-rewrite_live_range_opnd(void *dc, instr_t *def, instr_t *end, reg_id_t reg,
-                        opnd_t opnd, bool check_only)
+rewrite_reg_in_dst(void *dc, instr_t *instr, reg_id_t reg, opnd_t new_opnd,
+                   bool check_only)
+{
+    opnd_t dst_opnd = instr_get_dst(instr, 0);
+    bool success;
+
+    if (check_only)
+        instr = instr_clone(dc, instr);
+
+    dst_opnd = rewrite_reg_in_opnd(dc, reg, new_opnd, dst_opnd);
+    instr_set_dst(instr, 0, dst_opnd);
+
+    success = can_encode(instr);
+
+    if (check_only)
+        instr_destroy(dc, instr);
+
+    return success;
+}
+
+static bool
+rewrite_live_range_check(void *dc, instr_t *def, instr_t *end, reg_id_t reg,
+                         opnd_t opnd, bool check_only)
 {
     instr_t *instr;
+
+    /* When rewriting live ranges with other registers, we usually want to
+     * rewrite the def instr, too, like in reuse_registers.  When folding
+     * immediates, it will fail, so we don't. */
+    if (opnd_is_reg(opnd)) {
+        if (!rewrite_reg_in_dst(dc, def, reg, opnd, check_only))
+            return false;
+    }
 
     for (instr = instr_get_next(def); instr != end;
          instr = instr_get_next(instr))
         if (!rewrite_reg_in_instr(dc, instr, reg, opnd, check_only))
             return false;
+    return true;
+}
+
+/* Find the next full clobber of 'reg', if it exists.  If there is a
+ * subregister write that does not fully clobber the register, return false.
+ */
+static bool
+find_next_full_clobber(void *dc, instr_t *start, reg_id_t reg,
+                       instr_t **end)
+{
+    instr_t *instr;
+    int i;
+
+    /* Find the next write of dst.  If it's a complicated subregister write, we
+     * leave it alone.  Otherwise, we can rewrite up until that instruction. */
+    for (instr = instr_get_next(start); instr != NULL;
+         instr = instr_get_next(instr)) {
+        if (!instr_writes_to_reg(instr, reg))
+            continue;
+
+        for (i = 0; i < instr_num_dsts(instr); i++) {
+            opnd_t d = instr_get_dst(instr, i);
+            if (opnd_is_reg(d) && reg_overlap(opnd_get_reg(d), reg)) {
+                opnd_size_t sz = opnd_get_size(d);
+                if (sz == OPSZ_4 || sz == OPSZ_8) {
+                    /* dst is fully clobbered here. */
+                    *end = instr;
+                    return true;
+                } else {
+                    /* Subregister write, clobber is not full. */
+                    return false;
+                }
+            }
+        }
+    }
+    if (instr == NULL)
+        *end = NULL;
+    return true;
+}
+
+static bool
+try_rewrite_live_range(void *dc, instr_t *def, opnd_t opnd)
+{
+    instr_t *end = NULL;
+    reg_id_t reg;
+    DEBUG_DECLARE(bool ok);
+
+    ASSERT(instr_num_dsts(def) == 1);
+
+    reg = opnd_get_reg(instr_get_dst(def, 0));
+    if (!find_next_full_clobber(dc, def, reg, &end))
+        return false;
+    if (end != NULL)
+        end = instr_get_next(end);
+
+    if (!rewrite_live_range_check(dc, def, end, reg, opnd, true))
+        return false;
+    IF_DEBUG(ok =) rewrite_live_range_check(dc, def, end, reg, opnd, false);
+    ASSERT(ok);
+    return true;
+}
+
+/*****************************************************************************/
+/* Optimizations. */
+
+/* Propagate copies from dead source registers to reduce register pressure.
+ * Removes and destroys 'copy' and returns true if successful, otherwise
+ * returns false.
+ */
+static bool
+propagate_copy(void *dc, instrlist_t *ilist, instr_t *copy)
+{
+    opnd_t src = instr_get_src(copy, 0);
+    opnd_size_t copy_sz = opnd_get_size(src);
+
+    /* Let's not get into copy sizes that don't clobber the entire GPR. */
+    if (!(copy_sz == OPSZ_4 || copy_sz == OPSZ_8))
+        return false;
+
+    dr_log(dc, LOG_CLEANCALL, 3,
+           "drcalls: propagating copy at "PFX"\n", instr_get_app_pc(copy));
+
+    if (!try_rewrite_live_range(dc, copy, src))
+        return false;
+
+    /* Delete the copy. */
+    remove_and_destroy(GLOBAL_DCONTEXT, ilist, copy);
+
     return true;
 }
 
@@ -574,7 +517,7 @@ try_reuse_register(void *dc, instrlist_t *ilist, liveness_t *liveness,
            instr_get_app_pc(reuse_instr));
 
     /* Rewrite dst and all further uses of dst to new. */
-    if (rewrite_live_range(dc, reuse_instr, dst, new)) {
+    if (try_rewrite_live_range(dc, reuse_instr, opnd_create_reg(new))) {
         dr_log(dc, LOG_CLEANCALL, 3,
                "drcalls: succeeded reusing dead register %s instead of %s at "
                PFX"\n",
@@ -590,11 +533,7 @@ static bool
 fold_mov_immed(void *dc, instrlist_t *ilist, instr_t *mov_imm)
 {
     opnd_t imm = instr_get_src(mov_imm, 0);
-    opnd_t dst = instr_get_dst(mov_imm, 0);
-    reg_id_t reg = opnd_get_reg(dst);
-    instr_t *end = NULL;
     ptr_int_t val = opnd_get_immed_int(imm);
-    DEBUG_DECLARE(bool ok);
 
     /* For now we only deal with 32-bit immediates, since pointer values are
      * trickier to rewrite. */
@@ -605,27 +544,20 @@ fold_mov_immed(void *dc, instrlist_t *ilist, instr_t *mov_imm)
         return false;
 #endif
 
-    if (!find_next_full_clobber(dc, mov_imm, reg, &end))
-        return false;
-    if (end != NULL)
-        end = instr_get_next(end);
-
-    if (end) {
-        dr_log(dc, LOG_CLEANCALL, 3,
-               "drcalls: mov imm live range ends at "PFX"\n",
-               instr_get_app_pc(end));
-    }
     dr_log(dc, LOG_CLEANCALL, 3,
            "drcalls: attempting to fold mov_imm at "PFX"\n",
            instr_get_app_pc(mov_imm));
-    if (!rewrite_live_range_opnd(dc, mov_imm, end, reg, imm, true))
+    if (try_rewrite_live_range(dc, mov_imm, imm)) {
+        dr_log(dc, LOG_CLEANCALL, 3,
+               "drcalls: folded mov_imm at "PFX"\n",
+               instr_get_app_pc(mov_imm));
+        return true;
+    } else {
+        dr_log(dc, LOG_CLEANCALL, 3,
+               "drcalls: failed fold mov_imm\n",
+               instr_get_app_pc(mov_imm));
         return false;
-    IF_DEBUG(ok =) rewrite_live_range_opnd(dc, mov_imm, end, reg, imm, false);
-    ASSERT(ok);
-    dr_log(dc, LOG_CLEANCALL, 3,
-           "drcalls: folded immediate mov at "PFX"\n",
-           instr_get_app_pc(mov_imm));
-    return true;
+    }
 }
 
 static bool
@@ -933,59 +865,72 @@ redundant_load_elim(void *dc, void *dc_alloc, instrlist_t *ilist)
 
         /* If it's an app instruction, ignore it, only touch instrumentation. */
         if (instr_ok_to_mangle(instr)) {
+#ifdef VERBOSE
+            dr_log(dc, LOG_CLEANCALL, 3,
+                   "drcalls: RLE: blocked by non-meta instr: ");
+            instr_disassemble(dc, instr, dr_get_logfile(dc));
+            dr_log(dc, LOG_CLEANCALL, 3, "\n");
+#endif
             store = NULL;
             continue;
         }
 
-        if (store == NULL) {
-            if (instr_get_opcode(instr) == OP_mov_st) {
-                store = instr;
-                src = instr_get_src(instr, 0);
-                mem_ref = instr_get_dst(instr, 0);
+        if (instr_get_opcode(instr) == OP_mov_st) {
+            store = instr;
+            src = instr_get_src(instr, 0);
+            mem_ref = instr_get_dst(instr, 0);
 
-                /* If the memory operand reads any operands, we need to make
-                 * sure those aren't udpated between the store and the load. */
-                if (opnd_is_base_disp(mem_ref)) {
-                    base_reg = opnd_get_base(mem_ref);
-                    idx_reg = opnd_get_index(mem_ref);
-                }
+            /* If the memory operand reads any operands, we need to make
+             * sure those aren't udpated between the store and the load. */
+            if (opnd_is_base_disp(mem_ref)) {
+                base_reg = opnd_get_base(mem_ref);
+                idx_reg = opnd_get_index(mem_ref);
             }
-        } else {
-            if (instr_get_opcode(instr) == OP_mov_ld &&
-                opnd_same(mem_ref, instr_get_src(instr, 0))) {
-                load = instr;
-                dst_reg = instr_get_dst(load, 0);
-                if (opnd_same(src, dst_reg)) {
-                    /* Can delete load. */
-                    dr_log(dc, LOG_CLEANCALL, 3,
-                           "drcalls: RLE: deleted redundant load: ");
-                    instr_disassemble(dc, load, dr_get_logfile(dc));
-                    dr_log(dc, LOG_CLEANCALL, 3, "\n");
+            continue;
+        }
+        if (store == NULL)
+            continue;
 
-                    remove_and_destroy(dc_alloc, ilist, load);
-                } else {
-                    /* Can change to mov r1 -> r2. */
-                    dr_log(dc, LOG_CLEANCALL, 3,
-                           "drcalls: RLE: changed load to reg copy: ");
-                    instr_disassemble(dc, load, dr_get_logfile(dc));
-                    dr_log(dc, LOG_CLEANCALL, 3, "\n");
+        if (instr_get_opcode(instr) == OP_mov_ld &&
+            opnd_same(mem_ref, instr_get_src(instr, 0))) {
+            load = instr;
+            dst_reg = instr_get_dst(load, 0);
+            if (opnd_same(src, dst_reg)) {
+                /* Can delete load. */
+                dr_log(dc, LOG_CLEANCALL, 3,
+                       "drcalls: RLE: deleted redundant load: ");
+                instr_disassemble(dc, load, dr_get_logfile(dc));
+                dr_log(dc, LOG_CLEANCALL, 3, "\n");
 
-                    instr_set_src(load, 0, src);
-                }
-                continue;
+                remove_and_destroy(dc_alloc, ilist, load);
+            } else {
+                /* Can change to mov r1 -> r2. */
+                dr_log(dc, LOG_CLEANCALL, 3,
+                       "drcalls: RLE: changed load to reg copy: ");
+                instr_disassemble(dc, load, dr_get_logfile(dc));
+                dr_log(dc, LOG_CLEANCALL, 3, "\n");
+
+                instr_set_src(load, 0, src);
             }
+            continue;
+        }
 
-            /* To avoid aliasing issues, we punt on any intermediate store, as
-             * well as any cti or label, or clobbering or read registers. */
-            if (instr_writes_memory(instr) ||
-                instr_is_label(instr) ||
-                instr_is_cti(instr) ||
-                instr_writes_to_reg(instr, base_reg) ||
-                instr_writes_to_reg(instr, idx_reg) ||
-                (opnd_is_reg(src) &&
-                 instr_writes_to_reg(instr, opnd_get_reg(src)))) {
-                store = NULL;
-            }
+        /* To avoid aliasing issues, we punt on any intermediate store, as
+         * well as any cti or label, or clobbering or read registers. */
+        if (instr_writes_memory(instr) ||
+            instr_is_label(instr) ||
+            instr_is_cti(instr) ||
+            instr_writes_to_reg(instr, base_reg) ||
+            instr_writes_to_reg(instr, idx_reg) ||
+            (opnd_is_reg(src) &&
+             instr_writes_to_reg(instr, opnd_get_reg(src)))) {
+#ifdef VERBOSE
+            dr_log(dc, LOG_CLEANCALL, 3,
+                   "drcalls: RLE: blocked by instr: ");
+            instr_disassemble(dc, instr, dr_get_logfile(dc));
+            dr_log(dc, LOG_CLEANCALL, 3, "\n");
+#endif
+            store = NULL;
         }
     }
 }
@@ -1030,37 +975,35 @@ dead_store_elim(void *dc, void *dc_alloc, instrlist_t *ilist)
         }
 
         if (instr_get_opcode(instr) == OP_mov_st) {
-            if (store == NULL) {
-                store = instr;
-                mem_ref = instr_get_dst(instr, 0);
-
-                /* If the memory operand reads any operands, we need to make
-                 * sure those aren't udpated between the store and the load. */
-                if (opnd_is_base_disp(mem_ref)) {
-                    base_reg = opnd_get_base(mem_ref);
-                    idx_reg = opnd_get_index(mem_ref);
-                }
-
-#ifdef VERBOSE
-                dr_log(dc, LOG_CLEANCALL, 3,
-                       "drcalls: DSE: found store: ");
-                instr_disassemble(dc, store, dr_get_logfile(dc));
-                dr_log(dc, LOG_CLEANCALL, 3, "\n");
-#endif
-                continue;
-            } else if (opnd_same(mem_ref, instr_get_dst(instr, 0))) {
-                /* Can delete load. */
+            if (store != NULL && opnd_same(mem_ref, instr_get_dst(instr, 0))) {
+                /* Can delete store. */
                 dr_log(dc, LOG_CLEANCALL, 3,
                        "drcalls: DSE: deleted dead store: ");
                 instr_disassemble(dc, store, dr_get_logfile(dc));
                 dr_log(dc, LOG_CLEANCALL, 3, "\n");
 
                 remove_and_destroy(dc_alloc, ilist, store);
-                /* Note, this is store to the same mem_ref, base_reg, and
-                 * idx_reg, try to DSE it next. */
-                store = instr;
-                continue;
             }
+
+            /* Whether we deleted the last store or not, this is our new store
+             * to try to delete. */
+            store = instr;
+            mem_ref = instr_get_dst(instr, 0);
+
+            /* If the memory operand reads any operands, we need to make
+             * sure those aren't udpated between the store and the load. */
+            if (opnd_is_base_disp(mem_ref)) {
+                base_reg = opnd_get_base(mem_ref);
+                idx_reg = opnd_get_index(mem_ref);
+            }
+
+#ifdef VERBOSE
+            dr_log(dc, LOG_CLEANCALL, 3,
+                   "drcalls: DSE: found store: ");
+            instr_disassemble(dc, store, dr_get_logfile(dc));
+            dr_log(dc, LOG_CLEANCALL, 3, "\n");
+#endif
+            continue;
         }
 
         if (store != NULL &&

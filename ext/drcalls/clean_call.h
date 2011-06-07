@@ -30,49 +30,17 @@
  * DAMAGE.
  */
 
-/* An attempt to make generating and inserting instructions into ilists easier.
- */
+#ifndef DRCALLS_CLEANCALL_H
+#define DRCALLS_CLEANCALL_H
 
-#ifndef DRCALLS_INSTR_BUILDER_H
-#define DRCALLS_INSTR_BUILDER_H
+#include "core_compat.h"
 
-typedef struct _instr_builder_t {
-    void *dcontext;
-    instrlist_t *ilist;
-    instr_t *where;
-    bool meta;
-} instr_builder_t;
+void
+materialize_arg_into_reg(void *dc, instrlist_t *ilist, instr_t *where,
+                         uint framesize, bool regs_from_mc[NUM_GP_REGS],
+                         opnd_t arg, reg_id_t reg);
+void
+insert_clean_call(void *dc, instrlist_t *ilist, instr_t *where, void *callee,
+                  bool fpstate, uint num_args, opnd_t *args);
 
-#define BUILD(ib, opname, ...) \
-    do { \
-        instr_t *instr = INSTR_CREATE_##opname (ib.dcontext, __VA_ARGS__); \
-        instr_set_ok_to_mangle(instr, ib.meta); \
-        instrlist_preinsert(ib.ilist, ib.where, instr); \
-    } while (0)
-
-#define INSERT(ib, instr) \
-    instrlist_preinsert(ib.ilist, ib.where, instr)
-
-#define REG(r) opnd_create_reg(DR_REG_##r)
-
-#define IMM(v, sz) opnd_create_immed_int(v, OPSZ_##sz)
-
-#define MEM(base, disp, sz) \
-    opnd_create_base_disp(DR_REG_##base, DR_REG_NULL, 0, disp, OPSZ_##sz)
-#define MEM_PTR(base, disp) MEM(base, disp, sizeof(void*))
-
-#define MEM_REL(addr, sz) opnd_create_rel_addr(addr, OPSZ_##sz)
-
-/* sz is pasted with OPSZ_ so you can use lea or PTR for sz. */
-#define MEM_IDX(base, idx, scale, disp, sz) \
-    opnd_create_base_disp(DR_REG_##base, DR_REG_##idx, scale, disp, OPSZ_##sz)
-
-#define INSTR_BUILDER_INIT(ib_, dc_, ilist_, where_, meta_) \
-    do { \
-        ib_.dcontext = (dc_); \
-        ib_.ilist = (ilist_); \
-        ib_.where = (where_); \
-        ib_.meta = (meta_); \
-    } while (0)
-
-#endif /* DRCALLS_INSTR_BUILDER_H */
+#endif /* DRCALLS_CLEANCALL_H */

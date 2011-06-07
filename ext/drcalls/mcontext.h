@@ -30,49 +30,49 @@
  * DAMAGE.
  */
 
-/* An attempt to make generating and inserting instructions into ilists easier.
- */
+#ifndef DRCALLS_MCONTEXT_H
+#define DRCALLS_MCONTEXT_H
 
-#ifndef DRCALLS_INSTR_BUILDER_H
-#define DRCALLS_INSTR_BUILDER_H
+#include "core_compat.h"
 
-typedef struct _instr_builder_t {
-    void *dcontext;
-    instrlist_t *ilist;
-    instr_t *where;
-    bool meta;
-} instr_builder_t;
+opnd_t
+mc_frame_opnd(uint framesize, uint mc_offset);
 
-#define BUILD(ib, opname, ...) \
-    do { \
-        instr_t *instr = INSTR_CREATE_##opname (ib.dcontext, __VA_ARGS__); \
-        instr_set_ok_to_mangle(instr, ib.meta); \
-        instrlist_preinsert(ib.ilist, ib.where, instr); \
-    } while (0)
+void
+insert_mc_reg_save(void *dc, uint framesize, instrlist_t *ilist,
+                   instr_t *where, reg_id_t reg);
+void
+insert_mc_reg_restore(void *dc, uint framesize, instrlist_t *ilist,
+                      instr_t *where, reg_id_t reg);
 
-#define INSERT(ib, instr) \
-    instrlist_preinsert(ib.ilist, ib.where, instr)
+void
+insert_mc_flags_save(void *dc, uint framesize, instrlist_t *ilist,
+                     instr_t *where);
+void
+insert_mc_flags_restore(void *dc, uint framesize, instrlist_t *ilist,
+                        instr_t *where);
 
-#define REG(r) opnd_create_reg(DR_REG_##r)
+opnd_t
+opnd_get_tls_xax(void *dc);
+uint
+get_framesize(instr_t *instr);
 
-#define IMM(v, sz) opnd_create_immed_int(v, OPSZ_##sz)
+void
+insert_switch_to_dstack(void *dc, int framesize, instrlist_t *ilist,
+                        instr_t *where);
+void
+insert_switch_to_appstack(void *dc, int framesize, instrlist_t *ilist,
+                          instr_t *where);
+void
+expand_op_dstack(void *dc, instrlist_t *ilist, instr_t *where);
+void
+expand_op_appstack(void *dc, instrlist_t *ilist, instr_t *where);
 
-#define MEM(base, disp, sz) \
-    opnd_create_base_disp(DR_REG_##base, DR_REG_NULL, 0, disp, OPSZ_##sz)
-#define MEM_PTR(base, disp) MEM(base, disp, sizeof(void*))
+void
+insert_mc_regs(void *dc, int framesize, bool save, bool save_regs[NUM_GP_REGS],
+               instrlist_t *ilist, instr_t *where);
+void
+insert_mc_xmm_regs(void *dc, int framesize, bool save, instrlist_t *ilist,
+                   instr_t *where);
 
-#define MEM_REL(addr, sz) opnd_create_rel_addr(addr, OPSZ_##sz)
-
-/* sz is pasted with OPSZ_ so you can use lea or PTR for sz. */
-#define MEM_IDX(base, idx, scale, disp, sz) \
-    opnd_create_base_disp(DR_REG_##base, DR_REG_##idx, scale, disp, OPSZ_##sz)
-
-#define INSTR_BUILDER_INIT(ib_, dc_, ilist_, where_, meta_) \
-    do { \
-        ib_.dcontext = (dc_); \
-        ib_.ilist = (ilist_); \
-        ib_.where = (where_); \
-        ib_.meta = (meta_); \
-    } while (0)
-
-#endif /* DRCALLS_INSTR_BUILDER_H */
+#endif /* DRCALLS_MCONTEXT_H */

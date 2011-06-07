@@ -1733,7 +1733,13 @@ analyze_callee_ilist(void *dc, callee_info_t *ci)
                        "drcalls: skipping optimizing huge callee ilist.\n");
             } else {
                 dce_and_copy_prop(dc, ci);
+                dr_log(dc, LOG_CLEANCALL, 3,
+                       "drcalls: OPT: before reuse:\n");
+                instrlist_disassemble(dc, NULL, ci->ilist, dr_get_logfile(dc));
                 reuse_registers(dc, ci);
+                dr_log(dc, LOG_CLEANCALL, 3,
+                       "drcalls: OPT: after reuse:\n");
+                instrlist_disassemble(dc, NULL, ci->ilist, dr_get_logfile(dc));
                 try_fold_immeds(dc, GLOBAL_DCONTEXT, ci->ilist);
                 try_avoid_flags(dc, ci);
                 redundant_load_elim(dc, GLOBAL_DCONTEXT, ci->ilist);

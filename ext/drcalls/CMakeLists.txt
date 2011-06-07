@@ -38,6 +38,8 @@ add_library(drcalls STATIC
   callee.c
   optimize.c
   inline.c
+  mcontext.c
+  clean_call.c
   # add more here
   )
 configure_DynamoRIO_client(drcalls)
