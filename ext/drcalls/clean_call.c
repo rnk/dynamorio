@@ -83,12 +83,49 @@ materialize_arg_into_reg(void *dc, instrlist_t *ilist, instr_t *where,
                 instr_set_dst(instr_get_prev(where), 0, dst_opnd);
                 DR_ASSERT_MSG(false, "Not yet tested");
             } else {
-                PRE(ilist, where,
-                    INSTR_CREATE_mov_ld(dc, dst_opnd, arg));
+                PRE(ilist, where, INSTR_CREATE_mov_ld(dc, dst_opnd, arg));
             }
         }
+    } else if (opnd_is_memory_reference(arg)) {
+        if (opnd_is_base_disp(arg)) {
+            /* See if any used registers need to be restored from the mc. */
+            reg_id_t seg   = opnd_get_segment(arg);
+            reg_id_t base  = reg_to_pointer_sized(opnd_get_base(arg));
+            reg_id_t index = reg_to_pointer_sized(opnd_get_index(arg));
+            int      scale = opnd_get_scale(arg);
+            int      disp  = opnd_get_disp(arg);
+            opnd_size_t sz = opnd_get_size(arg);
+            /* Pointer-sized version of argument reg. */
+            reg_id_t ptr_reg = reg_to_pointer_sized(reg);
+            opnd_t ptr_arg_reg = opnd_create_reg(ptr_reg);
+            if (base == DR_REG_XSP) {
+                /* XSP is special, it comes from TLS. */
+                PRE(ilist, where, INSTR_CREATE_mov_ld
+                    (dc, ptr_arg_reg, opnd_get_tls_xax(dc)));
+                base = reg;  /* TODO(rnk): Needs to match the size of base. */
+            } else if (regs_from_mc[base - DR_REG_XAX]) {
+                /* If base reg is clobbered, mov_ld 0xNN(MC) -> %argreg, and change
+                 * base to argreg. */
+                insert_mc_reg_restore(dc, framesize, ilist, where, base);
+                instr_set_dst(instr_get_prev(where), 0, ptr_arg_reg);
+                base = reg;
+            }
+            /* If index reg is clobbered, mov_ld 0xNN(MC) -> %xax, and change
+             * index to xax.  XAX is a safe choice because it is not a regparm
+             * in any calling convention supported by DR. */
+            if (regs_from_mc[index - DR_REG_XAX]) {
+                insert_mc_reg_restore(dc, framesize, ilist, where, index);
+                instr_set_dst(instr_get_prev(where), 0,
+                              opnd_create_reg(DR_REG_XAX));
+                index = DR_REG_XAX;
+            }
+            arg = opnd_create_far_base_disp(seg, base, index, scale, disp, sz);
+        }
+        /* If it's a memref, it can be a lea or a load. */
+        int opc = (opnd_get_size(arg) == OPSZ_lea ?  OP_lea : OP_mov_ld);
+        PRE(ilist, where, instr_create_1dst_1src(dc, opc, dst_opnd, arg));
     } else {
-        PRE(ilist, where, INSTR_CREATE_mov_ld(dc, dst_opnd, arg));
+        DR_ASSERT_MSG(false, "Unknown opnd type.");
     }
 }
 

@@ -66,8 +66,6 @@ instrument_mem(void *dc, instrlist_t *ilist, instr_t *where, int pos,
                bool write)
 {
     opnd_t memop;
-    reg_id_t arg_reg_id = DR_REG_XBX;
-    opnd_t arg_reg = opnd_create_reg(arg_reg_id);
 
     if (write) {
         memop = instr_get_dst(where, pos);
@@ -77,13 +75,9 @@ instrument_mem(void *dc, instrlist_t *ilist, instr_t *where, int pos,
     uint opsize = opnd_size_in_bytes(opnd_get_size(memop));
     opnd_set_size(&memop, OPSZ_lea);
 
-    dr_save_reg(dc, ilist, where, arg_reg_id, SPILL_SLOT_1);
-    instrlist_meta_preinsert(ilist, where,
-                             INSTR_CREATE_lea(dc, arg_reg, memop));
     drcalls_insert_call(dc, ilist, where, (void*)clean_call, false, 4,
-                        arg_reg, OPND_CREATE_INTPTR(instr_get_app_pc(where)),
+                        memop, OPND_CREATE_INTPTR(instr_get_app_pc(where)),
                         OPND_CREATE_INT32(opsize), OPND_CREATE_INT32(write));
-    dr_restore_reg(dc, ilist, where, arg_reg_id, SPILL_SLOT_1);
 }
 
 static dr_emit_flags_t

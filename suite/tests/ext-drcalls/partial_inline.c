@@ -30,6 +30,8 @@
  * DAMAGE.
  */
 
+#ifndef ASM_CODE_ONLY
+
 #include "tools.h"
 
 #define NUM_ITERATIONS 10
@@ -42,6 +44,8 @@
 
 EXPORT void start_monitor(void) {}
 EXPORT void stop_monitor(void) {}
+
+void unaligned_stack_accesses(void);
 
 EXPORT void
 foo(char *a, char *b, char *c, char *d)
@@ -59,6 +63,7 @@ foo(char *a, char *b, char *c, char *d)
         *ci = 0x33333333;
         *di = 0x44444444;
     }
+    unaligned_stack_accesses();
     stop_monitor();
 }
 
@@ -69,3 +74,30 @@ main(void)
     foo(&s[0], &s[1], &s[2], &s[3]);
     assert(s[0] == 0x11 && s[1] == 0x22 && s[2] == 0x33 && s[3] == 0x44);
 }
+
+#else /* ASM_CODE_ONLY */
+
+#include "asm_defines.asm"
+
+START_FILE
+
+DECLARE_FUNC(unaligned_stack_accesses)
+GLOBAL_LABEL(unaligned_stack_accesses:)
+    enter 16, 0
+    sub REG_XSP, 1
+    mov REG_XAX, 0
+    mov BYTE  [REG_XSP], al   /* 1 byte aligned */
+    mov DWORD [REG_XSP], eax  /* unaligned */
+    sub REG_XSP, 1
+    mov WORD  [REG_XSP], ax   /* 2 byte aligned */
+    mov DWORD [REG_XSP], eax  /* unaligned */
+    sub REG_XSP, 2
+    mov DWORD [REG_XSP], eax  /* 4 byte aligned */
+    sub REG_XSP, 1
+    push 0  /* catch unaligned pushes as well */
+    leave
+    ret
+
+END_FILE
+
+#endif
