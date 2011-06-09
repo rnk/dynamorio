@@ -46,12 +46,15 @@ typedef struct _instr_builder_t {
 #define BUILD(ib, opname, ...) \
     do { \
         instr_t *instr = INSTR_CREATE_##opname (ib.dcontext, __VA_ARGS__); \
-        instr_set_ok_to_mangle(instr, ib.meta); \
+        instr_set_ok_to_mangle(instr, !ib.meta); \
         instrlist_preinsert(ib.ilist, ib.where, instr); \
     } while (0)
 
 #define INSERT(ib, instr) \
-    instrlist_preinsert(ib.ilist, ib.where, instr)
+    do { \
+        instr_set_ok_to_mangle(instr, !ib.meta); \
+        instrlist_preinsert(ib.ilist, ib.where, instr); \
+    } while (0)
 
 #define REG(r) opnd_create_reg(DR_REG_##r)
 
@@ -61,7 +64,7 @@ typedef struct _instr_builder_t {
     opnd_create_base_disp(DR_REG_##base, DR_REG_NULL, 0, disp, OPSZ_##sz)
 #define MEM_PTR(base, disp) MEM(base, disp, sizeof(void*))
 
-#define MEM_REL(addr, sz) opnd_create_rel_addr(addr, OPSZ_##sz)
+#define MEM_REL(addr, sz) opnd_create_rel_addr((void*)addr, OPSZ_##sz)
 
 /* sz is pasted with OPSZ_ so you can use lea or PTR for sz. */
 #define MEM_IDX(base, idx, scale, disp, sz) \

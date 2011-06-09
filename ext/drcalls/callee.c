@@ -200,7 +200,7 @@ decode_callee_instr(void *dcontext, callee_info_t *ci, app_pc instr_pc)
     app_pc   next_pc = NULL;
 
     instr = instr_create(GLOBAL_DCONTEXT);
-    instrlist_append(ilist, instr);
+    instrlist_meta_append(ilist, instr);
     ci->num_instrs++;
     TRY_EXCEPT(dcontext, {
         next_pc = decode(GLOBAL_DCONTEXT, instr_pc, instr);
@@ -1397,6 +1397,13 @@ analyze_callee_partial(void *dc, callee_info_t *ci)
     /* We insert partial_label to avoid memory leaks on bailout. */
     PRE(ci->ilist, slowpath_end, ci->partial_label);
 
+    /* XXX: Mark the call instr *non-meta* to indicate to optimizations that no
+     * registers are live-in.  This is the only reason we can pretend there is
+     * no control flow even in partial inlining, because in the slowpath there
+     * is no register use of consequence.
+     */
+    instr_set_ok_to_mangle(instr_get_next(slowpath_start), true);
+
     /* We need a jmp if slowpath_end is not right before ret. */
     for (instr = slowpath_end; instr != NULL; instr = instr_get_next(instr))
         if (!instr_is_label(instr)) break;
@@ -1733,15 +1740,10 @@ analyze_callee_ilist(void *dc, callee_info_t *ci)
                        "drcalls: skipping optimizing huge callee ilist.\n");
             } else {
                 dce_and_copy_prop(dc, ci);
-                dr_log(dc, LOG_CLEANCALL, 3,
-                       "drcalls: OPT: before reuse:\n");
-                instrlist_disassemble(dc, NULL, ci->ilist, dr_get_logfile(dc));
                 reuse_registers(dc, ci);
-                dr_log(dc, LOG_CLEANCALL, 3,
-                       "drcalls: OPT: after reuse:\n");
-                instrlist_disassemble(dc, NULL, ci->ilist, dr_get_logfile(dc));
                 try_fold_immeds(dc, GLOBAL_DCONTEXT, ci->ilist);
                 try_avoid_flags(dc, ci);
+                fold_leas(dc, GLOBAL_DCONTEXT, ci->ilist);
                 redundant_load_elim(dc, GLOBAL_DCONTEXT, ci->ilist);
                 dead_store_elim(dc, GLOBAL_DCONTEXT, ci->ilist);
                 dce_and_copy_prop(dc, ci);

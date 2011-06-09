@@ -192,7 +192,8 @@ analyze_clean_call_args(void *dcontext,
     uint i, j, num_regparm;
     callee_info_t *ci = cci->callee_info;
 
-    num_regparm = cci->num_args < dr_num_reg_parm() ? cci->num_args : dr_num_reg_parm();
+    num_regparm = (cci->num_args < dr_num_reg_parm() ?
+                   cci->num_args : dr_num_reg_parm());
     /* If a param uses a reg, DR need restore register value, which assumes
      * the full context switch with dr_mcontext_t layout,
      * in which case we need keep dr_mcontext_t layout.
@@ -260,7 +261,7 @@ analyze_clean_call_inline(void *dcontext, clean_call_info_t *cci)
         }
 #ifndef X64
         if (cci->num_args > 0 && cci->reg_skip[0]) {
-            /* we use eax to put arg into tls */
+            /* we use eax to put arg onto stack */
             cci->num_regs_skip--;
             cci->reg_skip[0] = false;
             num_slots++;
@@ -305,9 +306,6 @@ analyze_clean_call_inline(void *dcontext, clean_call_info_t *cci)
             STATS_INC(cleancall_aflags_clear_skipped);
         }
     } else {
-        /* TODO(rnk): Which is right!? */
-        /* Use global dcontext, since we apply callee optimizations again,
-         * which assume instrs are allocated using global dcontext. */
         cci->ilist = instrlist_clone(dcontext, info->ilist);
     }
     cci->opt_inline = opt_inline;
@@ -358,14 +356,14 @@ analyze_clean_call(void *dcontext, instr_t *where, void *callee,
 
 static void
 insert_inline_reg_save(void *dc, clean_call_info_t *cci,
-                       instrlist_t *ilist, instr_t *where, opnd_t *args)
+                       bool reg_used[NUM_GP_REGS], instrlist_t *ilist,
+                       instr_t *where)
 {
     callee_info_t *ci = cci->callee_info;
     int i;
 
-    ASSERT(cci->num_xmms_skip == NUM_XMM_REGS);
     for (i = 0; i < NUM_GP_REGS; i++) {
-        if (!cci->reg_skip[i]) {
+        if (reg_used[i]) {
             reg_id_t reg = DR_REG_XAX + (reg_id_t)i;
             dr_log(dc, LOG_CLEANCALL, 2,
                    "drcalls: inlining clean call "PFX", saving reg %s.\n",
@@ -382,7 +380,8 @@ insert_inline_reg_save(void *dc, clean_call_info_t *cci,
 
 static void
 insert_inline_reg_restore(void *dc, clean_call_info_t *cci,
-                          instrlist_t *ilist, instr_t *where)
+                          bool reg_used[NUM_GP_REGS], instrlist_t *ilist,
+                          instr_t *where)
 {
     int i;
     callee_info_t *ci = cci->callee_info;
@@ -394,7 +393,7 @@ insert_inline_reg_restore(void *dc, clean_call_info_t *cci,
 
     /* Now restore all registers. */
     for (i = 0; i < NUM_GP_REGS; i++) {
-        if (!cci->reg_skip[i]) {
+        if (reg_used[i]) {
             reg_id_t reg = DR_REG_XAX + (reg_id_t)i;
             dr_log(dc, LOG_CLEANCALL, 2,
                    "drcalls: inlining clean call "PFX", restoring reg %s.\n",
@@ -460,13 +459,15 @@ insert_inline_arg_setup(void *dc, clean_call_info_t *cci, instrlist_t *ilist,
  * rematerialized.
  */
 static void
-insert_inline_slowpath(void *dc, clean_call_info_t *cci, opnd_t *args)
+insert_inline_slowpath(void *dc, clean_call_info_t *cci,
+                       bool reg_used[NUM_GP_REGS], opnd_t *args)
 {
     callee_info_t *ci = cci->callee_info;
     instrlist_t *ilist = cci->ilist;
     instr_t *instr;
     instr_t *slowpath_call = NULL;
-    uint i;
+    uint i, j;
+    bool reg_save_slowpath[NUM_GP_REGS];
 
     ASSERT(ci->opt_partial);
     for (instr = instrlist_first(ilist); instr != NULL;
@@ -481,6 +482,39 @@ insert_inline_slowpath(void *dc, clean_call_info_t *cci, opnd_t *args)
     }
     ASSERT(slowpath_call != NULL);
 
+    /* reg_used[i] is the registers used by the callee after args are folded in
+     * during inlining.  It is a subset of ci->reg_used, which are the registers
+     * used by the optimized callee.
+     *
+     * During the normal inline reg save, we save:
+     *  reg_used[i]
+     * During the shared slowpath, we save:
+     *  !ci->reg_used[i]
+     * Here, we save:
+     *  ci->reg_used[i] && !reg_used[i]
+     *
+     * Compute these explicitly?  Into:
+     * reg_save_inline   - always saved inline
+     * reg_save_shared   - always saved out of line
+     * reg_save_slowpath - saved on the transition out of line
+     *
+     * reg_save_inline = reg_used + xax(if flags)
+     * reg_save_shared = ~ci->reg_used - arg_regs
+     * reg_save_slowpath = ~(reg_save_inline | reg_save_shared)
+     */
+
+    memset(reg_save_slowpath, 0, sizeof(reg_save_slowpath));
+    for (i = 0; i < NUM_GP_REGS; i++) {
+        reg_id_t reg = DR_REG_XAX + (reg_id_t)i;
+        bool saved_inline = reg_used[i];
+        bool saved_shared = !ci->reg_used[i];
+        /* Arg regs are not saved in the shared slowpath. */
+        for (j = 0; j < cci->num_args; j++)
+            if (reg == dr_reg_parm(j))
+                saved_shared = false;
+        reg_save_slowpath[i] = !(saved_inline || saved_shared);
+    }
+
     /* XXX: If the callee didn't use XAX and did use flags, we may have saved
      * XAX in order to save flags inline.  The slowpath assumes the inline code
      * always saves XAX if there is any flags usage.  If aflags were dead so we
@@ -488,35 +522,67 @@ insert_inline_slowpath(void *dc, clean_call_info_t *cci, opnd_t *args)
     if (!ci->reg_used[DR_REG_XAX - DR_REG_XAX] &&
         (ci->read_aflags || ci->write_aflags) &&
         cci->skip_save_aflags &&
-        cci->reg_skip[DR_REG_XAX - DR_REG_XAX]) {
-        insert_mc_reg_save(dc, ci->framesize, ilist, slowpath_call, DR_REG_XAX);
-        insert_mc_reg_restore(dc, ci->framesize, ilist,
-                              instr_get_next(slowpath_call), DR_REG_XAX);
+        !reg_used[DR_REG_XAX - DR_REG_XAX]) {
+        reg_save_slowpath[DR_REG_XAX - DR_REG_XAX] = true;
     }
 
-    /* Arg setup may use registers that weren't used inline, and therefore
-     * won't be saved. */
-    for (i = 0; i < cci->num_args; i++) {
-        reg_id_t reg = IF_X64_ELSE(dr_reg_parm(i), DR_REG_XAX);
-        if (!ci->reg_used[reg - DR_REG_XAX]) {
-            insert_mc_reg_save(dc, ci->framesize, ilist, slowpath_call, reg);
-            insert_mc_reg_restore(dc, ci->framesize, ilist,
-                                  instr_get_next(slowpath_call), reg);
-        }
-    }
-
-    /* Assert that reg_skip and reg_used agree, except in the case of XAX,
-     * which we deal with above. */
-    for (i = 0; i < NUM_GP_REGS; i++) {
-        DR_ASSERT_MSG(ci->reg_used[i] == !cci->reg_skip[i] ||
-                      (i == 0 && !cci->reg_skip[i]),
-                      "reg_used and reg_skip don't agree!");
-    }
-
+    insert_mc_regs(dc, ci->framesize, /*save=*/true, reg_save_slowpath, ilist,
+                   slowpath_call);
     /* TODO(rnk): Could use an analysis to see which args are still live, since
      * chances are most are.  The slowpath is not executed frequently, but
      * optimizing it should reduce code size. */
     insert_inline_arg_setup(dc, cci, ilist, slowpath_call, args, true);
+    insert_mc_regs(dc, ci->framesize, /*save=*/false, reg_save_slowpath, ilist,
+                   instr_get_next(slowpath_call));
+}
+
+#define FOR_EACH_OPND_IN_INSTR(instr, opnd_var, is_dst_var, body) \
+    do { \
+        int i; \
+        int num_srcs = instr_num_srcs(instr); \
+        int num_dsts = instr_num_dsts(instr); \
+        for (i = 0; i < num_srcs + num_dsts; i++) { \
+            bool is_dst_var = (i < num_srcs); \
+            opnd_t opnd_var = (is_dst_var ? \
+                               instr_get_src(instr, i) : \
+                               instr_get_dst(instr, i - num_srcs)); \
+            body \
+    } while (0)
+
+static void
+compute_regs_used(void *dc, instrlist_t *ilist, clean_call_info_t *cci,
+                  bool reg_used[NUM_GP_REGS])
+{
+    instr_t *instr;
+    int i, j;
+    memset(reg_used, 0, sizeof(bool) * NUM_GP_REGS);
+    for (instr = instrlist_first(ilist); instr != NULL;
+         instr = instr_get_next(instr)) {
+        for (i = 0; i < instr_num_srcs(instr); i++) {
+            opnd_t opnd = instr_get_src(instr, i);
+            for (j = 0; j < opnd_num_regs_used(opnd); j++) {
+                reg_id_t reg = reg_to_pointer_sized(opnd_get_reg_used(opnd, j));
+                if (!reg_is_gpr(reg)) continue;
+                reg_used[reg - DR_REG_XAX] = true;
+            }
+        }
+        for (i = 0; i < instr_num_dsts(instr); i++) {
+            opnd_t opnd = instr_get_dst(instr, i);
+            for (j = 0; j < opnd_num_regs_used(opnd); j++) {
+                reg_id_t reg = reg_to_pointer_sized(opnd_get_reg_used(opnd, j));
+                if (!reg_is_gpr(reg)) continue;
+                reg_used[reg - DR_REG_XAX] = true;
+            }
+        }
+    }
+    /* XSP is saved in TLS. */
+    reg_used[DR_REG_XSP - DR_REG_XAX] = false;
+    /* we need save/restore rax if save aflags because rax is used */
+    if (!cci->skip_save_aflags) {
+        dr_log(dc, LOG_CLEANCALL, 3,
+               "drcalls: cannot skip saving reg xax.\n");
+        reg_used[0] = true;
+    }
 }
 
 void
@@ -527,6 +593,7 @@ insert_inline_clean_call(void *dcontext, clean_call_info_t *cci,
     instrlist_t *callee = cci->ilist;
     opnd_t *args = cci->args;
     instr_t *instr;
+    bool reg_used[NUM_GP_REGS];
 
     /* Insert argument setup.  Do some optimizations to try to fold the
      * arguments in. */
@@ -536,13 +603,15 @@ insert_inline_clean_call(void *dcontext, clean_call_info_t *cci,
     insert_inline_arg_setup(dcontext, cci, callee, instrlist_first(callee),
                             args, false);
     try_fold_immeds(dcontext, dcontext, callee);
+    fold_leas(dcontext, dcontext, callee);
+    compute_regs_used(dcontext, callee, cci, reg_used);
     if (ci->opt_partial) {
-        insert_inline_slowpath(dcontext, cci, args);
+        insert_inline_slowpath(dcontext, cci, reg_used, args);
     }
 
     ASSERT(cci->ilist != NULL);
     insert_switch_to_dstack(dcontext, ci->framesize, ilist, where);
-    insert_inline_reg_save(dcontext, cci, ilist, where, args);
+    insert_inline_reg_save(dcontext, cci, reg_used, ilist, where);
     instr = instrlist_first(callee);
     while (instr != NULL) {
         instrlist_remove(callee, instr);
@@ -556,7 +625,7 @@ insert_inline_clean_call(void *dcontext, clean_call_info_t *cci,
     }
     instrlist_destroy(dcontext, callee);
     cci->ilist = NULL;
-    insert_inline_reg_restore(dcontext, cci, ilist, where);
+    insert_inline_reg_restore(dcontext, cci, reg_used, ilist, where);
     insert_switch_to_appstack(dcontext, ci->framesize, ilist, where);
 }
 
@@ -584,12 +653,12 @@ static void
 insert_slowpath_mc(void *dc, callee_info_t *ci, bool save, instrlist_t *ilist)
 {
     uint framesize = ci->framesize + 16;  /* ret addr + alignment */
-    bool save_regs[NUM_GP_REGS];
+    bool reg_save_shared[NUM_GP_REGS];
     reg_id_t reg;
     int i;
 
     /* Calculate which GPRs to save in the slowpath. */
-    memset(save_regs, 0, sizeof(save_regs));  /* Default to none. */
+    memset(reg_save_shared, 0, sizeof(reg_save_shared));  /* Default to none. */
     for (reg = DR_REG_XAX; reg < DR_REG_XAX + NUM_GP_REGS; reg++) {
         bool is_arg;
         /* If the register was used inline it was saved inline. */
@@ -614,19 +683,19 @@ insert_slowpath_mc(void *dc, callee_info_t *ci, bool save, instrlist_t *ilist)
         }
         if (is_arg)
             continue;
-        save_regs[reg - DR_REG_XAX] = true;
+        reg_save_shared[reg - DR_REG_XAX] = true;
     }
 
     /* Save/restore flags uses XAX, so on save it must come after regs, and on
      * restore it must come first. */
     if (save) {
-        insert_mc_regs(dc, framesize, save, save_regs, ilist, NULL);
+        insert_mc_regs(dc, framesize, save, reg_save_shared, ilist, NULL);
         insert_slowpath_mc_flags(dc, ci, save, ilist);
         insert_mc_xmm_regs(dc, framesize, save, ilist, NULL);
     } else {
         insert_mc_xmm_regs(dc, framesize, save, ilist, NULL);
         insert_slowpath_mc_flags(dc, ci, save, ilist);
-        insert_mc_regs(dc, framesize, save, save_regs, ilist, NULL);
+        insert_mc_regs(dc, framesize, save, reg_save_shared, ilist, NULL);
     }
 }
 
@@ -817,4 +886,5 @@ expand_and_optimize_bb(void *dc, instrlist_t *bb)
 
     redundant_load_elim(dc, dc, bb);
     dead_store_elim(dc, dc, bb);
+    fold_leas(dc, dc, bb);
 }

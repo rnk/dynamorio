@@ -231,15 +231,72 @@ rewrite_immed_into_memref(void *dc, reg_id_t reg, opnd_t new_opnd, opnd_t old_op
 static opnd_t
 rewrite_memref_into_reg(void *dc, reg_id_t reg, opnd_t new_opnd, opnd_t old_opnd)
 {
-    DR_ASSERT_MSG(false, "NYI");
+    reg_id_t    new_base  = opnd_get_base (new_opnd);
+    reg_id_t    new_index = opnd_get_index(new_opnd);
+    int         new_disp  = opnd_get_disp (new_opnd);
+
+    if (new_base == DR_REG_NULL && new_index == DR_REG_NULL) {
+        /* Basically, this is a mov immediate. */
+        return OPND_CREATE_INT32(new_disp);
+    }
     return opnd_create_null();
 }
 
 static opnd_t
 rewrite_memref_into_memref(void *dc, reg_id_t reg, opnd_t new_opnd, opnd_t old_opnd)
 {
-    DR_ASSERT_MSG(false, "NYI");
-    return opnd_create_null();
+    reg_id_t    old_base  = opnd_get_base (old_opnd);
+    reg_id_t    old_index = opnd_get_index(old_opnd);
+    int         old_scale = opnd_get_scale(old_opnd);
+    int         old_disp  = opnd_get_disp (old_opnd);
+    opnd_size_t old_sz    = opnd_get_size (old_opnd);
+
+    reg_id_t    new_base  = opnd_get_base (new_opnd);
+    reg_id_t    new_index = opnd_get_index(new_opnd);
+    int         new_scale = opnd_get_scale(new_opnd);
+    int         new_disp  = opnd_get_disp (new_opnd);
+    opnd_size_t new_sz    = opnd_get_size (new_opnd);
+
+    ASSERT(new_sz == OPSZ_lea);
+
+    if (old_base == reg) {
+        /* If used in base reg, new_disp will not be multiplied by scale. */
+        old_disp += new_disp;
+        if (old_index == DR_REG_NULL) {
+            /* lea 0x10(rbp, rsi, 4) -> rax ; mov 0x10(rax) */
+            /* mov 0x20(rsp, rdi, 4) */
+            old_base  = new_base;
+            old_index = new_index;
+            old_scale = new_scale;
+        } else if (new_index == DR_REG_NULL) {
+            /* lea 0x10(rsp) -> rax ; mov 0x10(rax, rdi, 4) */
+            /* mov 0x20(rsp, rdi, 4) */
+            old_base = new_base;
+        } else if (new_base == DR_REG_NULL) {
+            if (old_scale == 1) {
+                /* lea 0x00(,%rax,8) -> %r10 ; mov %rsi -> 0x08(%r10,%r9,1) */
+                /* mov %rsi -> 0x08(%r9,%rax,8) */
+                old_base = old_index;
+                old_index = new_index;
+                old_scale = new_scale;
+            } else if (new_scale == 1) {
+                /* lea 0x00(,%rax,1) -> %r10 ; mov %rsi -> 0x08(%r10,%r9,8) */
+                /* mov %rsi -> 0x08(%rax,%r9,8) */
+                /* XXX: When would a compiler *ever* generate this? */
+                old_base = new_index;
+            } else {
+                return opnd_create_null();
+            }
+        } else {
+            return opnd_create_null();
+        }
+    } else if (old_index == reg) {
+        return opnd_create_null();
+    } else {
+        return opnd_create_null();
+    }
+    return opnd_create_base_disp(old_base, old_index, old_scale, old_disp,
+                                 old_sz);
 }
 
 /*****************************************************************************/
@@ -256,6 +313,17 @@ rewrite_opnd_table_init(void)
     rewrite_table[OPND_BASE_DISP][OPND_BASE_DISP] = rewrite_memref_into_memref;
 }
 
+static void
+log_unable_combine_opnds(void *dc, opnd_t new_opnd, opnd_t old_opnd)
+{
+    dr_log(dc, LOG_CLEANCALL, 3,
+           "drcalls: unable to combine opnd \"");
+    opnd_disassemble(dc, new_opnd, dr_get_logfile(dc));
+    dr_log(dc, LOG_CLEANCALL, 3, "\" into \"");
+    opnd_disassemble(dc, old_opnd, dr_get_logfile(dc));
+    dr_log(dc, LOG_CLEANCALL, 3, "\"\n");
+}
+
 static opnd_t
 rewrite_reg_in_opnd(void *dc, reg_id_t reg, opnd_t new_opnd, opnd_t old_opnd)
 {
@@ -264,9 +332,23 @@ rewrite_reg_in_opnd(void *dc, reg_id_t reg, opnd_t new_opnd, opnd_t old_opnd)
     rewrite_opnd_fn_t rewrite_fn = rewrite_table[new_kind][old_kind];
 
     if (rewrite_fn == NULL) {
+        log_unable_combine_opnds(dc, new_opnd, old_opnd);
         return opnd_create_null();
     } else {
-        return rewrite_fn(dc, reg, new_opnd, old_opnd);
+        opnd_t combined_opnd = rewrite_fn(dc, reg, new_opnd, old_opnd);
+        if (opnd_is_null(combined_opnd)) {
+            log_unable_combine_opnds(dc, new_opnd, old_opnd);
+        } else {
+            dr_log(dc, LOG_CLEANCALL, 3,
+                   "drcalls: combined opnds \"");
+            opnd_disassemble(dc, new_opnd, dr_get_logfile(dc));
+            dr_log(dc, LOG_CLEANCALL, 3, "\" and \"");
+            opnd_disassemble(dc, old_opnd, dr_get_logfile(dc));
+            dr_log(dc, LOG_CLEANCALL, 3, "\" into \"");
+            opnd_disassemble(dc, combined_opnd, dr_get_logfile(dc));
+            dr_log(dc, LOG_CLEANCALL, 3, "\"\n");
+        }
+        return combined_opnd;
     }
 }
 
@@ -308,6 +390,17 @@ rewrite_reg_in_instr(void *dc, instr_t *instr, reg_id_t reg, opnd_t new_opnd,
             break;
         }
         instr_set_dst(instr, i, combined_opnd);
+    }
+
+    /* Massage operands to instructions so they can encode. */
+    if (instr_get_opcode(instr) == OP_test) {
+        opnd_t opnd0 = instr_get_src(instr, 0);
+        opnd_t opnd1 = instr_get_src(instr, 1);
+        if (!opnd_is_reg(opnd0) && opnd_is_reg(opnd1)) {
+            /* test is commutative, flip so it can encode. */
+            instr_set_src(instr, 0, opnd1);
+            instr_set_src(instr, 1, opnd0);
+        }
     }
 
     failed |= !can_encode(instr);
@@ -354,18 +447,33 @@ rewrite_live_range_check(void *dc, instr_t *def, instr_t *end, reg_id_t reg,
     }
 
     for (instr = instr_get_next(def); instr != end;
-         instr = instr_get_next(instr))
-        if (!rewrite_reg_in_instr(dc, instr, reg, opnd, check_only))
+         instr = instr_get_next(instr)) {
+        if (opnd_is_base_disp(opnd) && instr_get_next(instr) != end) {
+            /* If the opnd we're folding is a memref and this isn't the last
+             * instruction in the live range, make sure none of the registers it
+             * uses have been clobbered.
+             */
+            int i;
+            for (i = 0; i < opnd_num_regs_used(opnd); i++) {
+                reg_id_t reg = opnd_get_reg_used(opnd, i);
+                if (instr_writes_to_reg(instr, reg)) {
+                    return false;
+                }
+            }
+        }
+        if (!rewrite_reg_in_instr(dc, instr, reg, opnd, check_only)) {
             return false;
+        }
+    }
     return true;
 }
 
-/* Find the next full clobber of 'reg', if it exists.  If there is a
- * subregister write that does not fully clobber the register, return false.
+/* Find the instruction after the next full clobber of 'reg', if it exists.  If
+ * there is a subregister write that does not fully clobber the register, return
+ * false.  Considers application instructions to clobber all regs.
  */
 static bool
-find_next_full_clobber(void *dc, instr_t *start, reg_id_t reg,
-                       instr_t **end)
+find_next_full_clobber(void *dc, instr_t *start, reg_id_t reg, instr_t **end)
 {
     instr_t *instr;
     int i;
@@ -374,6 +482,30 @@ find_next_full_clobber(void *dc, instr_t *start, reg_id_t reg,
      * leave it alone.  Otherwise, we can rewrite up until that instruction. */
     for (instr = instr_get_next(start); instr != NULL;
          instr = instr_get_next(instr)) {
+
+        if (instr_is_call(instr)) {
+            if (instr_ok_to_mangle(instr)) {
+                /* XXX: This is a call out for partial inlining.  Nothing lives
+                 * in or out of this. */
+                continue;
+            } else {
+                /* Everything is live-in to a *meta* call, since that means
+                 * we've materialized args for it and we're optimizing the
+                 * entire bb.
+                 */
+                *end = NULL;
+                return false;
+            }
+        }
+
+        /* Nothing is live across application instrs. */
+        if (instr_ok_to_mangle(instr)) {
+            dr_log(dc, LOG_CLEANCALL, 3,
+                   "drcalls: live range ends at app instr\n");
+            *end = instr;
+            return true;
+        }
+
         if (!instr_writes_to_reg(instr, reg))
             continue;
 
@@ -383,10 +515,11 @@ find_next_full_clobber(void *dc, instr_t *start, reg_id_t reg,
                 opnd_size_t sz = opnd_get_size(d);
                 if (sz == OPSZ_4 || sz == OPSZ_8) {
                     /* dst is fully clobbered here. */
-                    *end = instr;
+                    *end = instr_get_next(instr);
                     return true;
                 } else {
                     /* Subregister write, clobber is not full. */
+                    *end = NULL;
                     return false;
                 }
             }
@@ -407,10 +540,11 @@ try_rewrite_live_range(void *dc, instr_t *def, opnd_t opnd)
     ASSERT(instr_num_dsts(def) == 1);
 
     reg = opnd_get_reg(instr_get_dst(def, 0));
-    if (!find_next_full_clobber(dc, def, reg, &end))
+    if (!find_next_full_clobber(dc, def, reg, &end)) {
+        dr_log(dc, LOG_CLEANCALL, 3,
+               "drcalls: unable to determine live range\n");
         return false;
-    if (end != NULL)
-        end = instr_get_next(end);
+    }
 
     if (!rewrite_live_range_check(dc, def, end, reg, opnd, true))
         return false;
@@ -545,8 +679,9 @@ fold_mov_immed(void *dc, instrlist_t *ilist, instr_t *mov_imm)
 #endif
 
     dr_log(dc, LOG_CLEANCALL, 3,
-           "drcalls: attempting to fold mov_imm at "PFX"\n",
-           instr_get_app_pc(mov_imm));
+           "drcalls: attempting to fold immediate: ");
+    instr_disassemble(dc, mov_imm, dr_get_logfile(dc));
+    dr_log(dc, LOG_CLEANCALL, 3, "\n");
     if (try_rewrite_live_range(dc, mov_imm, imm)) {
         dr_log(dc, LOG_CLEANCALL, 3,
                "drcalls: folded mov_imm at "PFX"\n",
@@ -753,7 +888,7 @@ dce_and_copy_prop(void *dc, const callee_info_t *ci)
                    instr_writes_memory(instr) ||
                    instr_is_cti(instr) ||
                    instr_is_label(instr));
-        if (!is_live) {
+        if (!is_live || instr_is_nop(instr)) {
             dr_log(dc, LOG_CLEANCALL, 3,
                    "drcalls: removing dead instr at "PFX".\n",
                    instr_get_app_pc(instr));
@@ -828,6 +963,94 @@ try_fold_immeds(void *dc, void *dc_alloc, instrlist_t *ilist)
             if (fold_mov_immed(dc, ilist, instr)) {
                 remove_and_destroy(dc_alloc, ilist, instr);
             }
+        }
+    }
+}
+
+#ifdef X64
+static opnd_t
+combine_riprel_opnds(void *dc, reg_id_t reg, opnd_t new_opnd, opnd_t old_opnd)
+{
+    ptr_int_t new_ptr = (ptr_int_t)opnd_get_addr(new_opnd);
+    ptr_int_t old_ptr = (ptr_int_t)opnd_get_addr(old_opnd);
+    opnd_size_t sz = opnd_get_size(old_opnd);
+    ptr_int_t diff = old_ptr - new_ptr;
+    if (-256 < diff && diff < 256) {
+        /* Only fold if the difference isn't likely to make displacements based
+         * off of it bigger. */
+        return opnd_create_base_disp(reg, DR_REG_NULL, 0, diff, sz);
+    }
+    return old_opnd;
+}
+
+static void
+try_merge_riprel(void *dc, instr_t *lea, opnd_t memref)
+{
+    instr_t *instr;
+    instr_t *end = NULL;
+    reg_id_t reg = opnd_get_reg(instr_get_dst(lea, 0));
+    int i;
+
+    find_next_full_clobber(dc, lea, reg, &end);
+    for (instr = instr_get_next(lea); instr != end;
+         instr = instr_get_next(instr)) {
+        for (i = 0; i < instr_num_srcs(instr); i++) {
+            opnd_t opnd = instr_get_src(instr, i);
+            if (opnd_is_rel_addr(opnd)) {
+                opnd_t after_opnd = combine_riprel_opnds(dc, reg, memref, opnd);
+                instr_set_src(instr, i, after_opnd);
+            }
+        }
+        for (i = 0; i < instr_num_dsts(instr); i++) {
+            opnd_t opnd = instr_get_dst(instr, i);
+            if (opnd_is_rel_addr(opnd)) {
+                opnd_t after_opnd = combine_riprel_opnds(dc, reg, memref, opnd);
+                instr_set_dst(instr, i, after_opnd);
+            }
+        }
+    }
+}
+#endif
+
+/* Try to fold "lea memref -> %reg ; use reg in memref" into the use. */
+void
+fold_leas(void *dc, void *dc_alloc, instrlist_t *ilist)
+{
+    instr_t *instr;
+    instr_t *next_instr;
+
+    for (instr = instrlist_first(ilist); instr != NULL; instr = next_instr) {
+        next_instr = instr_get_next(instr);
+        /* Don't touch app instrs. */
+        if (instr_ok_to_mangle(instr))
+            continue;
+
+        if (instr_get_opcode(instr) == OP_lea) {
+            opnd_t memref = instr_get_src(instr, 0);
+            if (opnd_is_base_disp(memref) &&
+                opnd_get_segment(memref) == DR_REG_NULL) {
+                dr_log(dc, LOG_CLEANCALL, 3,
+                       "drcalls: fold_lea: trying to fold lea: ");
+                instr_disassemble(dc, instr, dr_get_logfile(dc));
+                dr_log(dc, LOG_CLEANCALL, 3, "\n");
+                if (try_rewrite_live_range(dc, instr, memref)) {
+                    dr_log(dc, LOG_CLEANCALL, 3,
+                           "drcalls: folded lea\n");
+                    /* TODO(rnk): We've rewritten all uses of the dst reg in the
+                     * ilist, but it could be live-out.  If we choose to handle
+                     * this case, we should leave the instr and let DCE handle
+                     * that. */
+                    remove_and_destroy(dc_alloc, ilist, instr);
+                } else {
+                    dr_log(dc, LOG_CLEANCALL, 3,
+                           "drcalls: failed to fold lea\n");
+                }
+            }
+#ifdef X64
+            else if (opnd_is_rel_addr(memref)) {
+                try_merge_riprel(dc, instr, memref);
+            }
+#endif
         }
     }
 }

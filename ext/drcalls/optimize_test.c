@@ -58,7 +58,7 @@ ilist_cmp_test_init(ilist_cmp_test_t *test)
     test->dc = dr_get_current_drcontext();
     test->before = instrlist_create(GLOBAL_DCONTEXT);
     test->after = instrlist_create(GLOBAL_DCONTEXT);
-    INSTR_BUILDER_INIT(test->ib, GLOBAL_DCONTEXT, NULL, NULL, false);
+    INSTR_BUILDER_INIT(test->ib, GLOBAL_DCONTEXT, NULL, NULL, /*meta=*/true);
     callee_info_init(&test->ci);
 }
 
@@ -229,7 +229,7 @@ TEST(fold_mov_imm_64bit) {
 #endif
 }
 
-TEST(cant_encode_test_immed) {
+TEST(test_commute_op_test) {
     ilist_cmp_test_t t;
     ilist_cmp_test_init(&t);
 
@@ -237,11 +237,8 @@ TEST(cant_encode_test_immed) {
     BUILD(t.ib, mov_imm, REG(EAX), IMM(0x44, 4)); /* immediate */
     BUILD(t.ib, test,    REG(EAX), REG(EBX));
 
-    /* Should be no change, since immediate cannot be encoded to "left" operand
-     * of test. */
-    /* XXX: If we teach the optimizer how to flip operands, this might change. */
-    instrlist_destroy(GLOBAL_DCONTEXT, t.after);
-    t.after = instrlist_clone(GLOBAL_DCONTEXT, t.before);
+    t.ib.ilist = t.after;
+    BUILD(t.ib, test,    REG(EBX), IMM(0x44, 4));
 
     try_fold_immeds(t.dc, GLOBAL_DCONTEXT, t.before);
 
@@ -337,19 +334,109 @@ TEST(test_dse) {
     ilist_cmp_test_fini(&t);
 }
 
+TEST(test_fold_lea) {
+    ptr_int_t ptr = (ptr_int_t)&test_fold_lea;
+    ilist_cmp_test_t t;
+    ilist_cmp_test_init(&t);
+
+    t.ib.ilist = t.before;
+    /* Simple base disp -> base disp fold. */
+    BUILD(t.ib, lea,    REG(XAX), MEM(XSP, 0x10, lea));
+    BUILD(t.ib, mov_ld, REG(XBX), MEM(XAX, 0x10, PTR));
+    /* Don't fold if regs used in lea are clobbered. */
+    BUILD(t.ib, lea,    REG(XAX), MEM(XSI, 0x10, lea));
+    BUILD(t.ib, xor,    REG(XSI), REG(XSI));
+    BUILD(t.ib, mov_ld, REG(XBX), MEM(XAX, 0x10, PTR));
+    /* Index in lea, not target. */
+    BUILD(t.ib, lea,    REG(XAX), MEM_IDX(XBP, XSI, 0x04, 0x10, lea));
+    BUILD(t.ib, mov_ld, REG(XBX), MEM(XAX, 0x10, PTR));
+    /* Index in target, not lea. */
+    BUILD(t.ib, lea,    REG(XAX), MEM(XBP, 0x10, lea));
+    BUILD(t.ib, mov_ld, REG(XBX), MEM_IDX(XAX, XSI, 0x04, 0x10, PTR));
+    /* Shift lea into base with index and scale 1. */
+    BUILD(t.ib, lea,    REG(XAX), MEM_IDX(NULL, XSI, 0x08, 0x10, lea));
+    BUILD(t.ib, mov_ld, REG(XBX), MEM_IDX(XAX,  XDI, 0x01, 0x10, PTR));
+    /* Index, no scale lea into full BISD. */
+    BUILD(t.ib, lea,    REG(XAX), MEM_IDX(NULL, XSI, 0x01, 0x10, lea));
+    BUILD(t.ib, mov_ld, REG(XBX), MEM_IDX(XAX,  XDI, 0x08, 0x10, PTR));
+    /* Merge riprel. */
+    BUILD(t.ib, lea,    REG(XAX), MEM_REL(ptr + 0x00, lea));
+    BUILD(t.ib, lea,    REG(XBX), MEM_REL(ptr + 0x10, lea));
+    BUILD(t.ib, lea,    REG(XCX), MEM_REL(ptr - 0x10, lea));
+    BUILD(t.ib, mov_ld, REG(XDX), MEM(XAX, 0, PTR));
+    BUILD(t.ib, mov_ld, REG(XDI), MEM(XBX, 0, PTR));
+    BUILD(t.ib, mov_ld, REG(XSI), MEM(XCX, 0, PTR));
+    BUILD(t.ib, mov_ld, REG(XDX), MEM_REL(ptr + 0x20, PTR));
+    BUILD(t.ib, mov_st, MEM_REL(ptr + 0x20, PTR), REG(XDX));
+
+    t.ib.ilist = t.after;
+    /* Simple base disp -> base disp fold. */
+    BUILD(t.ib, mov_ld, REG(XBX), MEM(XSP, 0x20, PTR));
+    /* Don't fold if regs used in lea are clobbered. */
+    BUILD(t.ib, lea,    REG(XAX), MEM(XSI, 0x10, lea));
+    BUILD(t.ib, xor,    REG(XSI), REG(XSI));
+    BUILD(t.ib, mov_ld, REG(XBX), MEM(XAX, 0x10, PTR));
+    /* Index in lea, not target. */
+    BUILD(t.ib, mov_ld, REG(XBX), MEM_IDX(XBP, XSI, 0x04, 0x20, PTR));
+    /* Index in target, not lea. */
+    BUILD(t.ib, mov_ld, REG(XBX), MEM_IDX(XBP, XSI, 0x04, 0x20, PTR));
+    /* Shift lea into base with index and scale 1. */
+    BUILD(t.ib, mov_ld, REG(XBX), MEM_IDX(XDI, XSI, 0x08, 0x20, PTR));
+    /* Index, no scale lea into full BISD. */
+    BUILD(t.ib, mov_ld, REG(XBX), MEM_IDX(XSI, XDI, 0x08, 0x20, PTR));
+    /* Merge riprel. */
+    BUILD(t.ib, lea,    REG(XAX), MEM_REL(ptr, lea));
+    BUILD(t.ib, mov_ld, REG(XDX), MEM(XAX,  0x00, PTR));
+    BUILD(t.ib, mov_ld, REG(XDI), MEM(XAX,  0x10, PTR));
+    BUILD(t.ib, mov_ld, REG(XSI), MEM(XAX, -0x10, PTR));
+    BUILD(t.ib, mov_ld, REG(XDX), MEM(XAX,  0x20, PTR));
+    BUILD(t.ib, mov_st, MEM(XAX, 0x20, PTR), REG(XDX));
+
+    fold_leas(t.dc, GLOBAL_DCONTEXT, t.before);
+
+    ASSERT(ilists_same(t.dc, t.before, t.after), "fold leas failed");
+
+    ilist_cmp_test_fini(&t);
+}
+
+TEST(test_fold_consecutive_lea) {
+    ilist_cmp_test_t t;
+    ilist_cmp_test_init(&t);
+
+    t.ib.ilist = t.before;
+    /* 4 consecutive leas. */
+    BUILD(t.ib, lea,    REG(XAX), MEM(XAX, 0x01, lea));
+    BUILD(t.ib, lea,    REG(XAX), MEM(XAX, 0x01, lea));
+    BUILD(t.ib, lea,    REG(XAX), MEM(XAX, 0x01, lea));
+    BUILD(t.ib, lea,    REG(XAX), MEM(XAX, 0x01, lea));
+    BUILD(t.ib, mov_st, MEM(XSP, 0x00, PTR), REG(XAX));
+
+    t.ib.ilist = t.after;
+    BUILD(t.ib, lea,    REG(XAX), MEM(XAX, 0x04, lea));
+    BUILD(t.ib, mov_st, MEM(XSP, 0x00, PTR), REG(XAX));
+
+    fold_leas(t.dc, GLOBAL_DCONTEXT, t.before);
+
+    ASSERT(ilists_same(t.dc, t.before, t.after), "fold leas failed");
+
+    ilist_cmp_test_fini(&t);
+}
+
 #define TEST_FUNCS() \
     TEST_FN(dce_basic) \
     TEST_FN(copy_prop_basic) \
     TEST_FN(test_reuse_dead_reg) \
     TEST_FN(fold_mov_imm_basic) \
     TEST_FN(fold_mov_imm_64bit) \
-    TEST_FN(cant_encode_test_immed) \
+    TEST_FN(test_commute_op_test) \
     TEST_FN(test_jmp_next) \
     TEST_FN(test_rle) \
-    TEST_FN(test_dse)
+    TEST_FN(test_dse) \
+    TEST_FN(test_fold_lea) \
+    TEST_FN(test_fold_consecutive_lea)
 
-/* Non macro framework idea: */
 #if 0
+/* Non macro framework idea: */
 static test_fn_t test_funcs[] = {
     dce_basic,
     copy_prop_basic,

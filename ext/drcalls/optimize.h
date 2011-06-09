@@ -97,6 +97,7 @@ void rewrite_opnd_table_init(void);
 void dce_and_copy_prop(void *dc, const callee_info_t *ci);
 void reuse_registers(void *dc, const callee_info_t *ci);
 void try_fold_immeds(void *dc, void *dc_alloc, instrlist_t *ilist);
+void fold_leas(void *dc, void *dc_alloc, instrlist_t *ilist);
 void try_avoid_flags(void *dc, const callee_info_t *ci);
 void redundant_load_elim(void *dc, void *dc_alloc, instrlist_t *ilist);
 void dead_store_elim(void *dc, void *dc_alloc, instrlist_t *ilist);
