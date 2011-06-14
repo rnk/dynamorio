@@ -33,18 +33,30 @@
 /* inscount client that relies on DynamoRIO inlining the clean call. */
 
 #include "dr_api.h"
+#include "dr_calls.h"
+
 #include "inscount_common.h"
 
 const char *client_name = "inscount_cleancall";
+
+static void
+inc_count(void)
+{
+    global_count++;
+}
 
 dr_emit_flags_t
 event_basic_block(void *drcontext, void *tag, instrlist_t *bb,
                   bool for_trace, bool translating)
 {
-    uint num_instrs = count_instrs(bb);
-    dr_insert_clean_call(drcontext, bb, instrlist_first(bb),
-                         (void *)inscount, false /* save fpstate */, 1,
-                         OPND_CREATE_INT32(num_instrs));
+    instr_t *instr;
+    for (instr = instrlist_first(bb); instr != NULL;
+         instr = instr_get_next(instr)) {
+        drcalls_insert_call(drcontext, bb, instr, (void *)inc_count,
+                            false /* save fpstate */, 0);
+    }
+
+    drcalls_done(drcontext, bb);
 
     return DR_EMIT_DEFAULT;
 }

@@ -106,6 +106,12 @@ callee_info_free(callee_info_t *ci)
         ASSERT(ci->opt_inline);
         instrlist_clear_and_destroy(GLOBAL_DCONTEXT, ci->ilist);
     }
+    if (ci->check_ilist != NULL) {
+        instrlist_clear_and_destroy(GLOBAL_DCONTEXT, ci->check_ilist);
+    }
+    if (ci->fast_ilist != NULL) {
+        instrlist_clear_and_destroy(GLOBAL_DCONTEXT, ci->fast_ilist);
+    }
     dr_global_free(ci, sizeof(*ci));
 }
 
@@ -1429,6 +1435,60 @@ analyze_callee_partial(void *dc, callee_info_t *ci)
     }
 }
 
+/* Tries to see if we can coalesce checks for this callee. */
+static void
+analyze_callee_coalesce_check(void *dc, callee_info_t *ci)
+{
+    instr_t *instr;
+    instr_t *jcc_instr;
+    instr_t *fastpath_start;
+    //liveness_t liveness_;
+    //liveness_t *liveness = &liveness_;
+
+    ci->opt_coalesce_checks = false;
+    if (!ci->opt_partial) {
+        dr_log(dc, LOG_CLEANCALL, 3,
+               "drcalls: can't coalesce checks, not partial inline\n");
+        return;
+    }
+
+    ci->check_ilist = instrlist_create(GLOBAL_DCONTEXT);
+
+    /* Clone entry block. */
+    for (instr = instrlist_first(ci->ilist); !instr_is_cti(instr);
+         instr = instr_get_next(instr)) {
+        instrlist_append(ci->check_ilist, instr_clone(GLOBAL_DCONTEXT, instr));
+    }
+
+    /* Instr is now partial check instr, which jumps to fastpath if check
+     * passes.  Invert it and remove the target, which has a dangling pointer
+     * to a label. */
+    if (!instr_is_jcc(instr)) {
+        dr_log(dc, LOG_CLEANCALL, 3,
+               "drcalls: can't coalesce, cannot invert check\n");
+        return;
+    }
+    jcc_instr = instr_clone(GLOBAL_DCONTEXT, instr);
+    instr_invert_cbr(jcc_instr);
+    instr_set_target(jcc_instr, opnd_create_pc(NULL));
+    instrlist_append(ci->check_ilist, jcc_instr);
+
+    /* Create the fast ilist by cloning the check ilist and removing the check.
+     * Clean up later with DCE. */
+    ci->fast_ilist = instrlist_clone(GLOBAL_DCONTEXT, ci->check_ilist);
+    remove_and_destroy(GLOBAL_DCONTEXT, ci->fast_ilist,
+                       instrlist_last(ci->fast_ilist));
+
+    /* Append the fastpath. */
+    fastpath_start = opnd_get_instr(instr_get_target(instr));
+    for (instr = fastpath_start; instr != NULL; instr = instr_get_next(instr)) {
+        instrlist_append(ci->fast_ilist, instr_clone(GLOBAL_DCONTEXT, instr));
+    }
+
+    instrlist_disassemble(dc, NULL, ci->check_ilist, STDOUT);
+    instrlist_disassemble(dc, NULL, ci->fast_ilist, STDOUT);
+}
+
 static reg_id_t
 get_fp_reg(callee_info_t *ci)
 {
@@ -1749,6 +1809,7 @@ analyze_callee_ilist(void *dc, callee_info_t *ci)
                 dce_and_copy_prop(dc, ci);
                 remove_jmp_next_instr(dc, GLOBAL_DCONTEXT, ci->ilist);
             }
+            analyze_callee_coalesce_check(dc, ci);
         }
         analyze_callee_regs_usage(dc, ci);
         analyze_callee_tls(dc, ci);

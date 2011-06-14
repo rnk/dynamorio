@@ -61,8 +61,12 @@ typedef struct _callee_info_t {
     bool stack_complex;       /* true if the stack usage is complicated */
     instrlist_t *ilist;       /* instruction list of function for inline. */
     instr_t *partial_label;   /* label of slowpath entry */
-    app_pc partial_pc;      /* pc of slowpath entry */
-    uint framesize;           /* size of the frame on dstack */
+    app_pc partial_pc;        /* pc of slowpath entry */
+    uint framesize;           /* size of the frame on dstack. */
+    bool opt_coalesce_checks; /* partial inline checks might be coalesced */
+    bool check_dep_regs[NUM_GP_REGS]; /* true if check depends on reg i. */
+    instrlist_t *check_ilist; /* ilist for check if coalescing. */
+    instrlist_t *fast_ilist;  /* fastpath ilist if coalescing. */
 } callee_info_t;
 
 void callee_info_init(callee_info_t *ci);

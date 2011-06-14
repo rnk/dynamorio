@@ -111,8 +111,6 @@ event_bb(void *dc, void *entry_pc, instrlist_t *bb, bool for_trace,
         }
     }
 
-    drcalls_done(dc, bb);
-
     return DR_EMIT_DEFAULT;
 }
 

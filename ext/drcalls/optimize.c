@@ -148,8 +148,8 @@ static opnd_t
 rewrite_reg_into_reg(void *dc, reg_id_t reg, opnd_t new_opnd, opnd_t old_opnd)
 {
     reg_id_t new = opnd_get_reg(new_opnd);
-    reg_id_t old = opnd_get_reg(old_opnd);
     opnd_size_t sz = opnd_get_size(old_opnd);
+    IF_DEBUG(reg_id_t old = opnd_get_reg(old_opnd));
 
     ASSERT(reg_overlap(reg, old));
 
@@ -255,7 +255,7 @@ rewrite_memref_into_memref(void *dc, reg_id_t reg, opnd_t new_opnd, opnd_t old_o
     reg_id_t    new_index = opnd_get_index(new_opnd);
     int         new_scale = opnd_get_scale(new_opnd);
     int         new_disp  = opnd_get_disp (new_opnd);
-    opnd_size_t new_sz    = opnd_get_size (new_opnd);
+    IF_DEBUG(opnd_size_t new_sz = opnd_get_size (new_opnd));
 
     ASSERT(new_sz == OPSZ_lea);
 
@@ -316,12 +316,14 @@ rewrite_opnd_table_init(void)
 static void
 log_unable_combine_opnds(void *dc, opnd_t new_opnd, opnd_t old_opnd)
 {
-    dr_log(dc, LOG_CLEANCALL, 3,
-           "drcalls: unable to combine opnd \"");
-    opnd_disassemble(dc, new_opnd, dr_get_logfile(dc));
-    dr_log(dc, LOG_CLEANCALL, 3, "\" into \"");
-    opnd_disassemble(dc, old_opnd, dr_get_logfile(dc));
-    dr_log(dc, LOG_CLEANCALL, 3, "\"\n");
+    DOLOG(3, LOG_CLEANCALL, {
+        dr_log(dc, LOG_CLEANCALL, 3,
+               "drcalls: unable to combine opnd \"");
+        opnd_disassemble(dc, new_opnd, dr_get_logfile(dc));
+        dr_log(dc, LOG_CLEANCALL, 3, "\" into \"");
+        opnd_disassemble(dc, old_opnd, dr_get_logfile(dc));
+        dr_log(dc, LOG_CLEANCALL, 3, "\"\n");
+    });
 }
 
 static opnd_t
@@ -339,14 +341,16 @@ rewrite_reg_in_opnd(void *dc, reg_id_t reg, opnd_t new_opnd, opnd_t old_opnd)
         if (opnd_is_null(combined_opnd)) {
             log_unable_combine_opnds(dc, new_opnd, old_opnd);
         } else {
-            dr_log(dc, LOG_CLEANCALL, 3,
-                   "drcalls: combined opnds \"");
-            opnd_disassemble(dc, new_opnd, dr_get_logfile(dc));
-            dr_log(dc, LOG_CLEANCALL, 3, "\" and \"");
-            opnd_disassemble(dc, old_opnd, dr_get_logfile(dc));
-            dr_log(dc, LOG_CLEANCALL, 3, "\" into \"");
-            opnd_disassemble(dc, combined_opnd, dr_get_logfile(dc));
-            dr_log(dc, LOG_CLEANCALL, 3, "\"\n");
+            DOLOG(3, LOG_CLEANCALL, {
+                dr_log(dc, LOG_CLEANCALL, 3,
+                       "drcalls: combined opnds \"");
+                opnd_disassemble(dc, new_opnd, dr_get_logfile(dc));
+                dr_log(dc, LOG_CLEANCALL, 3, "\" and \"");
+                opnd_disassemble(dc, old_opnd, dr_get_logfile(dc));
+                dr_log(dc, LOG_CLEANCALL, 3, "\" into \"");
+                opnd_disassemble(dc, combined_opnd, dr_get_logfile(dc));
+                dr_log(dc, LOG_CLEANCALL, 3, "\"\n");
+            });
         }
         return combined_opnd;
     }
@@ -678,10 +682,12 @@ fold_mov_immed(void *dc, instrlist_t *ilist, instr_t *mov_imm)
         return false;
 #endif
 
-    dr_log(dc, LOG_CLEANCALL, 3,
-           "drcalls: attempting to fold immediate: ");
-    instr_disassemble(dc, mov_imm, dr_get_logfile(dc));
-    dr_log(dc, LOG_CLEANCALL, 3, "\n");
+    DOLOG(3, LOG_CLEANCALL, {
+        dr_log(dc, LOG_CLEANCALL, 3,
+               "drcalls: attempting to fold immediate: ");
+        instr_disassemble(dc, mov_imm, dr_get_logfile(dc));
+        dr_log(dc, LOG_CLEANCALL, 3, "\n");
+    });
     if (try_rewrite_live_range(dc, mov_imm, imm)) {
         dr_log(dc, LOG_CLEANCALL, 3,
                "drcalls: folded mov_imm at "PFX"\n",
@@ -704,10 +710,12 @@ addsub_to_lea(void *dc, const callee_info_t *ci, liveness_t *liveness,
     reg_id_t dst_reg;
     ASSERT(opnd_same(dst, instr_get_src(instr, 1)));
     if (check_only) {
-        dr_log(dc, LOG_CLEANCALL, 3,
-               "drcalls: attempting add -> lea for: ");
-        instr_disassemble(dc, instr, dr_get_logfile(dc));
-        dr_log(dc, LOG_CLEANCALL, 3, "\n");
+        DOLOG(3, LOG_CLEANCALL, {
+            dr_log(dc, LOG_CLEANCALL, 3,
+                   "drcalls: attempting add -> lea for: ");
+            instr_disassemble(dc, instr, dr_get_logfile(dc));
+            dr_log(dc, LOG_CLEANCALL, 3, "\n");
+        });
     }
 
     /* Extract memory operands from add into temp register loads and stores. */
@@ -1029,10 +1037,12 @@ fold_leas(void *dc, void *dc_alloc, instrlist_t *ilist)
             opnd_t memref = instr_get_src(instr, 0);
             if (opnd_is_base_disp(memref) &&
                 opnd_get_segment(memref) == DR_REG_NULL) {
-                dr_log(dc, LOG_CLEANCALL, 3,
-                       "drcalls: fold_lea: trying to fold lea: ");
-                instr_disassemble(dc, instr, dr_get_logfile(dc));
-                dr_log(dc, LOG_CLEANCALL, 3, "\n");
+                DOLOG(3, LOG_CLEANCALL, {
+                    dr_log(dc, LOG_CLEANCALL, 3,
+                           "drcalls: fold_lea: trying to fold lea: ");
+                    instr_disassemble(dc, instr, dr_get_logfile(dc));
+                    dr_log(dc, LOG_CLEANCALL, 3, "\n");
+                });
                 if (try_rewrite_live_range(dc, instr, memref)) {
                     dr_log(dc, LOG_CLEANCALL, 3,
                            "drcalls: folded lea\n");
@@ -1089,10 +1099,12 @@ redundant_load_elim(void *dc, void *dc_alloc, instrlist_t *ilist)
         /* If it's an app instruction, ignore it, only touch instrumentation. */
         if (instr_ok_to_mangle(instr)) {
 #ifdef VERBOSE
-            dr_log(dc, LOG_CLEANCALL, 3,
-                   "drcalls: RLE: blocked by non-meta instr: ");
-            instr_disassemble(dc, instr, dr_get_logfile(dc));
-            dr_log(dc, LOG_CLEANCALL, 3, "\n");
+            DOLOG(3, LOG_CLEANCALL, {
+                dr_log(dc, LOG_CLEANCALL, 3,
+                       "drcalls: RLE: blocked by non-meta instr: ");
+                instr_disassemble(dc, instr, dr_get_logfile(dc));
+                dr_log(dc, LOG_CLEANCALL, 3, "\n");
+            });
 #endif
             store = NULL;
             continue;
@@ -1120,18 +1132,22 @@ redundant_load_elim(void *dc, void *dc_alloc, instrlist_t *ilist)
             dst_reg = instr_get_dst(load, 0);
             if (opnd_same(src, dst_reg)) {
                 /* Can delete load. */
-                dr_log(dc, LOG_CLEANCALL, 3,
-                       "drcalls: RLE: deleted redundant load: ");
-                instr_disassemble(dc, load, dr_get_logfile(dc));
-                dr_log(dc, LOG_CLEANCALL, 3, "\n");
+                DOLOG(3, LOG_CLEANCALL, {
+                    dr_log(dc, LOG_CLEANCALL, 3,
+                           "drcalls: RLE: deleted redundant load: ");
+                    instr_disassemble(dc, load, dr_get_logfile(dc));
+                    dr_log(dc, LOG_CLEANCALL, 3, "\n");
+                });
 
                 remove_and_destroy(dc_alloc, ilist, load);
             } else {
                 /* Can change to mov r1 -> r2. */
-                dr_log(dc, LOG_CLEANCALL, 3,
-                       "drcalls: RLE: changed load to reg copy: ");
-                instr_disassemble(dc, load, dr_get_logfile(dc));
-                dr_log(dc, LOG_CLEANCALL, 3, "\n");
+                DOLOG(3, LOG_CLEANCALL, {
+                    dr_log(dc, LOG_CLEANCALL, 3,
+                           "drcalls: RLE: changed load to reg copy: ");
+                    instr_disassemble(dc, load, dr_get_logfile(dc));
+                    dr_log(dc, LOG_CLEANCALL, 3, "\n");
+                });
 
                 instr_set_src(load, 0, src);
             }
@@ -1148,10 +1164,12 @@ redundant_load_elim(void *dc, void *dc_alloc, instrlist_t *ilist)
             (opnd_is_reg(src) &&
              instr_writes_to_reg(instr, opnd_get_reg(src)))) {
 #ifdef VERBOSE
-            dr_log(dc, LOG_CLEANCALL, 3,
-                   "drcalls: RLE: blocked by instr: ");
-            instr_disassemble(dc, instr, dr_get_logfile(dc));
-            dr_log(dc, LOG_CLEANCALL, 3, "\n");
+            DOLOG(3, LOG_CLEANCALL, {
+                dr_log(dc, LOG_CLEANCALL, 3,
+                       "drcalls: RLE: blocked by instr: ");
+                instr_disassemble(dc, instr, dr_get_logfile(dc));
+                dr_log(dc, LOG_CLEANCALL, 3, "\n");
+            });
 #endif
             store = NULL;
         }
@@ -1187,10 +1205,12 @@ dead_store_elim(void *dc, void *dc_alloc, instrlist_t *ilist)
         if (instr_ok_to_mangle(instr)) {
             if (store != NULL) {
 #ifdef VERBOSE
-                dr_log(dc, LOG_CLEANCALL, 3,
-                       "drcalls: DSE: blocked by non-meta instr: ");
-                instr_disassemble(dc, instr, dr_get_logfile(dc));
-                dr_log(dc, LOG_CLEANCALL, 3, "\n");
+                DOLOG(3, LOG_CLEANCALL, {
+                    dr_log(dc, LOG_CLEANCALL, 3,
+                           "drcalls: DSE: blocked by non-meta instr: ");
+                    instr_disassemble(dc, instr, dr_get_logfile(dc));
+                    dr_log(dc, LOG_CLEANCALL, 3, "\n");
+                });
 #endif
                 store = NULL;
             }
@@ -1200,10 +1220,12 @@ dead_store_elim(void *dc, void *dc_alloc, instrlist_t *ilist)
         if (instr_get_opcode(instr) == OP_mov_st) {
             if (store != NULL && opnd_same(mem_ref, instr_get_dst(instr, 0))) {
                 /* Can delete store. */
-                dr_log(dc, LOG_CLEANCALL, 3,
-                       "drcalls: DSE: deleted dead store: ");
-                instr_disassemble(dc, store, dr_get_logfile(dc));
-                dr_log(dc, LOG_CLEANCALL, 3, "\n");
+                DOLOG(3, LOG_CLEANCALL, {
+                    dr_log(dc, LOG_CLEANCALL, 3,
+                           "drcalls: DSE: deleted dead store: ");
+                    instr_disassemble(dc, store, dr_get_logfile(dc));
+                    dr_log(dc, LOG_CLEANCALL, 3, "\n");
+                });
 
                 remove_and_destroy(dc_alloc, ilist, store);
             }
@@ -1221,10 +1243,12 @@ dead_store_elim(void *dc, void *dc_alloc, instrlist_t *ilist)
             }
 
 #ifdef VERBOSE
-            dr_log(dc, LOG_CLEANCALL, 3,
-                   "drcalls: DSE: found store: ");
-            instr_disassemble(dc, store, dr_get_logfile(dc));
-            dr_log(dc, LOG_CLEANCALL, 3, "\n");
+            DOLOG(3, LOG_CLEANCALL, {
+                dr_log(dc, LOG_CLEANCALL, 3,
+                       "drcalls: DSE: found store: ");
+                instr_disassemble(dc, store, dr_get_logfile(dc));
+                dr_log(dc, LOG_CLEANCALL, 3, "\n");
+            });
 #endif
             continue;
         }
@@ -1237,10 +1261,12 @@ dead_store_elim(void *dc, void *dc_alloc, instrlist_t *ilist)
              instr_writes_to_reg(instr, base_reg) ||
              instr_writes_to_reg(instr, idx_reg))) {
 #ifdef VERBOSE
-            dr_log(dc, LOG_CLEANCALL, 3,
-                   "drcalls: DSE: blocked by clobber: ");
-            instr_disassemble(dc, instr, dr_get_logfile(dc));
-            dr_log(dc, LOG_CLEANCALL, 3, "\n");
+            DOLOG(3, LOG_CLEANCALL, {
+                dr_log(dc, LOG_CLEANCALL, 3,
+                       "drcalls: DSE: blocked by clobber: ");
+                instr_disassemble(dc, instr, dr_get_logfile(dc));
+                dr_log(dc, LOG_CLEANCALL, 3, "\n");
+            });
 #endif
 
             store = NULL;

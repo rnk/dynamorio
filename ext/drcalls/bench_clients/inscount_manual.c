@@ -33,6 +33,7 @@
 /* inscount client that uses shared clean calls to reduce code bloat. */
 
 #include "dr_api.h"
+#include "dr_calls.h"
 #include "inscount_common.h"
 
 #define TESTALL(mask, var) (((mask) & (var)) == (mask))
@@ -69,6 +70,8 @@ event_basic_block(void *drcontext, void *tag, instrlist_t *bb,
 
     if (instr == NULL)
         dr_restore_arith_flags(drcontext, bb, first, SPILL_SLOT_1);
+
+    drcalls_done(drcontext, bb);
 
     return DR_EMIT_DEFAULT;
 }

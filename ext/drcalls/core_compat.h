@@ -53,16 +53,33 @@
 #define PRE  instrlist_meta_preinsert
 #define APP  instrlist_meta_append
 
-#define ASSERT DR_ASSERT
+#ifdef DEBUG
+# define ASSERT DR_ASSERT
 /* TODO(rnk): Maybe expose curiosity assertions to clients. */
-#define ASSERT_CURIOSITY DR_ASSERT
-#define CLIENT_ASSERT DR_ASSERT_MSG
+# define ASSERT_CURIOSITY DR_ASSERT
+# define CLIENT_ASSERT DR_ASSERT_MSG
+#else
+# undef DR_ASSERT
+# undef DR_ASSERT_MSG
+# define DR_ASSERT(cond)
+# define DR_ASSERT_MSG(cond, msg)
+# define ASSERT(cond)
+# define ASSERT_CURIOSITY(cond)
+# define CLIENT_ASSERT(cond, msg)
+#endif
 
-/* TODO(rnk): Maybe expose DEBUG and other build mode macros. */
-#define DOLOG(level, mask, stmt) stmt
-#define DEBUG_DECLARE(decl) decl
-#define IF_DEBUG(stmt) stmt
-#define IF_DEBUG(stmt) stmt
+#ifdef DEBUG
+/* TODO(rnk): It'd be nice if DOLOG actually checked the mask and level. */
+# define DOLOG(level, mask, stmt) stmt
+# define DEBUG_DECLARE(decl) decl
+# define IF_DEBUG(stmt) stmt
+# define IF_DEBUG(stmt) stmt
+#else
+# define DOLOG(level, mask, stmt)
+# define DEBUG_DECLARE(decl)
+# define IF_DEBUG(stmt)
+# define IF_DEBUG(stmt)
+#endif
 
 /* TODO(rnk): We use this to allocate thread-shared instrlists, but it violates
  * the abstraction barrier. */

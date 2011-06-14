@@ -33,31 +33,70 @@
 #include "dr_api.h"
 #include "dr_calls.h"
 
-#include "stdlib.h"
+#include <string.h>
 
-bool show_results;
+#ifdef WINDOWS
+# define EXPORT __declspec(dllexport)
+# define NOINLINE __declspec(noinline)
+#else
+# define EXPORT __attribute__((visibility("default")))
+# define NOINLINE __attribute__((noinline))
+#endif
+
+typedef struct _memop_t {
+    ptr_uint_t ea;
+    ptr_uint_t pc;
+    uint size;
+    uint write;
+} memop_t;
+
+#define BUFFER_SIZE 1024
+
+static uint pos;
+static memop_t buffer[BUFFER_SIZE];
+/* Test suite will want only count, spec will want neither. */
+static bool print_count = true;
+static bool print_accesses = true;
+static unsigned long long num_accesses = 0;
+static unsigned long long num_unaligned = 0;
+
+NOINLINE static void
+flush_buffer(void)
+{
+    int i;
+
+    for (i = 0; i < pos; i++) {
+        if ((buffer[i].ea & (buffer[i].size - 1)) == 0) {
+            continue;
+        }
+        num_unaligned++;
+        if (print_accesses) {
+            dr_fprintf(STDERR, "Unaligned %s access to ea "PFX" at pc "PFX" of"
+                       " size %u\n",
+                       (buffer[i].write ? "write" : "read"),
+                       buffer[i].ea,
+                       buffer[i].pc,
+                       buffer[i].size);
+        }
+    }
+    num_accesses += pos;
+    pos = 0;
+}
 
 /* An ideal clean call for partial inlining: has a fast path with a single
  * conditional jump and return, and a slow path with a bit of control flow
  * (ternary expr) and a call to printf.
- *
- * Checks that 'ea' was aligned to 'size', and if not prints out a warning about
- * an unaligned memory access.
  */
-void
-clean_call(ptr_uint_t ea, app_pc pc, uint size, bool write)
+EXPORT void
+buffer_memop(ptr_uint_t ea, ptr_uint_t pc, uint size, bool write)
 {
-    /* Check alignment.  Assumes size is a power of two. */
-    if ((ea & (size - 1)) == 0) {
-        return;
-    }
-
-    /* XXX: Instead of ifdef, use global variable to prevent the compiler from
-     * optimizing this away.  It's important for benchmarking purposes. */
-    if (show_results) {
-        dr_fprintf(STDERR,
-                   "Unaligned %s access to ea "PFX" at pc "PFX" of size %d\n",
-                   (write ? "write" : "read"), ea, pc, size);
+    buffer[pos].ea = ea;
+    buffer[pos].pc = pc;
+    buffer[pos].size = size;
+    buffer[pos].write = write;
+    pos++;
+    if (pos >= BUFFER_SIZE) {
+        flush_buffer();
     }
 }
 
@@ -75,7 +114,7 @@ instrument_mem(void *dc, instrlist_t *ilist, instr_t *where, int pos,
     uint opsize = opnd_size_in_bytes(opnd_get_size(memop));
     opnd_set_size(&memop, OPSZ_lea);
 
-    drcalls_insert_call(dc, ilist, where, (void*)clean_call, false, 4,
+    drcalls_insert_call(dc, ilist, where, (void*)buffer_memop, false, 4,
                         memop, OPND_CREATE_INTPTR(instr_get_app_pc(where)),
                         OPND_CREATE_INT32(opsize), OPND_CREATE_INT32(write));
 }
@@ -91,7 +130,7 @@ event_bb(void *dc, void *entry_pc, instrlist_t *bb, bool for_trace,
          instr = instr_get_next(instr)) {
         /* Some nop instructions have memory operands as a way of varying the
          * operation size.  We don't want those. */
-        if (instr_is_nop(instr) || instr_get_opcode(instr) == OP_nop_modrm)
+        if (instr_is_nop(instr))
             continue;
         if (instr_get_app_pc(instr) == NULL)
             continue;
@@ -112,25 +151,37 @@ event_bb(void *dc, void *entry_pc, instrlist_t *bb, bool for_trace,
     }
 
     drcalls_done(dc, bb);
-
     return DR_EMIT_DEFAULT;
+}
+
+static void
+event_exit(void)
+{
+    flush_buffer();
+
+    if (print_count) {
+        dr_fprintf(STDERR,
+                   "Memory accesses: %llu\n"
+                   "Unaligned memory accesses: %llu\n",
+                   num_accesses,
+                   num_unaligned);
+    }
+
+    drcalls_exit();
 }
 
 DR_EXPORT void
 dr_init(client_id_t id)
 {
-    const char *client_args = dr_get_options(id);
-    int opt_calls = atoi(client_args);
-
+    const char *opts = dr_get_options(id);
+    if (opts != NULL && strcmp("count_only", opts) == 0) {
+        print_count = true;
+        print_accesses = false;
+    } else if (opts != NULL && strcmp("hide_results", opts) == 0) {
+        print_count = false;
+        print_accesses = false;
+    }
     drcalls_init();
-    if (opt_calls < 0)
-        opt_calls = 3;
-    drcalls_set_optimization(opt_calls);
     dr_register_bb_event(event_bb);
-    dr_register_exit_event(drcalls_exit);
-#ifdef SHOW_RESULTS
-    show_results = true;
-#else
-    show_results = false;
-#endif
+    dr_register_exit_event(event_exit);
 }

@@ -177,8 +177,8 @@ code_cache_emit(void *dc, instrlist_t *ilist)
 
     dr_mutex_unlock(code_cache->lock);
 
-    dr_log(dc, LOG_CACHE, 3, "drcalls: cached ilist:\n");
     DOLOG(3, LOG_CLEANCALL, {
+        dr_log(dc, LOG_CACHE, 3, "drcalls: cached ilist:\n");
         instrlist_disassemble(dc, entry, ilist, dr_get_logfile(dc));
     });
     return entry;

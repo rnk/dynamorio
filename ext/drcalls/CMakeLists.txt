@@ -44,12 +44,16 @@ add_library(drcalls STATIC
   )
 configure_DynamoRIO_client(drcalls)
 use_DynamoRIO_extension(drcalls drcontainers)
+get_target_property(cflags drcalls COMPILE_FLAGS)
+if (DEBUG)
+  set(cflags "${cflags} -DDEBUG")
+endif ()
 if (UNIX)
   # static extensions must be PIC to be linked into clients: else requires
   # relocations that run afoul of security policies, etc.
-  get_target_property(cur_flags drcalls COMPILE_FLAGS)
-  set_target_properties(drcalls PROPERTIES COMPILE_FLAGS "${cur_flags} -fPIC")
+  set(cflags "${cflags} -fPIC")
 endif (UNIX)
+set_target_properties(drcalls PROPERTIES COMPILE_FLAGS "${cflags}")
 
 # Clients used for benchmarking.
 set(INSCOUNT_CLIENTS
@@ -63,6 +67,16 @@ foreach (client ${INSCOUNT_CLIENTS})
   configure_DynamoRIO_client(${client})
   use_DynamoRIO_extension(${client} drcalls)
 endforeach ()
+set(BENCH_CLIENTS
+  mem_buffer
+  )
+foreach (client ${BENCH_CLIENTS})
+  set(src "bench_clients/${client}.c")
+  add_library(${client} SHARED ${src})
+  configure_DynamoRIO_client(${client})
+  use_DynamoRIO_extension(${client} drcalls)
+endforeach ()
+
 
 if (BUILD_TESTS)
   # Unit tests.  These are finer grained than the system tests in suite/tests.

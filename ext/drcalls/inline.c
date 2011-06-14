@@ -884,7 +884,18 @@ expand_and_optimize_bb(void *dc, instrlist_t *bb)
         }
     }
 
-    redundant_load_elim(dc, dc, bb);
-    dead_store_elim(dc, dc, bb);
-    fold_leas(dc, dc, bb);
+    if (opt_cleancall >= 3) {
+        redundant_load_elim(dc, dc, bb);
+        dead_store_elim(dc, dc, bb);
+        fold_leas(dc, dc, bb);
+    }
+
+//#define PRINT_ONE_BB
+#ifdef PRINT_ONE_BB
+    static int times = 0;
+    times++;
+    if (times == 22) {
+        instrlist_disassemble(dc, NULL, bb, STDERR);
+    }
+#endif
 }

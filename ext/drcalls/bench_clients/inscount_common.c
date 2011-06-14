@@ -39,6 +39,8 @@
 
 #include "dr_calls.h"
 
+//#define SHOW_RESULTS
+
 /* Each inscount client variant defines a unique client_name and
  * event_basic_block function for instrumentation. */
 extern const char *client_name;
@@ -46,7 +48,7 @@ dr_emit_flags_t event_basic_block(void *drcontext, void *tag, instrlist_t *bb,
                                   bool for_trace, bool translating);
 
 /* We only have a global count. */
-uint64 global_count;
+uint64 __attribute__((visibility("hidden"))) global_count;
 
 /* A simple clean call that will be automatically inlined because it has only
  * one argument and contains no calls to other functions.
@@ -56,19 +58,29 @@ static void event_exit(void);
 DR_EXPORT void
 dr_init(client_id_t id)
 {
+    const char *client_args = dr_get_options(id);
+    int opt_calls = atoi(client_args);
+
     drcalls_init();
+    if (opt_calls < 0)
+        opt_calls = 3;
+    drcalls_set_optimization(opt_calls);
     /* register events */
     dr_register_exit_event(event_exit);
     dr_register_bb_event(event_basic_block);
 
+#ifdef SHOW_RESULTS
     dr_fprintf(STDERR, "Client %s running.\n", client_name);
+#endif
 }
 
 static void
 event_exit(void)
 {
+#ifdef SHOW_RESULTS
     dr_fprintf(STDERR, "Instrumentation results: %llu instructions executed\n",
                global_count);
+#endif
     drcalls_exit();
 }
 
