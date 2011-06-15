@@ -1012,6 +1012,15 @@ try_merge_riprel(void *dc, instr_t *lea, opnd_t memref)
     find_next_full_clobber(dc, lea, reg, &end);
     for (instr = instr_get_next(lea); instr != end;
          instr = instr_get_next(instr)) {
+        if (instr_ok_to_mangle(instr)) {
+            dr_log(dc, LOG_CLEANCALL, 3,
+                   "drcalls: merge riprel: stopping for app instr\n");
+            return;
+        }
+        /* TODO(rnk): Worry about control flow, in particular, we may try to
+         * combine leas inside partial inline arg setup with memrefs after
+         * partial inlining.
+         */
         for (i = 0; i < instr_num_srcs(instr); i++) {
             opnd_t opnd = instr_get_src(instr, i);
             if (opnd_is_rel_addr(opnd)) {

@@ -80,16 +80,21 @@ diagnose_access(ptr_uint_t ea, app_pc pc, uint size, bool write)
                    "Unaligned %s access to ea "PFX" at pc "PFX" of size %d\n",
                    (write ? "write" : "read"), ea, pc, size);
         if (print_symbols) {
-            const char *symbol = "<unknown>";
 #ifdef LINUX
             Dl_info info;
             int r;
+            const char *symbol = "<unknown>";
+            const char *image = "<unknown>";
             r = dladdr(pc, &info);
-            if (r && info.dli_sname) {
-                symbol = info.dli_sname;
+            if (r) {
+                if (info.dli_sname)
+                    symbol = info.dli_sname;
+                if (info.dli_fname)
+                    image = info.dli_fname;
             }
+            dr_fprintf(STDERR, "pc: "PFX", image: %s, symbol: %s.\n",
+                       pc, image, symbol);
 #endif
-            dr_fprintf(STDERR, "PC "PFX" is in symbol %s.\n", pc, symbol);
         }
     }
 }
