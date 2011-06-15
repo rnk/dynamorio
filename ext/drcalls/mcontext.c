@@ -79,6 +79,17 @@ mc_frame_opnd(uint framesize, uint mc_offset)
     return OPND_CREATE_MEMPTR(DR_REG_XSP, frame_offset);
 }
 
+/* Get an mcontext operand for a given register. */
+opnd_t
+mc_reg_opnd(uint framesize, reg_id_t reg)
+{
+    uint frame_offset;
+    ASSERT(reg_is_pointer_sized(reg));
+    frame_offset = (framesize - sizeof(dr_mcontext_t) +
+                    reg_mc_offset[reg - DR_REG_XAX]);
+    return OPND_CREATE_MEMPTR(DR_REG_XSP, frame_offset);
+}
+
 /* Saves a register to the mcontext at the base of the stack.  Assumes XSP is
  * at dstack - framesize.
  */
@@ -87,8 +98,7 @@ insert_mc_reg_save(void *dc, uint framesize, instrlist_t *ilist,
                    instr_t *where, reg_id_t reg)
 {
     PRE(ilist, where, INSTR_CREATE_mov_st
-        (dc, mc_frame_opnd(framesize, reg_mc_offset[reg - DR_REG_XAX]),
-         opnd_create_reg(reg)));
+        (dc, mc_reg_opnd(framesize, reg), opnd_create_reg(reg)));
 }
 
 /* Loads a register from the mcontext at the base of the stack.  Assumes XSP is
@@ -99,8 +109,7 @@ insert_mc_reg_restore(void *dc, uint framesize, instrlist_t *ilist,
                       instr_t *where, reg_id_t reg)
 {
     PRE(ilist, where, INSTR_CREATE_mov_ld
-        (dc, opnd_create_reg(reg),
-         mc_frame_opnd(framesize, reg_mc_offset[reg - DR_REG_XAX])));
+        (dc, opnd_create_reg(reg), mc_reg_opnd(framesize, reg)));
 }
 
 /* Saves aflags to the mcontext at the base of the stack.  Assumes XSP is at

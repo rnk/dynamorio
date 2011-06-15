@@ -127,6 +127,9 @@ static void free_instrumentation_funcs(void);
 DR_EXPORT void
 dr_init(client_id_t id)
 {
+    bool use_tls = false;
+    const char *client_args = dr_get_options(id);
+
     drcalls_init();
 
     dr_register_exit_event(event_exit);
@@ -135,6 +138,9 @@ dr_init(client_id_t id)
     /* Disable partial inlining and DCE optimizations, since they make many of
      * these test cases trivial. */
     drcalls_set_optimization(2);
+    if (strstr(client_args, "use_tls_inline"))
+        use_tls = true;
+    drcalls_set_use_tls_inline(use_tls);
 
     /* Lookup pcs. */
     lookup_pcs();

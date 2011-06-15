@@ -82,3 +82,60 @@ typedef void (*test_fn_t)(void);
             return -1; \
         } \
     }
+
+/* Ilist comparison test support. */
+/* TODO(rnk): Obviously code shouldn't go in headers, but moving it out into a
+ * separate file requires mucking with CMake... */
+
+typedef struct ilist_cmp_test_t_ {
+    void *dc;
+    instrlist_t *before;
+    instrlist_t *after;
+    instr_builder_t ib;
+    callee_info_t ci;
+} ilist_cmp_test_t;
+
+static void
+ilist_cmp_test_init(ilist_cmp_test_t *test)
+{
+    test->dc = dr_get_current_drcontext();
+    test->before = instrlist_create(GLOBAL_DCONTEXT);
+    test->after = instrlist_create(GLOBAL_DCONTEXT);
+    INSTR_BUILDER_INIT(test->ib, GLOBAL_DCONTEXT, NULL, NULL, /*meta=*/true);
+    callee_info_init(&test->ci);
+}
+
+static void
+ilist_cmp_test_fini(ilist_cmp_test_t *test)
+{
+    instrlist_clear_and_destroy(GLOBAL_DCONTEXT, test->before);
+    instrlist_clear_and_destroy(GLOBAL_DCONTEXT, test->after);
+}
+
+static bool
+ilists_same(void *dc, instrlist_t *ilist_a, instrlist_t *ilist_b)
+{
+    instr_t *instr_a, *instr_b;
+    bool same = true;
+    for (instr_a = instrlist_first(ilist_a),
+         instr_b = instrlist_first(ilist_b);
+         instr_a != NULL && instr_b != NULL;
+         instr_a = instr_get_next(instr_a),
+         instr_b = instr_get_next(instr_b)) {
+        if (!instr_same(instr_a, instr_b)) {
+            same = false;
+            break;
+        }
+    }
+    same &= (instr_a == NULL && instr_b == NULL);
+    if (!same) {
+        dr_fprintf(STDERR, "ilists differ!\n");
+        dr_fprintf(STDERR, "ilist A:\n");
+        instrlist_disassemble(dc, NULL, ilist_a, STDERR);
+        dr_fprintf(STDERR, "\nilist B:\n");
+        instrlist_disassemble(dc, NULL, ilist_b, STDERR);
+        dr_fprintf(STDERR, "\n");
+    }
+    return same;
+}
+

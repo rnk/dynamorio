@@ -61,12 +61,13 @@ void expand_and_optimize_bb(void *dc, instrlist_t *bb);
 void clean_call_info_destroy(void *dc, clean_call_info_t *cci);
 
 uint opt_cleancall;
+bool use_tls_inline;
 
 /* The max number of instructions try to decode from a function. */
 #define MAX_NUM_FUNC_INSTRS 1024
 /* the max number of instructions the callee can have for inline. */
 #define MAX_NUM_INLINE_INSTRS 20
-#define NUM_SCRATCH_SLOTS 10 /* XXX: Can support more now that we use dstack. */
+#define NUM_SCRATCH_SLOTS 12
 
 /* TODO(rnk): Circular dependency. */
 struct _callee_info_t;

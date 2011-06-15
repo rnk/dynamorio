@@ -36,6 +36,26 @@
 #define DRCALLS_CALLEE_H
 
 #include "core_compat.h"
+#include "inline.h"  /* for NUM_SCRATCH_SLOTS */
+
+/* Describes usage of a scratch slot. */
+enum {
+    SLOT_NONE = 0,
+    SLOT_REG,
+    SLOT_LOCAL,
+    SLOT_FLAGS,
+};
+typedef byte slot_kind_t;
+
+/* If kind is:
+ * SLOT_REG: value is a reg_id_t
+ * SLOT_LOCAL: value is meaningless, may change to support multiple locals
+ * SLOT_FLAGS: value is meaningless
+ */
+typedef struct _slot_t {
+    slot_kind_t kind;
+    byte value;
+} slot_t;
 
 /* Analysis results for functions called. */
 typedef struct _callee_info_t {
@@ -67,6 +87,8 @@ typedef struct _callee_info_t {
     bool check_dep_regs[NUM_GP_REGS]; /* true if check depends on reg i. */
     instrlist_t *check_ilist; /* ilist for check if coalescing. */
     instrlist_t *fast_ilist;  /* fastpath ilist if coalescing. */
+    uint tls_slots_used;      /* number of scratch slots needed. */
+    slot_t tls_slots[NUM_SCRATCH_SLOTS]; /* scratch slot allocation */
 } callee_info_t;
 
 void callee_info_init(callee_info_t *ci);
@@ -76,5 +98,9 @@ callee_info_t *callee_info_analyze(void *dc, void *callee, uint num_args);
 
 /* TODO(rnk): Create and move to instr_builder.h or utils.h. */
 void remove_and_destroy(void *dc, instrlist_t *ilist, instr_t *instr);
+
+void scratch_tls_check_exit(void);
+opnd_t scratch_slot_opnd(callee_info_t *ci, slot_kind_t kind, byte value);
+opnd_t inline_local_var_opnd(callee_info_t *ci);
 
 #endif /* DRCALLS_CALLEE_H */

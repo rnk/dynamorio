@@ -38,6 +38,9 @@
 opnd_t
 mc_frame_opnd(uint framesize, uint mc_offset);
 
+opnd_t
+mc_reg_opnd(uint framesize, reg_id_t reg);
+
 void
 insert_mc_reg_save(void *dc, uint framesize, instrlist_t *ilist,
                    instr_t *where, reg_id_t reg);

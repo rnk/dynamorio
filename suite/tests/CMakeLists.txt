@@ -714,6 +714,19 @@ function(tobuild_drcalls test source client_ops dr_ops exe_ops)
   use_DynamoRIO_extension(${test}.dll drcalls)
 endfunction(tobuild_drcalls)
 
+# Rerun a client test with different options.
+function(torunonly_ci test realtest source client_ops dr_ops exe_ops)
+  get_target_property(client_path ${realtest}.dll LOCATION${location_suffix})
+
+  set(testlist_ci ${testlist_ci} ${test} PARENT_SCOPE)
+  set(${test}_realtest ${realtest} PARENT_SCOPE)
+  set(${test}_source ${source} PARENT_SCOPE)
+  set(${test}_client_ops ${client_ops} PARENT_SCOPE)
+  set(${test}_dr_ops ${dr_ops} PARENT_SCOPE)
+  set(${test}_exe_ops ${exe_ops} PARENT_SCOPE)
+  set(${test}_client_path ${client_path} PARENT_SCOPE)
+endfunction(torunonly_ci)
+
 # i#215: mark tests w/ text relocations to avoid violating selinux policies:
 # for that, pass in "textrel_shlib_t" as the type.
 # We also need to mark tests that make their stack +x: "execmem_exec_t"
@@ -1113,8 +1126,14 @@ function(torun_ci name test ops)
       set(cli_ops "use_unlink")
     endif ()
   endif ("${test}" MATCHES "client\\.flush")
+  # Handle torunonly_ci tests.
+  if (DEFINED ${test}_realtest)
+    set(exe ${${test}_realtest})
+  else ()
+    set(exe ${test})
+  endif ()
   # note that we cannot use double quotes as they'll be stripped out
-  torun("${name}" ${test} ${test} ${${test}_source} OFF
+  torun("${name}" ${test} ${exe} ${${test}_source} OFF
     " -code_api -client_lib '${${test}_client_path}\;0\;${cli_ops}' ${${test}_dr_ops} ${ops}" "${${test}_exe_ops}")
 endfunction(torun_ci)
 
@@ -1506,6 +1525,7 @@ if (BUILD_DRCALLS)
   tobuild_drcalls(drcalls.leancall          "ext-drcalls/leancall.c" "" "" "")
   tobuild_drcalls(drcalls.lean_args         "ext-drcalls/lean_args.c" "" "" "")
   tobuild_drcalls(drcalls.inline            "ext-drcalls/inline.c" "" "" "")
+  torunonly_ci(drcalls.inline_tls drcalls.inline "ext-drcalls/inline.c" "use_tls_inline" "" "")
   tobuild_drcalls(drcalls.preserve_mcontext "ext-drcalls/preserve_mcontext.c" "" "" "")
   tobuild_drcalls(drcalls.coalesce_inscount "ext-drcalls/coalesce_inscount.c" "" "" "")
   tobuild_drcalls(drcalls.partial_inline    "ext-drcalls/partial_inline.c" "" "" "")

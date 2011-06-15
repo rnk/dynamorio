@@ -65,6 +65,7 @@ inline_init(void)
     clean_call_info_init(&default_clean_call_info, NULL, false, NULL, 0);
     callee_info_table_init();
     rewrite_opnd_table_init();
+    scratch_tls_check_exit();
 }
 
 void
@@ -355,7 +356,31 @@ analyze_clean_call(void *dcontext, instr_t *where, void *callee,
 }
 
 static void
-insert_inline_reg_save(void *dc, clean_call_info_t *cci,
+insert_inline_reg_save(void *dc, callee_info_t *ci, instrlist_t *ilist,
+                       instr_t *where, reg_id_t reg)
+{
+    if (use_tls_inline) {
+        PRE(ilist, where, INSTR_CREATE_mov_st
+            (dc, scratch_slot_opnd(ci, SLOT_REG, reg), opnd_create_reg(reg)));
+    } else {
+        insert_mc_reg_save(dc, ci->framesize, ilist, where, reg);
+    }
+}
+
+static void
+insert_inline_reg_restore(void *dc, callee_info_t *ci, instrlist_t *ilist,
+                          instr_t *where, reg_id_t reg)
+{
+    if (use_tls_inline) {
+        PRE(ilist, where, INSTR_CREATE_mov_ld
+            (dc, opnd_create_reg(reg), scratch_slot_opnd(ci, SLOT_REG, reg)));
+    } else {
+        insert_mc_reg_restore(dc, ci->framesize, ilist, where, reg);
+    }
+}
+
+static void
+insert_inline_save_regs(void *dc, clean_call_info_t *cci,
                        bool reg_used[NUM_GP_REGS], instrlist_t *ilist,
                        instr_t *where)
 {
@@ -368,27 +393,38 @@ insert_inline_reg_save(void *dc, clean_call_info_t *cci,
             dr_log(dc, LOG_CLEANCALL, 2,
                    "drcalls: inlining clean call "PFX", saving reg %s.\n",
                    ci->start, get_register_name(reg));
-            insert_mc_reg_save(dc, ci->framesize, ilist, where, reg);
+            insert_inline_reg_save(dc, ci, ilist, where, reg);
         }
     }
 
     if (!cci->skip_save_aflags) {
         DR_ASSERT_MSG(!cci->reg_skip[0], "XAX must be saved to save aflags!");
         insert_mc_flags_save(dc, ci->framesize, ilist, where);
+        if (use_tls_inline) {
+            /* Hack: Just change the store dst from stack to TLS. */
+            instr_t *mov_st = instr_get_prev(where);
+            instr_set_dst(mov_st, 0, scratch_slot_opnd(ci, SLOT_FLAGS, 0));
+        }
     }
 }
 
 static void
-insert_inline_reg_restore(void *dc, clean_call_info_t *cci,
-                          bool reg_used[NUM_GP_REGS], instrlist_t *ilist,
-                          instr_t *where)
+insert_inline_restore_regs(void *dc, clean_call_info_t *cci,
+                           bool reg_used[NUM_GP_REGS], instrlist_t *ilist,
+                           instr_t *where)
 {
     int i;
     callee_info_t *ci = cci->callee_info;
 
     /* aflags is first because it uses XAX. */
     if (!cci->skip_save_aflags) {
+        instr_t *mov_ld = instr_get_prev(where);
         insert_mc_flags_restore(dc, ci->framesize, ilist, where);
+        if (use_tls_inline) {
+            /* Hack: Just change the load dst from stack to TLS. */
+            mov_ld = instr_get_next(mov_ld);
+            instr_set_src(mov_ld, 0, scratch_slot_opnd(ci, SLOT_FLAGS, 0));
+        }
     }
 
     /* Now restore all registers. */
@@ -398,9 +434,16 @@ insert_inline_reg_restore(void *dc, clean_call_info_t *cci,
             dr_log(dc, LOG_CLEANCALL, 2,
                    "drcalls: inlining clean call "PFX", restoring reg %s.\n",
                    ci->start, get_register_name(reg));
-            insert_mc_reg_restore(dc, ci->framesize, ilist, where, reg);
+            insert_inline_reg_restore(dc, ci, ilist, where, reg);
         }
     }
+}
+
+static opnd_t
+get_tls_reg_slot(void *dc, void *val, reg_id_t reg)
+{
+    callee_info_t *ci = (callee_info_t*)val;
+    return scratch_slot_opnd(ci, SLOT_REG, reg);
 }
 
 static void
@@ -409,7 +452,7 @@ insert_inline_arg_setup(void *dc, clean_call_info_t *cci, instrlist_t *ilist,
 {
     uint i;
     callee_info_t *ci = cci->callee_info;
-    bool regs_from_mc[NUM_GP_REGS];
+    bool regs_clobbered[NUM_GP_REGS];
 
     if (cci->num_args == 0)
         return;
@@ -417,9 +460,13 @@ insert_inline_arg_setup(void *dc, clean_call_info_t *cci, instrlist_t *ilist,
     if (is_slowpath) {
         /* If we're in the slowpath, any registers used inline will have been
          * saved and possibly clobbered, so we reload them from the mcontext. */
-        memcpy(regs_from_mc, ci->reg_used, sizeof(regs_from_mc));
+        memcpy(regs_clobbered, ci->reg_used, sizeof(regs_clobbered));
     } else {
-        memset(regs_from_mc, 0, sizeof(regs_from_mc));
+        memset(regs_clobbered, 0, sizeof(regs_clobbered));
+    }
+    if (!use_tls_inline) {
+        /* Need to restore XSP if used in arg. */
+        regs_clobbered[DR_REG_XSP - DR_REG_XAX] = true;
     }
 
     ASSERT(cci->num_args <= IF_X64_ELSE(dr_num_reg_parm(), 1));
@@ -436,8 +483,14 @@ insert_inline_arg_setup(void *dc, clean_call_info_t *cci, instrlist_t *ilist,
         dr_log(dc, LOG_CLEANCALL, 2,
                "drcalls: inlining clean call "PFX", passing arg via reg %s.\n",
                ci->start, get_register_name(reg));
-        materialize_arg_into_reg(dc, ilist, where, ci->framesize, regs_from_mc,
-                                 args[i], reg);
+        if (use_tls_inline) {
+            materialize_arg_into_reg(dc, ilist, where, regs_clobbered,
+                                     get_tls_reg_slot, &ci, args[i], reg);
+        } else {
+            materialize_arg_into_reg(dc, ilist, where, regs_clobbered,
+                                     get_mc_reg_slot, &ci->framesize,
+                                     args[i], reg);
+        }
     }
 #ifndef X64
     ASSERT(!cci->reg_skip[0]);
@@ -450,7 +503,7 @@ insert_inline_arg_setup(void *dc, clean_call_info_t *cci, instrlist_t *ilist,
            "drcalls: inlining clean call "PFX", passing arg via slot %d.\n",
            ci->start, NUM_SCRATCH_SLOTS - 1);
     PRE(ilist, where, INSTR_CREATE_mov_st
-        (dc, OPND_CREATE_MEMPTR(DR_REG_XSP, 0), opnd_create_reg(DR_REG_XAX)));
+        (dc, inline_local_var_opnd(ci), opnd_create_reg(DR_REG_XAX)));
 #endif
 }
 
@@ -595,6 +648,9 @@ insert_inline_clean_call(void *dcontext, clean_call_info_t *cci,
     instr_t *instr;
     bool reg_used[NUM_GP_REGS];
 
+    dr_log(dcontext, LOG_CLEANCALL, 2,
+           "drcalls: inlining callee "PFX".\n", ci->start);
+
     /* Insert argument setup.  Do some optimizations to try to fold the
      * arguments in. */
     /* TODO(rnk): We can't run the full set of optimizations because they
@@ -610,8 +666,9 @@ insert_inline_clean_call(void *dcontext, clean_call_info_t *cci,
     }
 
     ASSERT(cci->ilist != NULL);
-    insert_switch_to_dstack(dcontext, ci->framesize, ilist, where);
-    insert_inline_reg_save(dcontext, cci, reg_used, ilist, where);
+    if (!use_tls_inline)
+        insert_switch_to_dstack(dcontext, ci->framesize, ilist, where);
+    insert_inline_save_regs(dcontext, cci, reg_used, ilist, where);
     instr = instrlist_first(callee);
     while (instr != NULL) {
         instrlist_remove(callee, instr);
@@ -625,8 +682,9 @@ insert_inline_clean_call(void *dcontext, clean_call_info_t *cci,
     }
     instrlist_destroy(dcontext, callee);
     cci->ilist = NULL;
-    insert_inline_reg_restore(dcontext, cci, reg_used, ilist, where);
-    insert_switch_to_appstack(dcontext, ci->framesize, ilist, where);
+    insert_inline_restore_regs(dcontext, cci, reg_used, ilist, where);
+    if (!use_tls_inline)
+        insert_switch_to_appstack(dcontext, ci->framesize, ilist, where);
 }
 
 /* Save or restore flags if it wasn't saved inline. */
@@ -890,7 +948,7 @@ expand_and_optimize_bb(void *dc, instrlist_t *bb)
         fold_leas(dc, dc, bb);
     }
 
-//#define PRINT_ONE_BB
+//#define PRINT_ONE_BB;
 #ifdef PRINT_ONE_BB
     static int times = 0;
     times++;

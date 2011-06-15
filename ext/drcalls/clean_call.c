@@ -34,6 +34,7 @@
 
 #include "dr_api.h"
 
+#include "clean_call.h"
 #include "core_compat.h"
 #include "mcontext.h"
 
@@ -56,36 +57,30 @@ shrink_reg_for_param(reg_id_t regular, opnd_t arg)
 }
 
 void
-materialize_arg_into_reg(void *dc, instrlist_t *ilist, instr_t *where,
-                         uint framesize, bool regs_from_mc[NUM_GP_REGS],
-                         opnd_t arg, reg_id_t reg)
+materialize_arg_into_reg(void *dc_alloc, instrlist_t *ilist, instr_t *where,
+                         bool reg_clobbered[NUM_GP_REGS],
+                         reg_slot_fn_t reg_slot_fn, void *val, opnd_t arg,
+                         reg_id_t reg)
 {
     opnd_t dst_opnd;
+    opnd_t src_slot;
+    void *dc = dr_get_current_drcontext();
 
     reg = shrink_reg_for_param(reg, arg);
     dst_opnd = opnd_create_reg(reg);
     if (opnd_is_immed_int(arg)) {
-        PRE(ilist, where, INSTR_CREATE_mov_imm (dc, dst_opnd, arg));
+        PRE(ilist, where, INSTR_CREATE_mov_imm(dc_alloc, dst_opnd, arg));
     } else if (opnd_is_reg(arg)) {
         reg_id_t src = reg_to_pointer_sized(opnd_get_reg(arg));
-        if (src == DR_REG_XSP) {
-            DR_ASSERT_MSG(false, "Not yet tested");
-            PRE(ilist, where, INSTR_CREATE_mov_ld
-                (dc, dst_opnd, opnd_get_tls_xax(dc)));
+        if (reg_clobbered[src - DR_REG_XAX]) {
+            /* If we used src in the inline code, we need to restore it
+             * to the application value before reading it again.
+             */
+            src_slot = reg_slot_fn(dc, val, src);
         } else {
-            if (regs_from_mc[src - DR_REG_XAX]) {
-                /* If we used src in the inline code, we need to restore it
-                 * to the application value before reading it again.
-                 */
-                insert_mc_reg_restore(dc, framesize, ilist, where, src);
-                /* Set the dst of the mov_ld to dst_opnd. */
-                /* TODO(rnk): May be an opnd size issue. */
-                instr_set_dst(instr_get_prev(where), 0, dst_opnd);
-                DR_ASSERT_MSG(false, "Not yet tested");
-            } else {
-                PRE(ilist, where, INSTR_CREATE_mov_ld(dc, dst_opnd, arg));
-            }
+            src_slot = arg;
         }
+        PRE(ilist, where, INSTR_CREATE_mov_ld(dc_alloc, dst_opnd, src_slot));
     } else if (opnd_is_memory_reference(arg)) {
         if (opnd_is_base_disp(arg)) {
             /* See if any used registers need to be restored from the mc. */
@@ -98,34 +93,41 @@ materialize_arg_into_reg(void *dc, instrlist_t *ilist, instr_t *where,
             /* Pointer-sized version of argument reg. */
             reg_id_t ptr_reg = reg_to_pointer_sized(reg);
             opnd_t ptr_arg_reg = opnd_create_reg(ptr_reg);
-            if (base == DR_REG_XSP) {
-                /* XSP is special, it comes from TLS. */
-                PRE(ilist, where, INSTR_CREATE_mov_ld
-                    (dc, ptr_arg_reg, opnd_get_tls_xax(dc)));
-                base = reg;  /* TODO(rnk): Needs to match the size of base. */
-            } else if (base != DR_REG_NULL && regs_from_mc[base - DR_REG_XAX]) {
+            if (base != DR_REG_NULL && reg_clobbered[base - DR_REG_XAX]) {
                 /* If base reg is clobbered, mov_ld 0xNN(MC) -> %argreg, and
                  * change base to argreg. */
-                insert_mc_reg_restore(dc, framesize, ilist, where, base);
-                instr_set_dst(instr_get_prev(where), 0, ptr_arg_reg);
+                src_slot = reg_slot_fn(dc, val, base);
+                PRE(ilist, where, INSTR_CREATE_mov_ld
+                    (dc_alloc, ptr_arg_reg, src_slot));
                 base = reg;
             }
             /* If index reg is clobbered, mov_ld 0xNN(MC) -> %xax, and change
              * index to xax.  XAX is a safe choice because it is not a regparm
              * in any calling convention supported by DR. */
-            if (index != DR_REG_NULL && regs_from_mc[index - DR_REG_XAX]) {
-                insert_mc_reg_restore(dc, framesize, ilist, where, index);
-                instr_set_dst(instr_get_prev(where), 0,
-                              opnd_create_reg(DR_REG_XAX));
+            if (index != DR_REG_NULL && reg_clobbered[index - DR_REG_XAX]) {
+                src_slot = reg_slot_fn(dc, val, index);
+                PRE(ilist, where, INSTR_CREATE_mov_ld
+                    (dc_alloc, opnd_create_reg(DR_REG_XAX), src_slot));
                 index = DR_REG_XAX;
             }
             arg = opnd_create_far_base_disp(seg, base, index, scale, disp, sz);
         }
         /* If it's a memref, it can be a lea or a load. */
         int opc = (opnd_get_size(arg) == OPSZ_lea ?  OP_lea : OP_mov_ld);
-        PRE(ilist, where, instr_create_1dst_1src(dc, opc, dst_opnd, arg));
+        PRE(ilist, where, instr_create_1dst_1src(dc_alloc, opc, dst_opnd, arg));
     } else {
         DR_ASSERT_MSG(false, "Unknown opnd type.");
+    }
+}
+
+opnd_t
+get_mc_reg_slot(void *dc, void *val, reg_id_t reg)
+{
+    uint framesize = *(uint *)val;
+    if (reg == DR_REG_XSP) {
+        return opnd_get_tls_xax(dc);
+    } else {
+        return mc_reg_opnd(framesize, reg);
     }
 }
 
@@ -142,7 +144,8 @@ insert_arg_setup(void *dc, instrlist_t *ilist, instr_t *where, uint framesize,
 
     memset(regs_from_mc, 0, sizeof(regs_from_mc));
     for (i = 0; i < num_reg_args; i++) {
-        materialize_arg_into_reg(dc, ilist, where, framesize, regs_from_mc,
+        materialize_arg_into_reg(dc, ilist, where, regs_from_mc,
+                                 get_mc_reg_slot, &framesize,
                                  args[i], dr_reg_parm(i));
     }
     if (num_args <= num_reg_args)

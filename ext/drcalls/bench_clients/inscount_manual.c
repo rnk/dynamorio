@@ -45,7 +45,9 @@ dr_emit_flags_t
 event_basic_block(void *drcontext, void *tag, instrlist_t *bb,
                   bool for_trace, bool translating)
 {
-    instr_t *instr, *first = instrlist_first(bb);
+    instr_t *instr;
+    instr_t *add;
+    instr_t *first = instrlist_first(bb);
     uint flags;
     uint num_instrs = count_instrs(bb);
 
@@ -57,19 +59,17 @@ event_basic_block(void *drcontext, void *tag, instrlist_t *bb,
             break;
     }
 
+    add = INSTR_CREATE_add(drcontext,
+                           OPND_CREATE_ABSMEM((byte *)&global_count, OPSZ_8),
+                           OPND_CREATE_INT32(num_instrs));
+
     if (instr == NULL) {
         dr_save_arith_flags(drcontext, bb, first, SPILL_SLOT_1);
-    }
-
-    /* TODO(rnk): This doesn't work for 32-bit. */
-    instrlist_meta_preinsert
-        (bb, (instr == NULL) ? first : instr,
-         INSTR_CREATE_add(drcontext,
-                          OPND_CREATE_ABSMEM((byte *)&global_count, OPSZ_8),
-                          OPND_CREATE_INT32(num_instrs)));
-
-    if (instr == NULL)
+        instrlist_meta_preinsert(bb, first, add);
         dr_restore_arith_flags(drcontext, bb, first, SPILL_SLOT_1);
+    } else {
+        instrlist_meta_preinsert(bb, instr, add);
+    }
 
     drcalls_done(drcontext, bb);
 

@@ -65,10 +65,10 @@ set(BENCH_CLIENTS
   )
 foreach (client ${BENCH_CLIENTS})
   set(srcs "bench_clients/${client}.c")
-  set(client "drcalls_bench.${client}")
   if ("${client}" MATCHES "^inscount_.*$")
     set (srcs ${srcs} "bench_clients/inscount_common.c")
   endif ()
+  set(client "drcalls_bench.${client}")
   add_library(${client} SHARED ${srcs})
   configure_DynamoRIO_client(${client})
   use_DynamoRIO_extension(${client} drcalls)
@@ -84,6 +84,7 @@ if (BUILD_TESTS)
   # need macro magic or an export list to get access to internal functions.
   set(UNIT_TESTS
     optimize_test
+    clean_call_test
     )
   foreach (test ${UNIT_TESTS})
     # exe and test targets must have different names or things explode.

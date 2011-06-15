@@ -35,10 +35,21 @@
 
 #include "core_compat.h"
 
+typedef opnd_t (*reg_slot_fn_t)(void *dc, void *val, reg_id_t reg);
+
+/* Default reg slot finder: Pulls registers out of the stack mcontext, and pulls
+ * XSP from the TLS XAX slot. */
+opnd_t get_mc_reg_slot(void *dc, void *val, reg_id_t reg);
+
+/* Materializes an argument into a register.  reg_slot_fn should return an
+ * operand which can be loaded to restore the application register value for use
+ * in the argument materialization.
+ */
 void
 materialize_arg_into_reg(void *dc, instrlist_t *ilist, instr_t *where,
-                         uint framesize, bool regs_from_mc[NUM_GP_REGS],
-                         opnd_t arg, reg_id_t reg);
+                         bool reg_clobbered[NUM_GP_REGS],
+                         reg_slot_fn_t reg_slot_fn, void *val, opnd_t arg,
+                         reg_id_t reg);
 void
 insert_clean_call(void *dc, instrlist_t *ilist, instr_t *where, void *callee,
                   bool fpstate, uint num_args, opnd_t *args);

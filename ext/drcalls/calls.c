@@ -162,6 +162,12 @@ drcalls_set_optimization(uint opt_level)
 }
 
 void
+drcalls_set_use_tls_inline(bool use_tls)
+{
+    use_tls_inline = use_tls;
+}
+
+void
 drcalls_done(void *dc, instrlist_t *bb)
 {
     expand_and_optimize_bb(dc, bb);

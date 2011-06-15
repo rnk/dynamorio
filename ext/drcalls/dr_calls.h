@@ -49,6 +49,10 @@ DR_EXPORT
 void drcalls_set_optimization(uint opt_level);
 
 DR_EXPORT
+/* Set whether TLS should be used inline. */
+void drcalls_set_use_tls_inline(bool use_tls);
+
+DR_EXPORT
 /**
  * Insert a clean call to a function before the provided instruction using a
  * shared, out-of-line save and restore routine.

@@ -52,6 +52,11 @@ static hashtable_t *callee_info_table;
 static bool callee_info_table_exit = false;
 #define CALLEE_INFO_TABLE_BITS 6
 
+/* Base offset into TLS segment where we keep our scratch space. */
+static bool tls_scratch_initialized;
+static uint tls_scratch_offset;
+static reg_id_t tls_scratch_segment;
+
 /****************************************************************************/
 /* Callee info manipulation functions. */
 
@@ -192,6 +197,80 @@ callee_info_analyze(void *dc, void *callee, uint num_args)
     if (!ci->bailout)
         analyze_callee_ilist(dc, ci);
     return callee_info_table_add(ci);
+}
+
+/****************************************************************************/
+/* Scratch TLS management. */
+
+static void
+scratch_tls_check_init(void)
+{
+    if (use_tls_inline && !tls_scratch_initialized) {
+        bool ok;
+        ok = dr_raw_tls_calloc(&tls_scratch_segment, &tls_scratch_offset,
+                               NUM_SCRATCH_SLOTS, sizeof(reg_t));
+        DR_ASSERT_MSG(ok, "Unable to allocate scratch space for inlined code");
+        if (ok) {
+            tls_scratch_initialized = true;
+        } else {
+            use_tls_inline = false;
+        }
+    }
+}
+
+void
+scratch_tls_check_exit(void)
+{
+    if (tls_scratch_initialized) {
+        dr_raw_tls_cfree(tls_scratch_offset, NUM_SCRATCH_SLOTS);
+        tls_scratch_initialized = false;
+    }
+}
+
+static void
+use_scratch_slot_for(callee_info_t *ci, slot_kind_t kind, byte value)
+{
+    if (ci->tls_slots_used < NUM_SCRATCH_SLOTS) {
+        if (kind == SLOT_REG)
+            value = reg_to_pointer_sized(value);
+        ci->tls_slots[ci->tls_slots_used].kind = kind;
+        ci->tls_slots[ci->tls_slots_used].value = value;
+    }
+    ci->tls_slots_used++;
+}
+
+/* Returns a null opnd on failure. */
+opnd_t
+scratch_slot_opnd(callee_info_t *ci, slot_kind_t kind, byte value)
+{
+    uint i;
+    ASSERT(use_tls_inline);  /* XXX: Or generalize for stack case too? */
+    if (kind == SLOT_REG)
+        value = reg_to_pointer_sized(value);
+    for (i = 0; i < NUM_SCRATCH_SLOTS; i++) {
+        if (ci->tls_slots[i].kind  == kind &&
+            ci->tls_slots[i].value == value) {
+            int disp = (tls_scratch_offset + i * sizeof(reg_t));
+            return opnd_create_far_base_disp(tls_scratch_segment, DR_REG_NULL,
+                                             DR_REG_NULL, 0, disp, OPSZ_PTR);
+        }
+    }
+    DR_ASSERT_MSG(false, "Failed to call use_scratch_slot_for");
+    return opnd_create_null();
+}
+
+/* Returns an operand either pointing to the TLS slot for the local variable,
+ * or the top of the stack, depending on whether inline code is using dstack or
+ * TLS.
+ */
+opnd_t
+inline_local_var_opnd(callee_info_t *ci)
+{
+    if (use_tls_inline) {
+        return scratch_slot_opnd(ci, SLOT_LOCAL, 0);
+    } else {
+        return OPND_CREATE_MEMPTR(DR_REG_XSP, 0);
+    }
 }
 
 /****************************************************************************/
@@ -588,14 +667,17 @@ analyze_callee_regs_usage(void *dcontext, callee_info_t *ci)
         }
         /* General purpose registers */
         for (i = 0; i < NUM_GP_REGS; i++) {
+            reg_id_t reg = (DR_REG_XAX + (reg_id_t)i);
             if (!ci->reg_used[i] &&
-                instr_uses_reg(instr, (DR_REG_XAX + (reg_id_t)i))) {
+                reg != DR_REG_XSP && /* we manage xsp ourselves */
+                instr_uses_reg(instr, reg)) {
                 dr_log(dcontext, LOG_CLEANCALL, 2,
                        "drcalls: callee "PFX" uses REG %s at "PFX"\n", 
-                       ci->start, get_register_name(DR_REG_XAX + (reg_id_t)i),
+                       ci->start, get_register_name(reg),
                     instr_get_app_pc(instr));
                 ci->reg_used[i] = true;
                 ci->num_regs_used++;
+                use_scratch_slot_for(ci, SLOT_REG, reg);
             }
         }
         /* callee update aflags */
@@ -606,11 +688,6 @@ analyze_callee_regs_usage(void *dcontext, callee_info_t *ci)
                 ci->write_aflags = true;
             }
         }
-    }
-    /* we treat %xsp separately. */
-    if (ci->reg_used[DR_REG_XSP - DR_REG_XAX]) {
-        ci->reg_used[DR_REG_XSP - DR_REG_XAX] = false;
-        ci->num_regs_used--;
     }
 
     /* check if callee read aflags from caller */
@@ -637,6 +714,16 @@ analyze_callee_regs_usage(void *dcontext, callee_info_t *ci)
     if (ci->read_aflags) {
         dr_log(dcontext, LOG_CLEANCALL, 2,
                "drcalls: callee "PFX" reads aflags from caller\n", ci->start);
+    }
+
+    /* If we read or write aflags, we need to reserve a slot to save them.
+     * We may or may not use the slot at the call site, but it needs to be
+     * reserved just in case. */
+    if (ci->read_aflags || ci->write_aflags) {
+        use_scratch_slot_for(ci, SLOT_FLAGS, 0);
+        if (!ci->reg_used[DR_REG_XAX - DR_REG_XAX]) {
+            use_scratch_slot_for(ci, SLOT_REG, DR_REG_XAX);
+        }
     }
 }
 
@@ -1526,7 +1613,9 @@ get_fp_reg(callee_info_t *ci)
 static bool
 opnd_is_stack_access(callee_info_t *ci, opnd_t opnd)
 {
-    return (opnd_is_base_disp(opnd) && opnd_get_base(opnd) == get_fp_reg(ci));
+    return (opnd_is_base_disp(opnd) &&
+            (opnd_get_base(opnd) == get_fp_reg(ci) ||
+             opnd_get_base(opnd) == DR_REG_XSP));
 }
 
 /* Look for stack accesses.  Convert them to use our scratch slots. */
@@ -1639,6 +1728,7 @@ analyze_callee_stack_usage(void *dcontext, callee_info_t *ci)
 
         /* Check how many stack variables the callee has.  We will not inline
          * the callee if it has more than one stack variable.  */
+        /* TODO(rnk): Can dedupe with FOR_EACH_OPND_IN_INSTR ? */
         if (instr_reads_memory(instr)) {
             for (i = 0; i < instr_num_srcs(instr); i++) {
                 opnd = instr_get_src(instr, i);
@@ -1647,10 +1737,11 @@ analyze_callee_stack_usage(void *dcontext, callee_info_t *ci)
                 if (!ci->has_locals) {
                     /* We see the first one, rembmer it. */
                     mem_ref = opnd;
+                    use_scratch_slot_for(ci, SLOT_LOCAL, 0);
                     ci->has_locals = true;
                 } else if (!opnd_same(opnd, mem_ref)) {
                     /* Check if it is the same stack var as the one we saw.
-                     * If different, no inline. 
+                     * If different, no inline.
                      */
                     dr_log(dcontext, LOG_CLEANCALL, 1,
                            "drcalls: callee "PFX" cannot be inlined: "
@@ -1659,7 +1750,8 @@ analyze_callee_stack_usage(void *dcontext, callee_info_t *ci)
                     break;
                 }
                 /* replace the stack location with the last stack slot. */
-                slot = OPND_CREATE_MEMPTR(DR_REG_XSP, 0);
+                slot = inline_local_var_opnd(ci);
+                DR_ASSERT(!opnd_is_null(slot));
                 opnd_set_size(&slot, opnd_get_size(mem_ref));
                 instr_set_src(instr, i, slot);
             }
@@ -1675,6 +1767,7 @@ analyze_callee_stack_usage(void *dcontext, callee_info_t *ci)
                     continue;
                 if (!ci->has_locals) {
                     mem_ref = opnd;
+                    use_scratch_slot_for(ci, SLOT_LOCAL, 0);
                     ci->has_locals = true;
                 } else if (!opnd_same(opnd, mem_ref)) {
                     /* currently we only allows one stack refs */
@@ -1685,7 +1778,8 @@ analyze_callee_stack_usage(void *dcontext, callee_info_t *ci)
                     break;
                 }
                 /* replace the stack location with the last stack slot. */
-                slot = OPND_CREATE_MEMPTR(DR_REG_XSP, 0);
+                slot = inline_local_var_opnd(ci);
+                DR_ASSERT(!opnd_is_null(slot));
                 opnd_set_size(&slot, opnd_get_size(mem_ref));
                 instr_set_dst(instr, i, slot);
             }
@@ -1801,6 +1895,7 @@ analyze_callee_inline(void *dcontext, callee_info_t *ci)
 static void
 analyze_callee_ilist(void *dc, callee_info_t *ci)
 {
+    scratch_tls_check_init();
     ASSERT(!ci->bailout && ci->ilist != NULL);
     if (opt_cleancall < 1) {
         /* Only optimization at opt 0 is skipping unused registers. */

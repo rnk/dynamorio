@@ -30,11 +30,17 @@
  * DAMAGE.
  */
 
-#define _GNU_SOURCE
+#ifdef LINUX
+# define _GNU_SOURCE
+#endif
+
 #include "dr_api.h"
 #include "dr_calls.h"
 
-#include <dlfcn.h>
+#ifdef LINUX
+# include <dlfcn.h>
+#endif
+
 #include <stdlib.h>
 #include <string.h>
 
@@ -76,7 +82,7 @@ NOINLINE static void
 diagnose_access(ptr_uint_t ea, app_pc pc, uint size, bool write)
 {
     if (print_accesses) {
-        dr_fprintf(STDERR,
+        dr_fprintf(STDOUT,
                    "Unaligned %s access to ea "PFX" at pc "PFX" of size %d\n",
                    (write ? "write" : "read"), ea, pc, size);
         if (print_symbols) {
@@ -92,7 +98,7 @@ diagnose_access(ptr_uint_t ea, app_pc pc, uint size, bool write)
                 if (info.dli_fname)
                     image = info.dli_fname;
             }
-            dr_fprintf(STDERR, "pc: "PFX", image: %s, symbol: %s.\n",
+            dr_fprintf(STDOUT, "pc: "PFX", image: %s, symbol: %s.\n",
                        pc, image, symbol);
 #endif
         }
@@ -233,6 +239,7 @@ dr_init(client_id_t id)
     const char *client_args = dr_get_options(id);
     int opt_calls;
     const char *opt_calls_str;
+    bool use_tls = false;
 
     drcalls_init();
 
@@ -240,13 +247,16 @@ dr_init(client_id_t id)
     if (strstr(client_args, "print_count"))    print_count    = true;
     if (strstr(client_args, "print_accesses")) print_accesses = true;
     if (strstr(client_args, "print_symbols"))  print_symbols  = true;
-    if (strstr(client_args, "use_buffer"))     use_buffer  = true;
+    if (strstr(client_args, "use_buffer"))     use_buffer     = true;
+    if (strstr(client_args, "use_tls"))        use_tls        = true;
 
     opt_calls_str = strstr(client_args, "opt_calls");
     if (opt_calls_str) {
         opt_calls = atoi(opt_calls_str + strlen("opt_calls"));
         drcalls_set_optimization(opt_calls);
     }
+
+    drcalls_set_use_tls_inline(use_tls);
 
     dr_register_bb_event(event_bb);
     dr_register_exit_event(event_exit);
