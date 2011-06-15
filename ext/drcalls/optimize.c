@@ -487,16 +487,26 @@ find_next_full_clobber(void *dc, instr_t *start, reg_id_t reg, instr_t **end)
     for (instr = instr_get_next(start); instr != NULL;
          instr = instr_get_next(instr)) {
 
-        if (instr_is_call(instr)) {
-            if (instr_ok_to_mangle(instr)) {
-                /* XXX: This is a call out for partial inlining.  Nothing lives
-                 * in or out of this. */
-                continue;
+        if (instr_is_cti(instr)) {
+            do {
+                instr = instr_get_next(instr);
+            } while (instr != NULL && instr_is_label(instr));
+            if (instr != NULL &&
+                instr_is_call(instr) &&
+                instr_ok_to_mangle(instr)) {
+                do {
+                    instr = instr_get_next(instr);
+                } while (instr != NULL && instr_is_label(instr));
+                if (instr != NULL && instr_is_ubr(instr)) {
+                    /* XXX: This is a call out for partial inlining.  Nothing lives
+                     * in or out of this, and it uses no registers.  Skip both the
+                     * jcc and the call. */
+                    dr_log(dc, LOG_CLEANCALL, 3,
+                           "drcalls: live range crosses partial inline call\n");
+                    continue;
+                }
             } else {
-                /* Everything is live-in to a *meta* call, since that means
-                 * we've materialized args for it and we're optimizing the
-                 * entire bb.
-                 */
+                /* Don't try to optimize across bbs. */
                 *end = NULL;
                 return false;
             }

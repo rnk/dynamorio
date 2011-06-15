@@ -422,6 +422,38 @@ TEST(test_fold_consecutive_lea) {
     ilist_cmp_test_fini(&t);
 }
 
+TEST(test_fold_imm_across_partial) {
+    ilist_cmp_test_t t;
+    ilist_cmp_test_init(&t);
+
+    t.ib.ilist = t.before;
+    BUILD(t.ib, mov_imm, REG(EAX), IMM(0x44, 4)); /* immediate */
+    BUILD(t.ib, test,    REG(RCX), REG(RCX));     /* partial check */
+    INSERT(t.ib, INSTR_CREATE_jcc(t.ib.dcontext, OP_jz, opnd_create_pc(NULL)));
+    INSERT(t.ib, INSTR_CREATE_label(t.ib.dcontext));
+    BUILD(t.ib, call, opnd_create_pc(NULL));
+    instr_set_ok_to_mangle(instrlist_last(t.ib.ilist), true);
+    INSERT(t.ib, INSTR_CREATE_label(t.ib.dcontext));
+    BUILD(t.ib, jmp_short, opnd_create_pc(NULL));
+    BUILD(t.ib, mov_st,  MEM(XBP, 0, 4), REG(EAX)); /* use */
+
+    t.ib.ilist = t.after;
+    BUILD(t.ib, test,    REG(RCX), REG(RCX));     /* partial check */
+    INSERT(t.ib, INSTR_CREATE_jcc(t.ib.dcontext, OP_jz, opnd_create_pc(NULL)));
+    INSERT(t.ib, INSTR_CREATE_label(t.ib.dcontext));
+    BUILD(t.ib, call, opnd_create_pc(NULL));
+    instr_set_ok_to_mangle(instrlist_last(t.ib.ilist), true);
+    INSERT(t.ib, INSTR_CREATE_label(t.ib.dcontext));
+    BUILD(t.ib, jmp_short, opnd_create_pc(NULL));
+    BUILD(t.ib, mov_st,  MEM(XBP, 0, 4), IMM(0x44, 4)); /* use */
+
+    try_fold_immeds(t.dc, GLOBAL_DCONTEXT, t.before);
+
+    ASSERT(ilists_same(t.dc, t.before, t.after), "fold immed failed");
+
+    ilist_cmp_test_fini(&t);
+}
+
 #define TEST_FUNCS() \
     TEST_FN(dce_basic) \
     TEST_FN(copy_prop_basic) \
@@ -433,7 +465,8 @@ TEST(test_fold_consecutive_lea) {
     TEST_FN(test_rle) \
     TEST_FN(test_dse) \
     TEST_FN(test_fold_lea) \
-    TEST_FN(test_fold_consecutive_lea)
+    TEST_FN(test_fold_consecutive_lea) \
+    TEST_FN(test_fold_imm_across_partial) \
 
 #if 0
 /* Non macro framework idea: */

@@ -50,8 +50,9 @@ typedef struct _instr_builder_t {
         instrlist_preinsert(ib.ilist, ib.where, instr); \
     } while (0)
 
-#define INSERT(ib, instr) \
+#define INSERT(ib, instr_) \
     do { \
+        instr_t *instr = (instr_); \
         instr_set_ok_to_mangle(instr, !ib.meta); \
         instrlist_preinsert(ib.ilist, ib.where, instr); \
     } while (0)

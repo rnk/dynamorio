@@ -56,25 +56,25 @@ endif (UNIX)
 set_target_properties(drcalls PROPERTIES COMPILE_FLAGS "${cflags}")
 
 # Clients used for benchmarking.
-set(INSCOUNT_CLIENTS
+set(BENCH_CLIENTS
   inscount_cleancall
   inscount_leancall
   inscount_manual
-  )
-foreach (client ${INSCOUNT_CLIENTS})
-  set(src "bench_clients/${client}.c")
-  add_library(${client} SHARED ${src} "bench_clients/inscount_common.c")
-  configure_DynamoRIO_client(${client})
-  use_DynamoRIO_extension(${client} drcalls)
-endforeach ()
-set(BENCH_CLIENTS
   mem_buffer
+  alignment
   )
 foreach (client ${BENCH_CLIENTS})
-  set(src "bench_clients/${client}.c")
-  add_library(${client} SHARED ${src})
+  set(srcs "bench_clients/${client}.c")
+  set(client "drcalls_bench.${client}")
+  if ("${client}" MATCHES "^inscount_.*$")
+    set (srcs ${srcs} "bench_clients/inscount_common.c")
+  endif ()
+  add_library(${client} SHARED ${srcs})
   configure_DynamoRIO_client(${client})
   use_DynamoRIO_extension(${client} drcalls)
+  get_target_property(cflags ${client} COMPILE_FLAGS)
+  set(cflags "${cflags} -O2")
+  set_target_properties(${client} PROPERTIES COMPILE_FLAGS "${cflags}")
 endforeach ()
 
 

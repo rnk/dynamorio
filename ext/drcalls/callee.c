@@ -1214,8 +1214,6 @@ defer_side_effects(void *dc, callee_info_t *ci, instr_t *jcc, instr_t *fastpath,
         }
     }
 
-    for (; instr != NULL; instr = instr_get_prev(instr)) {
-    }
     return true;
 }
 
@@ -1436,7 +1434,37 @@ analyze_callee_partial(void *dc, callee_info_t *ci)
 }
 
 /* Tries to see if we can coalesce checks for this callee. */
-static void
+/* XXX: Problem with check coalescing:
+ *
+ * Original code:
+ * ld pos
+ * inc pos
+ * check pos
+ * st pos
+ * st buffer
+ *
+ * Coalesced checks:
+ * ld pos
+ * inc pos
+ * check pos
+ * ld pos
+ * inc pos
+ * check pos
+ *
+ * pos is not saved, so checks will pass if first check passes.  :(
+ *
+ * In model, can be:
+ * <call>
+ * <appcode>
+ * <call>
+ * <appcode>
+ * <call>
+ *
+ * Can assume appcode doesn't touch riprel/absmem globals.
+ *
+ * PROBLEM: Can't assume buffer doesn't alias pos.
+ */
+static __attribute__((unused)) void
 analyze_callee_coalesce_check(void *dc, callee_info_t *ci)
 {
     instr_t *instr;
@@ -1809,7 +1837,7 @@ analyze_callee_ilist(void *dc, callee_info_t *ci)
                 dce_and_copy_prop(dc, ci);
                 remove_jmp_next_instr(dc, GLOBAL_DCONTEXT, ci->ilist);
             }
-            analyze_callee_coalesce_check(dc, ci);
+            //analyze_callee_coalesce_check(dc, ci);
         }
         analyze_callee_regs_usage(dc, ci);
         analyze_callee_tls(dc, ci);

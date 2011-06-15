@@ -103,9 +103,9 @@ materialize_arg_into_reg(void *dc, instrlist_t *ilist, instr_t *where,
                 PRE(ilist, where, INSTR_CREATE_mov_ld
                     (dc, ptr_arg_reg, opnd_get_tls_xax(dc)));
                 base = reg;  /* TODO(rnk): Needs to match the size of base. */
-            } else if (regs_from_mc[base - DR_REG_XAX]) {
-                /* If base reg is clobbered, mov_ld 0xNN(MC) -> %argreg, and change
-                 * base to argreg. */
+            } else if (base != DR_REG_NULL && regs_from_mc[base - DR_REG_XAX]) {
+                /* If base reg is clobbered, mov_ld 0xNN(MC) -> %argreg, and
+                 * change base to argreg. */
                 insert_mc_reg_restore(dc, framesize, ilist, where, base);
                 instr_set_dst(instr_get_prev(where), 0, ptr_arg_reg);
                 base = reg;
@@ -113,7 +113,7 @@ materialize_arg_into_reg(void *dc, instrlist_t *ilist, instr_t *where,
             /* If index reg is clobbered, mov_ld 0xNN(MC) -> %xax, and change
              * index to xax.  XAX is a safe choice because it is not a regparm
              * in any calling convention supported by DR. */
-            if (regs_from_mc[index - DR_REG_XAX]) {
+            if (index != DR_REG_NULL && regs_from_mc[index - DR_REG_XAX]) {
                 insert_mc_reg_restore(dc, framesize, ilist, where, index);
                 instr_set_dst(instr_get_prev(where), 0,
                               opnd_create_reg(DR_REG_XAX));
