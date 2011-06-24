@@ -39,6 +39,8 @@
 
 #include "dr_calls.h"
 
+#include <string.h>
+
 //#define SHOW_RESULTS
 
 /* Each inscount client variant defines a unique client_name and
@@ -60,6 +62,10 @@ dr_init(client_id_t id)
 {
     const char *client_args = dr_get_options(id);
     int opt_calls = atoi(client_args);
+
+    if (strstr(client_args, "use_tls")) {
+        drcalls_set_use_tls_inline(true);
+    }
 
     drcalls_init();
     if (opt_calls < 0)
