@@ -1395,6 +1395,7 @@ bool dr_fragment_deleted_hook_exists(void);
 bool dr_end_trace_hook_exists(void);
 bool dr_thread_exit_hook_exists(void);
 bool dr_exit_hook_exists(void);
+bool dr_xl8_hook_exists(void);
 bool hide_tag_from_client(app_pc tag);
 
 /* DR_API EXPORT TOFILE dr_tools.h */
@@ -1499,6 +1500,34 @@ dr_get_parent_id(void);
 #endif
 
 #ifdef WINDOWS
+/* DR_API EXPORT BEGIN */
+/** Windows versions */
+typedef enum {
+    DR_WINDOWS_VERSION_7     = 61,
+    DR_WINDOWS_VERSION_VISTA = 60,
+    DR_WINDOWS_VERSION_2003  = 52,
+    DR_WINDOWS_VERSION_XP    = 51,
+    DR_WINDOWS_VERSION_2000  = 50,
+    DR_WINDOWS_VERSION_NT    = 40,
+} dr_os_version_t;
+
+/** Data structure used with dr_get_os_version() */
+typedef struct _dr_os_version_info_t {
+    /** The size of this structure.  Set this to sizeof(dr_os_version_info_t). */
+    size_t size;
+    /** The operating system version */
+    dr_os_version_t version;
+} dr_os_version_info_t;
+/* DR_API EXPORT END */
+
+DR_API
+/** 
+ * Returns information about the version of the operating system.
+ * Returns whether successful.
+ */
+bool
+dr_get_os_version(dr_os_version_info_t *info);
+
 DR_API
 /** 
  * Returns true if this process is a 32-bit process operating on a
@@ -3086,6 +3115,8 @@ DR_API
 /**
  * Inserts \p instr as a non-application instruction that can fault (see
  * instr_set_meta_may_fault()) into \p ilist prior to \p where. 
+ *
+ * \deprecated Essentially equivalent to instrlist_meta_preinsert()
  */
 void 
 instrlist_meta_fault_preinsert(instrlist_t *ilist, instr_t *where, instr_t *instr);
@@ -3094,6 +3125,8 @@ DR_API
 /**
  * Inserts \p instr as a non-application instruction that can fault (see
  * instr_set_meta_may_fault()) into \p ilist after \p where. 
+ *
+ * \deprecated Essentially equivalent to instrlist_meta_postinsert()
  */
 void
 instrlist_meta_fault_postinsert(instrlist_t *ilist, instr_t *where, instr_t *instr);
@@ -3102,6 +3135,8 @@ DR_API
 /**
  * Inserts \p instr as a non-application instruction that can fault (see
  * instr_set_meta_may_fault()) onto the end of \p ilist. 
+ *
+ * \deprecated Essentially equivalent to instrlist_meta_append()
  */
 void
 instrlist_meta_fault_append(instrlist_t *ilist, instr_t *instr);
