@@ -1244,6 +1244,8 @@ defer_side_effects(void *dc, callee_info_t *ci, instr_t *jcc, instr_t *fastpath,
     if (!check_only) {
         dr_log(dc, LOG_CLEANCALL, 3,
                "drcalls: defering memory writes for real\n");
+        //dr_printf("\nBEFORE DEFER:\n");
+        //instrlist_disassemble(dc, NULL, ci->ilist, STDOUT);
     }
 
     liveness_init(liveness, ci);
@@ -1287,8 +1289,10 @@ defer_side_effects(void *dc, callee_info_t *ci, instr_t *jcc, instr_t *fastpath,
         if (can_defer) {
             dr_log(dc, LOG_CLEANCALL, 3, "drcalls: deferred instr at "PFX"\n",
                    instr_get_app_pc(instr));
-            instrlist_remove(ci->ilist, instr);
-            POST(ci->ilist, fastpath, instr);
+            if (!check_only) {
+                instrlist_remove(ci->ilist, instr);
+                POST(ci->ilist, fastpath, instr);
+            }
         } else {
             if (instr_writes_memory(instr)) {
                 dr_log(dc, LOG_CLEANCALL, 3,
@@ -1299,6 +1303,11 @@ defer_side_effects(void *dc, callee_info_t *ci, instr_t *jcc, instr_t *fastpath,
             clobbered_update(clobbered, instr);
             liveness_update(liveness, instr);
         }
+    }
+
+    if (!check_only) {
+        //dr_printf("\nAFTER DEFER:\n");
+        //instrlist_disassemble(dc, NULL, ci->ilist, STDOUT);
     }
 
     return true;

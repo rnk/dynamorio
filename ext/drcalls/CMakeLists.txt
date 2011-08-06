@@ -57,6 +57,7 @@ set_target_properties(drcalls PROPERTIES COMPILE_FLAGS "${cflags}")
 
 # Clients used for benchmarking.
 set(BENCH_CLIENTS
+  inscount_bbcall
   inscount_cleancall
   inscount_leancall
   inscount_manual

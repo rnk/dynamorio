@@ -1046,6 +1046,15 @@ fold_leas(void *dc, void *dc_alloc, instrlist_t *ilist)
     instr_t *instr;
     instr_t *next_instr;
 
+//#define PRINT_ONE_BB
+#ifdef PRINT_ONE_BB
+    static int times = 0;
+    times++;
+    if (times == 22) {
+        instrlist_disassemble(dc, NULL, ilist, STDERR);
+    }
+#endif
+
     for (instr = instrlist_first(ilist); instr != NULL; instr = next_instr) {
         next_instr = instr_get_next(instr);
         /* Don't touch app instrs. */
@@ -1082,6 +1091,12 @@ fold_leas(void *dc, void *dc_alloc, instrlist_t *ilist)
 #endif
         }
     }
+
+#ifdef PRINT_ONE_BB
+    if (times == 22) {
+        instrlist_disassemble(dc, NULL, ilist, STDERR);
+    }
+#endif
 }
 
 /* Eliminate redundant loads.

@@ -948,7 +948,7 @@ expand_and_optimize_bb(void *dc, instrlist_t *bb)
         fold_leas(dc, dc, bb);
     }
 
-//#define PRINT_ONE_BB;
+//#define PRINT_ONE_BB
 #ifdef PRINT_ONE_BB
     static int times = 0;
     times++;

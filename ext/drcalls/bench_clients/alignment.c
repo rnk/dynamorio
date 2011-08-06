@@ -112,7 +112,7 @@ diagnose_access(ptr_uint_t ea, app_pc pc, uint size, bool write)
  * Checks that 'ea' was aligned to 'size', and if not prints out a warning about
  * an unaligned memory access.
  */
-static void
+EXPORT void
 check_access(ptr_uint_t ea, app_pc pc, uint size, bool write)
 {
     num_accesses++;
@@ -143,7 +143,7 @@ flush_buffer(void)
  * conditional jump and return, and a slow path with a bit of control flow
  * (ternary expr) and a call to printf.
  */
-void
+EXPORT void
 buffer_memop(ptr_uint_t ea, ptr_uint_t pc, uint size, bool write)
 {
     buffer[pos].ea = ea;
@@ -250,6 +250,15 @@ dr_init(client_id_t id)
     if (strstr(client_args, "use_buffer"))     use_buffer     = true;
     if (strstr(client_args, "use_tls"))        use_tls        = true;
 
+#if 0
+    file_t f = dr_open_file("/scratch/rnk/dynamorio/alignment_opts.txt",
+                            DR_FILE_WRITE_APPEND);
+    DR_ASSERT(f != INVALID_FILE);
+    dr_write_file(f, client_args, strlen(client_args));
+    dr_write_file(f, "\n", 1);
+    dr_close_file(f);
+#endif
+
     opt_calls_str = strstr(client_args, "opt_calls");
     if (opt_calls_str) {
         opt_calls = atoi(opt_calls_str + strlen("opt_calls"));
@@ -260,4 +269,6 @@ dr_init(client_id_t id)
 
     dr_register_bb_event(event_bb);
     dr_register_exit_event(event_exit);
+
+    //dr_unregister_bb_event(event_bb);
 }
