@@ -850,7 +850,9 @@ os_init(void)
     get_own_unqualified_name();
     get_own_short_qualified_name();
     get_own_short_unqualified_name();
+    get_application_name();
     get_application_short_name();
+    get_application_short_unqualified_name();
     get_process_primary_SID();
     get_process_SID_string();
     get_process_owner_SID();
@@ -3772,7 +3774,7 @@ get_memory_info(const byte *pc, byte **base_pc, size_t *size, uint *prot)
          * want: we have to loop for that information (i#345)
          */
         dr_mem_info_t info;
-        if (!query_memory_ex(pc, &info))
+        if (!query_memory_ex(pc, &info) || info.type == DR_MEMTYPE_FREE)
             return false;
         if (base_pc != NULL)
             *base_pc = info.base_pc;
@@ -5879,6 +5881,7 @@ detach_helper(int detach_type)
     int i, num_threads, my_thread_index = -1;
     thread_id_t my_id;
     bool res;
+    int exit_res;
     bool *cleanup_tpc;
     bool translate_cxt;
     bool detach_stacked_callbacks;
@@ -6251,8 +6254,8 @@ detach_helper(int detach_type)
         "Detach :  Last message from detach, about to clean up some more memory and unload\n");
     SYSLOG_INTERNAL_INFO("Detaching from process, entering final cleanup");
     /* call dynamo exit routines */
-    res = dynamo_shared_exit(toexit, detach_stacked_callbacks); 
-    ASSERT(res == SUCCESS);
+    exit_res = dynamo_shared_exit(toexit, detach_stacked_callbacks);
+    ASSERT(exit_res == SUCCESS);
 
     /* we can free the initstack, it can't be our stack, we are specially created thread */
     stack_free(initstack, DYNAMORIO_STACK_SIZE);

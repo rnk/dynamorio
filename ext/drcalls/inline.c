@@ -673,8 +673,8 @@ insert_inline_clean_call(void *dcontext, clean_call_info_t *cci,
     while (instr != NULL) {
         instrlist_remove(callee, instr);
         instr_set_translation(instr, NULL);
-        /* The inlined code might cause access violation, so set to may fault.
-         * XXX: anything else we should do?
+        /* The inlined code might cause access violation, how should we handle
+         * it?  We need to set some kind of translation.
          */
         instr_set_meta_may_fault(instr, true);
         instrlist_meta_preinsert(ilist, where, instr);

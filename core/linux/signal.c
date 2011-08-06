@@ -313,9 +313,9 @@ bool kernel_sigismember(kernel_sigset_t *set, int _sig)
 {
     int sig = _sig - 1; /* go to 0-based */
     if (_NSIG_WORDS == 1)
-        return 1 & (set->sig[0] >> sig);
+        return CAST_TO_bool(1 & (set->sig[0] >> sig));
     else
-        return 1 & (set->sig[sig / _NSIG_BPW] >> (sig % _NSIG_BPW));
+        return CAST_TO_bool(1 & (set->sig[sig / _NSIG_BPW] >> (sig % _NSIG_BPW)));
 }
 
 /* FIXME: how does libc do this? */
@@ -5254,11 +5254,21 @@ handle_suspend_signal(dcontext_t *dcontext, kernel_ucontext_t *ucxt)
     ASSERT(ostd != NULL);
 
     if (ostd->terminate) {
-        /* PR 297902: exit this thread, without using any stack */
+         /* PR 297902: exit this thread, without using any stack */
         LOG(THREAD, LOG_ASYNCH, 2, "handle_suspend_signal: exiting\n");
-        ostd->terminated = true;
-        /* can't use stack once set terminated to true */
-        asm("jmp dynamorio_sys_exit");
+        if (kernel_futex_support) {
+            /* can't use stack once set terminated to 1 so in asm we do:
+             *   ostd->terminated = 1;
+             *   futex_wake_all(&ostd->terminated);
+             */
+            volatile int *term = &ostd->terminated;
+            asm("mov %0, %%"ASM_XAX : : "m"(term));
+            asm("movl $1,(%"ASM_XAX")");
+            asm("jmp dynamorio_futex_wake_and_exit");
+        } else {
+            ostd->terminated = 1;
+            asm("jmp dynamorio_sys_exit");
+        }
         ASSERT_NOT_REACHED();
         return false;
     }
@@ -5300,11 +5310,20 @@ handle_suspend_signal(dcontext_t *dcontext, kernel_ucontext_t *ucxt)
     /* Notify thread_suspend that it can now return, as this thread is
      * officially suspended now and is ready for thread_{get,set}_mcontext.
      */
-    ASSERT(!ostd->suspended);
-    ostd->suspended = true;
-    /* FIXME i#96/PR 295561: use futex */
-    while (!ostd->wakeup)
-        thread_yield();
+    ASSERT(ostd->suspended == 0);
+    ostd->suspended = 1;
+    futex_wake_all(&ostd->suspended);
+    /* i#96/PR 295561: use futex(2) if available */
+    while (ostd->wakeup == 0) {
+        /* Waits only if the wakeup flag is not set as 1. Return value
+         * doesn't matter because the flag will be re-checked. 
+         */
+        futex_wait(&ostd->wakeup, 0);
+        if (ostd->wakeup == 0) {
+            /* If it still has to wait, give up the cpu. */
+            thread_yield();
+        }
+    }
     LOG(THREAD, LOG_ASYNCH, 2, "handle_suspend_signal: awake now\n");
 
     /* re-block so our exit from master_signal_handler is not interrupted */
@@ -5314,8 +5333,9 @@ handle_suspend_signal(dcontext_t *dcontext, kernel_ucontext_t *ucxt)
     /* Notify thread_resume that it can return now, which (assuming
      * suspend_count is back to 0) means it's then safe to re-suspend. 
      */
-    ostd->suspended = false; /* reset prior to signalling thread_resume */
-    ostd->resumed = true;
+    ostd->suspended = 0; /* reset prior to signalling thread_resume */
+    ostd->resumed = 1;
+    futex_wake_all(&ostd->resumed);
 
     return false; /* do not pass to app */
 }

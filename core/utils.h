@@ -187,6 +187,7 @@ void external_error(char *file, int line, char *msg);
 #define LOCK_FREE_STATE -1     /* allows a quick >=0 test for contention */
 #define LOCK_SET_STATE (LOCK_FREE_STATE + 1)  /* set when requested by a single thread */
 /* any value greater than LOCK_SET_STATE means multiple threads requested the lock */
+#define LOCK_CONTENDED_STATE (LOCK_SET_STATE + 1)
 
 #define SPINLOCK_FREE_STATE 0 /* for initstack_mutex is a spin lock with values 0 or 1 */
 
@@ -966,7 +967,7 @@ typedef bitmap_element_t bitmap_t[];
 static inline bool
 bitmap_test(bitmap_t b, uint i)
 {
-    return b[BITMAP_INDEX(i)] & BITMAP_MASK(i);
+    return ((b[BITMAP_INDEX(i)] & BITMAP_MASK(i)) != 0);
 }
 
 static inline void

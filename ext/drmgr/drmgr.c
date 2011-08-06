@@ -58,7 +58,7 @@
  * input from user) but perhaps we shouldn't since this is a library
  */
 #ifdef DEBUG
-# define ASSERT(x, msg) DR_ASSERT(x, msg)
+# define ASSERT(x, msg) DR_ASSERT_MSG(x, msg)
 #else
 # define ASSERT(x, msg) /* nothing */
 #endif
@@ -219,7 +219,10 @@ void
 drmgr_exit(void)
 {
     static bool exited;
-    if (exited || !dr_mutex_trylock(exit_lock))
+    /* try to handle multiple calls to exit.  still possible to crash
+     * trying to lock a destroyed lock.
+     */
+    if (exited || !dr_mutex_trylock(exit_lock) || exited)
         return;
     exited = true;
 
@@ -709,7 +712,8 @@ void *
 drmgr_get_tls_field(void *drcontext, int idx)
 {
     tls_array_t *tls = (tls_array_t *) dr_get_tls_field(drcontext);
-    if (idx < 0 || idx > MAX_NUM_TLS || !tls_taken[idx] || tls == NULL)
+    /* no need to check for tls_taken since would return NULL anyway (i#484) */
+    if (idx < 0 || idx > MAX_NUM_TLS || tls == NULL)
         return NULL;
     return tls->tls[idx];
 }
@@ -719,8 +723,12 @@ bool
 drmgr_set_tls_field(void *drcontext, int idx, void *value)
 {
     tls_array_t *tls = (tls_array_t *) dr_get_tls_field(drcontext);
-    if (idx < 0 || idx > MAX_NUM_TLS || !tls_taken[idx] || tls == NULL)
+    if (idx < 0 || idx > MAX_NUM_TLS || tls == NULL)
         return false;
+    /* going DR's traditional route of efficiency over safety: making this
+     * a debug-only check to avoid cost in release build
+     */
+    ASSERT(tls_taken[idx], "usage error: setting tls index that is not reserved");
     tls->tls[idx] = value;
     return true;
 }

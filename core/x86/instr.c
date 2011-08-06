@@ -1204,6 +1204,7 @@ opnd_size_in_bytes(opnd_size_t size)
     case OPSZ_4x8_short2: /* default size */
     case OPSZ_4x8_short2xi8: /* default size */
 #endif
+    case OPSZ_8_rex16: /* default size */
     case OPSZ_8_rex16_short4: /* default size */
         return 8;
     case OPSZ_16:
@@ -1381,7 +1382,7 @@ opnd_compute_address_priv(opnd_t opnd, priv_mcontext_t *mc)
                   "opnd_compute_address: must pass memory reference");
     if (opnd_is_far_base_disp(opnd)) {
 #ifdef X86
-        seg_base = (ptr_uint_t) get_segment_base(opnd_get_segment(opnd));
+        seg_base = (ptr_uint_t) get_app_segment_base(opnd_get_segment(opnd));
         if (seg_base == POINTER_MAX) /* failure */
             seg_base = 0;
 #endif
@@ -3964,9 +3965,15 @@ instr_is_cti_short_rewrite(instr_t *instr, byte *pc)
      * just like ours: instr_convert_short_meta_jmp_to_long() (PR 266292).
      */
     if (pc == NULL) {
-        if (!instr_has_allocated_bits(instr) || instr->length != CTI_SHORT_REWRITE_LENGTH)
+        if (!instr_has_allocated_bits(instr))
             return false;
         pc = instr_get_raw_bits(instr);
+        if (*pc == ADDR_PREFIX_OPCODE) {
+            pc++;
+            if (instr->length != CTI_SHORT_REWRITE_LENGTH + 1)
+                return false;
+        } else if (instr->length != CTI_SHORT_REWRITE_LENGTH)
+            return false;
     }
     if (instr_opcode_valid(instr)) {
         int opc = instr_get_opcode(instr);

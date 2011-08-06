@@ -327,7 +327,7 @@ GLOBAL_LABEL(call_switch_stack:)
         mov      REG_XDX, [3*ARG_SZ + REG_XAX] /* func */
         mov      REG_XCX, [1*ARG_SZ + REG_XAX] /* dcontext */
         mov      REG_XSP, [2*ARG_SZ + REG_XAX] /* stack */
-        cmp      DWORD [4*ARG_SZ + REG_XAX], 0 /* free_initstack */
+        cmp      BYTE [4*ARG_SZ + REG_XAX], 0 /* free_initstack */
         je       call_dispatch_alt_stack_no_free
 #if !defined(X64) && defined(LINUX)
         /* PR 212290: avoid text relocations: get PIC base into xax
@@ -344,7 +344,7 @@ call_dispatch_alt_stack_no_free:
         CALLC1(REG_XDX, REG_XCX)
         mov      REG_XSP, REG_XDI
         mov      REG_XAX, REG_XBX
-        cmp      DWORD [5*ARG_SZ + REG_XAX], 0 /* return_on_return */
+        cmp      BYTE [5*ARG_SZ + REG_XAX], 0 /* return_on_return */
         je       unexpected_return
         pop      REG_XDI
         pop      REG_XBX
@@ -534,7 +534,7 @@ cat_done_saving_dstack:
         push     REG_XBX /* 16-byte aligned again */
         push     REG_XAX
         /* upper bytes are 0xab so only look at lower bytes */
-        mov      esi, DWORD [5*ARG_SZ + REG_XBP] /* exitproc */
+        movzx    esi, BYTE [5*ARG_SZ + REG_XBP] /* exitproc */
         cmp      esi, 0
         jz       cat_thread_only
         CALLC0(dynamo_process_exit)
@@ -1122,6 +1122,36 @@ GLOBAL_LABEL(dynamorio_sys_exit:)
         jmp      unexpected_return
         END_FUNC(dynamorio_sys_exit)
         
+/* we need to call futex_wakeall without using any stack, to support
+ * THREAD_SYNCH_TERMINATED_AND_CLEANED.
+ * takes int* futex in xax.
+ */
+        DECLARE_FUNC(dynamorio_futex_wake_and_exit)
+GLOBAL_LABEL(dynamorio_futex_wake_and_exit:)
+#ifdef X64
+        mov      ARG6, 0
+        mov      ARG5, 0
+        mov      ARG4, 0
+        mov      ARG3, 0x7fffffff /* arg3 = INT_MAX */
+        mov      ARG2, 1 /* arg2 = FUTEX_WAKE */
+        mov      ARG1, rax /* &futex, passed in rax */
+        mov      rax, 202 /* SYS_futex */
+        mov      r10, rcx
+        syscall
+#else
+        mov      ebp, 0 /* arg6 */
+        mov      edi, 0 /* arg5 */
+        mov      esi, 0 /* arg4 */
+        mov      edx, 0x7fffffff /* arg3 = INT_MAX */
+        mov      ecx, 1 /* arg2 = FUTEX_WAKE */
+        mov      ebx, eax /* arg1 = &futex, passed in eax */
+        mov      eax, 240 /* SYS_futex */
+        /* PR 254280: we assume int$80 is ok even for LOL64 */
+        int      HEX(80)
+#endif
+        jmp dynamorio_sys_exit
+        END_FUNC(dynamorio_futex_wake_and_exit)
+
 /* exit entire group without using any stack, in case something like
  * SYS_kill via cleanup_and_terminate fails
  */
@@ -1596,6 +1626,7 @@ GLOBAL_LABEL(call_modcode_alt_stack:)
         mov      REG_XDI, cxt
         mov      REG_XSI, target
         mov      REG_XDX, flags
+        /* bool is byte-sized but rest should be zeroed as separate param */
         cmp      using_initstack, 0
         je       call_modcode_alt_stack_no_free
         mov      DWORD SYMREF(initstack_mutex), 0 /* rip-relative on x64 */

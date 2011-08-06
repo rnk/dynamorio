@@ -109,9 +109,12 @@ extern void do_file_write(file_t f, const char *fmt, va_list ap);
  */
 DR_API const char *unique_build_number = STRINGIFY(UNIQUE_BUILD_NUMBER);
 
-/* Acquire when registering or unregistering event callbacks */
-DECLARE_CXTSWPROT_VAR(static mutex_t callback_registration_lock,
-                      INIT_LOCK_FREE(callback_registration_lock));
+/* Acquire when registering or unregistering event callbacks
+ * Also held when invoking events, which happens much more often
+ * than registration changes, so we use rwlock
+ */
+DECLARE_CXTSWPROT_VAR(static read_write_lock_t callback_registration_lock,
+                      INIT_READWRITE_LOCK(callback_registration_lock));
 
 /* Structures for maintaining lists of event callbacks */
 typedef void (*callback_t)(void);
@@ -139,15 +142,15 @@ typedef struct _callback_list_t {
 #define call_all_ret(ret, retop, postop, vec, type, ...)                \
     do {                                                                \
         size_t idx, num;                                                \
-        mutex_lock(&callback_registration_lock);                        \
+        read_lock(&callback_registration_lock);                         \
         num = (vec).num;                                                \
         if (num == 0) {                                                 \
-            mutex_unlock(&callback_registration_lock);                  \
+            read_unlock(&callback_registration_lock);                   \
         }                                                               \
         else if (num <= FAST_COPY_SIZE) {                               \
             callback_t tmp[FAST_COPY_SIZE];                             \
             memcpy(tmp, (vec).callbacks, num * sizeof(callback_t));     \
-            mutex_unlock(&callback_registration_lock);                  \
+            read_unlock(&callback_registration_lock);                   \
             for (idx=0; idx<num; idx++) {                               \
                 ret retop (((type)tmp[num-idx-1])(__VA_ARGS__)) postop; \
             }                                                           \
@@ -156,7 +159,7 @@ typedef struct _callback_list_t {
             callback_t *tmp = HEAP_ARRAY_ALLOC(GLOBAL_DCONTEXT, callback_t, num, \
                                                ACCT_OTHER, UNPROTECTED); \
             memcpy(tmp, (vec).callbacks, num * sizeof(callback_t));     \
-            mutex_unlock(&callback_registration_lock);                  \
+            read_unlock(&callback_registration_lock);                   \
             for (idx=0; idx<num; idx++) {                               \
                 ret retop (((type)tmp[num-idx-1])(__VA_ARGS__)) postop; \
             }                                                           \
@@ -263,7 +266,7 @@ add_callback(callback_list_t *vec, void (*func)(void), bool unprotect)
         return;
     }
 
-    mutex_lock(&callback_registration_lock);
+    write_lock(&callback_registration_lock);
     /* Although we're receiving a pointer to a callback_list_t, we're
      * usually modifying a static var.
      */
@@ -282,7 +285,7 @@ add_callback(callback_list_t *vec, void (*func)(void), bool unprotect)
 
         if (tmp == NULL) {
             CLIENT_ASSERT(false, "out of memory: can't register callback");
-            mutex_unlock(&callback_registration_lock);        
+            write_unlock(&callback_registration_lock);        
             return;
         }
 
@@ -301,7 +304,7 @@ add_callback(callback_list_t *vec, void (*func)(void), bool unprotect)
     if (unprotect) {
         SELF_PROTECT_DATASEC(DATASEC_RARELY_PROT);
     }
-    mutex_unlock(&callback_registration_lock);
+    write_unlock(&callback_registration_lock);
 }
 
 static bool
@@ -315,7 +318,7 @@ remove_callback(callback_list_t *vec, void (*func)(void), bool unprotect)
         return false;
     }
 
-    mutex_lock(&callback_registration_lock);
+    write_lock(&callback_registration_lock);
     /* Although we're receiving a pointer to a callback_list_t, we're
      * usually modifying a static var.
      */
@@ -337,10 +340,10 @@ remove_callback(callback_list_t *vec, void (*func)(void), bool unprotect)
         }
     }
 
-    SELF_PROTECT_DATASEC(DATASEC_RARELY_PROT);
     if (unprotect) {
-        mutex_unlock(&callback_registration_lock);
+        SELF_PROTECT_DATASEC(DATASEC_RARELY_PROT);
     }
+    write_unlock(&callback_registration_lock);
 
     return found;
 }
@@ -627,7 +630,7 @@ instrument_exit(void)
 #if defined(WINDOWS) || defined(CLIENT_SIDELINE)
     DELETE_LOCK(client_thread_count_lock);
 #endif
-    DELETE_LOCK(callback_registration_lock);
+    DELETE_READWRITE_LOCK(callback_registration_lock);
 }
 
 bool
@@ -5171,7 +5174,7 @@ DR_API
  * register reg. In Linux, it is only supported with -mangle_app_seg option.
  * In Windows, it only supports getting base address of the TLS segment.
  */
-void
+bool
 dr_insert_get_seg_base(void *drcontext, instrlist_t *ilist, instr_t *instr,
                        reg_id_t seg, reg_id_t reg)
 {
@@ -5190,8 +5193,11 @@ dr_insert_get_seg_base(void *drcontext, instrlist_t *ilist, instr_t *instr,
      * runtime overhead for keeping track of the app's TLS segment base.
      */
     CLIENT_ASSERT(INTERNAL_OPTION(private_loader) || seg != SEG_TLS,
-                  "dr_insert_get_seg_base support TLS seg"
+                  "dr_insert_get_seg_base supports TLS seg"
                   "only with -private_loader");
+    if (!INTERNAL_OPTION(mangle_app_seg) ||
+        !(INTERNAL_OPTION(private_loader) || seg != SEG_TLS))
+        return false;
     if (seg == SEG_FS || seg == SEG_GS) {
         instrlist_meta_preinsert
             (ilist, instr,
@@ -5204,12 +5210,20 @@ dr_insert_get_seg_base(void *drcontext, instrlist_t *ilist, instr_t *instr,
                                   OPND_CREATE_INTPTR(0)));
     }
 #else
-    CLIENT_ASSERT(seg != SEG_TLS,
-                  "dr_insert_get_seg_base only support TLS seg in Windows");
-    instrlist_meta_preinsert
-        (ilist, instr,
-         instr_create_restore_from_tls(drcontext, reg, SELF_TIB_OFFSET));
+    if (seg == SEG_TLS) {
+        instrlist_meta_preinsert
+            (ilist, instr,
+             instr_create_restore_from_tls(drcontext, reg, SELF_TIB_OFFSET));
+    } else if (seg == SEG_CS || seg == SEG_DS || seg == SEG_ES) {
+        /* XXX: we assume flat address space */
+        instrlist_meta_preinsert
+            (ilist, instr,
+             INSTR_CREATE_mov_imm(drcontext, opnd_create_reg(reg),
+                                  OPND_CREATE_INTPTR(0)));
+    } else
+        return false;
 #endif /* LINUX */
+    return true;
 }
 
 #endif /* CLIENT_INTERFACE */

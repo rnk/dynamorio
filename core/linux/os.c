@@ -67,6 +67,8 @@
 #include <sys/time.h>
 #include <sys/resource.h>
 
+#include <linux/futex.h> /* for futex op code */
+
 #include "module.h" /* elf */
 
 #ifndef F_DUPFD_CLOEXEC /* in linux 2.6.24+ */
@@ -98,7 +100,7 @@ extern char **__environ;
 
 #ifdef X86
 /* must be prior to <link.h> => <elf.h> => INT*_{MIN,MAX} */
-# include "instr.h" /* for get_segment_base() */
+# include "instr.h" /* for get_app_segment_base() */
 #endif
 
 #include "decode_fast.h" /* decode_cti: maybe os_handle_mov_seg should be ifdef X86? */
@@ -240,6 +242,11 @@ static app_pc executable_start = NULL;
 
 /* does the kernel provide tids that must be used to distinguish threads in a group? */
 static bool kernel_thread_groups;
+
+/* Does the kernel support SYS_futex syscall? Safe to initialize assuming 
+ * no futex support.
+ */
+bool kernel_futex_support = false;
 
 static bool kernel_64bit;
 
@@ -607,6 +614,16 @@ get_uname(void)
 void
 os_init(void)
 {
+    /* Determines whether the kernel supports SYS_futex syscall or not.
+     * From man futex(2): initial futex support was merged in 2.5.7, in current six
+     * argument format since 2.6.7.
+     */
+    volatile int futex_for_test = 0;
+    ptr_int_t res = dynamorio_syscall(SYS_futex, 6, &futex_for_test, FUTEX_WAKE, 1,
+                                      NULL, NULL, 0);
+    kernel_futex_support = (res >= 0); 
+    ASSERT_CURIOSITY(kernel_futex_support);
+
     get_uname();
 
     /* determine whether gettid is provided and needed for threads,
@@ -1330,7 +1347,7 @@ set_tls(ushort tls_offs, void *value)
  * Should we export this to clients?  For now they can get
  * this information via opnd_compute_address().
  */
-byte *
+static byte *
 get_segment_base(uint seg)
 {
     if (seg == SEG_CS || seg == SEG_SS || seg == SEG_DS || seg == SEG_ES)
@@ -1391,6 +1408,20 @@ get_segment_base(uint seg)
 # endif /* HAVE_TLS */
     }
     return (byte *) POINTER_MAX;
+}
+
+/* i#572: handle opnd_compute_address to return the application 
+ * segment base value.
+ */
+byte *
+get_app_segment_base(uint seg)
+{
+    if (seg == SEG_CS || seg == SEG_SS || seg == SEG_DS || seg == SEG_ES)
+        return NULL;
+    if (IF_CLIENT_INTERFACE_ELSE(INTERNAL_OPTION(private_loader), false)) {
+        return get_tls(os_get_app_seg_base_offset(seg));
+    }
+    return get_segment_base(seg);
 }
 #endif
 
@@ -2511,6 +2542,62 @@ os_heap_get_commit_limit(size_t *commit_used, size_t *commit_limit)
     return false;
 }
 
+/* Waits on the futex until woken if the kernel supports SYS_futex syscall
+ * and the futex's value has not been changed from mustbe. Does not block
+ * if the kernel doesn't support SYS_futex. Returns 0 if woken by another thread, 
+ * and negative value for all other cases.
+ */
+ptr_int_t
+futex_wait(volatile int *futex, int mustbe)
+{
+    ptr_int_t res;
+    ASSERT(ALIGNED(futex, sizeof(int)));
+    if (kernel_futex_support) {
+        /* XXX: Having debug timeout like win32 os_wait_event() would be useful */
+        res = dynamorio_syscall(SYS_futex, 6, futex, FUTEX_WAIT, mustbe, NULL,
+                                NULL, 0);
+    } else {
+        res = -1;
+    }
+    return res;
+}
+
+/* Wakes up at most one thread waiting on the futex if the kernel supports
+ * SYS_futex syscall. Does nothing if the kernel doesn't support SYS_futex.
+ */
+ptr_int_t
+futex_wake(volatile int *futex)
+{
+    ptr_int_t res;
+    ASSERT(ALIGNED(futex, sizeof(int)));
+    if (kernel_futex_support) {
+        res = dynamorio_syscall(SYS_futex, 6, futex, FUTEX_WAKE, 1, NULL, NULL, 0);
+    } else {
+        res = -1;
+    }
+    return res;
+}
+
+/* Wakes up all the threads waiting on the futex if the kernel supports
+ * SYS_futex syscall. Does nothing if the kernel doesn't support SYS_futex.
+ */
+ptr_int_t
+futex_wake_all(volatile int *futex)
+{
+    ptr_int_t res;
+    ASSERT(ALIGNED(futex, sizeof(int)));
+    if (kernel_futex_support) {
+        do {
+            res = dynamorio_syscall(SYS_futex, 6, futex, FUTEX_WAKE, INT_MAX,
+                                    NULL, NULL, 0);
+        } while (res == INT_MAX);
+        res = 0;
+    } else {
+        res = -1;
+    }
+    return res;
+}
+
 /* yield the current thread */
 void
 thread_yield()
@@ -2584,7 +2671,7 @@ thread_suspend(thread_record_t *tr)
          * up to the caller to check whether it is a safe suspend point,
          * to match Windows behavior.
          */
-        ASSERT(!ostd->suspended);
+        ASSERT(ostd->suspended == 0);
         if (!thread_signal(tr, SUSPEND_SIGNAL)) {
             ostd->suspend_count--;
             mutex_unlock(&ostd->suspend_lock);
@@ -2592,14 +2679,21 @@ thread_suspend(thread_record_t *tr)
         }
     }
     /* we can unlock before the wait loop b/c we're using a separate "resumed"
-     * bool and thread_resume holds the lock across its wait.  this way a resume
+     * int and thread_resume holds the lock across its wait.  this way a resume
      * can proceed as soon as the suspended thread is suspended, before the
      * suspending thread gets scheduled again.
      */
     mutex_unlock(&ostd->suspend_lock);
-    /* FIXME PR 295561: use futex */
-    while (!ostd->suspended) {
-        thread_yield();
+    /* i#96/PR 295561: use futex(2) if available */
+    while (ostd->suspended == 0) {
+        /* Waits only if the suspended flag is not set as 1. Return value
+         * doesn't matter because the flag will be re-checked. 
+         */
+        futex_wait(&ostd->suspended, 0);
+        if (ostd->suspended == 0) {
+            /* If it still has to wait, give up the cpu. */
+            thread_yield();
+        }
     }
     return true;
 }
@@ -2628,12 +2722,21 @@ thread_resume(thread_record_t *tr)
         mutex_unlock(&ostd->suspend_lock);
         return true; /* still suspended */
     }
-    ostd->wakeup = true;
-    /* FIXME PR 295561: use futex */
-    while (!ostd->resumed)
-        thread_yield();
-    ostd->wakeup = false;
-    ostd->resumed = false;
+    ostd->wakeup = 1;
+    futex_wake(&ostd->wakeup);
+    /* i#96/PR 295561: use futex(2) if available */
+    while (ostd->resumed == 0) {
+        /* Waits only if the resumed flag is not set as 1. Return value
+         * doesn't matter because the flag will be re-checked. 
+         */
+        futex_wait(&ostd->resumed, 0);
+        if (ostd->resumed == 0) {
+            /* If it still has to wait, give up the cpu. */
+            thread_yield();
+        }
+    }
+    ostd->wakeup = 0;
+    ostd->resumed = 0;
     mutex_unlock(&ostd->suspend_lock);
     return true;
 }
@@ -2656,7 +2759,24 @@ is_thread_terminated(dcontext_t *dcontext)
 {
     os_thread_data_t *ostd = (os_thread_data_t *) dcontext->os_field;
     ASSERT(ostd != NULL);
-    return ostd->terminated;
+    return (ostd->terminated == 1);
+}
+
+void
+os_wait_thread_terminated(dcontext_t *dcontext)
+{
+    os_thread_data_t *ostd = (os_thread_data_t *) dcontext->os_field;
+    ASSERT(ostd != NULL);
+    while (ostd->terminated == 0) {
+        /* Waits only if the terminated flag is not set as 1. Return value
+         * doesn't matter because the flag will be re-checked. 
+         */
+        futex_wait(&ostd->terminated, 0);
+        if (ostd->terminated == 0) {
+            /* If it still has to wait, give up the cpu. */
+            thread_yield();
+        }
+    }
 }
 
 bool
@@ -3484,7 +3604,7 @@ safe_write_ex(void *base, size_t size, const void *in_buf, size_t *bytes_written
 static bool
 is_readable_without_exception_internal(const byte *pc, size_t size, bool query_os)
 {
-    uint prot;
+    uint prot = MEMPROT_NONE;
     byte *check_pc = (byte *) ALIGN_BACKWARD(pc, PAGE_SIZE);
     if (size > ((byte *)POINTER_MAX - pc))
         size = (byte *)POINTER_MAX - pc;
@@ -7536,7 +7656,7 @@ get_memory_info(const byte *pc, byte **base_pc, size_t *size,
                 uint *prot /* OUT optional, returns MEMPROT_* value */)
 {
     dr_mem_info_t info;
-#if defined(LINUX) && defined(CLIENT_INTERFACE)
+#ifdef CLIENT_INTERFACE
     if (is_vmm_reserved_address((byte*)pc, 1)) {
         if (!query_memory_ex_from_os(pc, &info) || info.type == DR_MEMTYPE_FREE)
             return false;
@@ -7747,36 +7867,67 @@ extern void deadlock_avoidance_unlock(mutex_t *lock, bool ownable);
 void
 mutex_wait_contended_lock(mutex_t *lock)
 {
-    IF_CLIENT_INTERFACE(dcontext_t *dcontext = get_thread_private_dcontext();)
-    /* FIXME: we don't actually use system calls to synchronize on Linux,
-     * one day we would use futex(2) on this path (PR 295561). 
-     * For now we use a busy-wait lock.
-     * If we do use a true wait need to set client_thread_safe_for_synch around it */
-
-    /* we now have to undo our earlier request */
-    atomic_dec_and_test(&lock->lock_requests);
-
-    while (!mutex_trylock(lock)) {
 #ifdef CLIENT_INTERFACE
-        if (dcontext != NULL && IS_CLIENT_THREAD(dcontext) &&
-            (mutex_t *)dcontext->client_data->client_grab_mutex == lock)
-            dcontext->client_data->client_thread_safe_for_synch = true;
+    dcontext_t *dcontext = get_thread_private_dcontext();
+    bool set_client_safe_for_synch = 
+                      ((dcontext != NULL) && IS_CLIENT_THREAD(dcontext) && 
+                        ((mutex_t *)dcontext->client_data->client_grab_mutex == lock));
 #endif
-        thread_yield();
+    
+    /* i#96/PR 295561: use futex(2) if available */
+    if (kernel_futex_support) {
+        /* Try to get the lock.  If already held, it's fine to store any value
+         * > LOCK_SET_STATE (we don't rely on paired incs/decs) so that
+         * the next unlocker will call mutex_notify_released_lock().
+         */
+        ptr_int_t res;
+        while (atomic_exchange_int(&lock->lock_requests, LOCK_CONTENDED_STATE) !=
+               LOCK_FREE_STATE) {
 #ifdef CLIENT_INTERFACE
-        if (dcontext != NULL && IS_CLIENT_THREAD(dcontext) &&
-            (mutex_t *)dcontext->client_data->client_grab_mutex == lock)
-            dcontext->client_data->client_thread_safe_for_synch = false;
+            if (set_client_safe_for_synch)
+                dcontext->client_data->client_thread_safe_for_synch = true;
 #endif
-    }
+            /* We'll abort the wait if lock_requests has changed at all.
+             * We can't have a series of changes that result in no apparent
+             * change w/o someone acquiring the lock, b/c
+             * mutex_notify_released_lock() sets lock_requests to LOCK_FREE_STATE.
+             */
+            res = futex_wait(&lock->lock_requests, LOCK_CONTENDED_STATE);
+            if (res != 0 && res != -EWOULDBLOCK)
+                thread_yield();
+#ifdef CLIENT_INTERFACE
+            if (set_client_safe_for_synch)
+                dcontext->client_data->client_thread_safe_for_synch = false;
+#endif
+            /* we don't care whether properly woken (res==0), var mismatch
+             * (res==-EWOULDBLOCK), or error: regardless, someone else
+             * could have acquired the lock, so we try again
+             */
+        }
+    } else {
+        /* we now have to undo our earlier request */
+        atomic_dec_and_test(&lock->lock_requests);
+        
+        while (!mutex_trylock(lock)) {
+#ifdef CLIENT_INTERFACE
+            if (set_client_safe_for_synch)
+                dcontext->client_data->client_thread_safe_for_synch = true;
+#endif
+            thread_yield();
+#ifdef CLIENT_INTERFACE
+            if (set_client_safe_for_synch)
+                dcontext->client_data->client_thread_safe_for_synch = false;
+#endif
+        }
 
 #ifdef DEADLOCK_AVOIDANCE
-    /* HACK: trylock's success causes it to do DEADLOCK_AVOIDANCE_LOCK, so to
-     * avoid two in a row (causes assertion on owner) we unlock here
-     * In the future we will remove the trylock here and this will go away.
-     */
-    deadlock_avoidance_unlock(lock, true);
+        /* HACK: trylock's success causes it to do DEADLOCK_AVOIDANCE_LOCK, so to
+         * avoid two in a row (causes assertion on owner) we unlock here
+         * In the future we will remove the trylock here and this will go away.
+         */
+        deadlock_avoidance_unlock(lock, true);
 #endif
+    }
 
     return;
     
@@ -7785,7 +7936,15 @@ mutex_wait_contended_lock(mutex_t *lock)
 void
 mutex_notify_released_lock(mutex_t *lock)
 {
-    /* nothing to do here */
+    /* i#96/PR 295561: use futex(2) if available. */
+    if (kernel_futex_support) {
+        /* Set to LOCK_FREE_STATE to avoid concurrent lock attempts from
+         * resulting in a futex_wait value match w/o anyone owning the lock
+         */
+        lock->lock_requests = LOCK_FREE_STATE;
+        /* No reason to wake multiple threads: just one */
+        futex_wake(&lock->lock_requests);
+    } /* else nothing to do */
 }
 
 /* read_write_lock_t implementation doesn't expect the contention path
@@ -7820,7 +7979,12 @@ rwlock_notify_readers(read_write_lock_t *rwlock)
 
 /* events are un-signaled when successfully waited upon. */
 typedef struct linux_event_t {
-    volatile bool signaled;
+    /* volatile int rather than volatile bool since it's used as a futex.
+     * 0 is unset, 1 is set, no other value is used.
+     * Any function that sets this flag must also notify possibly waiting
+     * thread(s). See i#96/PR 295561.
+     */
+    volatile int signaled;
     mutex_t lock;
 } linux_event_t;
 
@@ -7832,7 +7996,7 @@ event_t
 create_event()
 {
     event_t e = (event_t) global_heap_alloc(sizeof(linux_event_t) HEAPACCT(ACCT_OTHER));
-    e->signaled = false;
+    e->signaled = 0;
     ASSIGN_INIT_LOCK_FREE(e->lock, event_lock); /* FIXME: we'll need to pass the event name here */
     return e;
 }
@@ -7844,12 +8008,12 @@ destroy_event(event_t e)
     global_heap_free(e, sizeof(linux_event_t) HEAPACCT(ACCT_OTHER));
 }
 
-/* FIXME PR 295561: use futex */
 void
 signal_event(event_t e)
 {
     mutex_lock(&e->lock);
-    e->signaled = true;
+    e->signaled = 1;
+    futex_wake(&e->signaled);
     LOG(THREAD_GET, LOG_THREADS, 3,"thread %d signalling event "PFX"\n",get_thread_id(),e);
     mutex_unlock(&e->lock);
 }
@@ -7858,13 +8022,13 @@ void
 reset_event(event_t e)
 {
     mutex_lock(&e->lock);
-    e->signaled = false;
+    e->signaled = 0;
     LOG(THREAD_GET, LOG_THREADS, 3,"thread %d resetting event "PFX"\n",get_thread_id(),e);
     mutex_unlock(&e->lock);
 }
 
 /* FIXME: compare use and implementation with  man pthread_cond_wait */
-/* FIXME PR 295561: use futex */
+/* i#96/PR 295561: use futex(2) if available. */
 void
 wait_for_event(event_t e)
 {
@@ -7874,23 +8038,31 @@ wait_for_event(event_t e)
     /* Use a user-space event on Linux, a kernel event on Windows. */
     LOG(THREAD, LOG_THREADS, 3, "thread %d waiting for event "PFX"\n",get_thread_id(),e);
     while (true) {
-        if (e->signaled) {
+        if (e->signaled == 1) {
             mutex_lock(&e->lock);
-            if (!e->signaled) {
+            if (e->signaled == 0) {
                 /* some other thread beat us to it */
                 LOG(THREAD, LOG_THREADS, 3, "thread %d was beaten to event "PFX"\n",
                     get_thread_id(),e);
                 mutex_unlock(&e->lock);
             } else {
                 /* reset the event */
-                e->signaled = false;
+                e->signaled = 0;
                 mutex_unlock(&e->lock);
                 LOG(THREAD, LOG_THREADS, 3,
                     "thread %d finished waiting for event "PFX"\n", get_thread_id(),e);
                 return;
             }
+        } else {
+            /* Waits only if the signaled flag is not set as 1. Return value
+             * doesn't matter because the flag will be re-checked. 
+             */
+            futex_wait(&e->signaled, 0);
         }
-        thread_yield();
+        if (e->signaled == 0) {
+            /* If it still has to wait, give up the cpu. */
+            thread_yield();
+        }
     }
 }
 

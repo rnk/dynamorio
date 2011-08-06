@@ -39,7 +39,7 @@
  * input from user)
  */
 #ifdef DEBUG
-# define ASSERT(x, msg) DR_ASSERT(x, msg)
+# define ASSERT(x, msg) DR_ASSERT_MSG(x, msg)
 #else
 # define ASSERT(x, msg) /* nothing */
 #endif
@@ -383,7 +383,10 @@ void
 drwrap_exit(void)
 {
     static bool exited;
-    if (exited || !dr_mutex_trylock(exit_lock))
+    /* try to handle multiple calls to exit.  still possible to crash
+     * trying to lock a destroyed lock.
+     */
+    if (exited || !dr_mutex_trylock(exit_lock) || exited)
         return;
     exited = true;
 

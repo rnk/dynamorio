@@ -64,7 +64,7 @@ typedef struct _thread_synch_data_t {
     /* Only valid while holding all_threads_synch_lock and thread_initexit_lock.  Set
      * to whether synch_with_all_threads was successful in synching this thread.
      */
-    int synch_with_success;
+    bool synch_with_success;
     /* Case 10101: allows threads waiting_at_safe_spot() to set their own
      * contexts.  This use sometimes requires a full os-specific context, which
      * we hide behind a generic pointer and a size.
@@ -968,9 +968,11 @@ synch_with_thread(thread_id_t id, bool block, bool hold_initexit_lock,
              */
             /* PR 452168: if failed to send suspend signal, do not spin */
             if (actually_suspended) {
-                while (!is_thread_terminated(trec->dcontext)) {
-                    /* FIXME i#96/PR 295561: use futex */
-                    synch_thread_yield();
+                if (!is_thread_terminated(trec->dcontext)) {
+                    /* i#96/PR 295561: use futex(2) if available. Blocks until
+                     * the thread gets terminated.
+                     */
+                    os_wait_thread_terminated(trec->dcontext);
                 }
             } else
                 ASSERT(TEST(THREAD_SYNCH_SUSPEND_FAILURE_IGNORE, flags));
