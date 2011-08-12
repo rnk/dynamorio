@@ -42,6 +42,7 @@
 #include "../x86/instr.h" /* SEG_GS/SEG_FS */
 #include "module.h"     /* elf */
 #include "../heap.h"    /* HEAPACCT */
+#include "instrument.h"
 
 #include <dlfcn.h>      /* dlsym */
 #include <string.h>     /* strcmp */
@@ -117,6 +118,45 @@ privload_delete_os_privmod_data(privmod_t *privmod);
 
 static void
 privload_mod_tls_init(privmod_t *mod);
+
+static void
+privload_register_symfile(privmod_t *mod);
+
+static void
+privload_unregister_symfile(privmod_t *privmod);
+
+/***************************************************************************/
+/* Declarations used by GDB's JIT interface for registering symbol files.
+ * Documented here:
+ * http://sourceware.org/gdb/onlinedocs/gdb/JIT-Interface.html
+ */
+
+typedef enum {
+    JIT_NOACTION = 0,
+    JIT_REGISTER_FN,
+    JIT_UNREGISTER_FN
+} jit_actions_t;
+
+typedef struct _jit_code_entry_t {
+    struct _jit_code_entry_t *next_entry;
+    struct _jit_code_entry_t *prev_entry;
+    byte *symfile_addr;
+    uint64 symfile_size;
+} jit_code_entry_t;
+
+typedef struct _jit_descriptor_t {
+    uint32 version;
+    uint32 action_flag;
+    jit_code_entry_t *relevant_entry;
+    jit_code_entry_t *first_entry;
+} jit_descriptor_t;
+
+/* GDB puts a breakpoint in this function.  */
+void __attribute__((noinline)) __jit_debug_register_code() { };
+
+/* Make sure to specify the version statically, because the
+   debugger may check the version before we can set it.  */
+jit_descriptor_t __jit_debug_descriptor = { 1, JIT_NOACTION, NULL, NULL };
 
 /***************************************************************************/
 
@@ -242,7 +282,11 @@ privload_unmap_file(privmod_t *privmod)
     /* walk the program header to unmap files, also the tls data */
     uint i;
     os_privmod_data_t *opd = privmod->os_privmod_data;
-    
+
+    if (INTERNAL_OPTION(privload_register_gdb)) {
+        privload_unregister_symfile(privmod);
+    }
+
     /* unmap segments */
     for (i = 0; i < opd->os_data.num_segments; i++) {
         unmap_file(opd->os_data.segments[i].start, 
@@ -421,13 +465,15 @@ privload_map_and_relocate(const char *filename, size_t *size OUT)
     }
     ASSERT(last_end == lib_end);
 
+    if (!INTERNAL_OPTION(privload_register_gdb)) {
 #ifdef DEBUG
-    /* Add debugging comment about how to get symbol information in gdb. */
-    SYSLOG_INTERNAL_INFO("In GDB, use add-symbol-file %s %p"
-                         " to add symbol information",
-                         filename, 
-                         delta + module_get_text_section(file_map, file_size));
+        /* Add debugging comment about how to get symbol information in gdb. */
+        SYSLOG_INTERNAL_INFO("In GDB, use add-symbol-file %s %p"
+                             " to add symbol information",
+                             filename,
+                             delta + module_get_text_section(file_map, file_size));
 #endif
+    }
     LOG(GLOBAL, LOG_LOADER, 1,
         "for debugger: add-symbol-file %s %p\n",
         filename, delta + module_get_text_section(file_map, file_size));
@@ -788,6 +834,15 @@ privload_create_os_privmod_data(privmod_t *privmod)
                                 &out_base, &out_end, &opd->soname,
                                 &opd->os_data);
     module_get_os_privmod_data(privmod->base, privmod->size, opd);
+
+    /* Register the module as a symfile with gdb.  We do this when creating the
+     * os module data because we know the heap will be initialized.  We don't
+     * register a symfile for DR's DLL, since the system loader already knows
+     * about it. */
+    if (INTERNAL_OPTION(privload_register_gdb) &&
+        privmod->base != get_dynamorio_dll_start()) {
+        privload_register_symfile(privmod);
+    }
 }
 
 static void
@@ -797,6 +852,74 @@ privload_delete_os_privmod_data(privmod_t *privmod)
                    os_privmod_data_t,
                    ACCT_OTHER, PROTECTED);
     privmod->os_privmod_data = NULL;
+}
+
+/* Register a code entry with gdb, which describes the library.
+ */
+static void
+privload_register_symfile(privmod_t *privmod)
+{
+    jit_code_entry_t *entry;
+    jit_code_entry_t *next_entry;
+    //file_t fd;
+    app_pc file_map;
+    size_t file_size;
+    //const char *filename = privmod->path;
+
+    file_map = privmod->base;
+    file_size = privmod->size;
+
+    /* Insert the code entry. */
+    next_entry = __jit_debug_descriptor.first_entry;
+    entry = HEAP_TYPE_ALLOC(GLOBAL_DCONTEXT, jit_code_entry_t, ACCT_OTHER,
+                            PROTECTED);
+    entry->next_entry = next_entry;
+    entry->prev_entry = NULL;
+    entry->symfile_addr = file_map;
+    entry->symfile_size = file_size;
+    if (next_entry != NULL) {
+        next_entry->prev_entry = entry;
+    }
+    __jit_debug_descriptor.action_flag = JIT_REGISTER_FN;
+    __jit_debug_descriptor.first_entry = entry;
+    __jit_debug_descriptor.relevant_entry = entry;
+    /* gbd takes control here. */
+    __jit_debug_register_code();
+}
+
+static void
+privload_unregister_symfile(privmod_t *privmod)
+{
+    /* Search the linked list for the entry for the library and remove it. */
+    jit_code_entry_t *entry;
+    jit_code_entry_t *next;
+    jit_code_entry_t *prev;
+    for (entry = __jit_debug_descriptor.first_entry;
+         entry != NULL; entry = entry->next_entry) {
+        if (entry->symfile_addr == privmod->base) {
+            break;
+        }
+    }
+    ASSERT_CURIOSITY(entry != NULL);
+    if (entry == NULL) return;
+
+    prev = entry->prev_entry;
+    next = entry->next_entry;
+    if (next != NULL) next->prev_entry = prev;
+    if (prev != NULL) prev->next_entry = next;
+
+    if (prev == NULL) {
+        ASSERT(__jit_debug_descriptor.first_entry == entry);
+        __jit_debug_descriptor.first_entry = next;
+    }
+
+    __jit_debug_descriptor.action_flag = JIT_UNREGISTER_FN;
+    __jit_debug_descriptor.relevant_entry = entry;
+    __jit_debug_register_code();
+
+    /* Cleanup. */
+    HEAP_TYPE_FREE(GLOBAL_DCONTEXT, entry, jit_code_entry_t, ACCT_OTHER,
+                   PROTECTED);
 }
 
 

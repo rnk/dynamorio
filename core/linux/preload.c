@@ -43,7 +43,7 @@
 
 #define START_DYNAMO 1          /* start dynamo on preload */
 #define VERBOSE_INIT_FINI 0     /* notification for _init and _fini  */
-#define VERBOSE 0
+#define VERBOSE 1
 #define INIT_BEFORE_LIBC 0
 
 #include "configure.h"
