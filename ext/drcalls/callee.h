@@ -94,6 +94,8 @@ typedef struct _callee_info_t {
 void callee_info_init(callee_info_t *ci);
 void callee_info_table_init(void);
 void callee_info_table_destroy(void);
+callee_info_t *callee_info_create(app_pc start, uint num_args);
+void callee_info_free(callee_info_t *ci);
 callee_info_t *callee_info_analyze(void *dc, void *callee, uint num_args);
 
 /* TODO(rnk): Create and move to instr_builder.h or utils.h. */
@@ -102,5 +104,8 @@ void remove_and_destroy(void *dc, instrlist_t *ilist, instr_t *instr);
 void scratch_tls_check_exit(void);
 opnd_t scratch_slot_opnd(callee_info_t *ci, slot_kind_t kind, byte value);
 opnd_t inline_local_var_opnd(callee_info_t *ci);
+
+/* Useful elsewhere. */
+void decode_callee_ilist(void *dc, callee_info_t *ci);
 
 #endif /* DRCALLS_CALLEE_H */

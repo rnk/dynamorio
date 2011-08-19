@@ -400,11 +400,6 @@ insert_inline_save_regs(void *dc, clean_call_info_t *cci,
     if (!cci->skip_save_aflags) {
         DR_ASSERT_MSG(!cci->reg_skip[0], "XAX must be saved to save aflags!");
         insert_mc_flags_save(dc, ci->framesize, ilist, where);
-        if (use_tls_inline) {
-            /* Hack: Just change the store dst from stack to TLS. */
-            instr_t *mov_st = instr_get_prev(where);
-            instr_set_dst(mov_st, 0, scratch_slot_opnd(ci, SLOT_FLAGS, 0));
-        }
     }
 }
 
@@ -418,13 +413,7 @@ insert_inline_restore_regs(void *dc, clean_call_info_t *cci,
 
     /* aflags is first because it uses XAX. */
     if (!cci->skip_save_aflags) {
-        instr_t *mov_ld = instr_get_prev(where);
         insert_mc_flags_restore(dc, ci->framesize, ilist, where);
-        if (use_tls_inline) {
-            /* Hack: Just change the load dst from stack to TLS. */
-            mov_ld = instr_get_next(mov_ld);
-            instr_set_src(mov_ld, 0, scratch_slot_opnd(ci, SLOT_FLAGS, 0));
-        }
     }
 
     /* Now restore all registers. */
@@ -676,7 +665,7 @@ insert_inline_clean_call(void *dcontext, clean_call_info_t *cci,
         /* The inlined code might cause access violation, how should we handle
          * it?  We need to set some kind of translation.
          */
-        instr_set_meta_may_fault(instr, true);
+        //instr_set_meta_may_fault(instr, true);
         instrlist_meta_preinsert(ilist, where, instr);
         instr = instrlist_first(callee);
     }
@@ -845,66 +834,77 @@ expand_and_optimize_bb(void *dc, instrlist_t *bb)
     instr_t *next_instr;
     bool found_call = false;
 
-    /* Reschedule. */
-    for (instr = instrlist_first(bb); instr != NULL; instr = next_instr) {
-        clean_call_info_t *cci; 
-        callee_info_t *ci;
-        opnd_t *args;
+    if (opt_cleancall >= 3) {
+        /* Reschedule. */
+        for (instr = instrlist_first(bb); instr != NULL; instr = next_instr) {
+            clean_call_info_t *cci;
+            callee_info_t *ci;
+            opnd_t *args;
 
-        next_instr = instr_get_next(instr);
-        if (instr_get_opcode(instr) != DRC_OP_call)
-            continue;
-        if (!found_call) {
-            /* Don't touch the first call.  We could try to schedule it
-             * downwards, but we don't yet. */
-            found_call = true;
-            continue;
+            next_instr = instr_get_next(instr);
+            if (instr_get_opcode(instr) != DRC_OP_call)
+                continue;
+            if (!found_call) {
+                /* Don't touch the first call.  We could try to schedule it
+                 * downwards, but we don't yet. */
+                found_call = true;
+                continue;
+            }
+
+            cci = (clean_call_info_t *)instr_get_note(instr);
+            ci = (callee_info_t *)cci->callee_info;
+            args = cci->args;
+
+            /* For now we only touch non-partially inlined calls, since we might
+             * disturb the values in mcontext. */
+            if (ci->opt_partial) {
+                continue;
+            }
+
+            schedule_call_upwards(dc, cci, bb, instr);
         }
-
-        cci = (clean_call_info_t *)instr_get_note(instr);
-        ci = (callee_info_t *)cci->callee_info;
-        args = cci->args;
-
-        /* For now we only touch non-partially inlined calls, since we might
-         * disturb the values in mcontext. */
-        if (ci->opt_partial) {
-            continue;
-        }
-
-        schedule_call_upwards(dc, cci, bb, instr);
     }
 
+    /* Expand calls. */
     for (instr = instrlist_first(bb); instr != NULL; instr = next_instr) {
         next_instr = instr_get_next(instr);
 
         if (instr_get_opcode(instr) == DRC_OP_call) {
             clean_call_info_t *cci = (clean_call_info_t *)instr_get_note(instr);
             insert_inline_clean_call(dc, cci, bb, next_instr);
+            /* Hack: remember callee_info in DRC_OP_*_flags opcodes. */
+            if (use_tls_inline) {
+                instr_t *i;;
+                for (i = instr; i != next_instr; i = instr_get_next(i)) {
+                    if (instr_get_opcode(i) == DRC_OP_save_flags ||
+                        instr_get_opcode(i) == DRC_OP_rstr_flags) {
+                        instr_set_note(i, cci->callee_info);
+                    }
+                }
+            }
             remove_and_destroy(dc, bb, instr);
             clean_call_info_destroy(dc, cci);
         }
     }
 
-    for (instr = instrlist_first(bb); instr != NULL; instr = next_instr) {
-        bool pseudo_instr;
-        uint opc = instr_get_opcode(instr);
-        next_instr = instr_get_next(instr);
+    /* Remove consecutive save/restore pairs. */
+    if (opt_cleancall >= 3) {
+        for (instr = instrlist_first(bb); instr != NULL; instr = next_instr) {
+            next_instr = instr_get_next(instr);
+            if (next_instr == NULL) {
+                break;
+            }
 
-        if (next_instr != NULL) {
+            uint opc = instr_get_opcode(instr);
             uint next_opc = instr_get_opcode(next_instr);
+            bool reciprocal = false;
 
-            if (opc == DRC_OP_appstack &&
-                next_opc == DRC_OP_dstack &&
+            if (((opc == DRC_OP_appstack && next_opc == DRC_OP_dstack) ||
+                 (opc == DRC_OP_rstr_flags && next_opc == DRC_OP_save_flags)) &&
                 get_framesize(instr) == get_framesize(next_instr)) {
-                /* If we switch to appstack and immediately back to dstack with the
-                 * same framesizes, just stay on dstack. */
-                instr_t *tmp = instr_get_prev(instr);
-                dr_log(dc, LOG_CLEANCALL, 3,
-                       "drcalls: deleting appstack/dstack pair\n");
-                remove_and_destroy(dc, bb, instr);
-                remove_and_destroy(dc, bb, next_instr);
-                next_instr = tmp;
-                continue;
+                /* If we switch stacks back and forth or save and restore flags
+                 * back and forth, we can remove them. */
+                reciprocal = true;
             }
             /* TODO(rnk): This is incorrect, should have pseudo-op.  Also
              * restore might be needed if reg is live-in to call. */
@@ -914,37 +914,63 @@ expand_and_optimize_bb(void *dc, instrlist_t *bb)
                 opnd_t mem = instr_get_src(instr, 0);
                 if (opnd_same(reg, instr_get_src(next_instr, 0)) &&
                     opnd_same(mem, instr_get_dst(next_instr, 0))) {
-                    instr_t *tmp = instr_get_prev(instr);
-                    dr_log(dc, LOG_CLEANCALL, 3,
-                           "drcalls: deleting restore/save pair\n");
-                    remove_and_destroy(dc, bb, instr);
-                    remove_and_destroy(dc, bb, next_instr);
-                    next_instr = tmp;
-                    continue;
+                    reciprocal = true;
                 }
             }
-        }
 
-        pseudo_instr = true;
+            if (reciprocal) {
+                instr_t *tmp = instr_get_prev(instr);
+                dr_log(dc, LOG_CLEANCALL, 3,
+                       "drcalls: deleting reciprocal pseudo-instr pair\n");
+                remove_and_destroy(dc, bb, instr);
+                remove_and_destroy(dc, bb, next_instr);
+                next_instr = tmp;
+            }
+        }
+    }
+
+    /* Expand stack switches and flags saving. */
+    for (instr = instrlist_first(bb); instr != NULL; instr = next_instr) {
+        bool pseudo_instr = true;
+        uint opc = instr_get_opcode(instr);
+        next_instr = instr_get_next(instr);
+        instr_t *prev_instr = instr_get_prev(instr);
+
         switch (opc) {
-        case DRC_OP_dstack:
-            expand_op_dstack(dc, bb, instr);
-            break;
-        case DRC_OP_appstack:
-            expand_op_appstack(dc, bb, instr);
-            break;
+        case DRC_OP_dstack    : expand_op_dstack       (dc, bb, instr); break;
+        case DRC_OP_appstack  : expand_op_appstack     (dc, bb, instr); break;
+        case DRC_OP_save_flags: expand_mc_flags_save   (dc, bb, instr); break;
+        case DRC_OP_rstr_flags: expand_mc_flags_restore(dc, bb, instr); break;
         default:
             pseudo_instr = false;
             break;
         }
+
+        /* Hack: Get flags saving code to use TLS slots instead of stack slots.
+         * Messing with mcontext.c breaks layering. */
+        if (use_tls_inline &&
+            (opc == DRC_OP_save_flags || opc == DRC_OP_rstr_flags)) {
+            callee_info_t *ci = (callee_info_t*)instr_get_note(instr);
+            if (opc == DRC_OP_save_flags) {
+                instr_t *mov_st = instr_get_prev(instr);
+                instr_set_dst(mov_st, 0, scratch_slot_opnd(ci, SLOT_FLAGS, 0));
+            } else if (opc == DRC_OP_rstr_flags) {
+                instr_t *mov_ld = instr_get_next(prev_instr);
+                instr_set_src(mov_ld, 0, scratch_slot_opnd(ci, SLOT_FLAGS, 0));
+            }
+        }
+
+        /* Remove the pseudo-instr. */
         if (pseudo_instr) {
             remove_and_destroy(dc, bb, instr);
         }
     }
 
-    if (opt_cleancall >= 3) {
+    if (opt_cleancall >= 4) {
         redundant_load_elim(dc, dc, bb);
         dead_store_elim(dc, dc, bb);
+    }
+    if (opt_cleancall >= 5) {
         fold_leas(dc, dc, bb);
     }
 

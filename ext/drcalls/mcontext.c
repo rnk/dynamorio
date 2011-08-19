@@ -112,13 +112,42 @@ insert_mc_reg_restore(void *dc, uint framesize, instrlist_t *ilist,
         (dc, opnd_create_reg(reg), mc_reg_opnd(framesize, reg)));
 }
 
-/* Saves aflags to the mcontext at the base of the stack.  Assumes XSP is at
- * dstack - framesize.  Assumes that XAX is dead and can be used as scratch.
- */
+uint
+get_framesize(instr_t *instr)
+{
+    ASSERT(instr_get_opcode(instr) == DRC_OP_dstack ||
+           instr_get_opcode(instr) == DRC_OP_appstack ||
+           instr_get_opcode(instr) == DRC_OP_save_flags ||
+           instr_get_opcode(instr) == DRC_OP_rstr_flags);
+    return (uint)opnd_get_immed_int(instr_get_src(instr, 0));
+}
+
+/* Insert save flags pseudo-op. */
 void
 insert_mc_flags_save(void *dc, uint framesize, instrlist_t *ilist,
                      instr_t *where)
 {
+    PRE(ilist, where, instr_create_0dst_1src
+        (dc, DRC_OP_save_flags, OPND_CREATE_INT32(framesize)));
+}
+
+/* Insert restore flags pseudo-op. */
+void
+insert_mc_flags_restore(void *dc, uint framesize, instrlist_t *ilist,
+                        instr_t *where)
+{
+    PRE(ilist, where, instr_create_0dst_1src
+        (dc, DRC_OP_rstr_flags, OPND_CREATE_INT32(framesize)));
+}
+
+/* Saves aflags to the mcontext at the base of the stack.  Assumes XSP is at
+ * dstack - framesize.  Assumes that XAX is dead and can be used as scratch.
+ */
+void
+expand_mc_flags_save(void *dc, instrlist_t *ilist, instr_t *where)
+{
+    uint framesize = get_framesize(where);
+
     PRE(ilist, where, INSTR_CREATE_lahf(dc));
     PRE(ilist, where, INSTR_CREATE_setcc
         (dc, OP_seto, opnd_create_reg(DR_REG_AL)));
@@ -127,13 +156,14 @@ insert_mc_flags_save(void *dc, uint framesize, instrlist_t *ilist,
          opnd_create_reg(DR_REG_XAX)));
 }
 
-/* Saves aflags to the mcontext at the base of the stack.  Assumes XSP is at
- * dstack - framesize.  Assumes that XAX is dead and can be used as scratch.
+/* Restores aflags from the mcontext at the base of the stack.  Assumes XSP is
+ * at dstack - framesize.  Assumes that XAX is dead and can be used as scratch.
  */
 void
-insert_mc_flags_restore(void *dc, uint framesize, instrlist_t *ilist,
-                        instr_t *where)
+expand_mc_flags_restore(void *dc, instrlist_t *ilist, instr_t *where)
 {
+    uint framesize = get_framesize(where);
+
     PRE(ilist, where, INSTR_CREATE_mov_ld
         (dc, opnd_create_reg(DR_REG_XAX),
          mc_frame_opnd(framesize, XFLAGS_OFFSET)));
@@ -218,14 +248,6 @@ insert_switch_to_dstack(void *dc, int framesize, instrlist_t *ilist,
 {
     PRE(ilist, where, instr_create_0dst_1src
         (dc, DRC_OP_dstack, OPND_CREATE_INT32(framesize)));
-}
-
-uint
-get_framesize(instr_t *instr)
-{
-    ASSERT(instr_get_opcode(instr) == DRC_OP_dstack ||
-           instr_get_opcode(instr) == DRC_OP_appstack);
-    return (uint)opnd_get_immed_int(instr_get_src(instr, 0));
 }
 
 void

@@ -54,6 +54,11 @@ insert_mc_flags_save(void *dc, uint framesize, instrlist_t *ilist,
 void
 insert_mc_flags_restore(void *dc, uint framesize, instrlist_t *ilist,
                         instr_t *where);
+void
+expand_mc_flags_save(void *dc, instrlist_t *ilist, instr_t *where);
+void
+expand_mc_flags_restore(void *dc, instrlist_t *ilist, instr_t *where);
+
 
 opnd_t
 opnd_get_tls_xax(void *dc);

@@ -79,6 +79,8 @@ enum {
     DRC_OP_call = OP_AFTER_LAST,
     DRC_OP_dstack,
     DRC_OP_appstack,
+    DRC_OP_save_flags,
+    DRC_OP_rstr_flags,
 };
 
 #endif /* DRCALLS_INLINE_H */

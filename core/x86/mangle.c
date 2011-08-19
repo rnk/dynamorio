@@ -5641,4 +5641,3 @@ insert_inline_clean_call(dcontext_t *dcontext, clean_call_info_t *cci,
      * leave it for higher optimization level.
      */
 }
-

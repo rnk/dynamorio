@@ -43,7 +43,6 @@
 #include <string.h>
 
 /* Fwd decls. */
-static void decode_callee_ilist(void *dc, callee_info_t *ci);
 static void analyze_callee_ilist(void *dc, callee_info_t *ci);
 
 /* Hashtable for storing callee analysis info. */
@@ -91,7 +90,7 @@ callee_info_init(callee_info_t *ci)
     ci->framesize = sizeof(dr_mcontext_t);
 }
 
-static callee_info_t *
+callee_info_t *
 callee_info_create(app_pc start, uint num_args)
 {
     callee_info_t *ci;
@@ -103,12 +102,10 @@ callee_info_create(app_pc start, uint num_args)
     return ci;
 }
 
-static void
+void
 callee_info_free(callee_info_t *ci)
 {
-    ASSERT(callee_info_table_exit);
     if (ci->ilist != NULL) {
-        ASSERT(ci->opt_inline);
         instrlist_clear_and_destroy(GLOBAL_DCONTEXT, ci->ilist);
     }
     if (ci->check_ilist != NULL) {
@@ -327,7 +324,7 @@ tgt_pc_in_callee(app_pc tgt_pc, callee_info_t *ci)
  * encountered and then onwards towards the next tail call, backwards jmp, or
  * ret.
  */
-static void
+void
 decode_callee_ilist(void *dc, callee_info_t *ci)
 {
     app_pc cur_pc;
@@ -1923,7 +1920,7 @@ analyze_callee_ilist(void *dc, callee_info_t *ci)
         rewrite_pic_code(dc, ci);
         analyze_callee_cti(dc, ci);
         analyze_callee_setup(dc, ci);
-        if (opt_cleancall >= 3) {
+        if (opt_cleancall >= 4) {
             analyze_callee_partial(dc, ci);
             /* Optimizations are expensive, avoid wasting time on huge callees.
              */

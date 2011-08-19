@@ -99,6 +99,10 @@ if (BUILD_TESTS)
   endforeach ()
 endif ()
 
+add_executable(thesis_listings "thesis_listings.c")
+configure_DynamoRIO_standalone(thesis_listings)
+target_link_libraries(thesis_listings drcalls)
+
 export(TARGETS drcalls
   FILE ${PROJECT_BINARY_DIR}/cmake/${exported_targets_name}.cmake
   APPEND)
