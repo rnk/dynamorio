@@ -102,6 +102,9 @@ endif ()
 add_executable(thesis_listings "thesis_listings.c")
 configure_DynamoRIO_standalone(thesis_listings)
 target_link_libraries(thesis_listings drcalls)
+get_target_property(cflags thesis_listings COMPILE_FLAGS)
+set(cflags "${cflags} -O2 -fomit-frame-pointer")
+set_target_properties(thesis_listings PROPERTIES COMPILE_FLAGS "${cflags}")
 
 export(TARGETS drcalls
   FILE ${PROJECT_BINARY_DIR}/cmake/${exported_targets_name}.cmake

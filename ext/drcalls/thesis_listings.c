@@ -61,8 +61,8 @@ codegen_app_bb(void *dc)
     instr_builder_t ib;
     INSTR_BUILDER_INIT(ib, dc, instrlist_create(dc), NULL, /*meta=*/false);
 
-    BUILD(ib, mov_ld, REG(XAX),             MEM(XBX, 0, PTR));
-    BUILD(ib, mov_st, MEM(XSP, 0x10, PTR),  REG(XAX));
+    BUILD(ib, mov_ld, REG(XAX),                         MEM_IDX(XSP, XBX, 4, 0x10, PTR));
+    BUILD(ib, mov_st, MEM_IDX(XDI, XCX, 4, 0x10, PTR),  REG(XAX));
     BUILD(ib, jmp,    opnd_create_pc(app_bb_tag));
 
     app_bb = ib.ilist;
@@ -252,8 +252,8 @@ inscount_listings(void *dc)
 /* Alignment instrumentation. */
 void
 //__attribute__((visibility("default")))
-__attribute__((optimize(2)))
-__attribute__((optimize("-fomit-frame-pointer")))
+//__attribute__((optimize(2)))
+//__attribute__((optimize("-fomit-frame-pointer")))
 check_access(ptr_uint_t ea, app_pc pc, uint size, bool write)
 {
     /* Check alignment.  Assumes size is a power of two. */
@@ -294,8 +294,8 @@ flush_buffer(void)
 
 void
 //__attribute__((visibility("default")))
-__attribute__((optimize(2)))
-__attribute__((optimize("-fomit-frame-pointer")))
+//__attribute__((optimize(2)))
+//__attribute__((optimize("-fomit-frame-pointer")))
 buffer_memop(ptr_uint_t ea, ptr_uint_t pc, uint size, bool write)
 {
     buffer[pos].ea = ea;
@@ -333,8 +333,6 @@ alignment_event_bb(void *dc, void *entry_pc, instrlist_t *bb, bool for_trace,
         /* Some nop instructions have memory operands as a way of varying the
          * operation size.  We don't want those. */
         if (instr_is_nop(instr) || instr_get_opcode(instr) == OP_nop_modrm)
-            continue;
-        if (instr_get_app_pc(instr) == NULL)
             continue;
         if (instr_reads_memory(instr))
             for (i = 0; i < instr_num_srcs(instr); i++)

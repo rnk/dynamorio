@@ -93,6 +93,7 @@ materialize_arg_into_reg(void *dc_alloc, instrlist_t *ilist, instr_t *where,
             /* Pointer-sized version of argument reg. */
             reg_id_t ptr_reg = reg_to_pointer_sized(reg);
             opnd_t ptr_arg_reg = opnd_create_reg(ptr_reg);
+
             if (base != DR_REG_NULL && reg_clobbered[base - DR_REG_XAX]) {
                 /* If base reg is clobbered, mov_ld 0xNN(MC) -> %argreg, and
                  * change base to argreg. */
@@ -113,7 +114,7 @@ materialize_arg_into_reg(void *dc_alloc, instrlist_t *ilist, instr_t *where,
             arg = opnd_create_far_base_disp(seg, base, index, scale, disp, sz);
         }
         /* If it's a memref, it can be a lea or a load. */
-        int opc = (opnd_get_size(arg) == OPSZ_lea ?  OP_lea : OP_mov_ld);
+        int opc = ((opnd_get_size(arg) == OPSZ_lea) ? OP_lea : OP_mov_ld);
         PRE(ilist, where, instr_create_1dst_1src(dc_alloc, opc, dst_opnd, arg));
     } else {
         DR_ASSERT_MSG(false, "Unknown opnd type.");
@@ -143,6 +144,7 @@ insert_arg_setup(void *dc, instrlist_t *ilist, instr_t *where, uint framesize,
     num_reg_args = MIN(num_args, num_reg_args);
 
     memset(regs_from_mc, 0, sizeof(regs_from_mc));
+    regs_from_mc[DR_REG_XSP - DR_REG_XAX] = true;
     for (i = 0; i < num_reg_args; i++) {
         materialize_arg_into_reg(dc, ilist, where, regs_from_mc,
                                  get_mc_reg_slot, &framesize,
