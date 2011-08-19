@@ -47,15 +47,15 @@ if (UNIX)
   #  )
   #install(TARGETS libdynamorio.so-gdb.py
   #  DESTINATION ${DR_LIBRARY_OUTPUT_DIRECTORY})
-  configure_file(libdynamorio.so-gdb.py
-    ${DR_LIBRARY_OUTPUT_DIRECTORY}/libdynamorio.so.3.0-gdb.py)
+  #configure_file(libdynamorio.so-gdb.py
+  #  ${DR_LIBRARY_OUTPUT_DIRECTORY}/libdynamorio.so.3.0-gdb.py)
   #add_dependencies(nudgeunix "${DR_LIBRARY_OUTPUT_DIRECTORY}/libdynamorio.so.3.0-gdb.py")
-  #execute_process(COMMAND ${CMAKE_COMMAND} -E create_symlink
-  #  "${CMAKE_CURRENT_SOURCE_DIR}/libdynamorio.so-gdb.py"
-  #  "${DR_LIBRARY_OUTPUT_DIRECTORY}/libdynamorio.so.3.0-gdb.py"
-  #  RESULT_VARIABLE symlink_result
-  #  ERROR_VARIABLE symlink_error
-  #  OUTPUT_QUIET)
+  execute_process(COMMAND ${CMAKE_COMMAND} -E create_symlink
+    "${CMAKE_CURRENT_SOURCE_DIR}/libdynamorio.so-gdb.py"
+    "${DR_LIBRARY_OUTPUT_DIRECTORY}/libdynamorio.so.3.0-gdb.py"
+    RESULT_VARIABLE symlink_result
+    ERROR_VARIABLE symlink_error
+    OUTPUT_QUIET)
 
   include_directories(
     ${PROJECT_SOURCE_DIR}/core/lib

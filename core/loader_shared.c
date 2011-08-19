@@ -80,7 +80,7 @@ uint search_paths_idx;
 vm_area_vector_t *modlist_areas;
 
 /* forward decls */
-DYNAMORIO_EXPORT bool
+static bool
 privload_load_finalize(privmod_t *privmod);
 
 static bool
@@ -489,22 +489,16 @@ privload_add_drext_path(void)
     }
 }
 
-void dr_printf(const char *, ...);
 
 /* most uses should call privload_load() instead
  * if it fails, unloads
  */
-/* Export this symbol so we can always find it in the gdb script.  In theory,
- * clients could access this symbol, but it's unlikely they will ever try.
- */
-DYNAMORIO_EXPORT bool
+static bool
 privload_load_finalize(privmod_t *privmod)
 {
     ASSERT_OWN_RECURSIVE_LOCK(true, &privload_lock);
 
     ASSERT(!privmod->externally_loaded);
-
-    dr_printf("privload_load_finalize\n");
 
     privload_add_areas(privmod);
 

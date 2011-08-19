@@ -2,18 +2,12 @@
 
 import gdb
 import os
-import traceback
 
 print 'Loading gdb scripts for debugging DynamoRIO...'
 
-def compute_lib_dir():
-    # If we attached to a process with libdynamorio in it, use that libdir.
-    for objfile in gdb.objfiles():
-        if "libdynamorio.so" in objfile.filename:
-            return os.path.dirname(os.path.abspath(objfile.filename))
-    # If we didn't attach, pick the libdir from the last configuration.
-    libdir = "@DR_LIBRARY_OUTPUT_DIRECTORY@"
-    return libdir
+# TODO: Get this from build dir or introspect.
+DR_BUILD = "/scratch/rnk/dynamorio/build_git-clone"
+BUILD_MODE = "debug"
 
 
 class DROption(gdb.Parameter):
@@ -62,14 +56,11 @@ class RunDR(gdb.Command):
 
     def invoke(self, arg, from_tty):
         # Build LD_LIBRARY_PATH.
-        lib_dir = compute_lib_dir()
-        parts = lib_dir.split(os.sep)
-        ext_lib_dir = os.sep.join(parts[:-2] + ['ext'] + parts[-2:])
-        ld_paths = [lib_dir, ext_lib_dir]
-        env_ld_path = os.environ.get("LD_LIBRARY_PATH")
-        if env_ld_path:
-            ld_paths.append(env_ld_path)
-        ld_path = ':'.join(ld_paths)
+        ld_path = (DR_BUILD +     "/lib64/" + BUILD_MODE + ":" +
+                   DR_BUILD + "/ext/lib64/" + BUILD_MODE)
+        orig_ld_path = os.environ.get("LD_LIBRARY_PATH")
+        if orig_ld_path:
+            ld_path += ":" + orig_ld_path
 
         # Build options string.
         dr_opts = os.environ.get("DYNAMORIO_OPTIONS", "")
@@ -88,50 +79,5 @@ class RunDR(gdb.Command):
         gdb.execute("set env DYNAMORIO_OPTIONS " + dr_opts)
         gdb.execute("run " + arg)
 
+
 RunDR()
-
-
-class PrivmodFinalizeBP(gdb.Breakpoint):
-
-    # Enable to debug this breakpoint.
-    DEBUG = True
-    DYNAMORIO_BP = True
-
-    def __init__(self):
-        super(PrivmodFinalizeBP, self).__init__("privload_load_finalize",
-                                                internal=self.DEBUG)
-
-    def stop(self):
-        frame = gdb.newest_frame()
-        print "pc from pygdb:", frame.pc()
-        return self.DEBUG  # Controls whether the user stops here or not.
-
-
-class InitBP(gdb.Breakpoint):
-
-    DEBUG = False
-    DYNAMORIO_BP = True
-
-    def __init__(self):
-        super(InitBP, self).__init__("_init", internal=not self.DEBUG)
-
-    def stop(self):
-        frame = gdb.newest_frame()
-        solib_name = gdb.solib_name(frame.pc())
-        if "drpreload" in solib_name:
-            PrivmodFinalizeBP()
-            self.delete()
-        return self.DEBUG
-
-
-# Delete all breakpoints set from previous runs and initializations and replace
-# them with new ones.
-def init_bp():
-    bps = gdb.breakpoints()
-    if not bps:
-        return
-    for bp in bps:
-        if getattr(bp, 'DYNAMORIO_BP', False):
-            bp.delete()
-init_bp()
-the_init_bp = InitBP()
