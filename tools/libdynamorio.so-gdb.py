@@ -27,25 +27,30 @@ class DROption(gdb.Parameter):
         return svalue
 
 
-# The client and client-args options are special.
+# The client and client-args options are special in that they do not go in
+# DYNAMORIO_OPTIONS without being massaged first.  We also specify
+# documentation strings for them.
 class DRClient(DROption):
     def __init__(self):
         super(DRClient, self).__init__("client", gdb.PARAM_OPTIONAL_FILENAME)
-        self.value = "api/samples/bin/libbbcount.so"  # NOCHECKIN
 
     set_doc = ("Path to DynamoRIO client to run when invoking DR.  "
                "Leave blank to run without a client.")
     show_doc = set_doc
+
 class DRClientArgs(DROption):
     def __init__(self):
         super(DRClientArgs, self).__init__("client-args", gdb.PARAM_OPTIONAL_FILENAME)
+
     set_doc = ("DynamoRIO client arguments.")
     show_doc = set_doc
 
 
-# Values contained in here.
+# Client specification options.
 dr_client = DRClient()
 dr_client_args = DRClientArgs()
+
+# Other useful flags to pass to DynamoRIO.
 dr_options = [
         DROption('msgbox_mask', gdb.PARAM_INTEGER),
         DROption('loglevel', gdb.PARAM_INTEGER),
@@ -54,6 +59,11 @@ dr_options = [
 
 
 class RunDR(gdb.Command):
+
+    """Run the application under DynamoRIO with the current options.
+
+    Goes through the drrun script to avoid depending on the config file format.
+    """
 
     def __init__(self):
         super(RunDR, self).__init__("rundr", gdb.COMMAND_OBSCURE)
@@ -107,10 +117,15 @@ class PrivloadBP(gdb.Breakpoint):
             frame = gdb.newest_frame()
             filename = frame.read_var("filename").string()
             textaddr = int(frame.read_var("textaddr"))
-            gdb.execute("add-symbol-file '%s' %s" %
-                        (filename, hex(textaddr)))
+            cmd = "add-symbol-file '%s' %s" % (filename, hex(textaddr))
+            print "Executing gdb command:", cmd
+            # We suppress output to the screen with to_string unless we're
+            # debugging.
+            gdb.execute(cmd, to_string=not self.DEBUG)
             return self.DEBUG  # Controls whether the user stops here or not.
         except:
+            # gdb won't print a Python stack trace if we raise an exception, so
+            # we do it ourselves.
             traceback.print_exc()
             return True
 
@@ -126,7 +141,7 @@ def remove_old_bps():
             bp.delete()
 remove_old_bps()
 
-
-# We need pending breakpoints in order to pick up this symbol at all.
+# We need pending breakpoints in order to wait for LD_PRELOAD to bring in the
+# library with the symbol.
 gdb.execute("set breakpoint pending on")
-privload_bp = PrivloadBP()
+PrivloadBP()

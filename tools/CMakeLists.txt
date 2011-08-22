@@ -35,27 +35,18 @@ if (UNIX)
   add_executable(runstats runstats.c)
   add_executable(nudgeunix nudgeunix.c)
 
-  # GDB helper script when debugging DR.
-  #add_custom_command(
-  #  OUTPUT "${DR_LIBRARY_OUTPUT_DIRECTORY}/libdynamorio.so.3.0-gdb.py"
-  #  DEPENDS "${PROJECT_SOURCE_DIR}/tools/libdynamorio.so-gdb.py"
-  #  COMMAND "cp"
-  #  ARGS "${PROJECT_SOURCE_DIR}/tools/libdynamorio.so-gdb.py"
-  #       "${DR_LIBRARY_OUTPUT_DIRECTORY}/libdynamorio.so.3.0-gdb.py"
-  #  WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}/tools
-  #  VERBATIM # recommended: p260
-  #  )
-  #install(TARGETS libdynamorio.so-gdb.py
-  #  DESTINATION ${DR_LIBRARY_OUTPUT_DIRECTORY})
-  #configure_file(libdynamorio.so-gdb.py
-  #  ${DR_LIBRARY_OUTPUT_DIRECTORY}/libdynamorio.so.3.0-gdb.py)
-  #add_dependencies(nudgeunix "${DR_LIBRARY_OUTPUT_DIRECTORY}/libdynamorio.so.3.0-gdb.py")
-  execute_process(COMMAND ${CMAKE_COMMAND} -E create_symlink
+  # Set up our debugging support for gdb in the build directory.
+  # We need to compute the final path of libdynamorio.so, with version number
+  # applied for gdb's script autoloading to work.
+  get_target_property(libdynamorio_so dynamorio LOCATION)
+  get_target_property(soversion dynamorio SOVERSION)
+  set(libdynamorio_so "${libdynamorio_so}.${soversion}")
+  execute_process(COMMAND
+    ${CMAKE_COMMAND} -E create_symlink
     "${CMAKE_CURRENT_SOURCE_DIR}/libdynamorio.so-gdb.py"
-    "${DR_LIBRARY_OUTPUT_DIRECTORY}/libdynamorio.so.3.0-gdb.py"
-    RESULT_VARIABLE symlink_result
-    ERROR_VARIABLE symlink_error
+    "${libdynamorio_so}-gdb.py"
     OUTPUT_QUIET)
+  configure_file(gdbinit ${CMAKE_BINARY_DIR}/.gdbinit)
 
   include_directories(
     ${PROJECT_SOURCE_DIR}/core/lib
