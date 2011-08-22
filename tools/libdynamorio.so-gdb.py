@@ -85,16 +85,16 @@ class RunDR(gdb.Command):
         gdb.execute("set exec-wrapper %r -%s" % (drrun_path, build_mode))
 
         # Build options string.
-        dr_opts = os.environ.get("DYNAMORIO_OPTIONS", "")
-        param_opts = ' '.join('-%s %s' % (p.dr_option, p.value)
+        # FIXME: The escaping is most likely wrong here.  It's tricky because
+        # the command is parsed by gdb and DynamoRIO.
+        env_opts = os.environ.get('DYNAMORIO_OPTIONS', '')
+        param_opts = ' '.join("-%s %s" % (p.dr_option, p.value)
                               for p in dr_options)
-        if dr_opts and param_opts:
-            dr_opts += ' '
-        dr_opts += param_opts
+        client_opts = ''
         if dr_client.value:
             client_opts = ('-code_api -client_lib %s;0;%s' %
                            (dr_client.value, dr_client_args.value))
-            dr_opts = client_opts + " " + dr_opts
+        dr_opts = ' '.join([env_opts, param_opts, client_opts])
 
         gdb.execute("set env DYNAMORIO_OPTIONS " + dr_opts)
         gdb.execute("run " + arg)
