@@ -1608,7 +1608,8 @@ instrument_module_load_trigger(app_pc modbase)
             os_get_module_info_unlock();
             instrument_module_load(client_data, false /*loading now*/);
             dr_free_module_data(client_data);
-        }
+        } else
+            os_get_module_info_unlock();
     }
 }
 
@@ -3167,12 +3168,11 @@ dr_snprintf(char *buf, size_t max, const char *fmt, ...)
     /* PR 219380: we use our_vsnprintf instead of ntdll._vsnprintf b/c the
      * latter does not support floating point (while ours does not support
      * wide chars: but we also forward _snprintf to ntdll for clients).
+     * Plus, our_vsnprintf returns -1 for > max chars (matching Windows
+     * behavior, but which Linux libc version does not do).
      */
     res = our_vsnprintf(buf, max, fmt, ap);
     va_end(ap);
-    /* Normalize Linux behavior to match Windows */
-    if ((size_t)res > max)
-        res = -1;
     return res;
 }
 
@@ -3241,6 +3241,12 @@ dr_set_tls_field(void *drcontext, void *value)
     CLIENT_ASSERT(drcontext != GLOBAL_DCONTEXT,
                   "dr_set_tls_field: drcontext is invalid");
     dcontext->client_data->user_field = value;
+}
+
+DR_API void *
+dr_get_dr_segment_base(IN reg_id_t seg)
+{
+    return get_segment_base(seg);
 }
 
 DR_API

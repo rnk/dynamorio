@@ -641,7 +641,7 @@ DR_API
  *   the translation.  When DR is translating not for a fault but for
  *   thread relocation, the \p restore_memory parameter will be false.
  *   Such translation can target a meta-instruction that can fault
- *   (see instr_set_meta_may_fault()).  For that scenario, a client
+ *   (i.e., it has a non-NULL translation field).  For that scenario, a client
  *   can choose not to translate.  Such instructions do not always
  *   require full translation for faults, and allowing translation
  *   failure removes the requirement that a client must translate at
@@ -2664,6 +2664,19 @@ dr_set_tls_field(void *drcontext, void *value);
 
 DR_API
 /**
+ * Get DR's segment base pointed at \p segment_register.
+ * It can be used to get the base of thread-local storage segment
+ * used by #dr_raw_tls_calloc.
+ *
+ * \note It should not be called on thread exit event, 
+ * as the thread exit event may be invoked from other threads.
+ * See #dr_register_thread_exit_event for details.
+ */
+void *
+dr_get_dr_segment_base(IN reg_id_t segment_register);
+
+DR_API
+/**
  * Allocates \p num_slots contiguous thread-local storage slots that
  * can be directly accessed via an offset from \p segment_register.
  * These slots will be initialized to 0 for each new thread.
@@ -2671,6 +2684,8 @@ DR_API
  * These slots are disjoint from the #dr_spill_slot_t register spill slots
  * and the client tls field (dr_get_tls_field()).
  * Returns whether or not the slots were successfully obtained.
+ * The segment base pointed at \p segment_register can be obtained
+ * using #dr_get_dr_segment_base. 
  *
  * \note These slots are useful for thread-shared code caches.  With
  * thread-private caches, DR's memory pools are guaranteed to be
