@@ -143,8 +143,7 @@ insert_arg_setup(void *dc, instrlist_t *ilist, instr_t *where, uint framesize,
 
     num_reg_args = MIN(num_args, num_reg_args);
 
-    memset(regs_from_mc, 0, sizeof(regs_from_mc));
-    regs_from_mc[DR_REG_XSP - DR_REG_XAX] = true;
+    memset(regs_from_mc, 1, sizeof(regs_from_mc));
     for (i = 0; i < num_reg_args; i++) {
         materialize_arg_into_reg(dc, ilist, where, regs_from_mc,
                                  get_mc_reg_slot, &framesize,

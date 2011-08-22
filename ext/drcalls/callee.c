@@ -1922,21 +1922,23 @@ analyze_callee_ilist(void *dc, callee_info_t *ci)
         analyze_callee_setup(dc, ci);
         if (opt_cleancall >= 4) {
             analyze_callee_partial(dc, ci);
-            /* Optimizations are expensive, avoid wasting time on huge callees.
-             */
-            if (ci->num_instrs > 2 * MAX_NUM_INLINE_INSTRS) {
-                dr_log(dc, LOG_CLEANCALL, 3,
-                       "drcalls: skipping optimizing huge callee ilist.\n");
-            } else {
-                dce_and_copy_prop(dc, ci);
-                reuse_registers(dc, ci);
-                try_fold_immeds(dc, GLOBAL_DCONTEXT, ci->ilist);
-                try_avoid_flags(dc, ci);
-                fold_leas(dc, GLOBAL_DCONTEXT, ci->ilist);
-                redundant_load_elim(dc, GLOBAL_DCONTEXT, ci->ilist);
-                dead_store_elim(dc, GLOBAL_DCONTEXT, ci->ilist);
-                dce_and_copy_prop(dc, ci);
-                remove_jmp_next_instr(dc, GLOBAL_DCONTEXT, ci->ilist);
+            if (opt_cleancall >= 5) {
+                /* Optimizations are expensive, avoid wasting time on huge callees.
+                 */
+                if (ci->num_instrs > 2 * MAX_NUM_INLINE_INSTRS) {
+                    dr_log(dc, LOG_CLEANCALL, 3,
+                           "drcalls: skipping optimizing huge callee ilist.\n");
+                } else {
+                    dce_and_copy_prop(dc, ci);
+                    reuse_registers(dc, ci);
+                    try_fold_immeds(dc, GLOBAL_DCONTEXT, ci->ilist);
+                    try_avoid_flags(dc, ci);
+                    fold_leas(dc, GLOBAL_DCONTEXT, ci->ilist);
+                    redundant_load_elim(dc, GLOBAL_DCONTEXT, ci->ilist);
+                    dead_store_elim(dc, GLOBAL_DCONTEXT, ci->ilist);
+                    dce_and_copy_prop(dc, ci);
+                    remove_jmp_next_instr(dc, GLOBAL_DCONTEXT, ci->ilist);
+                }
             }
             //analyze_callee_coalesce_check(dc, ci);
         }

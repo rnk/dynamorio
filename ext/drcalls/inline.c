@@ -446,13 +446,14 @@ insert_inline_arg_setup(void *dc, clean_call_info_t *cci, instrlist_t *ilist,
     if (cci->num_args == 0)
         return;
 
-    if (is_slowpath) {
+    memcpy(regs_clobbered, ci->reg_used, sizeof(regs_clobbered));
+    //if (is_slowpath) {
         /* If we're in the slowpath, any registers used inline will have been
          * saved and possibly clobbered, so we reload them from the mcontext. */
-        memcpy(regs_clobbered, ci->reg_used, sizeof(regs_clobbered));
-    } else {
-        memset(regs_clobbered, 0, sizeof(regs_clobbered));
-    }
+        //memcpy(regs_clobbered, ci->reg_used, sizeof(regs_clobbered));
+    //} else {
+        //memset(regs_clobbered, 0, sizeof(regs_clobbered));
+    //}
     if (!use_tls_inline) {
         /* Need to restore XSP if used in arg. */
         regs_clobbered[DR_REG_XSP - DR_REG_XAX] = true;
@@ -647,8 +648,10 @@ insert_inline_clean_call(void *dcontext, clean_call_info_t *cci,
      */
     insert_inline_arg_setup(dcontext, cci, callee, instrlist_first(callee),
                             args, false);
-    try_fold_immeds(dcontext, dcontext, callee);
-    fold_leas(dcontext, dcontext, callee);
+    if (opt_cleancall >= 5) {
+        try_fold_immeds(dcontext, dcontext, callee);
+        fold_leas(dcontext, dcontext, callee);
+    }
     compute_regs_used(dcontext, callee, cci, reg_used);
     if (ci->opt_partial) {
         insert_inline_slowpath(dcontext, cci, reg_used, args);

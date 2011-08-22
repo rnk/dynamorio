@@ -52,8 +52,9 @@
 /******************************************************************************/
 /* Sample application bb */
 
-static app_pc app_bb_tag = (app_pc)0x07f0000;
 static instrlist_t *app_bb;
+static byte app_bb_buffer[256];
+static app_pc app_bb_tag = (app_pc)&app_bb_buffer[0];
 
 static void
 codegen_app_bb(void *dc)
@@ -61,11 +62,20 @@ codegen_app_bb(void *dc)
     instr_builder_t ib;
     INSTR_BUILDER_INIT(ib, dc, instrlist_create(dc), NULL, /*meta=*/false);
 
-    BUILD(ib, mov_ld, REG(XAX),                         MEM_IDX(XSP, XBX, 4, 0x10, PTR));
+    BUILD(ib, mov_ld, REG(XAX),         MEM_IDX(XSP, XDI, 4, 0x44, PTR));
     BUILD(ib, mov_st, MEM_IDX(XDI, XCX, 4, 0x10, PTR),  REG(XAX));
     BUILD(ib, jmp,    opnd_create_pc(app_bb_tag));
 
     app_bb = ib.ilist;
+    instrlist_encode(dc, app_bb, app_bb_tag, true);
+
+    /* Set the application PC to the value it is when encoded. */
+    instr_t *instr;
+    for (instr = instrlist_first(app_bb); instr != NULL;
+         instr = instr_get_next(instr)) {
+        instr_set_translation(instr, app_bb_tag + (ptr_int_t)instr_get_note(instr));
+        instr_set_note(instr, NULL);
+    }
 }
 
 /******************************************************************************/
@@ -371,10 +381,30 @@ alignment_listings(void *dc)
     instrlist_disassemble(dc, (app_pc)buffer_memop, ci->ilist, STDOUT);
     callee_info_free(ci);
 
-    dr_printf("\nCLEAN CALL LISTING:\n");
+    //dr_printf("\nCLEAN CALL LISTING:\n");
+    //drcalls_init();
+    //bb = instrlist_clone(dc, app_bb);
+    //drcalls_set_optimization(0);
+    //alignment_event_bb(dc, app_bb_tag, bb, false, false);
+    //drcalls_done(dc, bb);
+    //my_disas(dc, bb, STDOUT);
+    //instrlist_clear_and_destroy(dc, bb);
+    //drcalls_exit();
+
+    dr_printf("\npartial_inline, no opts:\n");
     drcalls_init();
     bb = instrlist_clone(dc, app_bb);
-    drcalls_set_optimization(0);
+    drcalls_set_optimization(4);
+    alignment_event_bb(dc, app_bb_tag, bb, false, false);
+    drcalls_done(dc, bb);
+    my_disas(dc, bb, STDOUT);
+    instrlist_clear_and_destroy(dc, bb);
+    drcalls_exit();
+
+    dr_printf("\npartial_inline, all opts:\n");
+    drcalls_init();
+    bb = instrlist_clone(dc, app_bb);
+    drcalls_set_optimization(10);
     alignment_event_bb(dc, app_bb_tag, bb, false, false);
     drcalls_done(dc, bb);
     my_disas(dc, bb, STDOUT);
