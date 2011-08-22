@@ -338,7 +338,7 @@
     /* Controls whether we register symbol files with gdb through its JIT
      * interface.  This has very low overhead if gdb is not attached, and if it
      * is, we probably want to have symbols anyway. */
-    OPTION_DEFAULT_INTERNAL(bool, privload_register_gdb, IF_DEBUG_ELSE(true, false),
+    OPTION_DEFAULT_INTERNAL(bool, privload_register_gdb, IF_DEBUG_ELSE(false, false),
                             "register private loader DLLs with gdb")
 # endif
 # ifdef WINDOWS

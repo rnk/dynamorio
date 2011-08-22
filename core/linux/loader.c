@@ -309,6 +309,17 @@ privload_unload_imports(privmod_t *privmod)
     return true;
 }
 
+DR_API void
+privload_gdb_register(const char *filename, ELF_ADDR textaddr)
+{
+    /* Do nothing, if gdb is attached, it will lift argument values. */
+    /* TODO: This design sucks because it doesn't support attaching.  The issue
+     * is that once we've loaded the image, we unmap the original ELF file, and
+     * then are no longer able to read the section headers (as opposed to
+     * program headers), which have the names and offsets that gdb needs.
+     */
+}
+
 app_pc
 privload_map_and_relocate(const char *filename, size_t *size OUT)
 {
@@ -465,18 +476,20 @@ privload_map_and_relocate(const char *filename, size_t *size OUT)
     }
     ASSERT(last_end == lib_end);
 
+    ELF_ADDR text_addr =
+        delta + module_get_text_section(file_map, file_size);
     if (!INTERNAL_OPTION(privload_register_gdb)) {
 #ifdef DEBUG
         /* Add debugging comment about how to get symbol information in gdb. */
         SYSLOG_INTERNAL_INFO("In GDB, use add-symbol-file %s %p"
                              " to add symbol information",
-                             filename,
-                             delta + module_get_text_section(file_map, file_size));
+                             filename, text_addr);
 #endif
+        privload_gdb_register(filename, text_addr);
     }
     LOG(GLOBAL, LOG_LOADER, 1,
         "for debugger: add-symbol-file %s %p\n",
-        filename, delta + module_get_text_section(file_map, file_size));
+        filename, text_addr);
     /* unmap the file_map */
     (*unmap_func)(file_map, file_size);
     os_close(fd); /* no longer needed */
@@ -1150,4 +1163,3 @@ privload_redirect_sym(ELF_ADDR *r_addr, const char *name)
     }
     return false;
 }
-

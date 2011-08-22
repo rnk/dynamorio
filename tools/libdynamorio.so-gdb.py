@@ -2,12 +2,14 @@
 
 import gdb
 import os
+import traceback
 
 print 'Loading gdb scripts for debugging DynamoRIO...'
 
-# TODO: Get this from build dir or introspect.
-DR_BUILD = "/scratch/rnk/dynamorio/build_git-clone"
-BUILD_MODE = "debug"
+# If we didn't attach, pick the libdir from __file__.  This relies on
+# .gdbinit sourcing us from the build dir instead of from the source dir,
+# or __file__ will be wrong.
+DR_LIBDIR = os.path.dirname(os.path.abspath(__file__))
 
 
 class DROption(gdb.Parameter):
@@ -29,6 +31,8 @@ class DROption(gdb.Parameter):
 class DRClient(DROption):
     def __init__(self):
         super(DRClient, self).__init__("client", gdb.PARAM_OPTIONAL_FILENAME)
+        self.value = "api/samples/bin/libbbcount.so"  # NOCHECKIN
+
     set_doc = ("Path to DynamoRIO client to run when invoking DR.  "
                "Leave blank to run without a client.")
     show_doc = set_doc
@@ -55,12 +59,20 @@ class RunDR(gdb.Command):
         super(RunDR, self).__init__("rundr", gdb.COMMAND_OBSCURE)
 
     def invoke(self, arg, from_tty):
-        # Build LD_LIBRARY_PATH.
-        ld_path = (DR_BUILD +     "/lib64/" + BUILD_MODE + ":" +
-                   DR_BUILD + "/ext/lib64/" + BUILD_MODE)
-        orig_ld_path = os.environ.get("LD_LIBRARY_PATH")
-        if orig_ld_path:
-            ld_path += ":" + orig_ld_path
+        # Find drrun.
+        parts = DR_LIBDIR.split(os.sep)
+        build_mode = parts[-1]
+        arch = parts[-2][-2:]
+        if build_mode not in ('debug', 'release'):
+            print "Unrecognized build_mode %s." % build_mode
+            return
+        if arch not in ('32', '64'):
+            print ("Unable to find drrun using libdir %r, unrecognized arch %s."
+                   % (DR_LIBDIR, arch))
+            return
+        drrun_path = os.sep.join(parts[:-2])
+        drrun_path = os.path.join(drrun_path, 'bin%s/drrun' % arch)
+        gdb.execute("set exec-wrapper %r -%s" % (drrun_path, build_mode))
 
         # Build options string.
         dr_opts = os.environ.get("DYNAMORIO_OPTIONS", "")
@@ -74,10 +86,47 @@ class RunDR(gdb.Command):
                            (dr_client.value, dr_client_args.value))
             dr_opts = client_opts + " " + dr_opts
 
-        gdb.execute("set env LD_LIBRARY_PATH " + ld_path)
-        gdb.execute("set env LD_PRELOAD libdrpreload.so libdynamorio.so")
         gdb.execute("set env DYNAMORIO_OPTIONS " + dr_opts)
         gdb.execute("run " + arg)
 
-
 RunDR()
+
+
+class PrivloadBP(gdb.Breakpoint):
+
+    # Enable to debug this breakpoint.
+    DEBUG = False
+    DYNAMORIO_BP = True
+
+    def __init__(self):
+        super(PrivloadBP, self).__init__("privload_gdb_register",
+                                         internal=not self.DEBUG)
+
+    def stop(self):
+        try:
+            frame = gdb.newest_frame()
+            filename = frame.read_var("filename").string()
+            textaddr = int(frame.read_var("textaddr"))
+            gdb.execute("add-symbol-file '%s' %s" %
+                        (filename, hex(textaddr)))
+            return self.DEBUG  # Controls whether the user stops here or not.
+        except:
+            traceback.print_exc()
+            return True
+
+
+# Delete all breakpoints set from previous runs and initializations and replace
+# them with new ones.
+def remove_old_bps():
+    bps = gdb.breakpoints()
+    if not bps:
+        return
+    for bp in bps:
+        if getattr(bp, 'DYNAMORIO_BP', False):
+            bp.delete()
+remove_old_bps()
+
+
+# We need pending breakpoints in order to pick up this symbol at all.
+gdb.execute("set breakpoint pending on")
+privload_bp = PrivloadBP()
