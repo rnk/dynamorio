@@ -18,11 +18,15 @@ class DROption(gdb.Parameter):
         super(DROption, self).__init__("dr-" + dr_option, gdb.COMMAND_OBSCURE,
                                        param_class)
         self.dr_option = dr_option
+        self.modified = False
 
     set_doc = ("DynamoRIO option of the same name.")
     show_doc = set_doc
+
     def get_set_string(self):
+        self.modified = True
         return str(self.value)
+
     def get_show_string(self, svalue):
         return svalue
 
@@ -31,6 +35,7 @@ class DROption(gdb.Parameter):
 # DYNAMORIO_OPTIONS without being massaged first.  We also specify
 # documentation strings for them.
 class DRClient(DROption):
+
     def __init__(self):
         super(DRClient, self).__init__("client", gdb.PARAM_OPTIONAL_FILENAME)
 
@@ -39,6 +44,7 @@ class DRClient(DROption):
     show_doc = set_doc
 
 class DRClientArgs(DROption):
+
     def __init__(self):
         super(DRClientArgs, self).__init__("client-args", gdb.PARAM_OPTIONAL_FILENAME)
 
@@ -89,7 +95,8 @@ class RunDR(gdb.Command):
         # the command is parsed by gdb and DynamoRIO.
         env_opts = os.environ.get('DYNAMORIO_OPTIONS', '')
         param_opts = ' '.join("-%s %s" % (p.dr_option, p.value)
-                              for p in dr_options)
+                              for p in dr_options
+                              if p.modified)
         client_opts = ''
         if dr_client.value:
             client_opts = ('-code_api -client_lib %s;0;%s' %

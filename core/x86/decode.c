@@ -670,6 +670,9 @@ read_vex(byte *pc, decode_info_t *di, byte instr_byte,
     return pc;
 }
 
+void
+dr_printf(const char *fmt, ...);
+
 /* Disassembles the instruction at pc into the data structures ret_info
  * and di.  Does NOT set or read di->len.
  * Returns a pointer to the pc of the next instruction.
@@ -937,6 +940,7 @@ read_instruction(byte *pc, byte *orig_pc,
              */
             if (report_invalid && !is_dynamo_address(di->start_pc)) {
                 SYSLOG_INTERNAL_WARNING_ONCE("Invalid opcode encountered");
+                SYSLOG_INTERNAL_INFO("invalid opcode at PC %p\n", di->start_pc);
                 if (info != NULL && info->type == INVALID) {
                     LOG(THREAD_GET, LOG_ALL, 1, "Invalid opcode @"PFX": 0x%x\n",
                         di->start_pc, info->opcode);

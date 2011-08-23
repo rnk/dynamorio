@@ -201,6 +201,8 @@ auto_setup(ptr_uint_t appstack)
 /****************************************************************************/
 #ifdef LINUX
 
+void dr_printf(const char *, ...);
+
 /* Called by new_thread_dynamo_start to initialize the dcontext
  * structure for the current thread and start executing at the
  * the pc stored in the clone_record_t * stored at mc->pc.
@@ -217,6 +219,7 @@ new_thread_setup(priv_mcontext_t *mc)
     app_pc next_tag;
     void *crec;
     int rc;
+
     /* this is where a new thread first touches other than the dstack,
      * so we "enter" DR here
      */

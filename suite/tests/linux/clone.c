@@ -43,15 +43,29 @@
 #include <assert.h>
 #include <signal.h>
 #include <stdio.h>
+#include <string.h>
+#include <errno.h>
 
 #ifdef USE_DYNAMO
 #include "dynamorio.h"
 #endif
 
+#define ALIGN_FORWARD(x, alignment) \
+        ((((size_t)x) + ((size_t)(alignment)-1)) & (~(size_t)((alignment)-1)))
+#define ALIGN_BACKWARD(x, alignment) \
+        (((size_t)x) & (~(size_t)((alignment)-1)))
+
 #define false (0)
 #define true (1)
 typedef int bool;
 #define THREAD_STACK_SIZE   (32*1024)
+#define PAGE_SIZE 4096
+
+#ifdef X64
+# define APP_TLS_SEG "fs"
+#else
+# define APP_TLS_SEG "gs"
+#endif
 
 /* forward declarations */
 static pid_t create_thread(int (*fcn)(void *), void *arg, void **stack);
@@ -89,7 +103,7 @@ int main()
 
     /* waste some time */
     nanosleep(&sleeptime, NULL);
-    
+
     child_exit = true;
     /* we want deterministic printf ordering */
     while (!child_done)
@@ -123,6 +137,8 @@ int run(void *arg)
     return 0;
 }
 
+void *p_tid, *c_tid;
+
 /* Create a new thread. It should be passed "fcn", a function which
  * takes two arguments, (the second one is a dummy, always 4). The
  * first argument is passed in "arg". Returns the PID of the new
@@ -133,16 +149,39 @@ create_thread(int (*fcn)(void *), void *arg, void **stack)
     pid_t newpid; 
     int flags;
     void *my_stack;
-    
+    void *my_tls;
+    void *c_tcb;
+    void *p_tcb;
+    size_t tcb_size;
+
     my_stack = stack_alloc(THREAD_STACK_SIZE);
+    my_tls = (void*)ALIGN_BACKWARD(my_stack, THREAD_STACK_SIZE);
+
+    /* Work around bug in privload_tls_init in loader.c? */
+    /* Hack to get tcb size. */
+    asm ("mov %%"APP_TLS_SEG":0, %0" : "=r"(p_tcb));
+    tcb_size = ALIGN_FORWARD(p_tcb, PAGE_SIZE) - (size_t)p_tcb;
+    c_tcb = my_tls + PAGE_SIZE - tcb_size;
+    /* Copy the current parent TCB contents into the child blindly.  This is
+     * *obviously* the wrong thing for a real application to do, but if we don't
+     * do this, DR will crash when attempting to use libc.
+     */
+    memcpy((void*)ALIGN_BACKWARD(c_tcb, PAGE_SIZE),
+           (void*)ALIGN_BACKWARD(p_tcb, PAGE_SIZE),
+           PAGE_SIZE);
+    /* Set %fs:0 in the child to point to the child TCB. */
+    void **c_fs0 = (void**)my_tls;
+    *c_fs0 = c_tcb;
+
     /* need SIGCHLD so parent will get that signal when child dies,
      * else have errors doing a wait */
     /* we're not doing CLONE_THREAD => child has its own pid
      * (the thread.c test tests CLONE_THREAD)
      */
-    flags = SIGCHLD | CLONE_VM | CLONE_FS | CLONE_FILES | CLONE_SIGHAND;
-    newpid = clone(fcn, my_stack, flags, arg);
-  
+    flags = (SIGCHLD | CLONE_VM | CLONE_FS | CLONE_FILES | CLONE_SIGHAND |
+             CLONE_SETTLS);
+    newpid = clone(fcn, my_stack, flags, arg, &p_tid, c_tcb, &c_tid);
+
     if (newpid == -1) {
 	printf("smp.c: Error calling clone\n");
 	stack_free(my_stack, THREAD_STACK_SIZE);
