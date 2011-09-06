@@ -1,0 +1,74 @@
+Assembly for buffer first, check last:
+
+drcalls: decoding callee starting at: 0x00000000720037d0
+  0x00000000720037d0  44 8b 05 8d 2e 21 00 mov    <rel> 0x0000000072216664 -> %r8d 
+  0x00000000720037d7  4c 8d 0d a2 2e 21 00 lea    <rel> 0x0000000072216680 -> %r9 
+  0x00000000720037de  44 89 c0             mov    %r8d -> %eax 
+  0x00000000720037e1  41 83 c0 01          add    $0x00000001 %r8d -> %r8d 
+  0x00000000720037e5  48 8d 04 40          lea    (%rax,%rax,2) -> %rax 
+  0x00000000720037e9  41 81 f8 ff 03 00 00 cmp    %r8d $0x000003ff 
+  0x00000000720037f0  4c 8d 14 c5 00 00 00 lea    0x00(,%rax,8) -> %r10 
+                      00
+  0x00000000720037f8  49 89 3c c1          mov    %rdi -> (%r9,%rax,8) 
+  0x00000000720037fc  4b 89 74 0a 08       mov    %rsi -> 0x08(%r10,%r9,1) 
+  0x0000000072003801  48 8d 35 88 2e 21 00 lea    <rel> 0x0000000072216690 -> %rsi 
+  0x0000000072003808  89 14 c6             mov    %edx -> (%rsi,%rax,8) 
+  0x000000007200380b  41 89 4c 32 04       mov    %ecx -> 0x04(%r10,%rsi,1) 
+  0x0000000072003810  44 89 05 4d 2e 21 00 mov    %r8d -> <rel> 0x0000000072216664 
+  0x0000000072003817  77 07                jnbe   $0x0000000072003820 
+  0x0000000072003819  f3 c3                ret    %rsp (%rsp) -> %rsp 
+drcalls: stop decode for ret
+  0x000000007200381b  0f 1f 44 00 00       nop    0x00(%rax,%rax,1) 
+  0x0000000072003820  e9 7b fe ff ff       jmp    $0x00000000720036a0 
+drcalls: stop decode for bwds jmp from 0x0000000072003820 to 0x00000000720036a0
+
+
+
+
+
+CLEANCALL: decoding callee starting at: 0x0000000072003790
+  0x0000000072003790  55                   push   %rbp %rsp -> %rsp 0xfffffff8(%rsp) 
+  0x0000000072003791  48 89 e5             mov    %rsp -> %rbp 
+  0x0000000072003794  48 89 5d e0          mov    %rbx -> 0xffffffe0(%rbp) 
+  0x0000000072003798  4c 89 65 e8          mov    %r12 -> 0xffffffe8(%rbp) 
+  0x000000007200379c  48 89 fb             mov    %rdi -> %rbx 
+  0x000000007200379f  4c 89 6d f0          mov    %r13 -> 0xfffffff0(%rbp) 
+  0x00000000720037a3  4c 89 75 f8          mov    %r14 -> 0xfffffff8(%rbp) 
+  0x00000000720037a7  48 83 ec 20          sub    $0x0000000000000020 %rsp -> %rsp 
+  0x00000000720037ab  81 3d cf e2 20 00 ff cmp    <rel> 0x0000000072211a84 $0x000003ff 
+                      03 00 00
+  0x00000000720037b5  49 89 f4             mov    %rsi -> %r12 
+  0x00000000720037b8  41 89 d5             mov    %edx -> %r13d 
+  0x00000000720037bb  41 89 ce             mov    %ecx -> %r14d 
+  0x00000000720037be  76 05                jbe    $0x00000000720037c5 
+  0x00000000720037c0  e8 9b fe ff ff       call   $0x0000000072003660 %rsp -> %rsp 0xfffffff8(%rsp) 
+  0x00000000720037c5  8b 0d b9 e2 20 00    mov    <rel> 0x0000000072211a84 -> %ecx 
+  0x00000000720037cb  48 8d 15 ce e2 20 00 lea    <rel> 0x0000000072211aa0 -> %rdx 
+  0x00000000720037d2  89 c8                mov    %ecx -> %eax 
+  0x00000000720037d4  83 c1 01             add    $0x00000001 %ecx -> %ecx 
+  0x00000000720037d7  48 8d 04 40          lea    (%rax,%rax,2) -> %rax   # rax = pos * 3
+  0x00000000720037db  48 8d 34 c5 00 00 00 lea    0x00(,%rax,8) -> %rsi   # rsi = pos * 3 * 8 -> 24
+                      00
+  0x00000000720037e3  48 89 1c c2          mov    %rbx -> (%rdx,%rax,8) 
+  0x00000000720037e7  4c 89 64 16 08       mov    %r12 -> 0x08(%rsi,%rdx,1) 
+  0x00000000720037ec  48 8d 15 bd e2 20 00 lea    <rel> 0x0000000072211ab0 -> %rdx 
+  0x00000000720037f3  44 89 2c c2          mov    %r13d -> (%rdx,%rax,8) 
+  0x00000000720037f7  44 89 74 16 04       mov    %r14d -> 0x04(%rsi,%rdx,1) 
+  0x00000000720037fc  89 0d 82 e2 20 00    mov    %ecx -> <rel> 0x0000000072211a84 
+  0x0000000072003802  48 8b 1c 24          mov    (%rsp) -> %rbx 
+  0x0000000072003806  4c 8b 64 24 08       mov    0x08(%rsp) -> %r12 
+  0x000000007200380b  4c 8b 6c 24 10       mov    0x10(%rsp) -> %r13 
+  0x0000000072003810  4c 8b 74 24 18       mov    0x18(%rsp) -> %r14 
+  0x0000000072003815  c9                   leave  %rbp %rsp (%rbp) -> %rsp %rbp 
+  0x0000000072003816  c3                   ret    %rsp (%rsp) -> %rsp 
+
+
+  mov <rel> 0x0000000072211a84 -> %eax # pos
+  lea <rel> 0x0000000072211aa0 -> %rbx # &buffer[0]
+  lea (%rax,%rax,2) -> %rax   # rax = pos * 3
+  lea (%rbx,%rax,8) -> %r8  # &buffer[pos]
+  mov %rdi -> (%r8)
+  mov %rsi -> 0x08(%r8)
+  mov %edx -> 0x10(%r8)
+  mov %ecx -> 0x14(%r8)
+  inc <rel> 0x0000000072211a84 -> <rel> 0x0000000072211a84

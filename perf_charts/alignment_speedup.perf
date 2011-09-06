@@ -1,0 +1,21 @@
+# clustered graph example from Derek Bruening's CGO 2005 talk
+=cluster;alignment_opt0
+# green instead of gray since not planning on printing this
+colors=med_blue
+=table
+yformat=%gx
+max=4.14551160403
+min=1
+=norotate
+ylabel=Times Slowdown from Native
+xlabel=SPEC 2006 Benchmark
+# stretch it out in x direction
+extraops=set size 1.2,1
+
+astar 3.78602479728
+bzip2 4.14551160403
+gobmk 3.05452146913
+h264ref 3.87790234884
+hmmer 3.77947260769
+mcf 3.98003238292
+sjeng 3.53750452877

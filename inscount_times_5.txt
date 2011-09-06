@@ -1,0 +1,40 @@
+native
+
+real	0m4.544s
+user	0m4.528s
+sys	0m0.004s
+opt0
+
+real	9m22.081s
+user	9m20.607s
+sys	0m0.040s
+opt2 (inline, noopt)
+
+real	1m36.596s
+user	1m36.334s
+sys	0m0.008s
+opt3 (coalesce)
+
+real	0m45.823s
+user	0m45.683s
+sys	0m0.016s
+opt3 (tls)
+
+real	0m45.516s
+user	0m45.371s
+sys	0m0.012s
+opt5 (rle+dse)
+
+real	0m21.235s
+user	0m21.141s
+sys	0m0.012s
+opt6 (avoid aflags)
+
+real	0m14.663s
+user	0m14.609s
+sys	0m0.008s
+opt7 (fold_lea)
+
+real	0m9.877s
+user	0m9.821s
+sys	0m0.016s

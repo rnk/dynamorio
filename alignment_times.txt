@@ -1,0 +1,1261 @@
+alignment_opt3
+TAG  0x0000000000000000
+ +0    L4  65 48 89 24 25 00 00 mov    %rsp -> %gs:0x00 
+           00 00
+ +9    L4  65 48 8b 24 25 20 00 mov    %gs:0x20 -> %rsp 
+           00 00
+ +18   L4  48 8b a4 24 c0 02 00 mov    0x000002c0(%rsp) -> %rsp 
+           00
+ +26   L4  48 8d a4 24 50 fd ff lea    0xfffffd50(%rsp) -> %rsp 
+           ff
+ +34   L4  48 89 44 24 48       mov    %rax -> 0x48(%rsp) 
+ +39   L4  48 89 7c 24 10       mov    %rdi -> 0x10(%rsp) 
+ +44   L4  4c 89 4c 24 58       mov    %r9 -> 0x58(%rsp) 
+ +49   L4  9f                   lahf   -> %ah 
+ +50   L4  0f 90 c0             seto   -> %al 
+ +53   L4  48 89 84 24 90 00 00 mov    %rax -> 0x00000090(%rsp) 
+           00
+ +61   L4  49 8d 39             lea    (%r9) -> %rdi 
+ +64   L4  48 f7 c7 03 00 00 00 test   %rdi $0x0000000000000003 
+ +71   L4  74 fe                jz     $0x0000000073e35a30 
+ +73   L4  48 89 4c 24 40       mov    %rcx -> 0x40(%rsp) 
+ +78   L4  48 89 54 24 38       mov    %rdx -> 0x38(%rsp) 
+ +83   L4  48 89 74 24 18       mov    %rsi -> 0x18(%rsp) 
+ +88   L4  49 8d 39             lea    (%r9) -> %rdi 
+ +91   L4  48 be cd d1 1d 5f ee mov    $0x00007fee5f1dd1cd -> %rsi 
+           7f 00 00
+ +101  L4  ba 04 00 00 00       mov    $0x00000004 -> %edx 
+ +106  L4  b9 00 00 00 00       mov    $0x00000000 -> %ecx 
+ +111  L4  e8 0b a6 03 00       call   $0x0000000073e70040 %rsp -> %rsp 0xfffffff8(%rsp) 
+ +116  L4  48 8b 4c 24 40       mov    0x40(%rsp) -> %rcx 
+ +121  L4  48 8b 54 24 38       mov    0x38(%rsp) -> %rdx 
+ +126  L4  48 8b 74 24 18       mov    0x18(%rsp) -> %rsi 
+ +131  L4  eb fe                jmp    $0x0000000073e35a30 
+ +133  L3  48 83 05 7d 75 21 00 add    $0x0000000000000001 <rel> 0x000000007221b778 -> <rel> 0x000000007221b778 
+           01
+ +141  L4  48 8b 84 24 90 00 00 mov    0x00000090(%rsp) -> %rax 
+           00
+ +149  L4  04 7f                add    $0x7f %al -> %al 
+ +151  L4  9e                   sahf   %ah 
+ +152  L4  48 8b 44 24 48       mov    0x48(%rsp) -> %rax 
+ +157  L4  48 8b 7c 24 10       mov    0x10(%rsp) -> %rdi 
+ +162  L4  4c 8b 4c 24 58       mov    0x58(%rsp) -> %r9 
+ +167  L4  65 48 8b 24 25 00 00 mov    %gs:0x00 -> %rsp 
+           00 00
+ +176  L3  41 8b 39             mov    (%r9) -> %edi 
+ +179  L4  65 48 89 24 25 00 00 mov    %rsp -> %gs:0x00 
+           00 00
+ +188  L4  65 48 8b 24 25 20 00 mov    %gs:0x20 -> %rsp 
+           00 00
+ +197  L4  48 8b a4 24 c0 02 00 mov    0x000002c0(%rsp) -> %rsp 
+           00
+ +205  L4  48 8d a4 24 50 fd ff lea    0xfffffd50(%rsp) -> %rsp 
+           ff
+ +213  L4  48 89 44 24 48       mov    %rax -> 0x48(%rsp) 
+ +218  L4  48 89 7c 24 10       mov    %rdi -> 0x10(%rsp) 
+ +223  L4  4c 89 54 24 60       mov    %r10 -> 0x60(%rsp) 
+ +228  L4  9f                   lahf   -> %ah 
+ +229  L4  0f 90 c0             seto   -> %al 
+ +232  L4  48 89 84 24 90 00 00 mov    %rax -> 0x00000090(%rsp) 
+           00
+ +240  L4  49 8d ba 80 03 00 00 lea    0x00000380(%r10) -> %rdi 
+ +247  L4  48 f7 c7 07 00 00 00 test   %rdi $0x0000000000000007 
+ +254  L4  74 fe                jz     $0x0000000073e35a30 
+ +256  L4  48 89 4c 24 40       mov    %rcx -> 0x40(%rsp) 
+ +261  L4  48 89 54 24 38       mov    %rdx -> 0x38(%rsp) 
+ +266  L4  48 89 74 24 18       mov    %rsi -> 0x18(%rsp) 
+ +271  L4  49 8d ba 80 03 00 00 lea    0x00000380(%r10) -> %rdi 
+ +278  L4  48 be d0 d1 1d 5f ee mov    $0x00007fee5f1dd1d0 -> %rsi 
+           7f 00 00
+ +288  L4  ba 08 00 00 00       mov    $0x00000008 -> %edx 
+ +293  L4  b9 00 00 00 00       mov    $0x00000000 -> %ecx 
+ +298  L4  e8 0b a6 03 00       call   $0x0000000073e70040 %rsp -> %rsp 0xfffffff8(%rsp) 
+ +303  L4  48 8b 4c 24 40       mov    0x40(%rsp) -> %rcx 
+ +308  L4  48 8b 54 24 38       mov    0x38(%rsp) -> %rdx 
+ +313  L4  48 8b 74 24 18       mov    0x18(%rsp) -> %rsi 
+ +318  L4  eb fe                jmp    $0x0000000073e35a30 
+ +320  L3  48 83 05 7d 75 21 00 add    $0x0000000000000001 <rel> 0x000000007221b778 -> <rel> 0x000000007221b778 
+           01
+ +328  L4  48 8b 84 24 90 00 00 mov    0x00000090(%rsp) -> %rax 
+           00
+ +336  L4  04 7f                add    $0x7f %al -> %al 
+ +338  L4  9e                   sahf   %ah 
+ +339  L4  48 8b 44 24 48       mov    0x48(%rsp) -> %rax 
+ +344  L4  48 8b 7c 24 10       mov    0x10(%rsp) -> %rdi 
+ +349  L4  4c 8b 54 24 60       mov    0x60(%rsp) -> %r10 
+ +354  L4  65 48 8b 24 25 00 00 mov    %gs:0x00 -> %rsp 
+           00 00
+ +363  L3  49 8b 8a 80 03 00 00 mov    0x00000380(%r10) -> %rcx 
+ +370  L3  48 8d 54 24 20       lea    0x20(%rsp) -> %rdx 
+ +375  L4  65 48 89 24 25 00 00 mov    %rsp -> %gs:0x00 
+           00 00
+ +384  L4  65 48 8b 24 25 20 00 mov    %gs:0x20 -> %rsp 
+           00 00
+ +393  L4  48 8b a4 24 c0 02 00 mov    0x000002c0(%rsp) -> %rsp 
+           00
+ +401  L4  48 8d a4 24 50 fd ff lea    0xfffffd50(%rsp) -> %rsp 
+           ff
+ +409  L4  48 89 44 24 48       mov    %rax -> 0x48(%rsp) 
+ +414  L4  48 89 7c 24 10       mov    %rdi -> 0x10(%rsp) 
+ +419  L4  9f                   lahf   -> %ah 
+ +420  L4  0f 90 c0             seto   -> %al 
+ +423  L4  48 89 84 24 90 00 00 mov    %rax -> 0x00000090(%rsp) 
+           00
+ +431  L4  65 48 8b 3c 25 00 00 mov    %gs:0x00 -> %rdi 
+           00 00
+ +440  L4  48 8d 3f             lea    (%rdi) -> %rdi 
+ +443  L4  48 f7 c7 03 00 00 00 test   %rdi $0x0000000000000003 
+ +450  L4  74 fe                jz     $0x0000000073e35a30 
+ +452  L4  48 89 4c 24 40       mov    %rcx -> 0x40(%rsp) 
+ +457  L4  48 89 54 24 38       mov    %rdx -> 0x38(%rsp) 
+ +462  L4  48 89 74 24 18       mov    %rsi -> 0x18(%rsp) 
+ +467  L4  65 48 8b 3c 25 00 00 mov    %gs:0x00 -> %rdi 
+           00 00
+ +476  L4  48 8d 3f             lea    (%rdi) -> %rdi 
+ +479  L4  48 be dc d1 1d 5f ee mov    $0x00007fee5f1dd1dc -> %rsi 
+           7f 00 00
+ +489  L4  ba 04 00 00 00       mov    $0x00000004 -> %edx 
+ +494  L4  b9 01 00 00 00       mov    $0x00000001 -> %ecx 
+ +499  L4  e8 0b a6 03 00       call   $0x0000000073e70040 %rsp -> %rsp 0xfffffff8(%rsp) 
+ +504  L4  48 8b 4c 24 40       mov    0x40(%rsp) -> %rcx 
+ +509  L4  48 8b 54 24 38       mov    0x38(%rsp) -> %rdx 
+ +514  L4  48 8b 74 24 18       mov    0x18(%rsp) -> %rsi 
+ +519  L4  eb fe                jmp    $0x0000000073e35a30 
+ +521  L3  48 83 05 7d 75 21 00 add    $0x0000000000000001 <rel> 0x000000007221b778 -> <rel> 0x000000007221b778 
+           01
+ +529  L4  48 8b 84 24 90 00 00 mov    0x00000090(%rsp) -> %rax 
+           00
+ +537  L4  04 7f                add    $0x7f %al -> %al 
+ +539  L4  9e                   sahf   %ah 
+ +540  L4  48 8b 44 24 48       mov    0x48(%rsp) -> %rax 
+ +545  L4  48 8b 7c 24 10       mov    0x10(%rsp) -> %rdi 
+ +550  L4  65 48 8b 24 25 00 00 mov    %gs:0x00 -> %rsp 
+           00 00
+ +559  L3  89 34 24             mov    %esi -> (%rsp) 
+ +562  L3  41 b9 01 00 00 00    mov    $0x00000001 -> %r9d 
+ +568  L3  4c 89 d6             mov    %r10 -> %rsi 
+ +571  L4  65 48 89 24 25 00 00 mov    %rsp -> %gs:0x00 
+           00 00
+ +580  L4  65 48 8b 24 25 20 00 mov    %gs:0x20 -> %rsp 
+           00 00
+ +589  L4  48 8b a4 24 c0 02 00 mov    0x000002c0(%rsp) -> %rsp 
+           00
+ +597  L4  48 8d a4 24 50 fd ff lea    0xfffffd50(%rsp) -> %rsp 
+           ff
+ +605  L4  48 89 44 24 48       mov    %rax -> 0x48(%rsp) 
+ +610  L4  48 89 7c 24 10       mov    %rdi -> 0x10(%rsp) 
+ +615  L4  9f                   lahf   -> %ah 
+ +616  L4  0f 90 c0             seto   -> %al 
+ +619  L4  48 89 84 24 90 00 00 mov    %rax -> 0x00000090(%rsp) 
+           00
+ +627  L4  65 48 8b 3c 25 00 00 mov    %gs:0x00 -> %rdi 
+           00 00
+ +636  L4  48 8d 7f 08          lea    0x08(%rdi) -> %rdi 
+ +640  L4  48 f7 c7 07 00 00 00 test   %rdi $0x0000000000000007 
+ +647  L4  74 fe                jz     $0x0000000073e35a30 
+ +649  L4  48 89 4c 24 40       mov    %rcx -> 0x40(%rsp) 
+ +654  L4  48 89 54 24 38       mov    %rdx -> 0x38(%rsp) 
+ +659  L4  48 89 74 24 18       mov    %rsi -> 0x18(%rsp) 
+ +664  L4  65 48 8b 3c 25 00 00 mov    %gs:0x00 -> %rdi 
+           00 00
+ +673  L4  48 8d 7f 08          lea    0x08(%rdi) -> %rdi 
+ +677  L4  48 be e8 d1 1d 5f ee mov    $0x00007fee5f1dd1e8 -> %rsi 
+           7f 00 00
+ +687  L4  ba 08 00 00 00       mov    $0x00000008 -> %edx 
+ +692  L4  b9 01 00 00 00       mov    $0x00000001 -> %ecx 
+ +697  L4  e8 0b a6 03 00       call   $0x0000000073e70040 %rsp -> %rsp 0xfffffff8(%rsp) 
+ +702  L4  48 8b 4c 24 40       mov    0x40(%rsp) -> %rcx 
+ +707  L4  48 8b 54 24 38       mov    0x38(%rsp) -> %rdx 
+ +712  L4  48 8b 74 24 18       mov    0x18(%rsp) -> %rsi 
+ +717  L4  eb fe                jmp    $0x0000000073e35a30 
+ +719  L3  48 83 05 7d 75 21 00 add    $0x0000000000000001 <rel> 0x000000007221b778 -> <rel> 0x000000007221b778 
+           01
+ +727  L4  48 8b 84 24 90 00 00 mov    0x00000090(%rsp) -> %rax 
+           00
+ +735  L4  04 7f                add    $0x7f %al -> %al 
+ +737  L4  9e                   sahf   %ah 
+ +738  L4  48 8b 44 24 48       mov    0x48(%rsp) -> %rax 
+ +743  L4  48 8b 7c 24 10       mov    0x10(%rsp) -> %rdi 
+ +748  L4  65 48 8b 24 25 00 00 mov    %gs:0x00 -> %rsp 
+           00 00
+ +757  L3  48 c7 44 24 08 00 00 mov    $0x00000000 -> 0x08(%rsp) 
+           00 00
+ +766  L3  49 8d 3c 3b          lea    (%r11,%rdi,1) -> %rdi 
+ +770  L4  65 48 89 24 25 00 00 mov    %rsp -> %gs:0x00 
+           00 00
+ +779  L4  65 48 8b 24 25 20 00 mov    %gs:0x20 -> %rsp 
+           00 00
+ +788  L4  48 8b a4 24 c0 02 00 mov    0x000002c0(%rsp) -> %rsp 
+           00
+ +796  L4  48 8d a4 24 50 fd ff lea    0xfffffd50(%rsp) -> %rsp 
+           ff
+ +804  L4  48 89 44 24 48       mov    %rax -> 0x48(%rsp) 
+ +809  L4  48 89 7c 24 10       mov    %rdi -> 0x10(%rsp) 
+ +814  L4  9f                   lahf   -> %ah 
+ +815  L4  0f 90 c0             seto   -> %al 
+ +818  L4  48 89 84 24 90 00 00 mov    %rax -> 0x00000090(%rsp) 
+           00
+ +826  L4  65 48 8b 3c 25 00 00 mov    %gs:0x00 -> %rdi 
+           00 00
+ +835  L4  48 8d 7f f8          lea    0xfffffff8(%rdi) -> %rdi 
+ +839  L4  48 f7 c7 07 00 00 00 test   %rdi $0x0000000000000007 
+ +846  L4  74 fe                jz     $0x0000000073e35a30 
+ +848  L4  48 89 4c 24 40       mov    %rcx -> 0x40(%rsp) 
+ +853  L4  48 89 54 24 38       mov    %rdx -> 0x38(%rsp) 
+ +858  L4  48 89 74 24 18       mov    %rsi -> 0x18(%rsp) 
+ +863  L4  65 48 8b 3c 25 00 00 mov    %gs:0x00 -> %rdi 
+           00 00
+ +872  L4  48 8d 7f f8          lea    0xfffffff8(%rdi) -> %rdi 
+ +876  L4  48 be f5 d1 1d 5f ee mov    $0x00007fee5f1dd1f5 -> %rsi 
+           7f 00 00
+ +886  L4  ba 08 00 00 00       mov    $0x00000008 -> %edx 
+ +891  L4  b9 01 00 00 00       mov    $0x00000001 -> %ecx 
+ +896  L4  e8 0b a6 03 00       call   $0x0000000073e70040 %rsp -> %rsp 0xfffffff8(%rsp) 
+ +901  L4  48 8b 4c 24 40       mov    0x40(%rsp) -> %rcx 
+ +906  L4  48 8b 54 24 38       mov    0x38(%rsp) -> %rdx 
+ +911  L4  48 8b 74 24 18       mov    0x18(%rsp) -> %rsi 
+ +916  L4  eb fe                jmp    $0x0000000073e35a30 
+ +918  L3  48 83 05 7d 75 21 00 add    $0x0000000000000001 <rel> 0x000000007221b778 -> <rel> 0x000000007221b778 
+           01
+ +926  L4  48 8b 84 24 90 00 00 mov    0x00000090(%rsp) -> %rax 
+           00
+ +934  L4  04 7f                add    $0x7f %al -> %al 
+ +936  L4  9e                   sahf   %ah 
+ +937  L4  48 8b 44 24 48       mov    0x48(%rsp) -> %rax 
+ +942  L4  48 8b 7c 24 10       mov    0x10(%rsp) -> %rdi 
+ +947  L4  65 48 8b 24 25 00 00 mov    %gs:0x00 -> %rsp 
+           00 00
+ +956  L3  e8 76 c2 ff ff       call   $0x00007fee5f1d9470 %rsp -> %rsp 0xfffffff8(%rsp) 
+END 0x0000000000000000
+
+spec_init
+Loading Input Data
+Duplicating 278475 bytes
+Duplicating 556950 bytes
+Duplicating 983252 bytes
+Input data 2097152 bytes in length
+Compressing Input Data, level 5
+Compressed data 1434910 bytes in length
+Uncompressing Data
+Uncompressed data 2097152 bytes in length
+Uncompressed data compared correctly
+Compressing Input Data, level 7
+Compressed data 1127895 bytes in length
+Uncompressing Data
+Uncompressed data 2097152 bytes in length
+Uncompressed data compared correctly
+Compressing Input Data, level 9
+Compressed data 1067335 bytes in length
+Uncompressing Data
+Uncompressed data 2097152 bytes in length
+Uncompressed data compared correctly
+Tested 2MB buffer: OK!
+Memory accesses: 7082698990
+Unaligned memory accesses: 222180
+
+real	0m47.168s
+user	0m46.891s
+sys	0m0.024s
+mem_buffer_opt3
+TAG  0x0000000000000000
+ +0    L4  65 48 89 24 25 00 00 mov    %rsp -> %gs:0x00 
+           00 00
+ +9    L4  65 48 8b 24 25 20 00 mov    %gs:0x20 -> %rsp 
+           00 00
+ +18   L4  48 8b a4 24 c0 02 00 mov    0x000002c0(%rsp) -> %rsp 
+           00
+ +26   L4  48 8d a4 24 50 fd ff lea    0xfffffd50(%rsp) -> %rsp 
+           ff
+ +34   L4  48 89 44 24 48       mov    %rax -> 0x48(%rsp) 
+ +39   L4  48 89 74 24 18       mov    %rsi -> 0x18(%rsp) 
+ +44   L4  48 89 7c 24 10       mov    %rdi -> 0x10(%rsp) 
+ +49   L4  4c 89 44 24 50       mov    %r8 -> 0x50(%rsp) 
+ +54   L4  4c 89 4c 24 58       mov    %r9 -> 0x58(%rsp) 
+ +59   L4  9f                   lahf   -> %ah 
+ +60   L4  0f 90 c0             seto   -> %al 
+ +63   L4  48 89 84 24 90 00 00 mov    %rax -> 0x00000090(%rsp) 
+           00
+ +71   L4  49 8d 39             lea    (%r9) -> %rdi 
+ +74   L4  48 be cd 01 23 47 88 mov    $0x00007f88472301cd -> %rsi 
+           7f 00 00
+ +84   L3  44 8b 05 99 74 21 00 mov    <rel> 0x000000007221b780 -> %r8d 
+ +91   L3  44 89 c0             mov    %r8d -> %eax 
+ +94   L3  41 83 c0 01          add    $0x00000001 %r8d -> %r8d 
+ +98   L3  41 81 f8 ff 03 00 00 cmp    %r8d $0x000003ff 
+ +105  L4  76 fe                jbe    $0x0000000041359a30 
+ +107  L4  48 89 4c 24 40       mov    %rcx -> 0x40(%rsp) 
+ +112  L4  48 89 54 24 38       mov    %rdx -> 0x38(%rsp) 
+ +117  L4  4c 89 54 24 60       mov    %r10 -> 0x60(%rsp) 
+ +122  L4  48 8b 7c 24 58       mov    0x58(%rsp) -> %rdi 
+ +127  L4  48 8d 3f             lea    (%rdi) -> %rdi 
+ +130  L4  48 be cd 01 23 47 88 mov    $0x00007f88472301cd -> %rsi 
+           7f 00 00
+ +140  L4  ba 04 00 00 00       mov    $0x00000004 -> %edx 
+ +145  L4  b9 00 00 00 00       mov    $0x00000000 -> %ecx 
+ +150  L4  e8 0b a6 03 00       call   $0x0000000041394040 %rsp -> %rsp 0xfffffff8(%rsp) 
+ +155  L4  48 8b 4c 24 40       mov    0x40(%rsp) -> %rcx 
+ +160  L4  48 8b 54 24 38       mov    0x38(%rsp) -> %rdx 
+ +165  L4  4c 8b 54 24 60       mov    0x60(%rsp) -> %r10 
+ +170  L4  eb fe                jmp    $0x0000000041359a30 
+ +172  L3  4c 8d 0d b2 74 21 00 lea    <rel> 0x000000007221b7a0 -> %r9 
+ +179  L3  48 8d 04 40          lea    (%rax,%rax,2) -> %rax 
+ +183  L3  49 89 3c c1          mov    %rdi -> (%r9,%rax,8) 
+ +187  L4  49 89 74 c1 08       mov    %rsi -> 0x08(%r9,%rax,8) 
+ +192  L4  41 c7 44 c1 10 04 00 mov    $0x00000004 -> 0x10(%r9,%rax,8) 
+           00 00
+ +201  L4  41 c7 44 c1 14 00 00 mov    $0x00000000 -> 0x14(%r9,%rax,8) 
+           00 00
+ +210  L4  45 89 41 e0          mov    %r8d -> 0xffffffe0(%r9) 
+ +214  L4  48 8b 84 24 90 00 00 mov    0x00000090(%rsp) -> %rax 
+           00
+ +222  L4  04 7f                add    $0x7f %al -> %al 
+ +224  L4  9e                   sahf   %ah 
+ +225  L4  48 8b 44 24 48       mov    0x48(%rsp) -> %rax 
+ +230  L4  48 8b 74 24 18       mov    0x18(%rsp) -> %rsi 
+ +235  L4  48 8b 7c 24 10       mov    0x10(%rsp) -> %rdi 
+ +240  L4  4c 8b 44 24 50       mov    0x50(%rsp) -> %r8 
+ +245  L4  4c 8b 4c 24 58       mov    0x58(%rsp) -> %r9 
+ +250  L4  65 48 8b 24 25 00 00 mov    %gs:0x00 -> %rsp 
+           00 00
+ +259  L3  41 8b 39             mov    (%r9) -> %edi 
+ +262  L4  65 48 89 24 25 00 00 mov    %rsp -> %gs:0x00 
+           00 00
+ +271  L4  65 48 8b 24 25 20 00 mov    %gs:0x20 -> %rsp 
+           00 00
+ +280  L4  48 8b a4 24 c0 02 00 mov    0x000002c0(%rsp) -> %rsp 
+           00
+ +288  L4  48 8d a4 24 50 fd ff lea    0xfffffd50(%rsp) -> %rsp 
+           ff
+ +296  L4  48 89 44 24 48       mov    %rax -> 0x48(%rsp) 
+ +301  L4  48 89 74 24 18       mov    %rsi -> 0x18(%rsp) 
+ +306  L4  48 89 7c 24 10       mov    %rdi -> 0x10(%rsp) 
+ +311  L4  4c 89 44 24 50       mov    %r8 -> 0x50(%rsp) 
+ +316  L4  4c 89 4c 24 58       mov    %r9 -> 0x58(%rsp) 
+ +321  L4  4c 89 54 24 60       mov    %r10 -> 0x60(%rsp) 
+ +326  L4  9f                   lahf   -> %ah 
+ +327  L4  0f 90 c0             seto   -> %al 
+ +330  L4  48 89 84 24 90 00 00 mov    %rax -> 0x00000090(%rsp) 
+           00
+ +338  L4  49 8d ba 80 03 00 00 lea    0x00000380(%r10) -> %rdi 
+ +345  L4  48 be d0 01 23 47 88 mov    $0x00007f88472301d0 -> %rsi 
+           7f 00 00
+ +355  L3  44 8b 05 99 74 21 00 mov    <rel> 0x000000007221b780 -> %r8d 
+ +362  L3  44 89 c0             mov    %r8d -> %eax 
+ +365  L3  41 83 c0 01          add    $0x00000001 %r8d -> %r8d 
+ +369  L3  41 81 f8 ff 03 00 00 cmp    %r8d $0x000003ff 
+ +376  L4  76 fe                jbe    $0x0000000041359a30 
+ +378  L4  48 89 4c 24 40       mov    %rcx -> 0x40(%rsp) 
+ +383  L4  48 89 54 24 38       mov    %rdx -> 0x38(%rsp) 
+ +388  L4  48 8b 7c 24 60       mov    0x60(%rsp) -> %rdi 
+ +393  L4  48 8d bf 80 03 00 00 lea    0x00000380(%rdi) -> %rdi 
+ +400  L4  48 be d0 01 23 47 88 mov    $0x00007f88472301d0 -> %rsi 
+           7f 00 00
+ +410  L4  ba 08 00 00 00       mov    $0x00000008 -> %edx 
+ +415  L4  b9 00 00 00 00       mov    $0x00000000 -> %ecx 
+ +420  L4  e8 0b a6 03 00       call   $0x0000000041394040 %rsp -> %rsp 0xfffffff8(%rsp) 
+ +425  L4  48 8b 4c 24 40       mov    0x40(%rsp) -> %rcx 
+ +430  L4  48 8b 54 24 38       mov    0x38(%rsp) -> %rdx 
+ +435  L4  eb fe                jmp    $0x0000000041359a30 
+ +437  L3  4c 8d 0d b2 74 21 00 lea    <rel> 0x000000007221b7a0 -> %r9 
+ +444  L3  48 8d 04 40          lea    (%rax,%rax,2) -> %rax 
+ +448  L3  49 89 3c c1          mov    %rdi -> (%r9,%rax,8) 
+ +452  L4  49 89 74 c1 08       mov    %rsi -> 0x08(%r9,%rax,8) 
+ +457  L4  41 c7 44 c1 10 08 00 mov    $0x00000008 -> 0x10(%r9,%rax,8) 
+           00 00
+ +466  L4  41 c7 44 c1 14 00 00 mov    $0x00000000 -> 0x14(%r9,%rax,8) 
+           00 00
+ +475  L4  45 89 41 e0          mov    %r8d -> 0xffffffe0(%r9) 
+ +479  L4  48 8b 84 24 90 00 00 mov    0x00000090(%rsp) -> %rax 
+           00
+ +487  L4  04 7f                add    $0x7f %al -> %al 
+ +489  L4  9e                   sahf   %ah 
+ +490  L4  48 8b 44 24 48       mov    0x48(%rsp) -> %rax 
+ +495  L4  48 8b 74 24 18       mov    0x18(%rsp) -> %rsi 
+ +500  L4  48 8b 7c 24 10       mov    0x10(%rsp) -> %rdi 
+ +505  L4  4c 8b 44 24 50       mov    0x50(%rsp) -> %r8 
+ +510  L4  4c 8b 4c 24 58       mov    0x58(%rsp) -> %r9 
+ +515  L4  4c 8b 54 24 60       mov    0x60(%rsp) -> %r10 
+ +520  L4  65 48 8b 24 25 00 00 mov    %gs:0x00 -> %rsp 
+           00 00
+ +529  L3  49 8b 8a 80 03 00 00 mov    0x00000380(%r10) -> %rcx 
+ +536  L3  48 8d 54 24 20       lea    0x20(%rsp) -> %rdx 
+ +541  L4  65 48 89 24 25 00 00 mov    %rsp -> %gs:0x00 
+           00 00
+ +550  L4  65 48 8b 24 25 20 00 mov    %gs:0x20 -> %rsp 
+           00 00
+ +559  L4  48 8b a4 24 c0 02 00 mov    0x000002c0(%rsp) -> %rsp 
+           00
+ +567  L4  48 8d a4 24 50 fd ff lea    0xfffffd50(%rsp) -> %rsp 
+           ff
+ +575  L4  48 89 44 24 48       mov    %rax -> 0x48(%rsp) 
+ +580  L4  48 89 74 24 18       mov    %rsi -> 0x18(%rsp) 
+ +585  L4  48 89 7c 24 10       mov    %rdi -> 0x10(%rsp) 
+ +590  L4  4c 89 44 24 50       mov    %r8 -> 0x50(%rsp) 
+ +595  L4  4c 89 4c 24 58       mov    %r9 -> 0x58(%rsp) 
+ +600  L4  9f                   lahf   -> %ah 
+ +601  L4  0f 90 c0             seto   -> %al 
+ +604  L4  48 89 84 24 90 00 00 mov    %rax -> 0x00000090(%rsp) 
+           00
+ +612  L4  65 48 8b 3c 25 00 00 mov    %gs:0x00 -> %rdi 
+           00 00
+ +621  L4  48 8d 3f             lea    (%rdi) -> %rdi 
+ +624  L4  48 be dc 01 23 47 88 mov    $0x00007f88472301dc -> %rsi 
+           7f 00 00
+ +634  L3  44 8b 05 99 74 21 00 mov    <rel> 0x000000007221b780 -> %r8d 
+ +641  L3  44 89 c0             mov    %r8d -> %eax 
+ +644  L3  41 83 c0 01          add    $0x00000001 %r8d -> %r8d 
+ +648  L3  41 81 f8 ff 03 00 00 cmp    %r8d $0x000003ff 
+ +655  L4  76 fe                jbe    $0x0000000041359a30 
+ +657  L4  48 89 4c 24 40       mov    %rcx -> 0x40(%rsp) 
+ +662  L4  48 89 54 24 38       mov    %rdx -> 0x38(%rsp) 
+ +667  L4  4c 89 54 24 60       mov    %r10 -> 0x60(%rsp) 
+ +672  L4  65 48 8b 3c 25 00 00 mov    %gs:0x00 -> %rdi 
+           00 00
+ +681  L4  48 8d 3f             lea    (%rdi) -> %rdi 
+ +684  L4  48 be dc 01 23 47 88 mov    $0x00007f88472301dc -> %rsi 
+           7f 00 00
+ +694  L4  ba 04 00 00 00       mov    $0x00000004 -> %edx 
+ +699  L4  b9 01 00 00 00       mov    $0x00000001 -> %ecx 
+ +704  L4  e8 0b a6 03 00       call   $0x0000000041394040 %rsp -> %rsp 0xfffffff8(%rsp) 
+ +709  L4  48 8b 4c 24 40       mov    0x40(%rsp) -> %rcx 
+ +714  L4  48 8b 54 24 38       mov    0x38(%rsp) -> %rdx 
+ +719  L4  4c 8b 54 24 60       mov    0x60(%rsp) -> %r10 
+ +724  L4  eb fe                jmp    $0x0000000041359a30 
+ +726  L3  4c 8d 0d b2 74 21 00 lea    <rel> 0x000000007221b7a0 -> %r9 
+ +733  L3  48 8d 04 40          lea    (%rax,%rax,2) -> %rax 
+ +737  L3  49 89 3c c1          mov    %rdi -> (%r9,%rax,8) 
+ +741  L4  49 89 74 c1 08       mov    %rsi -> 0x08(%r9,%rax,8) 
+ +746  L4  41 c7 44 c1 10 04 00 mov    $0x00000004 -> 0x10(%r9,%rax,8) 
+           00 00
+ +755  L4  41 c7 44 c1 14 01 00 mov    $0x00000001 -> 0x14(%r9,%rax,8) 
+           00 00
+ +764  L4  45 89 41 e0          mov    %r8d -> 0xffffffe0(%r9) 
+ +768  L4  48 8b 84 24 90 00 00 mov    0x00000090(%rsp) -> %rax 
+           00
+ +776  L4  04 7f                add    $0x7f %al -> %al 
+ +778  L4  9e                   sahf   %ah 
+ +779  L4  48 8b 44 24 48       mov    0x48(%rsp) -> %rax 
+ +784  L4  48 8b 74 24 18       mov    0x18(%rsp) -> %rsi 
+ +789  L4  48 8b 7c 24 10       mov    0x10(%rsp) -> %rdi 
+ +794  L4  4c 8b 44 24 50       mov    0x50(%rsp) -> %r8 
+ +799  L4  4c 8b 4c 24 58       mov    0x58(%rsp) -> %r9 
+ +804  L4  65 48 8b 24 25 00 00 mov    %gs:0x00 -> %rsp 
+           00 00
+ +813  L3  89 34 24             mov    %esi -> (%rsp) 
+ +816  L3  41 b9 01 00 00 00    mov    $0x00000001 -> %r9d 
+ +822  L3  4c 89 d6             mov    %r10 -> %rsi 
+ +825  L4  65 48 89 24 25 00 00 mov    %rsp -> %gs:0x00 
+           00 00
+ +834  L4  65 48 8b 24 25 20 00 mov    %gs:0x20 -> %rsp 
+           00 00
+ +843  L4  48 8b a4 24 c0 02 00 mov    0x000002c0(%rsp) -> %rsp 
+           00
+ +851  L4  48 8d a4 24 50 fd ff lea    0xfffffd50(%rsp) -> %rsp 
+           ff
+ +859  L4  48 89 44 24 48       mov    %rax -> 0x48(%rsp) 
+ +864  L4  48 89 74 24 18       mov    %rsi -> 0x18(%rsp) 
+ +869  L4  48 89 7c 24 10       mov    %rdi -> 0x10(%rsp) 
+ +874  L4  4c 89 44 24 50       mov    %r8 -> 0x50(%rsp) 
+ +879  L4  4c 89 4c 24 58       mov    %r9 -> 0x58(%rsp) 
+ +884  L4  9f                   lahf   -> %ah 
+ +885  L4  0f 90 c0             seto   -> %al 
+ +888  L4  48 89 84 24 90 00 00 mov    %rax -> 0x00000090(%rsp) 
+           00
+ +896  L4  65 48 8b 3c 25 00 00 mov    %gs:0x00 -> %rdi 
+           00 00
+ +905  L4  48 8d 7f 08          lea    0x08(%rdi) -> %rdi 
+ +909  L4  48 be e8 01 23 47 88 mov    $0x00007f88472301e8 -> %rsi 
+           7f 00 00
+ +919  L3  44 8b 05 99 74 21 00 mov    <rel> 0x000000007221b780 -> %r8d 
+ +926  L3  44 89 c0             mov    %r8d -> %eax 
+ +929  L3  41 83 c0 01          add    $0x00000001 %r8d -> %r8d 
+ +933  L3  41 81 f8 ff 03 00 00 cmp    %r8d $0x000003ff 
+ +940  L4  76 fe                jbe    $0x0000000041359a30 
+ +942  L4  48 89 4c 24 40       mov    %rcx -> 0x40(%rsp) 
+ +947  L4  48 89 54 24 38       mov    %rdx -> 0x38(%rsp) 
+ +952  L4  4c 89 54 24 60       mov    %r10 -> 0x60(%rsp) 
+ +957  L4  65 48 8b 3c 25 00 00 mov    %gs:0x00 -> %rdi 
+           00 00
+ +966  L4  48 8d 7f 08          lea    0x08(%rdi) -> %rdi 
+ +970  L4  48 be e8 01 23 47 88 mov    $0x00007f88472301e8 -> %rsi 
+           7f 00 00
+ +980  L4  ba 08 00 00 00       mov    $0x00000008 -> %edx 
+ +985  L4  b9 01 00 00 00       mov    $0x00000001 -> %ecx 
+ +990  L4  e8 0b a6 03 00       call   $0x0000000041394040 %rsp -> %rsp 0xfffffff8(%rsp) 
+ +995  L4  48 8b 4c 24 40       mov    0x40(%rsp) -> %rcx 
+ +1000 L4  48 8b 54 24 38       mov    0x38(%rsp) -> %rdx 
+ +1005 L4  4c 8b 54 24 60       mov    0x60(%rsp) -> %r10 
+ +1010 L4  eb fe                jmp    $0x0000000041359a30 
+ +1012 L3  4c 8d 0d b2 74 21 00 lea    <rel> 0x000000007221b7a0 -> %r9 
+ +1019 L3  48 8d 04 40          lea    (%rax,%rax,2) -> %rax 
+ +1023 L3  49 89 3c c1          mov    %rdi -> (%r9,%rax,8) 
+ +1027 L4  49 89 74 c1 08       mov    %rsi -> 0x08(%r9,%rax,8) 
+ +1032 L4  41 c7 44 c1 10 08 00 mov    $0x00000008 -> 0x10(%r9,%rax,8) 
+           00 00
+ +1041 L4  41 c7 44 c1 14 01 00 mov    $0x00000001 -> 0x14(%r9,%rax,8) 
+           00 00
+ +1050 L4  45 89 41 e0          mov    %r8d -> 0xffffffe0(%r9) 
+ +1054 L4  48 8b 84 24 90 00 00 mov    0x00000090(%rsp) -> %rax 
+           00
+ +1062 L4  04 7f                add    $0x7f %al -> %al 
+ +1064 L4  9e                   sahf   %ah 
+ +1065 L4  48 8b 44 24 48       mov    0x48(%rsp) -> %rax 
+ +1070 L4  48 8b 74 24 18       mov    0x18(%rsp) -> %rsi 
+ +1075 L4  48 8b 7c 24 10       mov    0x10(%rsp) -> %rdi 
+ +1080 L4  4c 8b 44 24 50       mov    0x50(%rsp) -> %r8 
+ +1085 L4  4c 8b 4c 24 58       mov    0x58(%rsp) -> %r9 
+ +1090 L4  65 48 8b 24 25 00 00 mov    %gs:0x00 -> %rsp 
+           00 00
+ +1099 L3  48 c7 44 24 08 00 00 mov    $0x00000000 -> 0x08(%rsp) 
+           00 00
+ +1108 L3  49 8d 3c 3b          lea    (%r11,%rdi,1) -> %rdi 
+ +1112 L4  65 48 89 24 25 00 00 mov    %rsp -> %gs:0x00 
+           00 00
+ +1121 L4  65 48 8b 24 25 20 00 mov    %gs:0x20 -> %rsp 
+           00 00
+ +1130 L4  48 8b a4 24 c0 02 00 mov    0x000002c0(%rsp) -> %rsp 
+           00
+ +1138 L4  48 8d a4 24 50 fd ff lea    0xfffffd50(%rsp) -> %rsp 
+           ff
+ +1146 L4  48 89 44 24 48       mov    %rax -> 0x48(%rsp) 
+ +1151 L4  48 89 74 24 18       mov    %rsi -> 0x18(%rsp) 
+ +1156 L4  48 89 7c 24 10       mov    %rdi -> 0x10(%rsp) 
+ +1161 L4  4c 89 44 24 50       mov    %r8 -> 0x50(%rsp) 
+ +1166 L4  4c 89 4c 24 58       mov    %r9 -> 0x58(%rsp) 
+ +1171 L4  9f                   lahf   -> %ah 
+ +1172 L4  0f 90 c0             seto   -> %al 
+ +1175 L4  48 89 84 24 90 00 00 mov    %rax -> 0x00000090(%rsp) 
+           00
+ +1183 L4  65 48 8b 3c 25 00 00 mov    %gs:0x00 -> %rdi 
+           00 00
+ +1192 L4  48 8d 7f f8          lea    0xfffffff8(%rdi) -> %rdi 
+ +1196 L4  48 be f5 01 23 47 88 mov    $0x00007f88472301f5 -> %rsi 
+           7f 00 00
+ +1206 L3  44 8b 05 99 74 21 00 mov    <rel> 0x000000007221b780 -> %r8d 
+ +1213 L3  44 89 c0             mov    %r8d -> %eax 
+ +1216 L3  41 83 c0 01          add    $0x00000001 %r8d -> %r8d 
+ +1220 L3  41 81 f8 ff 03 00 00 cmp    %r8d $0x000003ff 
+ +1227 L4  76 fe                jbe    $0x0000000041359a30 
+ +1229 L4  48 89 4c 24 40       mov    %rcx -> 0x40(%rsp) 
+ +1234 L4  48 89 54 24 38       mov    %rdx -> 0x38(%rsp) 
+ +1239 L4  4c 89 54 24 60       mov    %r10 -> 0x60(%rsp) 
+ +1244 L4  65 48 8b 3c 25 00 00 mov    %gs:0x00 -> %rdi 
+           00 00
+ +1253 L4  48 8d 7f f8          lea    0xfffffff8(%rdi) -> %rdi 
+ +1257 L4  48 be f5 01 23 47 88 mov    $0x00007f88472301f5 -> %rsi 
+           7f 00 00
+ +1267 L4  ba 08 00 00 00       mov    $0x00000008 -> %edx 
+ +1272 L4  b9 01 00 00 00       mov    $0x00000001 -> %ecx 
+ +1277 L4  e8 0b a6 03 00       call   $0x0000000041394040 %rsp -> %rsp 0xfffffff8(%rsp) 
+ +1282 L4  48 8b 4c 24 40       mov    0x40(%rsp) -> %rcx 
+ +1287 L4  48 8b 54 24 38       mov    0x38(%rsp) -> %rdx 
+ +1292 L4  4c 8b 54 24 60       mov    0x60(%rsp) -> %r10 
+ +1297 L4  eb fe                jmp    $0x0000000041359a30 
+ +1299 L3  4c 8d 0d b2 74 21 00 lea    <rel> 0x000000007221b7a0 -> %r9 
+ +1306 L3  48 8d 04 40          lea    (%rax,%rax,2) -> %rax 
+ +1310 L3  49 89 3c c1          mov    %rdi -> (%r9,%rax,8) 
+ +1314 L4  49 89 74 c1 08       mov    %rsi -> 0x08(%r9,%rax,8) 
+ +1319 L4  41 c7 44 c1 10 08 00 mov    $0x00000008 -> 0x10(%r9,%rax,8) 
+           00 00
+ +1328 L4  41 c7 44 c1 14 01 00 mov    $0x00000001 -> 0x14(%r9,%rax,8) 
+           00 00
+ +1337 L4  45 89 41 e0          mov    %r8d -> 0xffffffe0(%r9) 
+ +1341 L4  48 8b 84 24 90 00 00 mov    0x00000090(%rsp) -> %rax 
+           00
+ +1349 L4  04 7f                add    $0x7f %al -> %al 
+ +1351 L4  9e                   sahf   %ah 
+ +1352 L4  48 8b 44 24 48       mov    0x48(%rsp) -> %rax 
+ +1357 L4  48 8b 74 24 18       mov    0x18(%rsp) -> %rsi 
+ +1362 L4  48 8b 7c 24 10       mov    0x10(%rsp) -> %rdi 
+ +1367 L4  4c 8b 44 24 50       mov    0x50(%rsp) -> %r8 
+ +1372 L4  4c 8b 4c 24 58       mov    0x58(%rsp) -> %r9 
+ +1377 L4  65 48 8b 24 25 00 00 mov    %gs:0x00 -> %rsp 
+           00 00
+ +1386 L3  e8 76 c2 ff ff       call   $0x00007f884722c470 %rsp -> %rsp 0xfffffff8(%rsp) 
+END 0x0000000000000000
+
+spec_init
+Loading Input Data
+Duplicating 278475 bytes
+Duplicating 556950 bytes
+Duplicating 983252 bytes
+Input data 2097152 bytes in length
+Compressing Input Data, level 5
+Compressed data 1434910 bytes in length
+Uncompressing Data
+Uncompressed data 2097152 bytes in length
+Uncompressed data compared correctly
+Compressing Input Data, level 7
+Compressed data 1127895 bytes in length
+Uncompressing Data
+Uncompressed data 2097152 bytes in length
+Uncompressed data compared correctly
+Compressing Input Data, level 9
+Compressed data 1067335 bytes in length
+Uncompressing Data
+Uncompressed data 2097152 bytes in length
+Uncompressed data compared correctly
+Tested 2MB buffer: OK!
+Memory accesses: 7082698990
+Unaligned memory accesses: 223648
+
+real	2m0.470s
+user	2m0.132s
+sys	0m0.016s
+alignment_opt0
+TAG  0x0000000000000000
+ +0    L4  65 48 89 24 25 00 00 mov    %rsp -> %gs:0x00 
+           00 00
+ +9    L4  65 48 8b 24 25 20 00 mov    %gs:0x20 -> %rsp 
+           00 00
+ +18   L4  48 8b a4 24 c0 02 00 mov    0x000002c0(%rsp) -> %rsp 
+           00
+ +26   L4  48 8d a4 24 50 fd ff lea    0xfffffd50(%rsp) -> %rsp 
+           ff
+ +34   L4  48 89 44 24 48       mov    %rax -> 0x48(%rsp) 
+ +39   L4  48 89 4c 24 40       mov    %rcx -> 0x40(%rsp) 
+ +44   L4  48 89 54 24 38       mov    %rdx -> 0x38(%rsp) 
+ +49   L4  48 89 5c 24 30       mov    %rbx -> 0x30(%rsp) 
+ +54   L4  48 89 64 24 28       mov    %rsp -> 0x28(%rsp) 
+ +59   L4  48 89 6c 24 20       mov    %rbp -> 0x20(%rsp) 
+ +64   L4  48 89 74 24 18       mov    %rsi -> 0x18(%rsp) 
+ +69   L4  48 89 7c 24 10       mov    %rdi -> 0x10(%rsp) 
+ +74   L4  4c 89 44 24 50       mov    %r8 -> 0x50(%rsp) 
+ +79   L4  4c 89 4c 24 58       mov    %r9 -> 0x58(%rsp) 
+ +84   L4  4c 89 54 24 60       mov    %r10 -> 0x60(%rsp) 
+ +89   L4  4c 89 5c 24 68       mov    %r11 -> 0x68(%rsp) 
+ +94   L4  4c 89 64 24 70       mov    %r12 -> 0x70(%rsp) 
+ +99   L4  4c 89 6c 24 78       mov    %r13 -> 0x78(%rsp) 
+ +104  L4  4c 89 b4 24 80 00 00 mov    %r14 -> 0x00000080(%rsp) 
+           00
+ +112  L4  4c 89 bc 24 88 00 00 mov    %r15 -> 0x00000088(%rsp) 
+           00
+ +120  L4  9f                   lahf   -> %ah 
+ +121  L4  0f 90 c0             seto   -> %al 
+ +124  L4  48 89 84 24 90 00 00 mov    %rax -> 0x00000090(%rsp) 
+           00
+ +132  L4  66 0f 7f 84 24 b0 00 movdqa %xmm0 -> 0x000000b0(%rsp) 
+           00 00
+ +141  L4  66 0f 7f 8c 24 d0 00 movdqa %xmm1 -> 0x000000d0(%rsp) 
+           00 00
+ +150  L4  66 0f 7f 94 24 f0 00 movdqa %xmm2 -> 0x000000f0(%rsp) 
+           00 00
+ +159  L4  66 0f 7f 9c 24 10 01 movdqa %xmm3 -> 0x00000110(%rsp) 
+           00 00
+ +168  L4  66 0f 7f a4 24 30 01 movdqa %xmm4 -> 0x00000130(%rsp) 
+           00 00
+ +177  L4  66 0f 7f ac 24 50 01 movdqa %xmm5 -> 0x00000150(%rsp) 
+           00 00
+ +186  L4  66 0f 7f b4 24 70 01 movdqa %xmm6 -> 0x00000170(%rsp) 
+           00 00
+ +195  L4  66 0f 7f bc 24 90 01 movdqa %xmm7 -> 0x00000190(%rsp) 
+           00 00
+ +204  L4  66 44 0f 7f 84 24 b0 movdqa %xmm8 -> 0x000001b0(%rsp) 
+           01 00 00
+ +214  L4  66 44 0f 7f 8c 24 d0 movdqa %xmm9 -> 0x000001d0(%rsp) 
+           01 00 00
+ +224  L4  66 44 0f 7f 94 24 f0 movdqa %xmm10 -> 0x000001f0(%rsp) 
+           01 00 00
+ +234  L4  66 44 0f 7f 9c 24 10 movdqa %xmm11 -> 0x00000210(%rsp) 
+           02 00 00
+ +244  L4  66 44 0f 7f a4 24 30 movdqa %xmm12 -> 0x00000230(%rsp) 
+           02 00 00
+ +254  L4  66 44 0f 7f ac 24 50 movdqa %xmm13 -> 0x00000250(%rsp) 
+           02 00 00
+ +264  L4  66 44 0f 7f b4 24 70 movdqa %xmm14 -> 0x00000270(%rsp) 
+           02 00 00
+ +274  L4  66 44 0f 7f bc 24 90 movdqa %xmm15 -> 0x00000290(%rsp) 
+           02 00 00
+ +284  L4  49 8d 39             lea    (%r9) -> %rdi 
+ +287  L4  48 be cd 31 99 86 8c mov    $0x00007f8c869931cd -> %rsi 
+           7f 00 00
+ +297  L4  ba 04 00 00 00       mov    $0x00000004 -> %edx 
+ +302  L4  b9 00 00 00 00       mov    $0x00000000 -> %ecx 
+ +307  L4  e8 bb a7 8d fe       call   $0x00000000720041f0 %rsp -> %rsp 0xfffffff8(%rsp) 
+ +312  L4  66 0f 6f 84 24 b0 00 movdqa 0x000000b0(%rsp) -> %xmm0 
+           00 00
+ +321  L4  66 0f 6f 8c 24 d0 00 movdqa 0x000000d0(%rsp) -> %xmm1 
+           00 00
+ +330  L4  66 0f 6f 94 24 f0 00 movdqa 0x000000f0(%rsp) -> %xmm2 
+           00 00
+ +339  L4  66 0f 6f 9c 24 10 01 movdqa 0x00000110(%rsp) -> %xmm3 
+           00 00
+ +348  L4  66 0f 6f a4 24 30 01 movdqa 0x00000130(%rsp) -> %xmm4 
+           00 00
+ +357  L4  66 0f 6f ac 24 50 01 movdqa 0x00000150(%rsp) -> %xmm5 
+           00 00
+ +366  L4  66 0f 6f b4 24 70 01 movdqa 0x00000170(%rsp) -> %xmm6 
+           00 00
+ +375  L4  66 0f 6f bc 24 90 01 movdqa 0x00000190(%rsp) -> %xmm7 
+           00 00
+ +384  L4  66 44 0f 6f 84 24 b0 movdqa 0x000001b0(%rsp) -> %xmm8 
+           01 00 00
+ +394  L4  66 44 0f 6f 8c 24 d0 movdqa 0x000001d0(%rsp) -> %xmm9 
+           01 00 00
+ +404  L4  66 44 0f 6f 94 24 f0 movdqa 0x000001f0(%rsp) -> %xmm10 
+           01 00 00
+ +414  L4  66 44 0f 6f 9c 24 10 movdqa 0x00000210(%rsp) -> %xmm11 
+           02 00 00
+ +424  L4  66 44 0f 6f a4 24 30 movdqa 0x00000230(%rsp) -> %xmm12 
+           02 00 00
+ +434  L4  66 44 0f 6f ac 24 50 movdqa 0x00000250(%rsp) -> %xmm13 
+           02 00 00
+ +444  L4  66 44 0f 6f b4 24 70 movdqa 0x00000270(%rsp) -> %xmm14 
+           02 00 00
+ +454  L4  66 44 0f 6f bc 24 90 movdqa 0x00000290(%rsp) -> %xmm15 
+           02 00 00
+ +464  L4  48 8b 84 24 90 00 00 mov    0x00000090(%rsp) -> %rax 
+           00
+ +472  L4  04 7f                add    $0x7f %al -> %al 
+ +474  L4  9e                   sahf   %ah 
+ +475  L4  48 8b 44 24 48       mov    0x48(%rsp) -> %rax 
+ +480  L4  48 8b 4c 24 40       mov    0x40(%rsp) -> %rcx 
+ +485  L4  48 8b 54 24 38       mov    0x38(%rsp) -> %rdx 
+ +490  L4  48 8b 5c 24 30       mov    0x30(%rsp) -> %rbx 
+ +495  L4  48 8b 6c 24 20       mov    0x20(%rsp) -> %rbp 
+ +500  L4  48 8b 74 24 18       mov    0x18(%rsp) -> %rsi 
+ +505  L4  48 8b 7c 24 10       mov    0x10(%rsp) -> %rdi 
+ +510  L4  4c 8b 44 24 50       mov    0x50(%rsp) -> %r8 
+ +515  L4  4c 8b 4c 24 58       mov    0x58(%rsp) -> %r9 
+ +520  L4  4c 8b 54 24 60       mov    0x60(%rsp) -> %r10 
+ +525  L4  4c 8b 5c 24 68       mov    0x68(%rsp) -> %r11 
+ +530  L4  4c 8b 64 24 70       mov    0x70(%rsp) -> %r12 
+ +535  L4  4c 8b 6c 24 78       mov    0x78(%rsp) -> %r13 
+ +540  L4  4c 8b b4 24 80 00 00 mov    0x00000080(%rsp) -> %r14 
+           00
+ +548  L4  4c 8b bc 24 88 00 00 mov    0x00000088(%rsp) -> %r15 
+           00
+ +556  L4  65 48 8b 24 25 00 00 mov    %gs:0x00 -> %rsp 
+           00 00
+ +565  L3  41 8b 39             mov    (%r9) -> %edi 
+ +568  L4  65 48 89 24 25 00 00 mov    %rsp -> %gs:0x00 
+           00 00
+ +577  L4  65 48 8b 24 25 20 00 mov    %gs:0x20 -> %rsp 
+           00 00
+ +586  L4  48 8b a4 24 c0 02 00 mov    0x000002c0(%rsp) -> %rsp 
+           00
+ +594  L4  48 8d a4 24 50 fd ff lea    0xfffffd50(%rsp) -> %rsp 
+           ff
+ +602  L4  48 89 44 24 48       mov    %rax -> 0x48(%rsp) 
+ +607  L4  48 89 4c 24 40       mov    %rcx -> 0x40(%rsp) 
+ +612  L4  48 89 54 24 38       mov    %rdx -> 0x38(%rsp) 
+ +617  L4  48 89 5c 24 30       mov    %rbx -> 0x30(%rsp) 
+ +622  L4  48 89 64 24 28       mov    %rsp -> 0x28(%rsp) 
+ +627  L4  48 89 6c 24 20       mov    %rbp -> 0x20(%rsp) 
+ +632  L4  48 89 74 24 18       mov    %rsi -> 0x18(%rsp) 
+ +637  L4  48 89 7c 24 10       mov    %rdi -> 0x10(%rsp) 
+ +642  L4  4c 89 44 24 50       mov    %r8 -> 0x50(%rsp) 
+ +647  L4  4c 89 4c 24 58       mov    %r9 -> 0x58(%rsp) 
+ +652  L4  4c 89 54 24 60       mov    %r10 -> 0x60(%rsp) 
+ +657  L4  4c 89 5c 24 68       mov    %r11 -> 0x68(%rsp) 
+ +662  L4  4c 89 64 24 70       mov    %r12 -> 0x70(%rsp) 
+ +667  L4  4c 89 6c 24 78       mov    %r13 -> 0x78(%rsp) 
+ +672  L4  4c 89 b4 24 80 00 00 mov    %r14 -> 0x00000080(%rsp) 
+           00
+ +680  L4  4c 89 bc 24 88 00 00 mov    %r15 -> 0x00000088(%rsp) 
+           00
+ +688  L4  9f                   lahf   -> %ah 
+ +689  L4  0f 90 c0             seto   -> %al 
+ +692  L4  48 89 84 24 90 00 00 mov    %rax -> 0x00000090(%rsp) 
+           00
+ +700  L4  66 0f 7f 84 24 b0 00 movdqa %xmm0 -> 0x000000b0(%rsp) 
+           00 00
+ +709  L4  66 0f 7f 8c 24 d0 00 movdqa %xmm1 -> 0x000000d0(%rsp) 
+           00 00
+ +718  L4  66 0f 7f 94 24 f0 00 movdqa %xmm2 -> 0x000000f0(%rsp) 
+           00 00
+ +727  L4  66 0f 7f 9c 24 10 01 movdqa %xmm3 -> 0x00000110(%rsp) 
+           00 00
+ +736  L4  66 0f 7f a4 24 30 01 movdqa %xmm4 -> 0x00000130(%rsp) 
+           00 00
+ +745  L4  66 0f 7f ac 24 50 01 movdqa %xmm5 -> 0x00000150(%rsp) 
+           00 00
+ +754  L4  66 0f 7f b4 24 70 01 movdqa %xmm6 -> 0x00000170(%rsp) 
+           00 00
+ +763  L4  66 0f 7f bc 24 90 01 movdqa %xmm7 -> 0x00000190(%rsp) 
+           00 00
+ +772  L4  66 44 0f 7f 84 24 b0 movdqa %xmm8 -> 0x000001b0(%rsp) 
+           01 00 00
+ +782  L4  66 44 0f 7f 8c 24 d0 movdqa %xmm9 -> 0x000001d0(%rsp) 
+           01 00 00
+ +792  L4  66 44 0f 7f 94 24 f0 movdqa %xmm10 -> 0x000001f0(%rsp) 
+           01 00 00
+ +802  L4  66 44 0f 7f 9c 24 10 movdqa %xmm11 -> 0x00000210(%rsp) 
+           02 00 00
+ +812  L4  66 44 0f 7f a4 24 30 movdqa %xmm12 -> 0x00000230(%rsp) 
+           02 00 00
+ +822  L4  66 44 0f 7f ac 24 50 movdqa %xmm13 -> 0x00000250(%rsp) 
+           02 00 00
+ +832  L4  66 44 0f 7f b4 24 70 movdqa %xmm14 -> 0x00000270(%rsp) 
+           02 00 00
+ +842  L4  66 44 0f 7f bc 24 90 movdqa %xmm15 -> 0x00000290(%rsp) 
+           02 00 00
+ +852  L4  49 8d ba 80 03 00 00 lea    0x00000380(%r10) -> %rdi 
+ +859  L4  48 be d0 31 99 86 8c mov    $0x00007f8c869931d0 -> %rsi 
+           7f 00 00
+ +869  L4  ba 08 00 00 00       mov    $0x00000008 -> %edx 
+ +874  L4  b9 00 00 00 00       mov    $0x00000000 -> %ecx 
+ +879  L4  e8 bb a7 8d fe       call   $0x00000000720041f0 %rsp -> %rsp 0xfffffff8(%rsp) 
+ +884  L4  66 0f 6f 84 24 b0 00 movdqa 0x000000b0(%rsp) -> %xmm0 
+           00 00
+ +893  L4  66 0f 6f 8c 24 d0 00 movdqa 0x000000d0(%rsp) -> %xmm1 
+           00 00
+ +902  L4  66 0f 6f 94 24 f0 00 movdqa 0x000000f0(%rsp) -> %xmm2 
+           00 00
+ +911  L4  66 0f 6f 9c 24 10 01 movdqa 0x00000110(%rsp) -> %xmm3 
+           00 00
+ +920  L4  66 0f 6f a4 24 30 01 movdqa 0x00000130(%rsp) -> %xmm4 
+           00 00
+ +929  L4  66 0f 6f ac 24 50 01 movdqa 0x00000150(%rsp) -> %xmm5 
+           00 00
+ +938  L4  66 0f 6f b4 24 70 01 movdqa 0x00000170(%rsp) -> %xmm6 
+           00 00
+ +947  L4  66 0f 6f bc 24 90 01 movdqa 0x00000190(%rsp) -> %xmm7 
+           00 00
+ +956  L4  66 44 0f 6f 84 24 b0 movdqa 0x000001b0(%rsp) -> %xmm8 
+           01 00 00
+ +966  L4  66 44 0f 6f 8c 24 d0 movdqa 0x000001d0(%rsp) -> %xmm9 
+           01 00 00
+ +976  L4  66 44 0f 6f 94 24 f0 movdqa 0x000001f0(%rsp) -> %xmm10 
+           01 00 00
+ +986  L4  66 44 0f 6f 9c 24 10 movdqa 0x00000210(%rsp) -> %xmm11 
+           02 00 00
+ +996  L4  66 44 0f 6f a4 24 30 movdqa 0x00000230(%rsp) -> %xmm12 
+           02 00 00
+ +1006 L4  66 44 0f 6f ac 24 50 movdqa 0x00000250(%rsp) -> %xmm13 
+           02 00 00
+ +1016 L4  66 44 0f 6f b4 24 70 movdqa 0x00000270(%rsp) -> %xmm14 
+           02 00 00
+ +1026 L4  66 44 0f 6f bc 24 90 movdqa 0x00000290(%rsp) -> %xmm15 
+           02 00 00
+ +1036 L4  48 8b 84 24 90 00 00 mov    0x00000090(%rsp) -> %rax 
+           00
+ +1044 L4  04 7f                add    $0x7f %al -> %al 
+ +1046 L4  9e                   sahf   %ah 
+ +1047 L4  48 8b 44 24 48       mov    0x48(%rsp) -> %rax 
+ +1052 L4  48 8b 4c 24 40       mov    0x40(%rsp) -> %rcx 
+ +1057 L4  48 8b 54 24 38       mov    0x38(%rsp) -> %rdx 
+ +1062 L4  48 8b 5c 24 30       mov    0x30(%rsp) -> %rbx 
+ +1067 L4  48 8b 6c 24 20       mov    0x20(%rsp) -> %rbp 
+ +1072 L4  48 8b 74 24 18       mov    0x18(%rsp) -> %rsi 
+ +1077 L4  48 8b 7c 24 10       mov    0x10(%rsp) -> %rdi 
+ +1082 L4  4c 8b 44 24 50       mov    0x50(%rsp) -> %r8 
+ +1087 L4  4c 8b 4c 24 58       mov    0x58(%rsp) -> %r9 
+ +1092 L4  4c 8b 54 24 60       mov    0x60(%rsp) -> %r10 
+ +1097 L4  4c 8b 5c 24 68       mov    0x68(%rsp) -> %r11 
+ +1102 L4  4c 8b 64 24 70       mov    0x70(%rsp) -> %r12 
+ +1107 L4  4c 8b 6c 24 78       mov    0x78(%rsp) -> %r13 
+ +1112 L4  4c 8b b4 24 80 00 00 mov    0x00000080(%rsp) -> %r14 
+           00
+ +1120 L4  4c 8b bc 24 88 00 00 mov    0x00000088(%rsp) -> %r15 
+           00
+ +1128 L4  65 48 8b 24 25 00 00 mov    %gs:0x00 -> %rsp 
+           00 00
+ +1137 L3  49 8b 8a 80 03 00 00 mov    0x00000380(%r10) -> %rcx 
+ +1144 L3  48 8d 54 24 20       lea    0x20(%rsp) -> %rdx 
+ +1149 L4  65 48 89 24 25 00 00 mov    %rsp -> %gs:0x00 
+           00 00
+ +1158 L4  65 48 8b 24 25 20 00 mov    %gs:0x20 -> %rsp 
+           00 00
+ +1167 L4  48 8b a4 24 c0 02 00 mov    0x000002c0(%rsp) -> %rsp 
+           00
+ +1175 L4  48 8d a4 24 50 fd ff lea    0xfffffd50(%rsp) -> %rsp 
+           ff
+ +1183 L4  48 89 44 24 48       mov    %rax -> 0x48(%rsp) 
+ +1188 L4  48 89 4c 24 40       mov    %rcx -> 0x40(%rsp) 
+ +1193 L4  48 89 54 24 38       mov    %rdx -> 0x38(%rsp) 
+ +1198 L4  48 89 5c 24 30       mov    %rbx -> 0x30(%rsp) 
+ +1203 L4  48 89 64 24 28       mov    %rsp -> 0x28(%rsp) 
+ +1208 L4  48 89 6c 24 20       mov    %rbp -> 0x20(%rsp) 
+ +1213 L4  48 89 74 24 18       mov    %rsi -> 0x18(%rsp) 
+ +1218 L4  48 89 7c 24 10       mov    %rdi -> 0x10(%rsp) 
+ +1223 L4  4c 89 44 24 50       mov    %r8 -> 0x50(%rsp) 
+ +1228 L4  4c 89 4c 24 58       mov    %r9 -> 0x58(%rsp) 
+ +1233 L4  4c 89 54 24 60       mov    %r10 -> 0x60(%rsp) 
+ +1238 L4  4c 89 5c 24 68       mov    %r11 -> 0x68(%rsp) 
+ +1243 L4  4c 89 64 24 70       mov    %r12 -> 0x70(%rsp) 
+ +1248 L4  4c 89 6c 24 78       mov    %r13 -> 0x78(%rsp) 
+ +1253 L4  4c 89 b4 24 80 00 00 mov    %r14 -> 0x00000080(%rsp) 
+           00
+ +1261 L4  4c 89 bc 24 88 00 00 mov    %r15 -> 0x00000088(%rsp) 
+           00
+ +1269 L4  9f                   lahf   -> %ah 
+ +1270 L4  0f 90 c0             seto   -> %al 
+ +1273 L4  48 89 84 24 90 00 00 mov    %rax -> 0x00000090(%rsp) 
+           00
+ +1281 L4  66 0f 7f 84 24 b0 00 movdqa %xmm0 -> 0x000000b0(%rsp) 
+           00 00
+ +1290 L4  66 0f 7f 8c 24 d0 00 movdqa %xmm1 -> 0x000000d0(%rsp) 
+           00 00
+ +1299 L4  66 0f 7f 94 24 f0 00 movdqa %xmm2 -> 0x000000f0(%rsp) 
+           00 00
+ +1308 L4  66 0f 7f 9c 24 10 01 movdqa %xmm3 -> 0x00000110(%rsp) 
+           00 00
+ +1317 L4  66 0f 7f a4 24 30 01 movdqa %xmm4 -> 0x00000130(%rsp) 
+           00 00
+ +1326 L4  66 0f 7f ac 24 50 01 movdqa %xmm5 -> 0x00000150(%rsp) 
+           00 00
+ +1335 L4  66 0f 7f b4 24 70 01 movdqa %xmm6 -> 0x00000170(%rsp) 
+           00 00
+ +1344 L4  66 0f 7f bc 24 90 01 movdqa %xmm7 -> 0x00000190(%rsp) 
+           00 00
+ +1353 L4  66 44 0f 7f 84 24 b0 movdqa %xmm8 -> 0x000001b0(%rsp) 
+           01 00 00
+ +1363 L4  66 44 0f 7f 8c 24 d0 movdqa %xmm9 -> 0x000001d0(%rsp) 
+           01 00 00
+ +1373 L4  66 44 0f 7f 94 24 f0 movdqa %xmm10 -> 0x000001f0(%rsp) 
+           01 00 00
+ +1383 L4  66 44 0f 7f 9c 24 10 movdqa %xmm11 -> 0x00000210(%rsp) 
+           02 00 00
+ +1393 L4  66 44 0f 7f a4 24 30 movdqa %xmm12 -> 0x00000230(%rsp) 
+           02 00 00
+ +1403 L4  66 44 0f 7f ac 24 50 movdqa %xmm13 -> 0x00000250(%rsp) 
+           02 00 00
+ +1413 L4  66 44 0f 7f b4 24 70 movdqa %xmm14 -> 0x00000270(%rsp) 
+           02 00 00
+ +1423 L4  66 44 0f 7f bc 24 90 movdqa %xmm15 -> 0x00000290(%rsp) 
+           02 00 00
+ +1433 L4  48 8d 3c 24          lea    (%rsp) -> %rdi 
+ +1437 L4  48 be dc 31 99 86 8c mov    $0x00007f8c869931dc -> %rsi 
+           7f 00 00
+ +1447 L4  ba 04 00 00 00       mov    $0x00000004 -> %edx 
+ +1452 L4  b9 01 00 00 00       mov    $0x00000001 -> %ecx 
+ +1457 L4  e8 bb a7 8d fe       call   $0x00000000720041f0 %rsp -> %rsp 0xfffffff8(%rsp) 
+ +1462 L4  66 0f 6f 84 24 b0 00 movdqa 0x000000b0(%rsp) -> %xmm0 
+           00 00
+ +1471 L4  66 0f 6f 8c 24 d0 00 movdqa 0x000000d0(%rsp) -> %xmm1 
+           00 00
+ +1480 L4  66 0f 6f 94 24 f0 00 movdqa 0x000000f0(%rsp) -> %xmm2 
+           00 00
+ +1489 L4  66 0f 6f 9c 24 10 01 movdqa 0x00000110(%rsp) -> %xmm3 
+           00 00
+ +1498 L4  66 0f 6f a4 24 30 01 movdqa 0x00000130(%rsp) -> %xmm4 
+           00 00
+ +1507 L4  66 0f 6f ac 24 50 01 movdqa 0x00000150(%rsp) -> %xmm5 
+           00 00
+ +1516 L4  66 0f 6f b4 24 70 01 movdqa 0x00000170(%rsp) -> %xmm6 
+           00 00
+ +1525 L4  66 0f 6f bc 24 90 01 movdqa 0x00000190(%rsp) -> %xmm7 
+           00 00
+ +1534 L4  66 44 0f 6f 84 24 b0 movdqa 0x000001b0(%rsp) -> %xmm8 
+           01 00 00
+ +1544 L4  66 44 0f 6f 8c 24 d0 movdqa 0x000001d0(%rsp) -> %xmm9 
+           01 00 00
+ +1554 L4  66 44 0f 6f 94 24 f0 movdqa 0x000001f0(%rsp) -> %xmm10 
+           01 00 00
+ +1564 L4  66 44 0f 6f 9c 24 10 movdqa 0x00000210(%rsp) -> %xmm11 
+           02 00 00
+ +1574 L4  66 44 0f 6f a4 24 30 movdqa 0x00000230(%rsp) -> %xmm12 
+           02 00 00
+ +1584 L4  66 44 0f 6f ac 24 50 movdqa 0x00000250(%rsp) -> %xmm13 
+           02 00 00
+ +1594 L4  66 44 0f 6f b4 24 70 movdqa 0x00000270(%rsp) -> %xmm14 
+           02 00 00
+ +1604 L4  66 44 0f 6f bc 24 90 movdqa 0x00000290(%rsp) -> %xmm15 
+           02 00 00
+ +1614 L4  48 8b 84 24 90 00 00 mov    0x00000090(%rsp) -> %rax 
+           00
+ +1622 L4  04 7f                add    $0x7f %al -> %al 
+ +1624 L4  9e                   sahf   %ah 
+ +1625 L4  48 8b 44 24 48       mov    0x48(%rsp) -> %rax 
+ +1630 L4  48 8b 4c 24 40       mov    0x40(%rsp) -> %rcx 
+ +1635 L4  48 8b 54 24 38       mov    0x38(%rsp) -> %rdx 
+ +1640 L4  48 8b 5c 24 30       mov    0x30(%rsp) -> %rbx 
+ +1645 L4  48 8b 6c 24 20       mov    0x20(%rsp) -> %rbp 
+ +1650 L4  48 8b 74 24 18       mov    0x18(%rsp) -> %rsi 
+ +1655 L4  48 8b 7c 24 10       mov    0x10(%rsp) -> %rdi 
+ +1660 L4  4c 8b 44 24 50       mov    0x50(%rsp) -> %r8 
+ +1665 L4  4c 8b 4c 24 58       mov    0x58(%rsp) -> %r9 
+ +1670 L4  4c 8b 54 24 60       mov    0x60(%rsp) -> %r10 
+ +1675 L4  4c 8b 5c 24 68       mov    0x68(%rsp) -> %r11 
+ +1680 L4  4c 8b 64 24 70       mov    0x70(%rsp) -> %r12 
+ +1685 L4  4c 8b 6c 24 78       mov    0x78(%rsp) -> %r13 
+ +1690 L4  4c 8b b4 24 80 00 00 mov    0x00000080(%rsp) -> %r14 
+           00
+ +1698 L4  4c 8b bc 24 88 00 00 mov    0x00000088(%rsp) -> %r15 
+           00
+ +1706 L4  65 48 8b 24 25 00 00 mov    %gs:0x00 -> %rsp 
+           00 00
+ +1715 L3  89 34 24             mov    %esi -> (%rsp) 
+ +1718 L3  41 b9 01 00 00 00    mov    $0x00000001 -> %r9d 
+ +1724 L3  4c 89 d6             mov    %r10 -> %rsi 
+ +1727 L4  65 48 89 24 25 00 00 mov    %rsp -> %gs:0x00 
+           00 00
+ +1736 L4  65 48 8b 24 25 20 00 mov    %gs:0x20 -> %rsp 
+           00 00
+ +1745 L4  48 8b a4 24 c0 02 00 mov    0x000002c0(%rsp) -> %rsp 
+           00
+ +1753 L4  48 8d a4 24 50 fd ff lea    0xfffffd50(%rsp) -> %rsp 
+           ff
+ +1761 L4  48 89 44 24 48       mov    %rax -> 0x48(%rsp) 
+ +1766 L4  48 89 4c 24 40       mov    %rcx -> 0x40(%rsp) 
+ +1771 L4  48 89 54 24 38       mov    %rdx -> 0x38(%rsp) 
+ +1776 L4  48 89 5c 24 30       mov    %rbx -> 0x30(%rsp) 
+ +1781 L4  48 89 64 24 28       mov    %rsp -> 0x28(%rsp) 
+ +1786 L4  48 89 6c 24 20       mov    %rbp -> 0x20(%rsp) 
+ +1791 L4  48 89 74 24 18       mov    %rsi -> 0x18(%rsp) 
+ +1796 L4  48 89 7c 24 10       mov    %rdi -> 0x10(%rsp) 
+ +1801 L4  4c 89 44 24 50       mov    %r8 -> 0x50(%rsp) 
+ +1806 L4  4c 89 4c 24 58       mov    %r9 -> 0x58(%rsp) 
+ +1811 L4  4c 89 54 24 60       mov    %r10 -> 0x60(%rsp) 
+ +1816 L4  4c 89 5c 24 68       mov    %r11 -> 0x68(%rsp) 
+ +1821 L4  4c 89 64 24 70       mov    %r12 -> 0x70(%rsp) 
+ +1826 L4  4c 89 6c 24 78       mov    %r13 -> 0x78(%rsp) 
+ +1831 L4  4c 89 b4 24 80 00 00 mov    %r14 -> 0x00000080(%rsp) 
+           00
+ +1839 L4  4c 89 bc 24 88 00 00 mov    %r15 -> 0x00000088(%rsp) 
+           00
+ +1847 L4  9f                   lahf   -> %ah 
+ +1848 L4  0f 90 c0             seto   -> %al 
+ +1851 L4  48 89 84 24 90 00 00 mov    %rax -> 0x00000090(%rsp) 
+           00
+ +1859 L4  66 0f 7f 84 24 b0 00 movdqa %xmm0 -> 0x000000b0(%rsp) 
+           00 00
+ +1868 L4  66 0f 7f 8c 24 d0 00 movdqa %xmm1 -> 0x000000d0(%rsp) 
+           00 00
+ +1877 L4  66 0f 7f 94 24 f0 00 movdqa %xmm2 -> 0x000000f0(%rsp) 
+           00 00
+ +1886 L4  66 0f 7f 9c 24 10 01 movdqa %xmm3 -> 0x00000110(%rsp) 
+           00 00
+ +1895 L4  66 0f 7f a4 24 30 01 movdqa %xmm4 -> 0x00000130(%rsp) 
+           00 00
+ +1904 L4  66 0f 7f ac 24 50 01 movdqa %xmm5 -> 0x00000150(%rsp) 
+           00 00
+ +1913 L4  66 0f 7f b4 24 70 01 movdqa %xmm6 -> 0x00000170(%rsp) 
+           00 00
+ +1922 L4  66 0f 7f bc 24 90 01 movdqa %xmm7 -> 0x00000190(%rsp) 
+           00 00
+ +1931 L4  66 44 0f 7f 84 24 b0 movdqa %xmm8 -> 0x000001b0(%rsp) 
+           01 00 00
+ +1941 L4  66 44 0f 7f 8c 24 d0 movdqa %xmm9 -> 0x000001d0(%rsp) 
+           01 00 00
+ +1951 L4  66 44 0f 7f 94 24 f0 movdqa %xmm10 -> 0x000001f0(%rsp) 
+           01 00 00
+ +1961 L4  66 44 0f 7f 9c 24 10 movdqa %xmm11 -> 0x00000210(%rsp) 
+           02 00 00
+ +1971 L4  66 44 0f 7f a4 24 30 movdqa %xmm12 -> 0x00000230(%rsp) 
+           02 00 00
+ +1981 L4  66 44 0f 7f ac 24 50 movdqa %xmm13 -> 0x00000250(%rsp) 
+           02 00 00
+ +1991 L4  66 44 0f 7f b4 24 70 movdqa %xmm14 -> 0x00000270(%rsp) 
+           02 00 00
+ +2001 L4  66 44 0f 7f bc 24 90 movdqa %xmm15 -> 0x00000290(%rsp) 
+           02 00 00
+ +2011 L4  48 8d 7c 24 08       lea    0x08(%rsp) -> %rdi 
+ +2016 L4  48 be e8 31 99 86 8c mov    $0x00007f8c869931e8 -> %rsi 
+           7f 00 00
+ +2026 L4  ba 08 00 00 00       mov    $0x00000008 -> %edx 
+ +2031 L4  b9 01 00 00 00       mov    $0x00000001 -> %ecx 
+ +2036 L4  e8 bb a7 8d fe       call   $0x00000000720041f0 %rsp -> %rsp 0xfffffff8(%rsp) 
+ +2041 L4  66 0f 6f 84 24 b0 00 movdqa 0x000000b0(%rsp) -> %xmm0 
+           00 00
+ +2050 L4  66 0f 6f 8c 24 d0 00 movdqa 0x000000d0(%rsp) -> %xmm1 
+           00 00
+ +2059 L4  66 0f 6f 94 24 f0 00 movdqa 0x000000f0(%rsp) -> %xmm2 
+           00 00
+ +2068 L4  66 0f 6f 9c 24 10 01 movdqa 0x00000110(%rsp) -> %xmm3 
+           00 00
+ +2077 L4  66 0f 6f a4 24 30 01 movdqa 0x00000130(%rsp) -> %xmm4 
+           00 00
+ +2086 L4  66 0f 6f ac 24 50 01 movdqa 0x00000150(%rsp) -> %xmm5 
+           00 00
+ +2095 L4  66 0f 6f b4 24 70 01 movdqa 0x00000170(%rsp) -> %xmm6 
+           00 00
+ +2104 L4  66 0f 6f bc 24 90 01 movdqa 0x00000190(%rsp) -> %xmm7 
+           00 00
+ +2113 L4  66 44 0f 6f 84 24 b0 movdqa 0x000001b0(%rsp) -> %xmm8 
+           01 00 00
+ +2123 L4  66 44 0f 6f 8c 24 d0 movdqa 0x000001d0(%rsp) -> %xmm9 
+           01 00 00
+ +2133 L4  66 44 0f 6f 94 24 f0 movdqa 0x000001f0(%rsp) -> %xmm10 
+           01 00 00
+ +2143 L4  66 44 0f 6f 9c 24 10 movdqa 0x00000210(%rsp) -> %xmm11 
+           02 00 00
+ +2153 L4  66 44 0f 6f a4 24 30 movdqa 0x00000230(%rsp) -> %xmm12 
+           02 00 00
+ +2163 L4  66 44 0f 6f ac 24 50 movdqa 0x00000250(%rsp) -> %xmm13 
+           02 00 00
+ +2173 L4  66 44 0f 6f b4 24 70 movdqa 0x00000270(%rsp) -> %xmm14 
+           02 00 00
+ +2183 L4  66 44 0f 6f bc 24 90 movdqa 0x00000290(%rsp) -> %xmm15 
+           02 00 00
+ +2193 L4  48 8b 84 24 90 00 00 mov    0x00000090(%rsp) -> %rax 
+           00
+ +2201 L4  04 7f                add    $0x7f %al -> %al 
+ +2203 L4  9e                   sahf   %ah 
+ +2204 L4  48 8b 44 24 48       mov    0x48(%rsp) -> %rax 
+ +2209 L4  48 8b 4c 24 40       mov    0x40(%rsp) -> %rcx 
+ +2214 L4  48 8b 54 24 38       mov    0x38(%rsp) -> %rdx 
+ +2219 L4  48 8b 5c 24 30       mov    0x30(%rsp) -> %rbx 
+ +2224 L4  48 8b 6c 24 20       mov    0x20(%rsp) -> %rbp 
+ +2229 L4  48 8b 74 24 18       mov    0x18(%rsp) -> %rsi 
+ +2234 L4  48 8b 7c 24 10       mov    0x10(%rsp) -> %rdi 
+ +2239 L4  4c 8b 44 24 50       mov    0x50(%rsp) -> %r8 
+ +2244 L4  4c 8b 4c 24 58       mov    0x58(%rsp) -> %r9 
+ +2249 L4  4c 8b 54 24 60       mov    0x60(%rsp) -> %r10 
+ +2254 L4  4c 8b 5c 24 68       mov    0x68(%rsp) -> %r11 
+ +2259 L4  4c 8b 64 24 70       mov    0x70(%rsp) -> %r12 
+ +2264 L4  4c 8b 6c 24 78       mov    0x78(%rsp) -> %r13 
+ +2269 L4  4c 8b b4 24 80 00 00 mov    0x00000080(%rsp) -> %r14 
+           00
+ +2277 L4  4c 8b bc 24 88 00 00 mov    0x00000088(%rsp) -> %r15 
+           00
+ +2285 L4  65 48 8b 24 25 00 00 mov    %gs:0x00 -> %rsp 
+           00 00
+ +2294 L3  48 c7 44 24 08 00 00 mov    $0x00000000 -> 0x08(%rsp) 
+           00 00
+ +2303 L3  49 8d 3c 3b          lea    (%r11,%rdi,1) -> %rdi 
+ +2307 L4  65 48 89 24 25 00 00 mov    %rsp -> %gs:0x00 
+           00 00
+ +2316 L4  65 48 8b 24 25 20 00 mov    %gs:0x20 -> %rsp 
+           00 00
+ +2325 L4  48 8b a4 24 c0 02 00 mov    0x000002c0(%rsp) -> %rsp 
+           00
+ +2333 L4  48 8d a4 24 50 fd ff lea    0xfffffd50(%rsp) -> %rsp 
+           ff
+ +2341 L4  48 89 44 24 48       mov    %rax -> 0x48(%rsp) 
+ +2346 L4  48 89 4c 24 40       mov    %rcx -> 0x40(%rsp) 
+ +2351 L4  48 89 54 24 38       mov    %rdx -> 0x38(%rsp) 
+ +2356 L4  48 89 5c 24 30       mov    %rbx -> 0x30(%rsp) 
+ +2361 L4  48 89 64 24 28       mov    %rsp -> 0x28(%rsp) 
+ +2366 L4  48 89 6c 24 20       mov    %rbp -> 0x20(%rsp) 
+ +2371 L4  48 89 74 24 18       mov    %rsi -> 0x18(%rsp) 
+ +2376 L4  48 89 7c 24 10       mov    %rdi -> 0x10(%rsp) 
+ +2381 L4  4c 89 44 24 50       mov    %r8 -> 0x50(%rsp) 
+ +2386 L4  4c 89 4c 24 58       mov    %r9 -> 0x58(%rsp) 
+ +2391 L4  4c 89 54 24 60       mov    %r10 -> 0x60(%rsp) 
+ +2396 L4  4c 89 5c 24 68       mov    %r11 -> 0x68(%rsp) 
+ +2401 L4  4c 89 64 24 70       mov    %r12 -> 0x70(%rsp) 
+ +2406 L4  4c 89 6c 24 78       mov    %r13 -> 0x78(%rsp) 
+ +2411 L4  4c 89 b4 24 80 00 00 mov    %r14 -> 0x00000080(%rsp) 
+           00
+ +2419 L4  4c 89 bc 24 88 00 00 mov    %r15 -> 0x00000088(%rsp) 
+           00
+ +2427 L4  9f                   lahf   -> %ah 
+ +2428 L4  0f 90 c0             seto   -> %al 
+ +2431 L4  48 89 84 24 90 00 00 mov    %rax -> 0x00000090(%rsp) 
+           00
+ +2439 L4  66 0f 7f 84 24 b0 00 movdqa %xmm0 -> 0x000000b0(%rsp) 
+           00 00
+ +2448 L4  66 0f 7f 8c 24 d0 00 movdqa %xmm1 -> 0x000000d0(%rsp) 
+           00 00
+ +2457 L4  66 0f 7f 94 24 f0 00 movdqa %xmm2 -> 0x000000f0(%rsp) 
+           00 00
+ +2466 L4  66 0f 7f 9c 24 10 01 movdqa %xmm3 -> 0x00000110(%rsp) 
+           00 00
+ +2475 L4  66 0f 7f a4 24 30 01 movdqa %xmm4 -> 0x00000130(%rsp) 
+           00 00
+ +2484 L4  66 0f 7f ac 24 50 01 movdqa %xmm5 -> 0x00000150(%rsp) 
+           00 00
+ +2493 L4  66 0f 7f b4 24 70 01 movdqa %xmm6 -> 0x00000170(%rsp) 
+           00 00
+ +2502 L4  66 0f 7f bc 24 90 01 movdqa %xmm7 -> 0x00000190(%rsp) 
+           00 00
+ +2511 L4  66 44 0f 7f 84 24 b0 movdqa %xmm8 -> 0x000001b0(%rsp) 
+           01 00 00
+ +2521 L4  66 44 0f 7f 8c 24 d0 movdqa %xmm9 -> 0x000001d0(%rsp) 
+           01 00 00
+ +2531 L4  66 44 0f 7f 94 24 f0 movdqa %xmm10 -> 0x000001f0(%rsp) 
+           01 00 00
+ +2541 L4  66 44 0f 7f 9c 24 10 movdqa %xmm11 -> 0x00000210(%rsp) 
+           02 00 00
+ +2551 L4  66 44 0f 7f a4 24 30 movdqa %xmm12 -> 0x00000230(%rsp) 
+           02 00 00
+ +2561 L4  66 44 0f 7f ac 24 50 movdqa %xmm13 -> 0x00000250(%rsp) 
+           02 00 00
+ +2571 L4  66 44 0f 7f b4 24 70 movdqa %xmm14 -> 0x00000270(%rsp) 
+           02 00 00
+ +2581 L4  66 44 0f 7f bc 24 90 movdqa %xmm15 -> 0x00000290(%rsp) 
+           02 00 00
+ +2591 L4  48 8d 7c 24 f8       lea    0xfffffff8(%rsp) -> %rdi 
+ +2596 L4  48 be f5 31 99 86 8c mov    $0x00007f8c869931f5 -> %rsi 
+           7f 00 00
+ +2606 L4  ba 08 00 00 00       mov    $0x00000008 -> %edx 
+ +2611 L4  b9 01 00 00 00       mov    $0x00000001 -> %ecx 
+ +2616 L4  e8 bb a7 8d fe       call   $0x00000000720041f0 %rsp -> %rsp 0xfffffff8(%rsp) 
+ +2621 L4  66 0f 6f 84 24 b0 00 movdqa 0x000000b0(%rsp) -> %xmm0 
+           00 00
+ +2630 L4  66 0f 6f 8c 24 d0 00 movdqa 0x000000d0(%rsp) -> %xmm1 
+           00 00
+ +2639 L4  66 0f 6f 94 24 f0 00 movdqa 0x000000f0(%rsp) -> %xmm2 
+           00 00
+ +2648 L4  66 0f 6f 9c 24 10 01 movdqa 0x00000110(%rsp) -> %xmm3 
+           00 00
+ +2657 L4  66 0f 6f a4 24 30 01 movdqa 0x00000130(%rsp) -> %xmm4 
+           00 00
+ +2666 L4  66 0f 6f ac 24 50 01 movdqa 0x00000150(%rsp) -> %xmm5 
+           00 00
+ +2675 L4  66 0f 6f b4 24 70 01 movdqa 0x00000170(%rsp) -> %xmm6 
+           00 00
+ +2684 L4  66 0f 6f bc 24 90 01 movdqa 0x00000190(%rsp) -> %xmm7 
+           00 00
+ +2693 L4  66 44 0f 6f 84 24 b0 movdqa 0x000001b0(%rsp) -> %xmm8 
+           01 00 00
+ +2703 L4  66 44 0f 6f 8c 24 d0 movdqa 0x000001d0(%rsp) -> %xmm9 
+           01 00 00
+ +2713 L4  66 44 0f 6f 94 24 f0 movdqa 0x000001f0(%rsp) -> %xmm10 
+           01 00 00
+ +2723 L4  66 44 0f 6f 9c 24 10 movdqa 0x00000210(%rsp) -> %xmm11 
+           02 00 00
+ +2733 L4  66 44 0f 6f a4 24 30 movdqa 0x00000230(%rsp) -> %xmm12 
+           02 00 00
+ +2743 L4  66 44 0f 6f ac 24 50 movdqa 0x00000250(%rsp) -> %xmm13 
+           02 00 00
+ +2753 L4  66 44 0f 6f b4 24 70 movdqa 0x00000270(%rsp) -> %xmm14 
+           02 00 00
+ +2763 L4  66 44 0f 6f bc 24 90 movdqa 0x00000290(%rsp) -> %xmm15 
+           02 00 00
+ +2773 L4  48 8b 84 24 90 00 00 mov    0x00000090(%rsp) -> %rax 
+           00
+ +2781 L4  04 7f                add    $0x7f %al -> %al 
+ +2783 L4  9e                   sahf   %ah 
+ +2784 L4  48 8b 44 24 48       mov    0x48(%rsp) -> %rax 
+ +2789 L4  48 8b 4c 24 40       mov    0x40(%rsp) -> %rcx 
+ +2794 L4  48 8b 54 24 38       mov    0x38(%rsp) -> %rdx 
+ +2799 L4  48 8b 5c 24 30       mov    0x30(%rsp) -> %rbx 
+ +2804 L4  48 8b 6c 24 20       mov    0x20(%rsp) -> %rbp 
+ +2809 L4  48 8b 74 24 18       mov    0x18(%rsp) -> %rsi 
+ +2814 L4  48 8b 7c 24 10       mov    0x10(%rsp) -> %rdi 
+ +2819 L4  4c 8b 44 24 50       mov    0x50(%rsp) -> %r8 
+ +2824 L4  4c 8b 4c 24 58       mov    0x58(%rsp) -> %r9 
+ +2829 L4  4c 8b 54 24 60       mov    0x60(%rsp) -> %r10 
+ +2834 L4  4c 8b 5c 24 68       mov    0x68(%rsp) -> %r11 
+ +2839 L4  4c 8b 64 24 70       mov    0x70(%rsp) -> %r12 
+ +2844 L4  4c 8b 6c 24 78       mov    0x78(%rsp) -> %r13 
+ +2849 L4  4c 8b b4 24 80 00 00 mov    0x00000080(%rsp) -> %r14 
+           00
+ +2857 L4  4c 8b bc 24 88 00 00 mov    0x00000088(%rsp) -> %r15 
+           00
+ +2865 L4  65 48 8b 24 25 00 00 mov    %gs:0x00 -> %rsp 
+           00 00
+ +2874 L3  e8 76 c2 ff ff       call   $0x00007f8c8698f470 %rsp -> %rsp 0xfffffff8(%rsp) 
+END 0x0000000000000000
+
+spec_init
+Loading Input Data
+Duplicating 278475 bytes
+Duplicating 556950 bytes
+Duplicating 983252 bytes
+Input data 2097152 bytes in length
+Compressing Input Data, level 5
+Compressed data 1434910 bytes in length
+Uncompressing Data
+Uncompressed data 2097152 bytes in length
+Uncompressed data compared correctly
+Compressing Input Data, level 7
+Compressed data 1127895 bytes in length
+Uncompressing Data
+Uncompressed data 2097152 bytes in length
+Uncompressed data compared correctly
+Compressing Input Data, level 9
+Compressed data 1067335 bytes in length
+Uncompressing Data
+Uncompressed data 2097152 bytes in length
+Uncompressed data compared correctly
+Tested 2MB buffer: OK!
+Memory accesses: 7082698990
+Unaligned memory accesses: 223636
+
+real	3m15.030s
+user	3m14.512s
+sys	0m0.020s

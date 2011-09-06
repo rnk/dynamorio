@@ -1,0 +1,13 @@
+{
+    'alignment_opt0': '/scratch/rnk/dynamorio/spec06/result/CINT2006.248.test.csv',
+    'alignment_opt3': '/scratch/rnk/dynamorio/spec06/result/CINT2006.247.test.csv',
+    'inscount_manual': '/scratch/rnk/dynamorio/spec06/result/CINT2006.223.test.csv',
+    'inscount_opt0': '/scratch/rnk/dynamorio/spec06/result/CINT2006.215.test.csv',
+    'inscount_opt0_bb': '/scratch/rnk/dynamorio/spec06/result/CINT2006.218.test.csv',
+    'inscount_opt3': '/scratch/rnk/dynamorio/spec06/result/CINT2006.216.test.csv',
+    'inscount_opt3_tls': '/scratch/rnk/dynamorio/spec06/result/CINT2006.217.test.csv',
+    'memtrace_opt0': '/scratch/rnk/dynamorio/spec06/result/CINT2006.250.test.csv',
+    'memtrace_opt3': '/scratch/rnk/dynamorio/spec06/result/CINT2006.249.test.csv',
+    'native': '/scratch/rnk/dynamorio/spec06/result/CINT2006.213.test.csv',
+    'noclient': '/scratch/rnk/dynamorio/spec06/result/CINT2006.214.test.csv',
+}

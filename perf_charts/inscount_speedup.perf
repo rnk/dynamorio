@@ -1,0 +1,21 @@
+# clustered graph example from Derek Bruening's CGO 2005 talk
+=cluster;inscount_opt0;inscount_opt0_bb
+# green instead of gray since not planning on printing this
+colors=black,yellow
+=table
+yformat=%gx
+max=74.6686458094
+min=1
+=norotate
+ylabel=Times Speedup with opt3 and TLS
+xlabel=SPEC 2006 Benchmark
+# stretch it out in x direction
+extraops=set size 1.2,1
+
+astar 37.2918550817 6.79409785974
+bzip2 54.7474493343 8.68640663763
+gobmk 36.624632143 7.99210596595
+h264ref 64.5776581721 6.84898882393
+hmmer 74.6686458094 7.57463685416
+mcf 26.2235075343 7.25807073099
+sjeng 39.0779379897 9.4048525375

@@ -1,0 +1,1445 @@
+CLEANCALL: emitted partial inline slowpath:
+TAG  0x00000000400dc040
+ +0    L4  68 00 00 00 00       push   $0x0000000000000000 %rsp -> %rsp 0xfffffff8(%rsp) 
+ +5    L4  9c                   pushf  %rsp -> %rsp 0xfffffff8(%rsp) 
+ +165  L4  68 00 00 00 00       push   $0x0000000000000000 %rsp -> %rsp 0xfffffff8(%rsp) 
+ +170  L4  9d                   popf   %rsp (%rsp) -> %rsp 
+ +171  L4  65 48 a1 20 00 00 00 mov    %gs:0x20 -> %rax 
+           00 00 00 00
+ +182  L4  8b 80 90 01 00 00    mov    0x00000190(%rax) -> %eax 
+ +209  L4  e8 72 63 1f 31       call   $0x0000000071277467 %rsp -> %rsp 0xfffffff8(%rsp) 
+ +220  L4  65 48 8b 1c 25 20 00 mov    %gs:0x20 -> %rbx 
+           00 00
+ +229  L4  89 83 90 01 00 00    mov    %eax -> 0x00000190(%rbx) 
+ +394  L4  9d                   popf   %rsp (%rsp) -> %rsp 
+ +395  L4  c3                   ret    %rsp (%rsp) -> %rsp 
+END 0x00000000400dc040
+
+CLEANCALL: callee 0x0000000072001070 uses REG rdx at 0x0000000072001070
+CLEANCALL: callee 0x0000000072001070 uses REG r8 at 0x0000000072001070
+CLEANCALL: callee 0x0000000072001070 uses REG rdi at 0x0000000072001074
+CLEANCALL: callee 0x0000000072001070 uses REG r10 at 0x0000000072001074
+CLEANCALL: callee 0x0000000072001070 uses REG rax at 0x0000000072001077
+CLEANCALL: callee 0x0000000072001070 updates aflags
+CLEANCALL: callee 0x0000000072001070 uses REG rsp at 0x0000000000000000
+CLEANCALL: callee 0x0000000072001070 can be inlined.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM0.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM1.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM2.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM3.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM4.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM5.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM6.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM7.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM8.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM9.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM10.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM11.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM12.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM13.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM14.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM15.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg rcx.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg rbx.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg rsp.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg rbp.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg rsi.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg r9.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg r11.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg r12.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg r13.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg r14.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg r15.
+CLEANCALL: callee is not leaf, saving all regs.
+CLEANCALL: inlined callee 0x0000000072001070
+CLEANCALL: inlining clean call 0x0000000072001070, saving reg rax.
+CLEANCALL: inlining clean call 0x0000000072001070, saving reg rdx.
+CLEANCALL: inlining clean call 0x0000000072001070, saving reg rdi.
+CLEANCALL: inlining clean call 0x0000000072001070, saving reg r8.
+CLEANCALL: inlining clean call 0x0000000072001070, saving reg r10.
+CLEANCALL: inlining clean call 0x0000000072001070, passing arg via reg rdi.
+CLEANCALL: inlining clean call 0x0000000072001070, passing arg via reg rsi.
+CLEANCALL: inlining clean call 0x0000000072001070, passing arg via reg edx.
+CLEANCALL: inlining clean call 0x0000000072001070, passing arg via reg ecx.
+CLEANCALL: inlining clean call 0x0000000072001070, restoring reg r10.
+CLEANCALL: inlining clean call 0x0000000072001070, restoring reg r8.
+CLEANCALL: inlining clean call 0x0000000072001070, restoring reg rdi.
+CLEANCALL: inlining clean call 0x0000000072001070, restoring reg rdx.
+CLEANCALL: inlining clean call 0x0000000072001070, restoring reg rax.
+CLEANCALL: insert clean call to 0x0000000072001070
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM0.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM1.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM2.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM3.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM4.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM5.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM6.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM7.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM8.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM9.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM10.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM11.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM12.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM13.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM14.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM15.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg rcx.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg rbx.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg rsp.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg rbp.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg rsi.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg r9.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg r11.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg r12.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg r13.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg r14.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg r15.
+CLEANCALL: callee is not leaf, saving all regs.
+CLEANCALL: inlined callee 0x0000000072001070
+CLEANCALL: inlining clean call 0x0000000072001070, saving reg rax.
+CLEANCALL: inlining clean call 0x0000000072001070, saving reg rdx.
+CLEANCALL: inlining clean call 0x0000000072001070, saving reg rdi.
+CLEANCALL: inlining clean call 0x0000000072001070, saving reg r8.
+CLEANCALL: inlining clean call 0x0000000072001070, saving reg r10.
+CLEANCALL: inlining clean call 0x0000000072001070, passing arg via reg rdi.
+CLEANCALL: inlining clean call 0x0000000072001070, passing arg via reg rsi.
+CLEANCALL: inlining clean call 0x0000000072001070, passing arg via reg edx.
+CLEANCALL: inlining clean call 0x0000000072001070, passing arg via reg ecx.
+CLEANCALL: inlining clean call 0x0000000072001070, restoring reg r10.
+CLEANCALL: inlining clean call 0x0000000072001070, restoring reg r8.
+CLEANCALL: inlining clean call 0x0000000072001070, restoring reg rdi.
+CLEANCALL: inlining clean call 0x0000000072001070, restoring reg rdx.
+CLEANCALL: inlining clean call 0x0000000072001070, restoring reg rax.
+CLEANCALL: insert clean call to 0x0000000072001070
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM0.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM1.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM2.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM3.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM4.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM5.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM6.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM7.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM8.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM9.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM10.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM11.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM12.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM13.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM14.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM15.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg rcx.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg rbx.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg rsp.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg rbp.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg rsi.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg r9.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg r11.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg r12.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg r13.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg r14.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg r15.
+CLEANCALL: callee is not leaf, saving all regs.
+CLEANCALL: inlined callee 0x0000000072001070
+CLEANCALL: inlining clean call 0x0000000072001070, saving reg rax.
+CLEANCALL: inlining clean call 0x0000000072001070, saving reg rdx.
+CLEANCALL: inlining clean call 0x0000000072001070, saving reg rdi.
+CLEANCALL: inlining clean call 0x0000000072001070, saving reg r8.
+CLEANCALL: inlining clean call 0x0000000072001070, saving reg r10.
+CLEANCALL: inlining clean call 0x0000000072001070, passing arg via reg rdi.
+CLEANCALL: inlining clean call 0x0000000072001070, passing arg via reg rsi.
+CLEANCALL: inlining clean call 0x0000000072001070, passing arg via reg edx.
+CLEANCALL: inlining clean call 0x0000000072001070, passing arg via reg ecx.
+CLEANCALL: inlining clean call 0x0000000072001070, restoring reg r10.
+CLEANCALL: inlining clean call 0x0000000072001070, restoring reg r8.
+CLEANCALL: inlining clean call 0x0000000072001070, restoring reg rdi.
+CLEANCALL: inlining clean call 0x0000000072001070, restoring reg rdx.
+CLEANCALL: inlining clean call 0x0000000072001070, restoring reg rax.
+
+after instrumentation:
+TAG  0x000000000040103b
+ +0    L4  65 48 89 1c 25 18 00 mov    %rbx -> %gs:0x18 
+           00 00
+ +9    L4  48 8d 5c 24 f8       lea    0xfffffff8(%rsp) -> %rbx 
+ +14   L4  65 48 89 24 25 00 00 mov    %rsp -> %gs:0x00 
+           00 00
+ +23   L4  65 48 8b 24 25 20 00 mov    %gs:0x20 -> %rsp 
+           00 00
+ +32   L4  48 8b a4 24 b0 01 00 mov    0x000001b0(%rsp) -> %rsp 
+           00
+ +40   L4  50                   push   %rax %rsp -> %rsp 0xfffffff8(%rsp) 
+ +41   L4  52                   push   %rdx %rsp -> %rsp 0xfffffff8(%rsp) 
+ +42   L4  57                   push   %rdi %rsp -> %rsp 0xfffffff8(%rsp) 
+ +43   L4  41 50                push   %r8 %rsp -> %rsp 0xfffffff8(%rsp) 
+ +45   L4  41 52                push   %r10 %rsp -> %rsp 0xfffffff8(%rsp) 
+ +47   L4  9c                   pushf  %rsp -> %rsp 0xfffffff8(%rsp) 
+ +48   L4  48 8b fb             mov    %rbx -> %rdi 
+ +51   L4  48 be 3b 10 40 00 00 mov    $0x000000000040103b -> %rsi 
+           00 00 00
+ +61   L4  ba 08 00 00 00       mov    $0x00000008 -> %edx 
+ +66   L4  b9 01 00 00 00       mov    $0x00000001 -> %ecx 
+ +71   L3  41 89 d0             mov    %edx -> %r8d 
+ +74   L3  49 89 fa             mov    %rdi -> %r10 
+ +77   L3  41 8d 40 ff          lea    0xffffffff(%r8) -> %eax 
+ +81   L3  48 85 f8             test   %rax %rdi 
+ +84   L4  74 fe                jz     $0x00000000400817e0 
+ +86   L3  48 8d 05 84 00 00 00 lea    <rel> 0x000000007200110e -> %rax 
+ +93   L4  e8 5b a8 05 00       call   $0x00000000400dc040 %rsp -> %rsp 0xfffffff8(%rsp) 
+ +98   L4  9d                   popf   %rsp (%rsp) -> %rsp 
+ +99   L4  41 5a                pop    %rsp (%rsp) -> %r10 %rsp 
+ +101  L4  41 58                pop    %rsp (%rsp) -> %r8 %rsp 
+ +103  L4  5f                   pop    %rsp (%rsp) -> %rdi %rsp 
+ +104  L4  5a                   pop    %rsp (%rsp) -> %rdx %rsp 
+ +105  L4  58                   pop    %rsp (%rsp) -> %rax %rsp 
+ +106  L4  65 48 8b 24 25 00 00 mov    %gs:0x00 -> %rsp 
+           00 00
+ +115  L4  65 48 8b 1c 25 18 00 mov    %gs:0x18 -> %rbx 
+           00 00
+ +124  L3  55                   push   %rbp %rsp -> %rsp 0xfffffff8(%rsp) 
+ +125  L3  48 89 e5             mov    %rsp -> %rbp 
+ +128  L4  65 48 89 1c 25 18 00 mov    %rbx -> %gs:0x18 
+           00 00
+ +137  L4  48 8d 5d 00          lea    0x00(%rbp) -> %rbx 
+ +141  L4  65 48 89 24 25 00 00 mov    %rsp -> %gs:0x00 
+           00 00
+ +150  L4  65 48 8b 24 25 20 00 mov    %gs:0x20 -> %rsp 
+           00 00
+ +159  L4  48 8b a4 24 b0 01 00 mov    0x000001b0(%rsp) -> %rsp 
+           00
+ +167  L4  50                   push   %rax %rsp -> %rsp 0xfffffff8(%rsp) 
+ +168  L4  52                   push   %rdx %rsp -> %rsp 0xfffffff8(%rsp) 
+ +169  L4  57                   push   %rdi %rsp -> %rsp 0xfffffff8(%rsp) 
+ +170  L4  41 50                push   %r8 %rsp -> %rsp 0xfffffff8(%rsp) 
+ +172  L4  41 52                push   %r10 %rsp -> %rsp 0xfffffff8(%rsp) 
+ +174  L4  9c                   pushf  %rsp -> %rsp 0xfffffff8(%rsp) 
+ +175  L4  48 8b fb             mov    %rbx -> %rdi 
+ +178  L4  48 be 3f 10 40 00 00 mov    $0x000000000040103f -> %rsi 
+           00 00 00
+ +188  L4  ba 08 00 00 00       mov    $0x00000008 -> %edx 
+ +193  L4  b9 00 00 00 00       mov    $0x00000000 -> %ecx 
+ +198  L3  41 89 d0             mov    %edx -> %r8d 
+ +201  L3  49 89 fa             mov    %rdi -> %r10 
+ +204  L3  41 8d 40 ff          lea    0xffffffff(%r8) -> %eax 
+ +208  L3  48 85 f8             test   %rax %rdi 
+ +211  L4  74 fe                jz     $0x00000000400817e0 
+ +213  L3  48 8d 05 84 00 00 00 lea    <rel> 0x000000007200110e -> %rax 
+ +220  L4  e8 5b a8 05 00       call   $0x00000000400dc040 %rsp -> %rsp 0xfffffff8(%rsp) 
+ +225  L4  9d                   popf   %rsp (%rsp) -> %rsp 
+ +226  L4  41 5a                pop    %rsp (%rsp) -> %r10 %rsp 
+ +228  L4  41 58                pop    %rsp (%rsp) -> %r8 %rsp 
+ +230  L4  5f                   pop    %rsp (%rsp) -> %rdi %rsp 
+ +231  L4  5a                   pop    %rsp (%rsp) -> %rdx %rsp 
+ +232  L4  58                   pop    %rsp (%rsp) -> %rax %rsp 
+ +233  L4  65 48 8b 24 25 00 00 mov    %gs:0x00 -> %rsp 
+           00 00
+ +242  L4  65 48 8b 1c 25 18 00 mov    %gs:0x18 -> %rbx 
+           00 00
+ +251  L3  c9                   leave  %rbp %rsp (%rbp) -> %rsp %rbp 
+ +252  L4  65 48 89 1c 25 18 00 mov    %rbx -> %gs:0x18 
+           00 00
+ +261  L4  48 8d 1c 24          lea    (%rsp) -> %rbx 
+ +265  L4  65 48 89 24 25 00 00 mov    %rsp -> %gs:0x00 
+           00 00
+ +274  L4  65 48 8b 24 25 20 00 mov    %gs:0x20 -> %rsp 
+           00 00
+ +283  L4  48 8b a4 24 b0 01 00 mov    0x000001b0(%rsp) -> %rsp 
+           00
+ +291  L4  50                   push   %rax %rsp -> %rsp 0xfffffff8(%rsp) 
+ +292  L4  52                   push   %rdx %rsp -> %rsp 0xfffffff8(%rsp) 
+ +293  L4  57                   push   %rdi %rsp -> %rsp 0xfffffff8(%rsp) 
+ +294  L4  41 50                push   %r8 %rsp -> %rsp 0xfffffff8(%rsp) 
+ +296  L4  41 52                push   %r10 %rsp -> %rsp 0xfffffff8(%rsp) 
+ +298  L4  9c                   pushf  %rsp -> %rsp 0xfffffff8(%rsp) 
+ +299  L4  48 8b fb             mov    %rbx -> %rdi 
+ +302  L4  48 be 40 10 40 00 00 mov    $0x0000000000401040 -> %rsi 
+           00 00 00
+ +312  L4  ba 08 00 00 00       mov    $0x00000008 -> %edx 
+ +317  L4  b9 00 00 00 00       mov    $0x00000000 -> %ecx 
+ +322  L3  41 89 d0             mov    %edx -> %r8d 
+ +325  L3  49 89 fa             mov    %rdi -> %r10 
+ +328  L3  41 8d 40 ff          lea    0xffffffff(%r8) -> %eax 
+ +332  L3  48 85 f8             test   %rax %rdi 
+ +335  L4  74 fe                jz     $0x00000000400817e0 
+ +337  L3  48 8d 05 84 00 00 00 lea    <rel> 0x000000007200110e -> %rax 
+ +344  L4  e8 5b a8 05 00       call   $0x00000000400dc040 %rsp -> %rsp 0xfffffff8(%rsp) 
+ +349  L4  9d                   popf   %rsp (%rsp) -> %rsp 
+ +350  L4  41 5a                pop    %rsp (%rsp) -> %r10 %rsp 
+ +352  L4  41 58                pop    %rsp (%rsp) -> %r8 %rsp 
+ +354  L4  5f                   pop    %rsp (%rsp) -> %rdi %rsp 
+ +355  L4  5a                   pop    %rsp (%rsp) -> %rdx %rsp 
+ +356  L4  58                   pop    %rsp (%rsp) -> %rax %rsp 
+ +357  L4  65 48 8b 24 25 00 00 mov    %gs:0x00 -> %rsp 
+           00 00
+ +366  L4  65 48 8b 1c 25 18 00 mov    %gs:0x18 -> %rbx 
+           00 00
+ +375  L3  c3                   ret    %rsp (%rsp) -> %rsp 
+END 0x000000000040103b
+
+setting cur_pc (for fall-through) to0x0000000000401041
+exit_branch_type=0x6 bb->exit_target=0x000000004001b380
+emit_fragment: bb use ibl <0x000000004001b380>
+exit_branch_type=0x6 target=0x000000004001b380 l->flags=0x9006
+Fragment 136, tag 0x000000000040103b, flags 0x1000018, shared, tracehead, size 399:
+	
+Entry into F136(0x000000000040103b).0x00000000400226bc (trace head)(shared)
+	
+Exit from sourceless ibl: bb ret	
+ (target 0x0000000000401084 not in cache)
+fragment_add_ibl_target tag 0x0000000000401084, branch 0, F0 
+
+dispatch: target = 0x0000000000401084
+
+interp: start_pc = 0x0000000000401084
+  0x0000000000401084  c7 45 dc 00 00 00 00 mov    $0x00000000 -> 0xffffffdc(%rbp) 
+  0x000000000040108b  eb 2c                jmp    $0x00000000004010b9 
+end_pc = 0x000000000040108d
+
+
+instrument_basic_block ******************
+
+before instrumentation:
+TAG  0x0000000000401084
+ +0    L3  c7 45 dc 00 00 00 00 mov    $0x00000000 -> 0xffffffdc(%rbp) 
+ +7    L3  eb 2c                jmp    $0x00000000004010b9 
+END 0x0000000000401084
+
+CLEANCALL: insert clean call to 0x0000000072001070
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM0.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM1.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM2.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM3.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM4.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM5.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM6.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM7.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM8.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM9.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM10.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM11.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM12.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM13.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM14.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM15.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg rcx.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg rbx.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg rsp.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg rbp.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg rsi.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg r9.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg r11.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg r12.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg r13.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg r14.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg r15.
+CLEANCALL: callee is not leaf, saving all regs.
+CLEANCALL: inlined callee 0x0000000072001070
+CLEANCALL: inlining clean call 0x0000000072001070, saving reg rax.
+CLEANCALL: inlining clean call 0x0000000072001070, saving reg rdx.
+CLEANCALL: inlining clean call 0x0000000072001070, saving reg rdi.
+CLEANCALL: inlining clean call 0x0000000072001070, saving reg r8.
+CLEANCALL: inlining clean call 0x0000000072001070, saving reg r10.
+CLEANCALL: inlining clean call 0x0000000072001070, passing arg via reg rdi.
+CLEANCALL: inlining clean call 0x0000000072001070, passing arg via reg rsi.
+CLEANCALL: inlining clean call 0x0000000072001070, passing arg via reg edx.
+CLEANCALL: inlining clean call 0x0000000072001070, passing arg via reg ecx.
+CLEANCALL: inlining clean call 0x0000000072001070, restoring reg r10.
+CLEANCALL: inlining clean call 0x0000000072001070, restoring reg r8.
+CLEANCALL: inlining clean call 0x0000000072001070, restoring reg rdi.
+CLEANCALL: inlining clean call 0x0000000072001070, restoring reg rdx.
+CLEANCALL: inlining clean call 0x0000000072001070, restoring reg rax.
+
+after instrumentation:
+TAG  0x0000000000401084
+ +0    L4  65 48 89 1c 25 18 00 mov    %rbx -> %gs:0x18 
+           00 00
+ +9    L4  48 8d 5d dc          lea    0xffffffdc(%rbp) -> %rbx 
+ +13   L4  65 48 89 24 25 00 00 mov    %rsp -> %gs:0x00 
+           00 00
+ +22   L4  65 48 8b 24 25 20 00 mov    %gs:0x20 -> %rsp 
+           00 00
+ +31   L4  48 8b a4 24 b0 01 00 mov    0x000001b0(%rsp) -> %rsp 
+           00
+ +39   L4  50                   push   %rax %rsp -> %rsp 0xfffffff8(%rsp) 
+ +40   L4  52                   push   %rdx %rsp -> %rsp 0xfffffff8(%rsp) 
+ +41   L4  57                   push   %rdi %rsp -> %rsp 0xfffffff8(%rsp) 
+ +42   L4  41 50                push   %r8 %rsp -> %rsp 0xfffffff8(%rsp) 
+ +44   L4  41 52                push   %r10 %rsp -> %rsp 0xfffffff8(%rsp) 
+ +46   L4  9c                   pushf  %rsp -> %rsp 0xfffffff8(%rsp) 
+ +47   L4  48 8b fb             mov    %rbx -> %rdi 
+ +50   L4  48 be 84 10 40 00 00 mov    $0x0000000000401084 -> %rsi 
+           00 00 00
+ +60   L4  ba 04 00 00 00       mov    $0x00000004 -> %edx 
+ +65   L4  b9 01 00 00 00       mov    $0x00000001 -> %ecx 
+ +70   L3  41 89 d0             mov    %edx -> %r8d 
+ +73   L3  49 89 fa             mov    %rdi -> %r10 
+ +76   L3  41 8d 40 ff          lea    0xffffffff(%r8) -> %eax 
+ +80   L3  48 85 f8             test   %rax %rdi 
+ +83   L4  74 fe                jz     $0x00000000400817e0 
+ +85   L3  48 8d 05 84 00 00 00 lea    <rel> 0x000000007200110e -> %rax 
+ +92   L4  e8 5b a8 05 00       call   $0x00000000400dc040 %rsp -> %rsp 0xfffffff8(%rsp) 
+ +97   L4  9d                   popf   %rsp (%rsp) -> %rsp 
+ +98   L4  41 5a                pop    %rsp (%rsp) -> %r10 %rsp 
+ +100  L4  41 58                pop    %rsp (%rsp) -> %r8 %rsp 
+ +102  L4  5f                   pop    %rsp (%rsp) -> %rdi %rsp 
+ +103  L4  5a                   pop    %rsp (%rsp) -> %rdx %rsp 
+ +104  L4  58                   pop    %rsp (%rsp) -> %rax %rsp 
+ +105  L4  65 48 8b 24 25 00 00 mov    %gs:0x00 -> %rsp 
+           00 00
+ +114  L4  65 48 8b 1c 25 18 00 mov    %gs:0x18 -> %rbx 
+           00 00
+ +123  L3  c7 45 dc 00 00 00 00 mov    $0x00000000 -> 0xffffffdc(%rbp) 
+ +130  L3  eb 2c                jmp    $0x00000000004010b9 
+END 0x0000000000401084
+
+setting cur_pc (for fall-through) to0x000000000040108d
+exit_branch_type=0x0 target=0x00000000004010b9 l->flags=0x9801
+Fragment 137, tag 0x0000000000401084, flags 0x1000030, shared, size 138:
+	
+Entry into F137(0x0000000000401084).0x0000000040022854 (shared)
+	
+Exit from F137(0x0000000000401084).0x00000000400228d9 (shared)	
+ (target 0x00000000004010b9 not in cache)
+
+dispatch: target = 0x00000000004010b9
+
+interp: start_pc = 0x00000000004010b9
+  0x00000000004010b9  83 7d dc 09          cmp    0xffffffdc(%rbp) $0x00000009 
+  0x00000000004010bd  7e ce                jle    $0x000000000040108d 
+end_pc = 0x00000000004010bf
+
+
+instrument_basic_block ******************
+
+before instrumentation:
+TAG  0x00000000004010b9
+ +0    L3  83 7d dc 09          cmp    0xffffffdc(%rbp) $0x00000009 
+ +4    L3  7e ce                jle    $0x000000000040108d 
+END 0x00000000004010b9
+
+CLEANCALL: insert clean call to 0x0000000072001070
+CLEANCALL: inserting clean call 0x0000000072001070, skip saving aflags.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM0.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM1.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM2.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM3.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM4.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM5.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM6.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM7.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM8.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM9.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM10.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM11.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM12.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM13.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM14.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM15.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg rcx.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg rbx.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg rsp.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg rbp.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg rsi.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg r9.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg r11.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg r12.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg r13.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg r14.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg r15.
+CLEANCALL: callee is not leaf, saving all regs.
+CLEANCALL: inlined callee 0x0000000072001070
+CLEANCALL: inlining clean call 0x0000000072001070, saving reg rax.
+CLEANCALL: inlining clean call 0x0000000072001070, saving reg rdx.
+CLEANCALL: inlining clean call 0x0000000072001070, saving reg rdi.
+CLEANCALL: inlining clean call 0x0000000072001070, saving reg r8.
+CLEANCALL: inlining clean call 0x0000000072001070, saving reg r10.
+CLEANCALL: inlining clean call 0x0000000072001070, passing arg via reg rdi.
+CLEANCALL: inlining clean call 0x0000000072001070, passing arg via reg rsi.
+CLEANCALL: inlining clean call 0x0000000072001070, passing arg via reg edx.
+CLEANCALL: inlining clean call 0x0000000072001070, passing arg via reg ecx.
+CLEANCALL: inlining clean call 0x0000000072001070, restoring reg r10.
+CLEANCALL: inlining clean call 0x0000000072001070, restoring reg r8.
+CLEANCALL: inlining clean call 0x0000000072001070, restoring reg rdi.
+CLEANCALL: inlining clean call 0x0000000072001070, restoring reg rdx.
+CLEANCALL: inlining clean call 0x0000000072001070, restoring reg rax.
+
+after instrumentation:
+TAG  0x00000000004010b9
+ +0    L4  65 48 89 1c 25 18 00 mov    %rbx -> %gs:0x18 
+           00 00
+ +9    L4  48 8d 5d dc          lea    0xffffffdc(%rbp) -> %rbx 
+ +13   L4  65 48 89 24 25 00 00 mov    %rsp -> %gs:0x00 
+           00 00
+ +22   L4  65 48 8b 24 25 20 00 mov    %gs:0x20 -> %rsp 
+           00 00
+ +31   L4  48 8b a4 24 b0 01 00 mov    0x000001b0(%rsp) -> %rsp 
+           00
+ +39   L4  50                   push   %rax %rsp -> %rsp 0xfffffff8(%rsp) 
+ +40   L4  52                   push   %rdx %rsp -> %rsp 0xfffffff8(%rsp) 
+ +41   L4  57                   push   %rdi %rsp -> %rsp 0xfffffff8(%rsp) 
+ +42   L4  41 50                push   %r8 %rsp -> %rsp 0xfffffff8(%rsp) 
+ +44   L4  41 52                push   %r10 %rsp -> %rsp 0xfffffff8(%rsp) 
+ +46   L4  48 8b fb             mov    %rbx -> %rdi 
+ +49   L4  48 be b9 10 40 00 00 mov    $0x00000000004010b9 -> %rsi 
+           00 00 00
+ +59   L4  ba 04 00 00 00       mov    $0x00000004 -> %edx 
+ +64   L4  b9 00 00 00 00       mov    $0x00000000 -> %ecx 
+ +69   L3  41 89 d0             mov    %edx -> %r8d 
+ +72   L3  49 89 fa             mov    %rdi -> %r10 
+ +75   L3  41 8d 40 ff          lea    0xffffffff(%r8) -> %eax 
+ +79   L3  48 85 f8             test   %rax %rdi 
+ +82   L4  74 fe                jz     $0x00000000400817e0 
+ +84   L3  48 8d 05 84 00 00 00 lea    <rel> 0x000000007200110e -> %rax 
+ +91   L4  e8 5b a8 05 00       call   $0x00000000400dc040 %rsp -> %rsp 0xfffffff8(%rsp) 
+ +96   L4  41 5a                pop    %rsp (%rsp) -> %r10 %rsp 
+ +98   L4  41 58                pop    %rsp (%rsp) -> %r8 %rsp 
+ +100  L4  5f                   pop    %rsp (%rsp) -> %rdi %rsp 
+ +101  L4  5a                   pop    %rsp (%rsp) -> %rdx %rsp 
+ +102  L4  58                   pop    %rsp (%rsp) -> %rax %rsp 
+ +103  L4  65 48 8b 24 25 00 00 mov    %gs:0x00 -> %rsp 
+           00 00
+ +112  L4  65 48 8b 1c 25 18 00 mov    %gs:0x18 -> %rbx 
+           00 00
+ +121  L3  83 7d dc 09          cmp    0xffffffdc(%rbp) $0x00000009 
+ +125  L3  7e ce                jle    $0x000000000040108d 
+END 0x00000000004010b9
+
+setting cur_pc (for fall-through) to0x00000000004010bf
+exit_branch_type=0x0 bb->exit_target=0x00000000004010bf
+exit_branch_type=0x11 target=0x000000000040108d l->flags=0x8011
+exit_branch_type=0x0 target=0x00000000004010bf l->flags=0x9001
+final exit sharing prev exit's stub @ 0x0000000040051a31
+Fragment 138, tag 0x00000000004010b9, flags 0x9000630, shared, size 139:
+	
+Entry into F138(0x00000000004010b9).0x00000000400228e8 (shared)
+	
+Exit from F138(0x00000000004010b9).0x0000000040022968 (shared)	
+ (target 0x000000000040108d not in cache)
+
+dispatch: target = 0x000000000040108d
+
+interp: start_pc = 0x000000000040108d
+  0x000000000040108d  48 8b 45 e0          mov    0xffffffe0(%rbp) -> %rax 
+  0x0000000000401091  c7 00 11 11 11 11    mov    $0x11111111 -> (%rax) 
+  0x0000000000401097  48 8b 45 e8          mov    0xffffffe8(%rbp) -> %rax 
+  0x000000000040109b  c7 00 22 22 22 22    mov    $0x22222222 -> (%rax) 
+  0x00000000004010a1  48 8b 45 f0          mov    0xfffffff0(%rbp) -> %rax 
+  0x00000000004010a5  c7 00 33 33 33 33    mov    $0x33333333 -> (%rax) 
+  0x00000000004010ab  48 8b 45 f8          mov    0xfffffff8(%rbp) -> %rax 
+  0x00000000004010af  c7 00 44 44 44 44    mov    $0x44444444 -> (%rax) 
+  0x00000000004010b5  83 45 dc 01          add    $0x00000001 0xffffffdc(%rbp) -> 0xffffffdc(%rbp) 
+  0x00000000004010b9  83 7d dc 09          cmp    0xffffffdc(%rbp) $0x00000009 
+  0x00000000004010bd  7e ce                jle    $0x000000000040108d 
+end_pc = 0x00000000004010bf
+
+
+instrument_basic_block ******************
+
+before instrumentation:
+TAG  0x000000000040108d
+ +0    L3  48 8b 45 e0          mov    0xffffffe0(%rbp) -> %rax 
+ +4    L3  c7 00 11 11 11 11    mov    $0x11111111 -> (%rax) 
+ +10   L3  48 8b 45 e8          mov    0xffffffe8(%rbp) -> %rax 
+ +14   L3  c7 00 22 22 22 22    mov    $0x22222222 -> (%rax) 
+ +20   L3  48 8b 45 f0          mov    0xfffffff0(%rbp) -> %rax 
+ +24   L3  c7 00 33 33 33 33    mov    $0x33333333 -> (%rax) 
+ +30   L3  48 8b 45 f8          mov    0xfffffff8(%rbp) -> %rax 
+ +34   L3  c7 00 44 44 44 44    mov    $0x44444444 -> (%rax) 
+ +40   L3  83 45 dc 01          add    $0x00000001 0xffffffdc(%rbp) -> 0xffffffdc(%rbp) 
+ +44   L3  83 7d dc 09          cmp    0xffffffdc(%rbp) $0x00000009 
+ +48   L3  7e ce                jle    $0x000000000040108d 
+END 0x000000000040108d
+
+CLEANCALL: insert clean call to 0x0000000072001070
+CLEANCALL: inserting clean call 0x0000000072001070, skip saving aflags.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM0.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM1.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM2.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM3.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM4.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM5.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM6.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM7.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM8.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM9.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM10.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM11.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM12.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM13.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM14.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM15.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg rcx.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg rbx.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg rsp.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg rbp.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg rsi.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg r9.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg r11.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg r12.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg r13.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg r14.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg r15.
+CLEANCALL: callee is not leaf, saving all regs.
+CLEANCALL: inlined callee 0x0000000072001070
+CLEANCALL: inlining clean call 0x0000000072001070, saving reg rax.
+CLEANCALL: inlining clean call 0x0000000072001070, saving reg rdx.
+CLEANCALL: inlining clean call 0x0000000072001070, saving reg rdi.
+CLEANCALL: inlining clean call 0x0000000072001070, saving reg r8.
+CLEANCALL: inlining clean call 0x0000000072001070, saving reg r10.
+CLEANCALL: inlining clean call 0x0000000072001070, passing arg via reg rdi.
+CLEANCALL: inlining clean call 0x0000000072001070, passing arg via reg rsi.
+CLEANCALL: inlining clean call 0x0000000072001070, passing arg via reg edx.
+CLEANCALL: inlining clean call 0x0000000072001070, passing arg via reg ecx.
+CLEANCALL: inlining clean call 0x0000000072001070, restoring reg r10.
+CLEANCALL: inlining clean call 0x0000000072001070, restoring reg r8.
+CLEANCALL: inlining clean call 0x0000000072001070, restoring reg rdi.
+CLEANCALL: inlining clean call 0x0000000072001070, restoring reg rdx.
+CLEANCALL: inlining clean call 0x0000000072001070, restoring reg rax.
+CLEANCALL: insert clean call to 0x0000000072001070
+CLEANCALL: inserting clean call 0x0000000072001070, skip saving aflags.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM0.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM1.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM2.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM3.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM4.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM5.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM6.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM7.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM8.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM9.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM10.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM11.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM12.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM13.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM14.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM15.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg rcx.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg rbx.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg rsp.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg rbp.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg rsi.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg r9.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg r11.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg r12.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg r13.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg r14.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg r15.
+CLEANCALL: callee is not leaf, saving all regs.
+CLEANCALL: inlined callee 0x0000000072001070
+CLEANCALL: inlining clean call 0x0000000072001070, saving reg rax.
+CLEANCALL: inlining clean call 0x0000000072001070, saving reg rdx.
+CLEANCALL: inlining clean call 0x0000000072001070, saving reg rdi.
+CLEANCALL: inlining clean call 0x0000000072001070, saving reg r8.
+CLEANCALL: inlining clean call 0x0000000072001070, saving reg r10.
+CLEANCALL: inlining clean call 0x0000000072001070, passing arg via reg rdi.
+CLEANCALL: inlining clean call 0x0000000072001070, passing arg via reg rsi.
+CLEANCALL: inlining clean call 0x0000000072001070, passing arg via reg edx.
+CLEANCALL: inlining clean call 0x0000000072001070, passing arg via reg ecx.
+CLEANCALL: inlining clean call 0x0000000072001070, restoring reg r10.
+CLEANCALL: inlining clean call 0x0000000072001070, restoring reg r8.
+CLEANCALL: inlining clean call 0x0000000072001070, restoring reg rdi.
+CLEANCALL: inlining clean call 0x0000000072001070, restoring reg rdx.
+CLEANCALL: inlining clean call 0x0000000072001070, restoring reg rax.
+CLEANCALL: insert clean call to 0x0000000072001070
+CLEANCALL: inserting clean call 0x0000000072001070, skip saving aflags.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM0.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM1.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM2.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM3.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM4.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM5.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM6.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM7.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM8.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM9.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM10.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM11.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM12.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM13.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM14.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM15.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg rcx.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg rbx.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg rsp.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg rbp.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg rsi.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg r9.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg r11.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg r12.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg r13.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg r14.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg r15.
+CLEANCALL: callee is not leaf, saving all regs.
+CLEANCALL: inlined callee 0x0000000072001070
+CLEANCALL: inlining clean call 0x0000000072001070, saving reg rax.
+CLEANCALL: inlining clean call 0x0000000072001070, saving reg rdx.
+CLEANCALL: inlining clean call 0x0000000072001070, saving reg rdi.
+CLEANCALL: inlining clean call 0x0000000072001070, saving reg r8.
+CLEANCALL: inlining clean call 0x0000000072001070, saving reg r10.
+CLEANCALL: inlining clean call 0x0000000072001070, passing arg via reg rdi.
+CLEANCALL: inlining clean call 0x0000000072001070, passing arg via reg rsi.
+CLEANCALL: inlining clean call 0x0000000072001070, passing arg via reg edx.
+CLEANCALL: inlining clean call 0x0000000072001070, passing arg via reg ecx.
+CLEANCALL: inlining clean call 0x0000000072001070, restoring reg r10.
+CLEANCALL: inlining clean call 0x0000000072001070, restoring reg r8.
+CLEANCALL: inlining clean call 0x0000000072001070, restoring reg rdi.
+CLEANCALL: inlining clean call 0x0000000072001070, restoring reg rdx.
+CLEANCALL: inlining clean call 0x0000000072001070, restoring reg rax.
+CLEANCALL: insert clean call to 0x0000000072001070
+CLEANCALL: inserting clean call 0x0000000072001070, skip saving aflags.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM0.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM1.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM2.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM3.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM4.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM5.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM6.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM7.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM8.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM9.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM10.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM11.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM12.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM13.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM14.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM15.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg rcx.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg rbx.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg rsp.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg rbp.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg rsi.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg r9.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg r11.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg r12.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg r13.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg r14.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg r15.
+CLEANCALL: callee is not leaf, saving all regs.
+CLEANCALL: inlined callee 0x0000000072001070
+CLEANCALL: inlining clean call 0x0000000072001070, saving reg rax.
+CLEANCALL: inlining clean call 0x0000000072001070, saving reg rdx.
+CLEANCALL: inlining clean call 0x0000000072001070, saving reg rdi.
+CLEANCALL: inlining clean call 0x0000000072001070, saving reg r8.
+CLEANCALL: inlining clean call 0x0000000072001070, saving reg r10.
+CLEANCALL: inlining clean call 0x0000000072001070, passing arg via reg rdi.
+CLEANCALL: inlining clean call 0x0000000072001070, passing arg via reg rsi.
+CLEANCALL: inlining clean call 0x0000000072001070, passing arg via reg edx.
+CLEANCALL: inlining clean call 0x0000000072001070, passing arg via reg ecx.
+CLEANCALL: inlining clean call 0x0000000072001070, restoring reg r10.
+CLEANCALL: inlining clean call 0x0000000072001070, restoring reg r8.
+CLEANCALL: inlining clean call 0x0000000072001070, restoring reg rdi.
+CLEANCALL: inlining clean call 0x0000000072001070, restoring reg rdx.
+CLEANCALL: inlining clean call 0x0000000072001070, restoring reg rax.
+CLEANCALL: insert clean call to 0x0000000072001070
+CLEANCALL: inserting clean call 0x0000000072001070, skip saving aflags.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM0.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM1.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM2.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM3.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM4.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM5.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM6.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM7.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM8.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM9.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM10.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM11.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM12.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM13.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM14.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM15.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg rcx.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg rbx.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg rsp.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg rbp.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg rsi.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg r9.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg r11.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg r12.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg r13.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg r14.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg r15.
+CLEANCALL: callee is not leaf, saving all regs.
+CLEANCALL: inlined callee 0x0000000072001070
+CLEANCALL: inlining clean call 0x0000000072001070, saving reg rax.
+CLEANCALL: inlining clean call 0x0000000072001070, saving reg rdx.
+CLEANCALL: inlining clean call 0x0000000072001070, saving reg rdi.
+CLEANCALL: inlining clean call 0x0000000072001070, saving reg r8.
+CLEANCALL: inlining clean call 0x0000000072001070, saving reg r10.
+CLEANCALL: inlining clean call 0x0000000072001070, passing arg via reg rdi.
+CLEANCALL: inlining clean call 0x0000000072001070, passing arg via reg rsi.
+CLEANCALL: inlining clean call 0x0000000072001070, passing arg via reg edx.
+CLEANCALL: inlining clean call 0x0000000072001070, passing arg via reg ecx.
+CLEANCALL: inlining clean call 0x0000000072001070, restoring reg r10.
+CLEANCALL: inlining clean call 0x0000000072001070, restoring reg r8.
+CLEANCALL: inlining clean call 0x0000000072001070, restoring reg rdi.
+CLEANCALL: inlining clean call 0x0000000072001070, restoring reg rdx.
+CLEANCALL: inlining clean call 0x0000000072001070, restoring reg rax.
+CLEANCALL: insert clean call to 0x0000000072001070
+CLEANCALL: inserting clean call 0x0000000072001070, skip saving aflags.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM0.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM1.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM2.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM3.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM4.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM5.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM6.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM7.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM8.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM9.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM10.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM11.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM12.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM13.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM14.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM15.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg rcx.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg rbx.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg rsp.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg rbp.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg rsi.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg r9.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg r11.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg r12.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg r13.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg r14.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg r15.
+CLEANCALL: callee is not leaf, saving all regs.
+CLEANCALL: inlined callee 0x0000000072001070
+CLEANCALL: inlining clean call 0x0000000072001070, saving reg rax.
+CLEANCALL: inlining clean call 0x0000000072001070, saving reg rdx.
+CLEANCALL: inlining clean call 0x0000000072001070, saving reg rdi.
+CLEANCALL: inlining clean call 0x0000000072001070, saving reg r8.
+CLEANCALL: inlining clean call 0x0000000072001070, saving reg r10.
+CLEANCALL: inlining clean call 0x0000000072001070, passing arg via reg rdi.
+CLEANCALL: inlining clean call 0x0000000072001070, passing arg via reg rsi.
+CLEANCALL: inlining clean call 0x0000000072001070, passing arg via reg edx.
+CLEANCALL: inlining clean call 0x0000000072001070, passing arg via reg ecx.
+CLEANCALL: inlining clean call 0x0000000072001070, restoring reg r10.
+CLEANCALL: inlining clean call 0x0000000072001070, restoring reg r8.
+CLEANCALL: inlining clean call 0x0000000072001070, restoring reg rdi.
+CLEANCALL: inlining clean call 0x0000000072001070, restoring reg rdx.
+CLEANCALL: inlining clean call 0x0000000072001070, restoring reg rax.
+CLEANCALL: insert clean call to 0x0000000072001070
+CLEANCALL: inserting clean call 0x0000000072001070, skip saving aflags.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM0.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM1.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM2.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM3.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM4.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM5.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM6.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM7.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM8.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM9.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM10.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM11.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM12.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM13.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM14.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM15.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg rcx.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg rbx.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg rsp.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg rbp.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg rsi.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg r9.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg r11.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg r12.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg r13.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg r14.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg r15.
+CLEANCALL: callee is not leaf, saving all regs.
+CLEANCALL: inlined callee 0x0000000072001070
+CLEANCALL: inlining clean call 0x0000000072001070, saving reg rax.
+CLEANCALL: inlining clean call 0x0000000072001070, saving reg rdx.
+CLEANCALL: inlining clean call 0x0000000072001070, saving reg rdi.
+CLEANCALL: inlining clean call 0x0000000072001070, saving reg r8.
+CLEANCALL: inlining clean call 0x0000000072001070, saving reg r10.
+CLEANCALL: inlining clean call 0x0000000072001070, passing arg via reg rdi.
+CLEANCALL: inlining clean call 0x0000000072001070, passing arg via reg rsi.
+CLEANCALL: inlining clean call 0x0000000072001070, passing arg via reg edx.
+CLEANCALL: inlining clean call 0x0000000072001070, passing arg via reg ecx.
+CLEANCALL: inlining clean call 0x0000000072001070, restoring reg r10.
+CLEANCALL: inlining clean call 0x0000000072001070, restoring reg r8.
+CLEANCALL: inlining clean call 0x0000000072001070, restoring reg rdi.
+CLEANCALL: inlining clean call 0x0000000072001070, restoring reg rdx.
+CLEANCALL: inlining clean call 0x0000000072001070, restoring reg rax.
+CLEANCALL: insert clean call to 0x0000000072001070
+CLEANCALL: inserting clean call 0x0000000072001070, skip saving aflags.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM0.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM1.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM2.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM3.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM4.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM5.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM6.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM7.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM8.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM9.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM10.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM11.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM12.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM13.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM14.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM15.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg rcx.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg rbx.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg rsp.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg rbp.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg rsi.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg r9.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg r11.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg r12.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg r13.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg r14.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg r15.
+CLEANCALL: callee is not leaf, saving all regs.
+CLEANCALL: inlined callee 0x0000000072001070
+CLEANCALL: inlining clean call 0x0000000072001070, saving reg rax.
+CLEANCALL: inlining clean call 0x0000000072001070, saving reg rdx.
+CLEANCALL: inlining clean call 0x0000000072001070, saving reg rdi.
+CLEANCALL: inlining clean call 0x0000000072001070, saving reg r8.
+CLEANCALL: inlining clean call 0x0000000072001070, saving reg r10.
+CLEANCALL: inlining clean call 0x0000000072001070, passing arg via reg rdi.
+CLEANCALL: inlining clean call 0x0000000072001070, passing arg via reg rsi.
+CLEANCALL: inlining clean call 0x0000000072001070, passing arg via reg edx.
+CLEANCALL: inlining clean call 0x0000000072001070, passing arg via reg ecx.
+CLEANCALL: inlining clean call 0x0000000072001070, restoring reg r10.
+CLEANCALL: inlining clean call 0x0000000072001070, restoring reg r8.
+CLEANCALL: inlining clean call 0x0000000072001070, restoring reg rdi.
+CLEANCALL: inlining clean call 0x0000000072001070, restoring reg rdx.
+CLEANCALL: inlining clean call 0x0000000072001070, restoring reg rax.
+CLEANCALL: insert clean call to 0x0000000072001070
+CLEANCALL: inserting clean call 0x0000000072001070, skip saving aflags.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM0.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM1.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM2.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM3.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM4.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM5.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM6.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM7.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM8.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM9.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM10.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM11.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM12.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM13.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM14.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM15.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg rcx.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg rbx.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg rsp.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg rbp.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg rsi.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg r9.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg r11.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg r12.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg r13.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg r14.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg r15.
+CLEANCALL: callee is not leaf, saving all regs.
+CLEANCALL: inlined callee 0x0000000072001070
+CLEANCALL: inlining clean call 0x0000000072001070, saving reg rax.
+CLEANCALL: inlining clean call 0x0000000072001070, saving reg rdx.
+CLEANCALL: inlining clean call 0x0000000072001070, saving reg rdi.
+CLEANCALL: inlining clean call 0x0000000072001070, saving reg r8.
+CLEANCALL: inlining clean call 0x0000000072001070, saving reg r10.
+CLEANCALL: inlining clean call 0x0000000072001070, passing arg via reg rdi.
+CLEANCALL: inlining clean call 0x0000000072001070, passing arg via reg rsi.
+CLEANCALL: inlining clean call 0x0000000072001070, passing arg via reg edx.
+CLEANCALL: inlining clean call 0x0000000072001070, passing arg via reg ecx.
+CLEANCALL: inlining clean call 0x0000000072001070, restoring reg r10.
+CLEANCALL: inlining clean call 0x0000000072001070, restoring reg r8.
+CLEANCALL: inlining clean call 0x0000000072001070, restoring reg rdi.
+CLEANCALL: inlining clean call 0x0000000072001070, restoring reg rdx.
+CLEANCALL: inlining clean call 0x0000000072001070, restoring reg rax.
+CLEANCALL: insert clean call to 0x0000000072001070
+CLEANCALL: inserting clean call 0x0000000072001070, skip saving aflags.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM0.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM1.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM2.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM3.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM4.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM5.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM6.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM7.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM8.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM9.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM10.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM11.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM12.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM13.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM14.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM15.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg rcx.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg rbx.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg rsp.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg rbp.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg rsi.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg r9.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg r11.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg r12.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg r13.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg r14.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg r15.
+CLEANCALL: callee is not leaf, saving all regs.
+CLEANCALL: inlined callee 0x0000000072001070
+CLEANCALL: inlining clean call 0x0000000072001070, saving reg rax.
+CLEANCALL: inlining clean call 0x0000000072001070, saving reg rdx.
+CLEANCALL: inlining clean call 0x0000000072001070, saving reg rdi.
+CLEANCALL: inlining clean call 0x0000000072001070, saving reg r8.
+CLEANCALL: inlining clean call 0x0000000072001070, saving reg r10.
+CLEANCALL: inlining clean call 0x0000000072001070, passing arg via reg rdi.
+CLEANCALL: inlining clean call 0x0000000072001070, passing arg via reg rsi.
+CLEANCALL: inlining clean call 0x0000000072001070, passing arg via reg edx.
+CLEANCALL: inlining clean call 0x0000000072001070, passing arg via reg ecx.
+CLEANCALL: inlining clean call 0x0000000072001070, restoring reg r10.
+CLEANCALL: inlining clean call 0x0000000072001070, restoring reg r8.
+CLEANCALL: inlining clean call 0x0000000072001070, restoring reg rdi.
+CLEANCALL: inlining clean call 0x0000000072001070, restoring reg rdx.
+CLEANCALL: inlining clean call 0x0000000072001070, restoring reg rax.
+CLEANCALL: insert clean call to 0x0000000072001070
+CLEANCALL: inserting clean call 0x0000000072001070, skip saving aflags.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM0.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM1.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM2.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM3.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM4.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM5.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM6.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM7.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM8.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM9.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM10.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM11.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM12.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM13.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM14.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving XMM15.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg rcx.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg rbx.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg rsp.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg rbp.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg rsi.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg r9.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg r11.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg r12.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg r13.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg r14.
+CLEANCALL: if inserting clean call 0x0000000072001070, skip saving reg r15.
+CLEANCALL: callee is not leaf, saving all regs.
+CLEANCALL: inlined callee 0x0000000072001070
+CLEANCALL: inlining clean call 0x0000000072001070, saving reg rax.
+CLEANCALL: inlining clean call 0x0000000072001070, saving reg rdx.
+CLEANCALL: inlining clean call 0x0000000072001070, saving reg rdi.
+CLEANCALL: inlining clean call 0x0000000072001070, saving reg r8.
+CLEANCALL: inlining clean call 0x0000000072001070, saving reg r10.
+CLEANCALL: inlining clean call 0x0000000072001070, passing arg via reg rdi.
+CLEANCALL: inlining clean call 0x0000000072001070, passing arg via reg rsi.
+CLEANCALL: inlining clean call 0x0000000072001070, passing arg via reg edx.
+CLEANCALL: inlining clean call 0x0000000072001070, passing arg via reg ecx.
+CLEANCALL: inlining clean call 0x0000000072001070, restoring reg r10.
+CLEANCALL: inlining clean call 0x0000000072001070, restoring reg r8.
+CLEANCALL: inlining clean call 0x0000000072001070, restoring reg rdi.
+CLEANCALL: inlining clean call 0x0000000072001070, restoring reg rdx.
+CLEANCALL: inlining clean call 0x0000000072001070, restoring reg rax.
+
+after instrumentation:
+TAG  0x000000000040108d
+ +0    L4  65 48 89 1c 25 18 00 mov    %rbx -> %gs:0x18 
+           00 00
+ +9    L4  48 8d 5d e0          lea    0xffffffe0(%rbp) -> %rbx 
+ +13   L4  65 48 89 24 25 00 00 mov    %rsp -> %gs:0x00 
+           00 00
+ +22   L4  65 48 8b 24 25 20 00 mov    %gs:0x20 -> %rsp 
+           00 00
+ +31   L4  48 8b a4 24 b0 01 00 mov    0x000001b0(%rsp) -> %rsp 
+           00
+ +39   L4  50                   push   %rax %rsp -> %rsp 0xfffffff8(%rsp) 
+ +40   L4  52                   push   %rdx %rsp -> %rsp 0xfffffff8(%rsp) 
+ +41   L4  57                   push   %rdi %rsp -> %rsp 0xfffffff8(%rsp) 
+ +42   L4  41 50                push   %r8 %rsp -> %rsp 0xfffffff8(%rsp) 
+ +44   L4  41 52                push   %r10 %rsp -> %rsp 0xfffffff8(%rsp) 
+ +46   L4  48 8b fb             mov    %rbx -> %rdi 
+ +49   L4  48 be 8d 10 40 00 00 mov    $0x000000000040108d -> %rsi 
+           00 00 00
+ +59   L4  ba 08 00 00 00       mov    $0x00000008 -> %edx 
+ +64   L4  b9 00 00 00 00       mov    $0x00000000 -> %ecx 
+ +69   L3  41 89 d0             mov    %edx -> %r8d 
+ +72   L3  49 89 fa             mov    %rdi -> %r10 
+ +75   L3  41 8d 40 ff          lea    0xffffffff(%r8) -> %eax 
+ +79   L3  48 85 f8             test   %rax %rdi 
+ +82   L4  74 fe                jz     $0x00000000400817e0 
+ +84   L3  48 8d 05 84 00 00 00 lea    <rel> 0x000000007200110e -> %rax 
+ +91   L4  e8 5b a8 05 00       call   $0x00000000400dc040 %rsp -> %rsp 0xfffffff8(%rsp) 
+ +96   L4  41 5a                pop    %rsp (%rsp) -> %r10 %rsp 
+ +98   L4  41 58                pop    %rsp (%rsp) -> %r8 %rsp 
+ +100  L4  5f                   pop    %rsp (%rsp) -> %rdi %rsp 
+ +101  L4  5a                   pop    %rsp (%rsp) -> %rdx %rsp 
+ +102  L4  58                   pop    %rsp (%rsp) -> %rax %rsp 
+ +103  L4  65 48 8b 24 25 00 00 mov    %gs:0x00 -> %rsp 
+           00 00
+ +112  L4  65 48 8b 1c 25 18 00 mov    %gs:0x18 -> %rbx 
+           00 00
+ +121  L3  48 8b 45 e0          mov    0xffffffe0(%rbp) -> %rax 
+ +125  L4  65 48 89 1c 25 18 00 mov    %rbx -> %gs:0x18 
+           00 00
+ +134  L4  48 8d 18             lea    (%rax) -> %rbx 
+ +137  L4  65 48 89 24 25 00 00 mov    %rsp -> %gs:0x00 
+           00 00
+ +146  L4  65 48 8b 24 25 20 00 mov    %gs:0x20 -> %rsp 
+           00 00
+ +155  L4  48 8b a4 24 b0 01 00 mov    0x000001b0(%rsp) -> %rsp 
+           00
+ +163  L4  50                   push   %rax %rsp -> %rsp 0xfffffff8(%rsp) 
+ +164  L4  52                   push   %rdx %rsp -> %rsp 0xfffffff8(%rsp) 
+ +165  L4  57                   push   %rdi %rsp -> %rsp 0xfffffff8(%rsp) 
+ +166  L4  41 50                push   %r8 %rsp -> %rsp 0xfffffff8(%rsp) 
+ +168  L4  41 52                push   %r10 %rsp -> %rsp 0xfffffff8(%rsp) 
+ +170  L4  48 8b fb             mov    %rbx -> %rdi 
+ +173  L4  48 be 91 10 40 00 00 mov    $0x0000000000401091 -> %rsi 
+           00 00 00
+ +183  L4  ba 04 00 00 00       mov    $0x00000004 -> %edx 
+ +188  L4  b9 01 00 00 00       mov    $0x00000001 -> %ecx 
+ +193  L3  41 89 d0             mov    %edx -> %r8d 
+ +196  L3  49 89 fa             mov    %rdi -> %r10 
+ +199  L3  41 8d 40 ff          lea    0xffffffff(%r8) -> %eax 
+ +203  L3  48 85 f8             test   %rax %rdi 
+ +206  L4  74 fe                jz     $0x00000000400817e0 
+ +208  L3  48 8d 05 84 00 00 00 lea    <rel> 0x000000007200110e -> %rax 
+ +215  L4  e8 5b a8 05 00       call   $0x00000000400dc040 %rsp -> %rsp 0xfffffff8(%rsp) 
+ +220  L4  41 5a                pop    %rsp (%rsp) -> %r10 %rsp 
+ +222  L4  41 58                pop    %rsp (%rsp) -> %r8 %rsp 
+ +224  L4  5f                   pop    %rsp (%rsp) -> %rdi %rsp 
+ +225  L4  5a                   pop    %rsp (%rsp) -> %rdx %rsp 
+ +226  L4  58                   pop    %rsp (%rsp) -> %rax %rsp 
+ +227  L4  65 48 8b 24 25 00 00 mov    %gs:0x00 -> %rsp 
+           00 00
+ +236  L4  65 48 8b 1c 25 18 00 mov    %gs:0x18 -> %rbx 
+           00 00
+ +245  L3  c7 00 11 11 11 11    mov    $0x11111111 -> (%rax) 
+ +251  L4  65 48 89 1c 25 18 00 mov    %rbx -> %gs:0x18 
+           00 00
+ +260  L4  48 8d 5d e8          lea    0xffffffe8(%rbp) -> %rbx 
+ +264  L4  65 48 89 24 25 00 00 mov    %rsp -> %gs:0x00 
+           00 00
+ +273  L4  65 48 8b 24 25 20 00 mov    %gs:0x20 -> %rsp 
+           00 00
+ +282  L4  48 8b a4 24 b0 01 00 mov    0x000001b0(%rsp) -> %rsp 
+           00
+ +290  L4  50                   push   %rax %rsp -> %rsp 0xfffffff8(%rsp) 
+ +291  L4  52                   push   %rdx %rsp -> %rsp 0xfffffff8(%rsp) 
+ +292  L4  57                   push   %rdi %rsp -> %rsp 0xfffffff8(%rsp) 
+ +293  L4  41 50                push   %r8 %rsp -> %rsp 0xfffffff8(%rsp) 
+ +295  L4  41 52                push   %r10 %rsp -> %rsp 0xfffffff8(%rsp) 
+ +297  L4  48 8b fb             mov    %rbx -> %rdi 
+ +300  L4  48 be 97 10 40 00 00 mov    $0x0000000000401097 -> %rsi 
+           00 00 00
+ +310  L4  ba 08 00 00 00       mov    $0x00000008 -> %edx 
+ +315  L4  b9 00 00 00 00       mov    $0x00000000 -> %ecx 
+ +320  L3  41 89 d0             mov    %edx -> %r8d 
+ +323  L3  49 89 fa             mov    %rdi -> %r10 
+ +326  L3  41 8d 40 ff          lea    0xffffffff(%r8) -> %eax 
+ +330  L3  48 85 f8             test   %rax %rdi 
+ +333  L4  74 fe                jz     $0x00000000400817e0 
+ +335  L3  48 8d 05 84 00 00 00 lea    <rel> 0x000000007200110e -> %rax 
+ +342  L4  e8 5b a8 05 00       call   $0x00000000400dc040 %rsp -> %rsp 0xfffffff8(%rsp) 
+ +347  L4  41 5a                pop    %rsp (%rsp) -> %r10 %rsp 
+ +349  L4  41 58                pop    %rsp (%rsp) -> %r8 %rsp 
+ +351  L4  5f                   pop    %rsp (%rsp) -> %rdi %rsp 
+ +352  L4  5a                   pop    %rsp (%rsp) -> %rdx %rsp 
+ +353  L4  58                   pop    %rsp (%rsp) -> %rax %rsp 
+ +354  L4  65 48 8b 24 25 00 00 mov    %gs:0x00 -> %rsp 
+           00 00
+ +363  L4  65 48 8b 1c 25 18 00 mov    %gs:0x18 -> %rbx 
+           00 00
+ +372  L3  48 8b 45 e8          mov    0xffffffe8(%rbp) -> %rax 
+ +376  L4  65 48 89 1c 25 18 00 mov    %rbx -> %gs:0x18 
+           00 00
+ +385  L4  48 8d 18             lea    (%rax) -> %rbx 
+ +388  L4  65 48 89 24 25 00 00 mov    %rsp -> %gs:0x00 
+           00 00
+ +397  L4  65 48 8b 24 25 20 00 mov    %gs:0x20 -> %rsp 
+           00 00
+ +406  L4  48 8b a4 24 b0 01 00 mov    0x000001b0(%rsp) -> %rsp 
+           00
+ +414  L4  50                   push   %rax %rsp -> %rsp 0xfffffff8(%rsp) 
+ +415  L4  52                   push   %rdx %rsp -> %rsp 0xfffffff8(%rsp) 
+ +416  L4  57                   push   %rdi %rsp -> %rsp 0xfffffff8(%rsp) 
+ +417  L4  41 50                push   %r8 %rsp -> %rsp 0xfffffff8(%rsp) 
+ +419  L4  41 52                push   %r10 %rsp -> %rsp 0xfffffff8(%rsp) 
+ +421  L4  48 8b fb             mov    %rbx -> %rdi 
+ +424  L4  48 be 9b 10 40 00 00 mov    $0x000000000040109b -> %rsi 
+           00 00 00
+ +434  L4  ba 04 00 00 00       mov    $0x00000004 -> %edx 
+ +439  L4  b9 01 00 00 00       mov    $0x00000001 -> %ecx 
+ +444  L3  41 89 d0             mov    %edx -> %r8d 
+ +447  L3  49 89 fa             mov    %rdi -> %r10 
+ +450  L3  41 8d 40 ff          lea    0xffffffff(%r8) -> %eax 
+ +454  L3  48 85 f8             test   %rax %rdi 
+ +457  L4  74 fe                jz     $0x00000000400817e0 
+ +459  L3  48 8d 05 84 00 00 00 lea    <rel> 0x000000007200110e -> %rax 
+ +466  L4  e8 5b a8 05 00       call   $0x00000000400dc040 %rsp -> %rsp 0xfffffff8(%rsp) 
+ +471  L4  41 5a                pop    %rsp (%rsp) -> %r10 %rsp 
+ +473  L4  41 58                pop    %rsp (%rsp) -> %r8 %rsp 
+ +475  L4  5f                   pop    %rsp (%rsp) -> %rdi %rsp 
+ +476  L4  5a                   pop    %rsp (%rsp) -> %rdx %rsp 
+ +477  L4  58                   pop    %rsp (%rsp) -> %rax %rsp 
+ +478  L4  65 48 8b 24 25 00 00 mov    %gs:0x00 -> %rsp 
+           00 00
+ +487  L4  65 48 8b 1c 25 18 00 mov    %gs:0x18 -> %rbx 
+           00 00
+ +496  L3  c7 00 22 22 22 22    mov    $0x22222222 -> (%rax) 
+ +502  L4  65 48 89 1c 25 18 00 mov    %rbx -> %gs:0x18 
+           00 00
+ +511  L4  48 8d 5d f0          lea    0xfffffff0(%rbp) -> %rbx 
+ +515  L4  65 48 89 24 25 00 00 mov    %rsp -> %gs:0x00 
+           00 00
+ +524  L4  65 48 8b 24 25 20 00 mov    %gs:0x20 -> %rsp 
+           00 00
+ +533  L4  48 8b a4 24 b0 01 00 mov    0x000001b0(%rsp) -> %rsp 
+           00
+ +541  L4  50                   push   %rax %rsp -> %rsp 0xfffffff8(%rsp) 
+ +542  L4  52                   push   %rdx %rsp -> %rsp 0xfffffff8(%rsp) 
+ +543  L4  57                   push   %rdi %rsp -> %rsp 0xfffffff8(%rsp) 
+ +544  L4  41 50                push   %r8 %rsp -> %rsp 0xfffffff8(%rsp) 
+ +546  L4  41 52                push   %r10 %rsp -> %rsp 0xfffffff8(%rsp) 
+ +548  L4  48 8b fb             mov    %rbx -> %rdi 
+ +551  L4  48 be a1 10 40 00 00 mov    $0x00000000004010a1 -> %rsi 
+           00 00 00
+ +561  L4  ba 08 00 00 00       mov    $0x00000008 -> %edx 
+ +566  L4  b9 00 00 00 00       mov    $0x00000000 -> %ecx 
+ +571  L3  41 89 d0             mov    %edx -> %r8d 
+ +574  L3  49 89 fa             mov    %rdi -> %r10 
+ +577  L3  41 8d 40 ff          lea    0xffffffff(%r8) -> %eax 
+ +581  L3  48 85 f8             test   %rax %rdi 
+ +584  L4  74 fe                jz     $0x00000000400817e0 
+ +586  L3  48 8d 05 84 00 00 00 lea    <rel> 0x000000007200110e -> %rax 
+ +593  L4  e8 5b a8 05 00       call   $0x00000000400dc040 %rsp -> %rsp 0xfffffff8(%rsp) 
+ +598  L4  41 5a                pop    %rsp (%rsp) -> %r10 %rsp 
+ +600  L4  41 58                pop    %rsp (%rsp) -> %r8 %rsp 
+ +602  L4  5f                   pop    %rsp (%rsp) -> %rdi %rsp 
+ +603  L4  5a                   pop    %rsp (%rsp) -> %rdx %rsp 
+ +604  L4  58                   pop    %rsp (%rsp) -> %rax %rsp 
+ +605  L4  65 48 8b 24 25 00 00 mov    %gs:0x00 -> %rsp 
+           00 00
+ +614  L4  65 48 8b 1c 25 18 00 mov    %gs:0x18 -> %rbx 
+           00 00
+ +623  L3  48 8b 45 f0          mov    0xfffffff0(%rbp) -> %rax 
+ +627  L4  65 48 89 1c 25 18 00 mov    %rbx -> %gs:0x18 
+           00 00
+ +636  L4  48 8d 18             lea    (%rax) -> %rbx 
+ +639  L4  65 48 89 24 25 00 00 mov    %rsp -> %gs:0x00 
+           00 00
+ +648  L4  65 48 8b 24 25 20 00 mov    %gs:0x20 -> %rsp 
+           00 00
+ +657  L4  48 8b a4 24 b0 01 00 mov    0x000001b0(%rsp) -> %rsp 
+           00
+ +665  L4  50                   push   %rax %rsp -> %rsp 0xfffffff8(%rsp) 
+ +666  L4  52                   push   %rdx %rsp -> %rsp 0xfffffff8(%rsp) 
+ +667  L4  57                   push   %rdi %rsp -> %rsp 0xfffffff8(%rsp) 
+ +668  L4  41 50                push   %r8 %rsp -> %rsp 0xfffffff8(%rsp) 
+ +670  L4  41 52                push   %r10 %rsp -> %rsp 0xfffffff8(%rsp) 
+ +672  L4  48 8b fb             mov    %rbx -> %rdi 
+ +675  L4  48 be a5 10 40 00 00 mov    $0x00000000004010a5 -> %rsi 
+           00 00 00
+ +685  L4  ba 04 00 00 00       mov    $0x00000004 -> %edx 
+ +690  L4  b9 01 00 00 00       mov    $0x00000001 -> %ecx 
+ +695  L3  41 89 d0             mov    %edx -> %r8d 
+ +698  L3  49 89 fa             mov    %rdi -> %r10 
+ +701  L3  41 8d 40 ff          lea    0xffffffff(%r8) -> %eax 
+ +705  L3  48 85 f8             test   %rax %rdi 
+ +708  L4  74 fe                jz     $0x00000000400817e0 
+ +710  L3  48 8d 05 84 00 00 00 lea    <rel> 0x000000007200110e -> %rax 
+ +717  L4  e8 5b a8 05 00       call   $0x00000000400dc040 %rsp -> %rsp 0xfffffff8(%rsp) 
+ +722  L4  41 5a                pop    %rsp (%rsp) -> %r10 %rsp 
+ +724  L4  41 58                pop    %rsp (%rsp) -> %r8 %rsp 
+ +726  L4  5f                   pop    %rsp (%rsp) -> %rdi %rsp 
+ +727  L4  5a                   pop    %rsp (%rsp) -> %rdx %rsp 
+ +728  L4  58                   pop    %rsp (%rsp) -> %rax %rsp 
+ +729  L4  65 48 8b 24 25 00 00 mov    %gs:0x00 -> %rsp 
+           00 00
+ +738  L4  65 48 8b 1c 25 18 00 mov    %gs:0x18 -> %rbx 
+           00 00
+ +747  L3  c7 00 33 33 33 33    mov    $0x33333333 -> (%rax) 
+ +753  L4  65 48 89 1c 25 18 00 mov    %rbx -> %gs:0x18 
+           00 00
+ +762  L4  48 8d 5d f8          lea    0xfffffff8(%rbp) -> %rbx 
+ +766  L4  65 48 89 24 25 00 00 mov    %rsp -> %gs:0x00 
+           00 00
+ +775  L4  65 48 8b 24 25 20 00 mov    %gs:0x20 -> %rsp 
+           00 00
+ +784  L4  48 8b a4 24 b0 01 00 mov    0x000001b0(%rsp) -> %rsp 
+           00
+ +792  L4  50                   push   %rax %rsp -> %rsp 0xfffffff8(%rsp) 
+ +793  L4  52                   push   %rdx %rsp -> %rsp 0xfffffff8(%rsp) 
+ +794  L4  57                   push   %rdi %rsp -> %rsp 0xfffffff8(%rsp) 
+ +795  L4  41 50                push   %r8 %rsp -> %rsp 0xfffffff8(%rsp) 
+ +797  L4  41 52                push   %r10 %rsp -> %rsp 0xfffffff8(%rsp) 
+ +799  L4  48 8b fb             mov    %rbx -> %rdi 
+ +802  L4  48 be ab 10 40 00 00 mov    $0x00000000004010ab -> %rsi 
+           00 00 00
+ +812  L4  ba 08 00 00 00       mov    $0x00000008 -> %edx 
+ +817  L4  b9 00 00 00 00       mov    $0x00000000 -> %ecx 
+ +822  L3  41 89 d0             mov    %edx -> %r8d 
+ +825  L3  49 89 fa             mov    %rdi -> %r10 
+ +828  L3  41 8d 40 ff          lea    0xffffffff(%r8) -> %eax 
+ +832  L3  48 85 f8             test   %rax %rdi 
+ +835  L4  74 fe                jz     $0x00000000400817e0 
+ +837  L3  48 8d 05 84 00 00 00 lea    <rel> 0x000000007200110e -> %rax 
+ +844  L4  e8 5b a8 05 00       call   $0x00000000400dc040 %rsp -> %rsp 0xfffffff8(%rsp) 
+ +849  L4  41 5a                pop    %rsp (%rsp) -> %r10 %rsp 
+ +851  L4  41 58                pop    %rsp (%rsp) -> %r8 %rsp 
+ +853  L4  5f                   pop    %rsp (%rsp) -> %rdi %rsp 
+ +854  L4  5a                   pop    %rsp (%rsp) -> %rdx %rsp 
+ +855  L4  58                   pop    %rsp (%rsp) -> %rax %rsp 
+ +856  L4  65 48 8b 24 25 00 00 mov    %gs:0x00 -> %rsp 
+           00 00
+ +865  L4  65 48 8b 1c 25 18 00 mov    %gs:0x18 -> %rbx 
+           00 00
+ +874  L3  48 8b 45 f8          mov    0xfffffff8(%rbp) -> %rax 
+ +878  L4  65 48 89 1c 25 18 00 mov    %rbx -> %gs:0x18 
+           00 00
+ +887  L4  48 8d 18             lea    (%rax) -> %rbx 
+ +890  L4  65 48 89 24 25 00 00 mov    %rsp -> %gs:0x00 
+           00 00
+ +899  L4  65 48 8b 24 25 20 00 mov    %gs:0x20 -> %rsp 
+           00 00
+ +908  L4  48 8b a4 24 b0 01 00 mov    0x000001b0(%rsp) -> %rsp 
+           00
+ +916  L4  50                   push   %rax %rsp -> %rsp 0xfffffff8(%rsp) 
+ +917  L4  52                   push   %rdx %rsp -> %rsp 0xfffffff8(%rsp) 
+ +918  L4  57                   push   %rdi %rsp -> %rsp 0xfffffff8(%rsp) 
+ +919  L4  41 50                push   %r8 %rsp -> %rsp 0xfffffff8(%rsp) 
+ +921  L4  41 52                push   %r10 %rsp -> %rsp 0xfffffff8(%rsp) 
+ +923  L4  48 8b fb             mov    %rbx -> %rdi 
+ +926  L4  48 be af 10 40 00 00 mov    $0x00000000004010af -> %rsi 
+           00 00 00
+ +936  L4  ba 04 00 00 00       mov    $0x00000004 -> %edx 
+ +941  L4  b9 01 00 00 00       mov    $0x00000001 -> %ecx 
+ +946  L3  41 89 d0             mov    %edx -> %r8d 
+ +949  L3  49 89 fa             mov    %rdi -> %r10 
+ +952  L3  41 8d 40 ff          lea    0xffffffff(%r8) -> %eax 
+ +956  L3  48 85 f8             test   %rax %rdi 
+ +959  L4  74 fe                jz     $0x00000000400817e0 
+ +961  L3  48 8d 05 84 00 00 00 lea    <rel> 0x000000007200110e -> %rax 
+ +968  L4  e8 5b a8 05 00       call   $0x00000000400dc040 %rsp -> %rsp 0xfffffff8(%rsp) 
+ +973  L4  41 5a                pop    %rsp (%rsp) -> %r10 %rsp 
+ +975  L4  41 58                pop    %rsp (%rsp) -> %r8 %rsp 
+ +977  L4  5f                   pop    %rsp (%rsp) -> %rdi %rsp 
+ +978  L4  5a                   pop    %rsp (%rsp) -> %rdx %rsp 
+ +979  L4  58                   pop    %rsp (%rsp) -> %rax %rsp 
+ +980  L4  65 48 8b 24 25 00 00 mov    %gs:0x00 -> %rsp 
+           00 00
+ +989  L4  65 48 8b 1c 25 18 00 mov    %gs:0x18 -> %rbx 
+           00 00
+ +998  L3  c7 00 44 44 44 44    mov    $0x44444444 -> (%rax) 
+ +1004 L4  65 48 89 1c 25 18 00 mov    %rbx -> %gs:0x18 
+           00 00
+ +1013 L4  48 8d 5d dc          lea    0xffffffdc(%rbp) -> %rbx 
+ +1017 L4  65 48 89 24 25 00 00 mov    %rsp -> %gs:0x00 
+           00 00
+ +1026 L4  65 48 8b 24 25 20 00 mov    %gs:0x20 -> %rsp 
+           00 00
+ +1035 L4  48 8b a4 24 b0 01 00 mov    0x000001b0(%rsp) -> %rsp 
+           00
+ +1043 L4  50                   push   %rax %rsp -> %rsp 0xfffffff8(%rsp) 
+ +1044 L4  52                   push   %rdx %rsp -> %rsp 0xfffffff8(%rsp) 
+ +1045 L4  57                   push   %rdi %rsp -> %rsp 0xfffffff8(%rsp) 
+ +1046 L4  41 50                push   %r8 %rsp -> %rsp 0xfffffff8(%rsp) 
+ +1048 L4  41 52                push   %r10 %rsp -> %rsp 0xfffffff8(%rsp) 
+ +1050 L4  48 8b fb             mov    %rbx -> %rdi 
+ +1053 L4  48 be b5 10 40 00 00 mov    $0x00000000004010b5 -> %rsi 
+           00 00 00
+ +1063 L4  ba 04 00 00 00       mov    $0x00000004 -> %edx 
+ +1068 L4  b9 00 00 00 00       mov    $0x00000000 -> %ecx 
+ +1073 L3  41 89 d0             mov    %edx -> %r8d 
+ +1076 L3  49 89 fa             mov    %rdi -> %r10 
+ +1079 L3  41 8d 40 ff          lea    0xffffffff(%r8) -> %eax 
+ +1083 L3  48 85 f8             test   %rax %rdi 
+ +1086 L4  74 fe                jz     $0x00000000400817e0 
+ +1088 L3  48 8d 05 84 00 00 00 lea    <rel> 0x000000007200110e -> %rax 
+ +1095 L4  e8 5b a8 05 00       call   $0x00000000400dc040 %rsp -> %rsp 0xfffffff8(%rsp) 
+ +1100 L4  41 5a                pop    %rsp (%rsp) -> %r10 %rsp 
+ +1102 L4  41 58                pop    %rsp (%rsp) -> %r8 %rsp 
+ +1104 L4  5f                   pop    %rsp (%rsp) -> %rdi %rsp 
+ +1105 L4  5a                   pop    %rsp (%rsp) -> %rdx %rsp 
+ +1106 L4  58                   pop    %rsp (%rsp) -> %rax %rsp 
+ +1107 L4  65 48 8b 24 25 00 00 mov    %gs:0x00 -> %rsp 
+           00 00
+ +1116 L4  65 48 8b 1c 25 18 00 mov    %gs:0x18 -> %rbx 
+           00 00
+ +1125 L4  65 48 89 1c 25 18 00 mov    %rbx -> %gs:0x18 
+           00 00
+ +1134 L4  48 8d 5d dc          lea    0xffffffdc(%rbp) -> %rbx 
+ +1138 L4  65 48 89 24 25 00 00 mov    %rsp -> %gs:0x00 
+           00 00
+ +1147 L4  65 48 8b 24 25 20 00 mov    %gs:0x20 -> %rsp 
+           00 00
+ +1156 L4  48 8b a4 24 b0 01 00 mov    0x000001b0(%rsp) -> %rsp 
+           00
+ +1164 L4  50                   push   %rax %rsp -> %rsp 0xfffffff8(%rsp) 
+ +1165 L4  52                   push   %rdx %rsp -> %rsp 0xfffffff8(%rsp) 
+ +1166 L4  57                   push   %rdi %rsp -> %rsp 0xfffffff8(%rsp) 
+ +1167 L4  41 50                push   %r8 %rsp -> %rsp 0xfffffff8(%rsp) 
+ +1169 L4  41 52                push   %r10 %rsp -> %rsp 0xfffffff8(%rsp) 
+ +1171 L4  48 8b fb             mov    %rbx -> %rdi 
+ +1174 L4  48 be b5 10 40 00 00 mov    $0x00000000004010b5 -> %rsi 
+           00 00 00
+ +1184 L4  ba 04 00 00 00       mov    $0x00000004 -> %edx 
+ +1189 L4  b9 01 00 00 00       mov    $0x00000001 -> %ecx 
+ +1194 L3  41 89 d0             mov    %edx -> %r8d 
+ +1197 L3  49 89 fa             mov    %rdi -> %r10 
+ +1200 L3  41 8d 40 ff          lea    0xffffffff(%r8) -> %eax 
+ +1204 L3  48 85 f8             test   %rax %rdi 
+ +1207 L4  74 fe                jz     $0x00000000400817e0 
+ +1209 L3  48 8d 05 84 00 00 00 lea    <rel> 0x000000007200110e -> %rax 
+ +1216 L4  e8 5b a8 05 00       call   $0x00000000400dc040 %rsp -> %rsp 0xfffffff8(%rsp) 
+ +1221 L4  41 5a                pop    %rsp (%rsp) -> %r10 %rsp 
+ +1223 L4  41 58                pop    %rsp (%rsp) -> %r8 %rsp 
+ +1225 L4  5f                   pop    %rsp (%rsp) -> %rdi %rsp 
+ +1226 L4  5a                   pop    %rsp (%rsp) -> %rdx %rsp 
+ +1227 L4  58                   pop    %rsp (%rsp) -> %rax %rsp 
+ +1228 L4  65 48 8b 24 25 00 00 mov    %gs:0x00 -> %rsp 
+           00 00
+ +1237 L4  65 48 8b 1c 25 18 00 mov    %gs:0x18 -> %rbx 
+           00 00
+ +1246 L3  83 45 dc 01          add    $0x00000001 0xffffffdc(%rbp) -> 0xffffffdc(%rbp) 
+ +1250 L4  65 48 89 1c 25 18 00 mov    %rbx -> %gs:0x18 
+           00 00
+ +1259 L4  48 8d 5d dc          lea    0xffffffdc(%rbp) -> %rbx 
+ +1263 L4  65 48 89 24 25 00 00 mov    %rsp -> %gs:0x00 
+           00 00
+ +1272 L4  65 48 8b 24 25 20 00 mov    %gs:0x20 -> %rsp 
+           00 00
+ +1281 L4  48 8b a4 24 b0 01 00 mov    0x000001b0(%rsp) -> %rsp 
+           00
+ +1289 L4  50                   push   %rax %rsp -> %rsp 0xfffffff8(%rsp) 
+ +1290 L4  52                   push   %rdx %rsp -> %rsp 0xfffffff8(%rsp) 
+ +1291 L4  57                   push   %rdi %rsp -> %rsp 0xfffffff8(%rsp) 
+ +1292 L4  41 50                push   %r8 %rsp -> %rsp 0xfffffff8(%rsp) 
+ +1294 L4  41 52                push   %r10 %rsp -> %rsp 0xfffffff8(%rsp) 
+ +1296 L4  48 8b fb             mov    %rbx -> %rdi 
+ +1299 L4  48 be b9 10 40 00 00 mov    $0x00000000004010b9 -> %rsi 
+           00 00 00
+ +1309 L4  ba 04 00 00 00       mov    $0x00000004 -> %edx 
+ +1314 L4  b9 00 00 00 00       mov    $0x00000000 -> %ecx 
+ +1319 L3  41 89 d0             mov    %edx -> %r8d 
+ +1322 L3  49 89 fa             mov    %rdi -> %r10 
+ +1325 L3  41 8d 40 ff          lea    0xffffffff(%r8) -> %eax 
+ +1329 L3  48 85 f8             test   %rax %rdi 
+ +1332 L4  74 fe                jz     $0x00000000400817e0 
+ +1334 L3  48 8d 05 84 00 00 00 lea    <rel> 0x000000007200110e -> %rax 
+ +1341 L4  e8 5b a8 05 00       call   $0x00000000400dc040 %rsp -> %rsp 0xfffffff8(%rsp) 
+ +1346 L4  41 5a                pop    %rsp (%rsp) -> %r10 %rsp 
+ +1348 L4  41 58                pop    %rsp (%rsp) -> %r8 %rsp 
+ +1350 L4  5f                   pop    %rsp (%rsp) -> %rdi %rsp 
+ +1351 L4  5a                   pop    %rsp (%rsp) -> %rdx %rsp 
+ +1352 L4  58                   pop    %rsp (%rsp) -> %rax %rsp 
+ +1353 L4  65 48 8b 24 25 00 00 mov    %gs:0x00 -> %rsp 
+           00 00
+ +1362 L4  65 48 8b 1c 25 18 00 mov    %gs:0x18 -> %rbx 
+           00 00
+ +1371 L3  83 7d dc 09          cmp    0xffffffdc(%rbp) $0x00000009 
+ +1375 L3  7e ce                jle    $0x000000000040108d 
+END 0x000000000040108d

@@ -1,0 +1,12 @@
+native	0m4.543s
+noclient	0m4.847s
+inscount_manual	0m9.764s
+inscount_opt3	0m12.679s
+inscount_opt3_tls	0m9.886s
+inscount_opt0	9m1.755s
+inscount_opt0_bb	1m25.849s
+
+
+alignment_opt3	0m47.168s
+mem_buffer_opt3	2m0.470s
+alignment_opt0	3m15.030s

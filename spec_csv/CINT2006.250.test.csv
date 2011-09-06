@@ -1,0 +1,90 @@
+valid,0
+Benchmark,"Base Ref Time","Est. Base Run Time","Est. Base Ratio","Base Selected","Base Status","Peak Ref Time","Est. Peak Run Time","Est. Peak Ratio","Peak Selected","Peak Status"
+401.bzip2,--,394.296092,--,1,S,,,,,
+429.mcf,--,53.442951,--,1,S,,,,,
+445.gobmk,--,1036.927797,--,1,S,,,,,
+456.hmmer,--,266.601417,--,1,S,,,,,
+458.sjeng,--,212.237955,--,1,S,,,,,
+464.h264ref,--,1470.633243,--,1,S,,,,,
+473.astar,--,385.519016,--,1,S,,,,,
+
+"Run number:",250
+
+SPECint_base2006,--
+SPECint2006,"Not Run"
+"Hardware Vendor:",Tyan
+"Hardware Model:","Tyan Thunder KKQS Pro (S4882)"
+"Date tested:",Dec-9999
+"CPU2006 License:",9999
+"Test sponsor:","Turbo Computers"
+"Tested by:","Turbo Computers"
+"Hardware avail:",Dec-9999
+"Software avail:",Dec-9999
+
+
+HARDWARE
+
+"CPU Name","AMD Opteron 256"
+"CPU Characteristics"," "
+"CPU MHz",3000
+FPU,Integrated
+"CPU(s) enabled","1 core, 1 chip, 1 core/chip"
+"CPU(s) orderable","1 chip"
+"Primary Cache","64 KB I + 64 KB D on chip per chip"
+"Secondary Cache","1 MB I+D on chip per chip"
+"L3 Cache",None
+"Other Cache",None
+Memory,"2 GB (2 x 1GB DDR333 CL2.5)"
+"Disk Subsystem",SATA
+"Other Hardware",--
+
+SOFTWARE
+
+"Operating System","SUSE SLES9 (for AMD64)"
+Compiler,"gcc , g++ & gfortran 4.2.0325 (for AMD64)"
+"Auto Parallel",No
+"File System",ext3
+"System State","runlevel 3"
+"Base Pointers",64-bit
+"Peak Pointers","Not Applicable"
+"Other Software",None
+
+"General Notes"
+
+" PORTABILITY=-DSPEC_CPU_LP64 is applied to all benchmarks in base."
+" 400.perlbench: -DSPEC_CPU_LINUX_X64"
+" 462.libquantum: -DSPEC_CPU_LINUX"
+" C base flags: -O2"
+" C++ base flags: -O2 "
+" Fortran base flags: -O2"
+
+ERRORS
+
+##############################################################################
+"#   INVALID RUN INVALID RUN INVALID RUN INVALID RUN INVALID RUN INVALID RUN  #"
+"#                                                                            #"
+"# 'reportable' flag not set during run                                       #"
+"# 471.omnetpp base did not have enough runs!                                 #"
+"# 456.hmmer base did not have enough runs!                                   #"
+"# 445.gobmk base did not have enough runs!                                   #"
+"# 458.sjeng base did not have enough runs!                                   #"
+"# 429.mcf base did not have enough runs!                                     #"
+"# 473.astar base did not have enough runs!                                   #"
+"# 483.xalancbmk base did not have enough runs!                               #"
+"# 400.perlbench base did not have enough runs!                               #"
+"# 464.h264ref base did not have enough runs!                                 #"
+"# 462.libquantum base did not have enough runs!                              #"
+"# 401.bzip2 base did not have enough runs!                                   #"
+"# 403.gcc base did not have enough runs!                                     #"
+"# Input set must be 'ref' for a valid run (set to 'test' for this run)       #"
+"# Unknown flags were used! See                                               #"
+"#      http://www.spec.org/auto/cpu2006/Docs/runspec.html#flagsurl           #"
+"# for information about how to get rid of this error.                        #"
+"#                                                                            #"
+"#   INVALID RUN INVALID RUN INVALID RUN INVALID RUN INVALID RUN INVALID RUN  #"
+##############################################################################
+-----------------------------------------------------------------------------
+"For questions about this result, please contact the tester."
+"For other inquiries, please contact webmaster@spec.org."
+"Copyright 2006 Standard Performance Evaluation Corporation"
+"Generated on Fri Aug  5 13:33:10 2011 by SPEC CPU2006 CSV formatter v4607"
