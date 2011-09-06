@@ -265,16 +265,27 @@ privload_unload_imports(privmod_t *privmod)
     return true;
 }
 
-DR_API void
-privload_gdb_register(const char *filename, ELF_ADDR textaddr)
+/* Register a symbol file with gdb.  This symbol needs to be exported so that
+ * gdb can find it even when full debug information is unavailable.  We do
+ * *not* consider it part of DR's public API.
+ */
+DYNAMORIO_EXPORT void
+dr_gdb_add_symbol_file(const char *filename, ELF_ADDR textaddr)
 {
-    /* Do nothing, if gdb is attached, it will lift argument values. */
-    /* TODO: This design is poor because it doesn't support attaching.  The
-     * problem is that once we've loaded the image, we unmap the original ELF
-     * file, and then are no longer able to read the section headers, which
-     * have the names and offsets that gdb needs.  We can recompute the load
-     * delta easily.  If we can store or re-read the section offsets and names,
-     * we can pass that information to gdb.
+    /* Do nothing.  If gdb is attached with libdynamorio.so-gdb.py loaded, it
+     * will stop here and lift the argument values.
+     */
+    /* FIXME: This only passes the text section offset.  gdb can accept
+     * additional "-s<section> <address>" arguments to locate data sections.
+     * This would be useful for setting watchpoints on client global variables.
+     */
+    /* FIXME: This design does not support attaching.  Traditionally, this is
+     * implemented by maintaining a doubly-linked list of modules that can be
+     * read from gdb when it attaches.  We can use the existing privmod_t list
+     * in loader_shared.c and perform registration from privload_finalize_load.
+     * However, we will need to either save the section offsets in
+     * privload_map_and_relocate (which runs before heap initialization) or
+     * re-map the file in privload_finalize_load.
      */
 }
 
@@ -437,14 +448,12 @@ privload_map_and_relocate(const char *filename, size_t *size OUT)
     ELF_ADDR text_addr =
         delta + module_get_text_section(file_map, file_size);
     if (INTERNAL_OPTION(privload_register_gdb)) {
-        privload_gdb_register(filename, text_addr);
+        dr_gdb_add_symbol_file(filename, text_addr);
     } else {
-#ifdef DEBUG
         /* Add debugging comment about how to get symbol information in gdb. */
         SYSLOG_INTERNAL_INFO("In GDB, use add-symbol-file %s %p"
                              " to add symbol information",
                              filename, text_addr);
-#endif
     }
     LOG(GLOBAL, LOG_LOADER, 1,
         "for debugger: add-symbol-file %s %p\n",

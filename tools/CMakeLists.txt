@@ -35,19 +35,6 @@ if (UNIX)
   add_executable(runstats runstats.c)
   add_executable(nudgeunix nudgeunix.c)
 
-  # Set up our debugging support for gdb in the build directory.
-  # We need to compute the final path of libdynamorio.so, with version number
-  # applied for gdb's script autoloading to work.
-  get_target_property(libdynamorio_so dynamorio LOCATION)
-  get_target_property(soversion dynamorio SOVERSION)
-  set(libdynamorio_so "${libdynamorio_so}.${soversion}")
-  execute_process(COMMAND
-    ${CMAKE_COMMAND} -E create_symlink
-    "${CMAKE_CURRENT_SOURCE_DIR}/libdynamorio.so-gdb.py"
-    "${libdynamorio_so}-gdb.py"
-    OUTPUT_QUIET)
-  configure_file(gdbinit ${CMAKE_BINARY_DIR}/.gdbinit)
-
   include_directories(
     ${PROJECT_SOURCE_DIR}/core/lib
     )
@@ -92,6 +79,20 @@ if (UNIX)
     PATTERN "run_in_bg*"
     PATTERN "runstats*"
     EXCLUDE)
+
+  # Set up our debugging support for gdb in the build directory.
+  # We need to compute the final path of libdynamorio.so, with version number
+  # applied for gdb's script autoloading to work.
+  get_target_property(libdynamorio_so dynamorio LOCATION)
+  get_target_property(soversion dynamorio SOVERSION)
+  set(libdynamorio_so "${libdynamorio_so}.${soversion}")
+  execute_process(COMMAND
+    ${CMAKE_COMMAND} -E create_symlink
+    "${CMAKE_CURRENT_SOURCE_DIR}/libdynamorio.so-gdb.py"
+    "${libdynamorio_so}-gdb.py"
+    WORKING_DIRECTORY "${CMAKE_LIBRARY_OUTPUT_DIRECTORY}"
+    OUTPUT_QUIET)
+  configure_file(gdbinit ${CMAKE_BINARY_DIR}/.gdbinit)
 
   DR_install(TARGETS nudgeunix DESTINATION ${INSTALL_BIN})
 else (UNIX)

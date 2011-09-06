@@ -337,7 +337,8 @@
                             "number of pages used for client libraries' TLS memory")
     /* Controls whether we register symbol files with gdb.  This has very low
      * overhead if gdb is not attached, and if it is, we probably want to have
-     * symbols anyway. */
+     * symbols anyway.
+     */
     OPTION_DEFAULT_INTERNAL(bool, privload_register_gdb, true,
                             "register private loader DLLs with gdb")
 # endif

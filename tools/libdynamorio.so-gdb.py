@@ -40,7 +40,7 @@ class DRClient(DROption):
 
 class DRClientArgs(DROption):
     def __init__(self):
-        super(DRClientArgs, self).__init__("client-args", gdb.PARAM_OPTIONAL_FILENAME)
+        super(DRClientArgs, self).__init__("client-args", gdb.PARAM_STRING)
 
     set_doc = ("DynamoRIO client arguments.")
     show_doc = set_doc
@@ -52,9 +52,9 @@ dr_client_args = DRClientArgs()
 
 # Other useful flags to pass to DynamoRIO.
 dr_options = [
-        DROption('msgbox_mask', gdb.PARAM_INTEGER),
-        DROption('loglevel', gdb.PARAM_INTEGER),
-        DROption('logmask', gdb.PARAM_INTEGER),
+        DROption('msgbox_mask', gdb.PARAM_ZINTEGER),
+        DROption('loglevel', gdb.PARAM_ZINTEGER),
+        DROption('logmask', gdb.PARAM_ZINTEGER),
         ]
 
 
@@ -109,7 +109,7 @@ class PrivloadBP(gdb.Breakpoint):
     DYNAMORIO_BP = True
 
     def __init__(self):
-        super(PrivloadBP, self).__init__("privload_gdb_register",
+        super(PrivloadBP, self).__init__("dr_gdb_add_symbol_file",
                                          internal=not self.DEBUG)
 
     def stop(self):
