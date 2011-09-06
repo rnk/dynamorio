@@ -969,11 +969,11 @@ expand_and_optimize_bb(void *dc, instrlist_t *bb)
         }
     }
 
-    if (opt_cleancall >= 4) {
+    if (opt_cleancall >= 5) {
         redundant_load_elim(dc, dc, bb);
         dead_store_elim(dc, dc, bb);
     }
-    if (opt_cleancall >= 5) {
+    if (opt_cleancall >= 7) {
         fold_leas(dc, dc, bb);
     }
 

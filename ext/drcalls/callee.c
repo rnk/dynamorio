@@ -1922,7 +1922,7 @@ analyze_callee_ilist(void *dc, callee_info_t *ci)
         analyze_callee_setup(dc, ci);
         if (opt_cleancall >= 4) {
             analyze_callee_partial(dc, ci);
-            if (opt_cleancall >= 5) {
+            if (opt_cleancall >= 6) {
                 /* Optimizations are expensive, avoid wasting time on huge callees.
                  */
                 if (ci->num_instrs > 2 * MAX_NUM_INLINE_INSTRS) {

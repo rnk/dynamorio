@@ -34,15 +34,35 @@
 
 #include "dr_api.h"
 #include "dr_calls.h"
+#include "instr_builder.h"
 
 #include "inscount_common.h"
 
 const char *client_name = "inscount_cleancall";
 
+static void (*inc_count)(void);
+
+static byte inc_count_buf[128];
+
 static void
-inc_count(void)
+codegen_inc_count(void *dc)
 {
-    global_count++;
+    instr_builder_t ib;
+    INSTR_BUILDER_INIT(ib, dc, instrlist_create(dc), NULL, /*meta=*/false);
+
+    BUILD(ib, push,   REG(XBP));
+    BUILD(ib, mov_ld, REG(XBP),                     REG(XSP));
+    BUILD(ib, mov_ld, REG(XAX),                     MEM_REL(&global_count, 8));
+    BUILD(ib, add,    REG(XAX),                     IMM(1, 4));
+    BUILD(ib, mov_st, MEM_REL(&global_count, 8),    REG(XAX));
+    INSERT(ib, INSTR_CREATE_leave(dc));
+    INSERT(ib, INSTR_CREATE_ret(dc));
+
+    instrlist_encode(dc, ib.ilist, &inc_count_buf[0], false);
+    inc_count = (void (*)(void)) &inc_count_buf[0];
+    instrlist_clear_and_destroy(dc, ib.ilist);
+    dr_memory_protect((void*)inc_count, 128,
+                      DR_MEMPROT_EXEC|DR_MEMPROT_WRITE|DR_MEMPROT_READ);
 }
 
 dr_emit_flags_t
@@ -50,6 +70,9 @@ event_basic_block(void *drcontext, void *tag, instrlist_t *bb,
                   bool for_trace, bool translating)
 {
     instr_t *instr;
+    if (inc_count == NULL) {
+        codegen_inc_count(drcontext);
+    }
     for (instr = instrlist_first(bb); instr != NULL;
          instr = instr_get_next(instr)) {
         drcalls_insert_call(drcontext, bb, instr, (void *)inc_count,
