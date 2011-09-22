@@ -7,17 +7,17 @@ import re
 
 print 'Loading gdb scripts for debugging DynamoRIO...'
 
-match = re.match(r'^(\d+)\.(\d+)[^0-9]*$', gdb.VERSION)
+match = re.match(r'^(\d+)\.(\d+)', gdb.VERSION)
 if match:
     major = int(match.group(1))
     minor = int(match.group(2))
 else:
     major = 0
     minor = 0
-#if major < 7 or (major == 7 and minor < 3):
-    ## Hacky way to "return" from the module before executing the code below.
-    #raise Exception('gdb version is older than 7.3, disabling gdb support for '
-                    #'DynamoRIO.')
+if major < 7 or (major == 7 and minor < 3):
+    # Hacky way to "return" from the module before executing the code below.
+    raise Exception('gdb version is older than 7.3, disabling gdb support for '
+                    'DynamoRIO.')
 
 # If we didn't attach, pick the libdir from __file__.  This relies on
 # .gdbinit sourcing us from the build dir instead of from the source dir,
