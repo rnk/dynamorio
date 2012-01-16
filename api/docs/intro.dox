@@ -1,6 +1,6 @@
 /* ******************************************************************************
  * Copyright (c) 2011 Massachusetts Institute of Technology  All rights reserved.
- * Copyright (c) 2010-2011 Google, Inc.  All rights reserved.
+ * Copyright (c) 2010-2012 Google, Inc.  All rights reserved.
  * Copyright (c) 2007-2010 VMware, Inc.  All rights reserved.
  * ******************************************************************************/
 
@@ -100,6 +100,7 @@ sections:
 - \subpage page_standalone
   <br>\DynamoRIO can be used as a standalone library for IA-32/AMD64
   disassembly, decoding, encoding, and general instruction manipulation.
+  A separate static library is provided for this purpose.
 \endif
 
 - \subpage API_tutorial
@@ -513,6 +514,10 @@ If a target application executes an \c execve that discards the \c $HOME
 environment variable, the resulting process will not run under \DynamoRIO
 control.  Use global configuration files to handle this situation.
 
+If a target application binary has suid or sgid bits set, \p drrun will be
+unable to inject into it.  You'll need to use /etc/ld.so.preload as
+described in the \ref limits_linux_preload "Limitations" section.
+
 To \ref sec_comm "nudge" a process with pid \c targetpid running under
 \DynamoRIO and pass argument "5" to the nudge callback, use the \c
 nudgeunix tool:
@@ -830,9 +835,10 @@ so as to avoid corrupting it.
 To simplify reachability in a 64-bit address space, \DynamoRIO guarantees
 that all of its code caches and heap are within the same 2GB memory region.
 \DynamoRIO also loads \client libraries within 32-bit reachability of its
-code caches and heap (which currently requires that \client libraries have
-preferred bases in the lower 2GB of the address space: see \ref
-limits_64bit).  This means that any static data or code in a \client
+code caches and heap.  \DynamoRIO's private loader will ensure this, though
+on Windows it is more efficient to set a preferred base of a \client
+library to be in the lower 2GB to avoid the cost of relocation at load time.
+Any static data or code in a \client
 library, or any data allocated using \DynamoRIO's API, is guaranteed to be
 directly reachable from code cache code.
 
@@ -1040,19 +1046,16 @@ g++ -o my-client.so -I<header dir> \
 
 \subsection subsec_cpp C++ \Clients
 
-On Windows, when using the Microsoft Visual C++ compiler, simply use the \p
-/MT compiler flag.  The \client will still use the \p kernel32.dll library
-but our private loader will load a separate copy of that library and
-redirect heap allocation automatically.  Our private loader does not yet
-support locating SxS libraries, so using \p /MD will most likely not work
-unless using an older version of the compiler.
+The 3.0 version of \DynamoRIO added experimental full support for C++
+\clients using the STL and other libraries.
 
-Be aware that we have successfully built and tested several small C++
-\clients using the gcc toolchain, but have not performed extensive testing.
-Our \clients successfully compile and run linked with the g++ libraries
-included in Red Hat Enterprise Linux 4, but on later distributions the
-pre-built libraries may not work and you may need to build static versions
-from the gcc sources with the appropriate flags (including -fPIC).
+On Windows, when using the Microsoft Visual C++ compiler, we recommend
+using the \p /MT compiler flag to request a static C library.  The \client
+will still use the \p kernel32.dll library but our private loader will load
+a separate copy of that library and redirect heap allocation automatically.
+Our private loader does not yet support locating SxS (side-by-side)
+libraries, so using \p /MD will most likely not work unless using a
+version of the Visual Studio compiler other than 2005 or 2008.
 
 We do not recommend that a \client or its libraries invoke their own system
 calls as this bypasses \DynamoRIO's monitoring of changes to the process
@@ -1148,7 +1151,7 @@ Linux\endif.  See \ref sec_deploy.
 \endif
 
  - \b -stack_size \e \<number\>: \anchor op_stack_size 
-   \DynamoRIO's per-thread stack is limited to 20KB by default (this may
+   \DynamoRIO's per-thread stack is limited to 56KB by default (this may
    seem small, but this is much larger than its size when no \client is
    present).  This parameter can be used to increase the size; however,
    larger stack sizes use significantly more memory when targeting
@@ -1242,7 +1245,8 @@ they want to shrink memory usage
 
  - \b -syntax_intel: \anchor op_syntax_intel
     This option causes \DynamoRIO to output all disassembly using Intel
-    syntax rather than the default AT&T-style syntax.
+    syntax rather than the default AT&T-style syntax.  This can also be set
+    using disassemble_set_syntax().
 
 \ifnot vmsafe
  - \b -tracedump_text and \b -tracedump_binary:
@@ -1318,7 +1322,11 @@ Options aiding in debugging:
     By default, \DynamoRIO hides itself from the Windows module list, for
     transparency.  However, this makes it more difficult to debug a process
     under \DynamoRIO's control.  The option -no_hide turns off this module
-    hiding. \if linux This option is for Windows only. \endif
+    hiding.  However, the \client library and any libraries it imports from
+    will still be hidden.  We provide a windbg script that can locate
+    \DynamoRIO, the \client library, and all of its dependences, so this
+    option should no longer be necessary (see \ref sec_debugging).
+   \if linux This option is for Windows only. \endif
 \endif
 
 Options available only in the debug build of \DynamoRIO:
@@ -1378,7 +1386,7 @@ href="http://code.google.com/p/dynamorio/wiki/BugReporting">a detailed
 description</a> of the problem (is it an application crash?  a \DynamoRIO
 crash?  a hang?  a debug build assert?) and how to reproduce it.
 
-\subsection sec_diagnosing Debugging Tips
+\subsection sec_diagnosing Troubleshooting
 
  - \DynamoRIO disables itself when Windows is booted in safe mode (without
 networking).  Thus, if a crash occurs in a Windows service under
@@ -1405,44 +1413,66 @@ networking).  Thus, if a crash occurs in a Windows service under
    be replaced by a ; separated lists of individual asserts to
    suppress as so "-ignore_assert_list 'foo.c:333;bar.c:12'".
 
-\ifnot vmsafe
- - A process under control of \DynamoRIO can be executed within a
-   debugger.  On Windows it is best to set the \ref op_no_hide "-no_hide"
-   option so the debugger can see the \DynamoRIO library.
-
-   \par
-   To attach to a process on Windows, use the \ref op_msgbox_mask
-   "-msgbox_mask" option and attach the debugger while the dialog box has
-   paused the application.  On Linux, the same option can be used and
-   the debugger attached while the application waits for enter to be
-   pressed.  Since this may not work for applications that themselves
-   read from standard input, an alternative exists: the \ref op_pause
-   "-pause_on_error" option allows attaching a debugger when a problem
-   occurs.  To run an application on Linux under a debugger from the start
-   you can perform the work of the \c drrun script by setting the
-   LD_LIBRARY_PATH and LD_PRELOAD environment variables from within the
-   debugger.
-
-   \par
-   For debugging on Windows we recommend using windbg version 6.3.0017
-   (\b not the newer versions 6.4 through 6.8, as they have problems
-   displaying callstacks involving \DynamoRIO code).
-
-   \par
-   Take care when setting breakpoints in an application running under
-   \DynamoRIO.  If the debugger inserts \c int3 it can find its way into
-   the code cache and cause errors as the debugger will not realize that
-   the resulting trap is from a breakpoint.  Use read watchpoints on the
-   code in question instead.
-
-   \par
-   On Windows, if an application invokes OuputDebugString() while under a
-   debugger, \DynamoRIO can end up losing control of the application.
-\endif
-
  - The \DynamoRIO header files have typedefs that may conflict with other
    header files wrapped in ifndef DR_DO_NOT_DEFINE_<type> to make it
    easier to work around such conflicts.
+
+\ifnot vmsafe
+\subsection sec_using_debugger Using Debuggers
+
+A process under control of \DynamoRIO can be executed within a debugger.
+For debugging on Windows we recommend using windbg version 6.3.0017 (\b not
+the newer versions, as they have problems displaying callstacks involving
+\DynamoRIO code).
+
+Normally, the debugger will not be aware of the \DynamoRIO library or the
+\client library.  We provide a windbg script that locates the \DynamoRIO
+library, the \client library, and any privately-loaded dependent libraries.
+The script is in \c bin32/load_syms.txt and \c bin64/load_syms64.txt.  To
+load it from windbg, execute the following command:
+
+\code
+  $><c:\path\to\DR\bin32\load_syms.txt
+\endcode
+When debugging often, modify the shortcut that launches windbg
+to include this command as a -c argument.  E.g.:
+
+\code
+"C:\Program Files (x86)\Debugging Tools for Windows\windbg.exe" -pt 1 -c "$><c:\tools\DynamoRIO\bin32\load_syms.txt"
+\endcode
+
+On Windows, the \ref op_no_hide "-no_hide" option can alternatively be
+used so the debugger can see the \DynamoRIO library, but the debugger
+will still not be able to see the \client library or any of its
+dependent libraries.  We recommend using our script.
+
+To attach to a process on Windows, use the \ref op_msgbox_mask
+"-msgbox_mask" option and attach the debugger while the dialog box has
+paused the application.  On Linux, the same option can be used and
+the debugger attached while the application waits for enter to be
+pressed.  Since this may not work for applications that themselves
+read from standard input, an alternative exists: the \ref op_pause
+"-pause_on_error" option allows attaching a debugger when a problem
+occurs.  To run an application on Linux under a debugger from the start
+you can perform the work of the \c drrun script by setting the
+LD_LIBRARY_PATH and LD_PRELOAD environment variables from within the
+debugger.
+
+Take care when setting breakpoints in an application running under
+\DynamoRIO.  If the debugger inserts \c int3 it can find its way into
+the code cache and cause errors as the debugger will not realize that
+the resulting trap is from a breakpoint.  Use read watchpoints on the
+code in question instead.
+
+On Linux, gdb sets a hidden breakpoint in __nptl_create_event.  This
+causes \DynamoRIO to put an \c int3 into the code cache.  The debugger
+then hits a trap on every pthread_create and other related calls.
+The debugger handles these traps so this is just an annoyance.
+See http://code.google.com/p/dynamorio/issues/detail?id=490.
+
+On Windows, if an application invokes OuputDebugString() while under a
+debugger, \DynamoRIO can end up losing control of the application.
+\endif
 
 ****************************************************************************
 ****************************************************************************
@@ -1461,8 +1491,8 @@ disassembly, decoding, encoding, and general instruction manipulation,
 independently of controlling a target application.  When used in this way,
 all aspects of \DynamoRIO's API routines that apply to instrumentation or
 application control are not applicable; however, the full, rich instruction
-set API is enabled.  For further information see the following sections of
-the Code Manipulation API:
+set API is enabled.  For further information on the instruction set API see
+the following sections of the Code Manipulation API:
 
  - \ref sec_IR
  - \ref sec_decode
@@ -1470,17 +1500,58 @@ the Code Manipulation API:
 \section sec_standalone Using \DynamoRIO as a Standalone Library
 
 \DynamoRIO can be used as a regular third-party library for a standalone
-application (instead of a \client that operates on a target program).  In
-order to use the \DynamoRIO API in such a situation, a dummy context must
-be created.  This routine creates such a context, and initializes
-\DynamoRIO for standalone use:
+application (instead of a \client that operates on a target program).  Two
+options are provided: using the regular \DynamoRIO shared library, or using
+a special static library \p drdecode.  The shared library provides not only
+decoding routines but also cross-platform resources such as file
+manipulation.
+
+When using the \DynamoRIO shared library, this initialization routine must
+be called prior to using any API routines:
 
 \code dr_standalone_init() \endcode
 
-Note that the returned context cannot be used as the drcontext for a thread
-running under \DynamoRIO control!  It is only for standalone programs that
-wish to use \DynamoRIO as a library of routines for IA-32 instruction
-manipulation or other purposes.
+This routine returns a dummy context that can be passed to API routines.
+
+When using \p drdecode, the special context \p GLOBAL_DCONTEXT should be
+used whenever a context is required.  The \p drdecode library does not
+require initialization.
+
+Neither the context returned by dr_standalone_init() nor \p
+GLOBAL_DCONTEXT can be used as the drcontext for a thread running under
+\DynamoRIO control!  It is only for standalone programs that wish to use
+\DynamoRIO as a library of routines for IA-32 instruction manipulation or
+other purposes.
+
+In standalone mode, the set_x86_mode() routine operates globally rather
+than per-thread.
+
+Runtime options are ignored in standalone mode.  Disassembly style can be
+controlled via disassemble_set_syntax().  The processor to use will not be
+automatically set and will be assumed to be \p VENDOR_INTEL.  Use
+proc_set_vendor() to set to \p VENDOR_AMD instead.
+
+Some \DynamoRIO API routines are not supported in standalone mode.  These
+include all event registration routines, module iteration,
+dr_memory_protect(), dr_messagebox(), dr_get_current_drcontext(),
+dr_get_thread_id(), tls fields, dr_thread_yield(), dr_sleep(), \client
+threads, suspending threads, itimers, register spilling and restoring,
+dr_redirect_execution(), try/except, and code cache routines (e.g.,
+dr_delete_fragment() or flush routines).
+
+When using the \p drdecode library, no API routines other than those
+involving decoding, encoding, disassembling, instruction lists,
+instructions, or operands are supported.  The various compute_address
+routines can be used by manually filling in \p dr_mcontext_t, although far
+memory references will have their segment base ignored.  Other API routines
+are simply not present in the static library.  There is no separate set of
+headers for use with \p drdecode.
+
+When using \DynamoRIO's CMake support, use the configure_DynamoRIO_decoder()
+function to set up include directories and to link with \p drdecode.  The
+next section describes how to link with the \DynamoRIO shared library.
+
+\section sec_standalone_shared \DynamoRIO Shared Library Issues
 
 Since the \DynamoRIO library on Windows includes or forwards
 implementations of certain C library routines (see 
@@ -1506,7 +1577,7 @@ When building an application that uses \DynamoRIO as a standalone library,
 follow the steps for \ref sec_build to include the header files and link
 with the \DynamoRIO library, but omit the linker flags requesting no
 standard libraries or startup files.  \DynamoRIO's CMake support does this
-automatically via the \p configure_DynamoRIO_standalone() function.
+automatically via the configure_DynamoRIO_standalone() function.
 
 \endif
 

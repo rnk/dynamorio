@@ -61,15 +61,20 @@ dr_init(client_id_t id)
     dr_log(NULL, LOG_ALL, 1, "Client 'instrcalls' initializing\n");
     /* also give notification to stderr */
 #ifdef SHOW_RESULTS
-    if (dr_is_notify_on())
+    if (dr_is_notify_on()) {
+# ifdef WINDOWS
+        /* ask for best-effort printing to cmd window.  must be called in dr_init(). */
+        dr_enable_console_printing();
+# endif
         dr_fprintf(STDERR, "Client instrcalls is running\n");
+    }
 #endif
     dr_register_exit_event(event_exit);
     dr_register_bb_event(event_basic_block);
     dr_register_thread_init_event(event_thread_init);
     dr_register_thread_exit_event(event_thread_exit);
 #ifdef SHOW_SYMBOLS
-    if (drsym_init(NULL) != DRSYM_SUCCESS) {
+    if (drsym_init(0) != DRSYM_SUCCESS) {
         dr_log(NULL, LOG_ALL, 1, "WARNING: unable to initialize symbol translation\n");
     }
 #endif
@@ -147,7 +152,8 @@ print_address(file_t f, app_pc addr, const char *prefix)
     sym = (drsym_info_t *) sbuf;
     sym->struct_size = sizeof(*sym);
     sym->name_size = MAX_SYM_RESULT;
-    symres = drsym_lookup_address(data->full_path, addr - data->start, sym);
+    symres = drsym_lookup_address(data->full_path, addr - data->start, sym,
+                                  DRSYM_DEFAULT_FLAGS);
     if (symres == DRSYM_SUCCESS || symres == DRSYM_ERROR_LINE_NOT_AVAILABLE) {
         const char *modname = dr_module_preferred_name(data);
         if (modname == NULL)
@@ -170,7 +176,7 @@ static void
 at_call(app_pc instr_addr, app_pc target_addr)
 {
     file_t f = (file_t)(ptr_uint_t) dr_get_tls_field(dr_get_current_drcontext());
-    dr_mcontext_t mc = {sizeof(mc),};
+    dr_mcontext_t mc = {sizeof(mc),DR_MC_CONTROL/*only need xsp*/};
     dr_get_mcontext(dr_get_current_drcontext(), &mc);
 #ifdef SHOW_SYMBOLS
     print_address(f, instr_addr, "CALL @ ");

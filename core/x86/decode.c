@@ -108,8 +108,9 @@ set_x86_mode(dcontext_t *dcontext, bool x86)
     /* We would disallow but some early init routines need to use global heap */
     if (dcontext == GLOBAL_DCONTEXT)
         dcontext = get_thread_private_dcontext();
-    if (dcontext == NULL) {
-        ASSERT(!dynamo_initialized || dynamo_exited);
+    /* Support GLOBAL_DCONTEXT or NULL for standalone/static modes */
+    if (dcontext == NULL || dcontext == GLOBAL_DCONTEXT) {
+        ASSERT(!dynamo_initialized || dynamo_exited || dcontext == GLOBAL_DCONTEXT);
         old_mode = initexit_x86_mode;
         initexit_x86_mode = x86;
     } else {
@@ -130,8 +131,9 @@ get_x86_mode(dcontext_t *dcontext)
     /* We would disallow but some early init routines need to use global heap */
     if (dcontext == GLOBAL_DCONTEXT)
         dcontext = get_thread_private_dcontext();
-    if (dcontext == NULL) {
-        ASSERT(!dynamo_initialized || dynamo_exited);
+    /* Support GLOBAL_DCONTEXT or NULL for standalone/static modes */
+    if (dcontext == NULL || dcontext == GLOBAL_DCONTEXT) {
+        ASSERT(!dynamo_initialized || dynamo_exited || dcontext == GLOBAL_DCONTEXT);
         return initexit_x86_mode;
     } else
         return dcontext->x86_mode;
@@ -143,7 +145,7 @@ get_x86_mode(dcontext_t *dcontext)
  * Developer's Manual,'' Volume 2: Instruction Set Reference, 2001.
  */
 
-#ifdef DEBUG /* currently only used in ASSERTs */
+#if defined(DEBUG) && !defined(STANDALONE_DECODER) /* currently only used in ASSERTs */
 static bool
 is_variable_size(opnd_size_t sz)
 {
@@ -611,10 +613,12 @@ read_vex(byte *pc, decode_info_t *di, byte instr_byte,
     pc++;
 
     if (info->code == PREFIX_VEX_2B) {
-        /* fields are: R, vvvv, L, PP */
+        /* fields are: R, vvvv, L, PP.  R is inverted. */
         vex_last = instr_byte;
-        if (TEST(0x80, vex_last))
+        if (!TEST(0x80, vex_last))
             di->prefixes |= PREFIX_REX_R;
+        /* 2-byte vex implies leading 0x0f */
+        *ret_info = &escape_instr;
         /* rest are shared w/ 3-byte form's final byte */
     } else if (info->code == PREFIX_VEX_3B) {
         byte vex_mm;
@@ -1088,7 +1092,12 @@ decode_reg(decode_reg_t which_reg, decode_info_t *di, byte optype, opnd_size_t o
     case TYPE_V:
     case TYPE_W:
     case TYPE_V_MODRM:
-        return (TEST(PREFIX_VEX_L, di->prefixes) ?
+        return ((TEST(PREFIX_VEX_L, di->prefixes) &&
+                 /* we use this to indicate .LIG since all {VHW}s{sd} types
+                  * and no others are .LIG
+                  */
+                 opsize != OPSZ_4_of_16 &&
+                 opsize != OPSZ_8_of_16)?
                 (extend? (REG_START_YMM + 8 + reg) : (REG_START_YMM + reg)) :
                 (extend? (REG_START_XMM + 8 + reg) : (REG_START_XMM + reg)));
     case TYPE_S:
@@ -1627,7 +1636,12 @@ decode_operand(decode_info_t *di, byte optype, opnd_size_t opsize, opnd_t *opnd)
             /* part of AVX: top 4 bits of 8-bit immed select xmm/ymm register */
             ptr_int_t immed = get_immed(di, OPSZ_1);
             reg_id_t reg = (reg_id_t) (immed & 0xf0) >> 4;
-            *opnd = opnd_create_reg((TEST(di->prefixes, PREFIX_VEX_L) ?
+            *opnd = opnd_create_reg(((TEST(di->prefixes, PREFIX_VEX_L) &&
+                                      /* we use this to indicate .LIG since all
+                                       * {VHW}s{sd} types and no others are .LIG
+                                       */
+                                      opsize != OPSZ_4_of_16 &&
+                                      opsize != OPSZ_8_of_16) ?
                                      REG_START_YMM : REG_START_XMM) + reg);
             return true;
         }
@@ -1635,7 +1649,12 @@ decode_operand(decode_info_t *di, byte optype, opnd_size_t opsize, opnd_t *opnd)
         {
             /* part of AVX: vex.vvvv selects xmm/ymm register */
             reg_id_t reg = (~di->vex_vvvv) & 0xf; /* bit-inverted */
-            *opnd = opnd_create_reg((TEST(di->prefixes, PREFIX_VEX_L) ?
+            *opnd = opnd_create_reg(((TEST(di->prefixes, PREFIX_VEX_L) &&
+                                      /* we use this to indicate .LIG since all
+                                       * {VHW}s{sd} types and no others are .LIG
+                                       */
+                                      opsize != OPSZ_4_of_16 &&
+                                      opsize != OPSZ_8_of_16) ?
                                      REG_START_YMM : REG_START_XMM) + reg);
             return true;
         }
@@ -1732,7 +1751,7 @@ decode_opcode(dcontext_t *dcontext, byte *pc, instr_t *instr)
     return pc + sz;
 }
 
-#ifdef DEBUG
+#if defined(DEBUG) && !defined(STANDALONE_DECODER)
 /* PR 215143: we must resolve variable sizes at decode time */
 static bool
 check_is_variable_size(opnd_t op)
@@ -2045,3 +2064,4 @@ int main()
 }
 
 #endif /* DECODE_UNIT_TEST */
+

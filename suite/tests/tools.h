@@ -93,6 +93,16 @@ typedef __int64 int64;
 # endif
 #endif
 
+/* Function attributes. */
+#ifdef WINDOWS
+# define EXPORT __declspec(dllexport)
+# define NOINLINE __declspec(noinline)
+#else /* LINUX */
+# define EXPORT __attribute__((visibility("default")))
+# define NOINLINE __attribute__((noinline))
+#endif
+
+
 /* some tests include dr_api.h and tools.h, so avoid duplicating */
 #ifndef IF_X64
 #  ifdef X64
@@ -223,6 +233,13 @@ size(Code_Snippet func)
     default:
         return 0;
     }
+    /* support ILT indirection where these are jmps to the real code
+     * (adding /debug for i#567 causes ILT usage == table of jmps)
+     */
+    if (*(unsigned char *)val1 == 0xe9/*jmp*/)
+        val1 = val1 + 5 + *(int*)(val1+1); /* resolve jmp target */
+    if (*(unsigned char *)val2 == 0xe9/*jmp*/)
+        val2 = val2 + 5 + *(int*)(val2+1); /* resolve jmp target */
     ret_val = val2 - val1;
     if (ret_val < 0) {
         print("Code layout assumption violation");
@@ -626,6 +643,7 @@ typedef HANDLE thread_handle;
 typedef unsigned int (__stdcall *fptr)(void *);
 #endif
 
+#ifdef WINDOWS
 /* Thread related functions */
 thread_handle
 create_thread(fptr f);
@@ -640,6 +658,7 @@ join_thread(thread_handle th);
 
 void
 thread_yield();
+#endif
 
 #ifdef WINDOWS
 static byte *
@@ -692,6 +711,22 @@ __asm {             \
 }
 #endif
 
+#ifdef LINUX
+/* Forward decl for nanosleep. */
+struct timespec;
+
+/* Staticly linked versions of libc routines that don't touch globals or errno.
+ */
+ptr_int_t nolibc_syscall(uint sysnum, uint num_args, ...);
+void nolibc_print(const char *str);
+void nolibc_print_int(int d);
+void nolibc_nanosleep(struct timespec *req);
+int  nolibc_strlen(const char *str);
+void *nolibc_mmap(void *addr, size_t length, int prot, int flags, int fd,
+                off_t offset);
+void nolibc_munmap(void *addr, size_t length);
+void nolibc_memset(void *dst, int val, size_t size);
+#endif
 
 #ifdef __cplusplus
 }

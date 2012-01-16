@@ -76,6 +76,7 @@
 extern int num_fragments;
 #endif
 
+#ifndef STANDALONE_DECODER
 /****************************************************************************
  * clean call callee info table for i#42 and i#43
  */
@@ -228,6 +229,8 @@ clean_call_info_init(clean_call_info_t *cci, void *callee,
     cci->should_align  = true;
     cci->callee_info   = &default_callee_info;
 }
+#endif /* !STANDALONE_DECODER */
+/***************************************************************************/
 
 /* Convert a short-format CTI into an equivalent one using
  * near-rel-format.
@@ -427,6 +430,9 @@ remangle_short_rewrite(dcontext_t *dcontext,
     instr_set_operands_valid(instr, true);
     return (pc+mangled_sz);
 }
+
+/***************************************************************************/
+#ifndef STANDALONE_DECODER
 
 /* Pushes not only the GPRs but also xmm/ymm, xip, and xflags, in
  * priv_mcontext_t order.
@@ -1769,6 +1775,47 @@ insert_push_cs(dcontext_t *dcontext, instrlist_t *ilist, instr_t *instr,
 #endif
 }
 
+static ptr_uint_t
+get_call_return_address(dcontext_t *dcontext, instrlist_t *ilist, instr_t *instr)
+{
+    ptr_uint_t retaddr, curaddr;
+
+    ASSERT(instr_is_call(instr));
+#ifdef CLIENT_INTERFACE
+    /* i#620: provide API to set fall-through and retaddr targets at end of bb */
+    if (instrlist_get_return_target(ilist) != NULL) {
+        retaddr = (ptr_uint_t)instrlist_get_return_target(ilist);
+        LOG(THREAD, LOG_INTERP, 3, "set return target "PFX" by client\n", retaddr);
+        return retaddr;
+    }
+#endif
+    /* For CI builds, use the translation field so we can handle cases
+     * where the client has changed the target and invalidated the raw
+     * bits.  We'll make sure the translation is always set for direct
+     * calls.
+     *
+     * If a client changes an instr, or our own mangle_rel_addr() does,
+     * the raw bits won't be valid but the translation should be.
+     */
+    curaddr = (ptr_uint_t) instr_get_translation(instr);
+    if (curaddr == 0 && instr_raw_bits_valid(instr))
+        curaddr = (ptr_uint_t) instr_get_raw_bits(instr);
+    ASSERT(curaddr != 0);
+    /* we use the next app instruction as return address as the client
+     * or DR may change the instruction and so its length.
+     */
+    if (instr_raw_bits_valid(instr) && 
+        instr_get_translation(instr) == instr_get_raw_bits(instr)) {
+        /* optimization, if nothing changes, use instr->length to avoid
+         * calling decode_next_pc. 
+         */
+        retaddr = curaddr + instr->length;
+    } else {
+        retaddr = (ptr_uint_t) decode_next_pc(dcontext, (byte *)curaddr);
+    }
+    return retaddr;
+}
+
 /***************************************************************************
  * DIRECT CALL
  * Returns new next_instr
@@ -1777,9 +1824,8 @@ static instr_t *
 mangle_direct_call(dcontext_t *dcontext, instrlist_t *ilist, instr_t *instr,
                    instr_t *next_instr, bool mangle_calls)
 {
-    ptr_uint_t retaddr, curaddr;
+    ptr_uint_t retaddr;
     app_pc target = NULL;
-    int len = instr_length(dcontext, instr);
     opnd_t pushop = instr_get_dst(instr, 1);
     opnd_size_t pushsz = stack_entry_size(instr, opnd_get_size(pushop));
     if (opnd_is_near_pc(instr_get_target(instr)))
@@ -1820,17 +1866,7 @@ mangle_direct_call(dcontext_t *dcontext, instrlist_t *ilist, instr_t *instr,
         return next_instr;
     } 
 
-    /* For CI builds, use the translation field so we can handle cases
-     * where the client has changed the target and invalidated the raw
-     * bits.  We'll make sure the translation is always set for direct
-     * calls.
-     */
-    curaddr = (ptr_uint_t) instr_get_translation(instr);
-    if (curaddr == 0 && instr_raw_bits_valid(instr))
-        curaddr = (ptr_uint_t) instr_get_raw_bits(instr);
-    ASSERT(curaddr != 0);
-    retaddr = curaddr + len;
-    ASSERT(retaddr == (ptr_uint_t) decode_next_pc(dcontext, (byte *)curaddr));
+    retaddr = get_call_return_address(dcontext, ilist, instr);
 
 #if defined(RETURN_STACK) || defined(NATIVE_RETURN)
     /* ASSUMPTION: a call to the next instr is not going to ever have a matching ret!
@@ -1973,7 +2009,7 @@ mangle_indirect_call(dcontext_t *dcontext, instrlist_t *ilist, instr_t *instr,
                      instr_t *next_instr, bool mangle_calls, uint flags)
 {
     opnd_t target;
-    ptr_uint_t retaddr, curaddr;
+    ptr_uint_t retaddr;
 #ifdef RETURN_STACK
     instr_t *cleanup;
 #endif
@@ -1983,6 +2019,7 @@ mangle_indirect_call(dcontext_t *dcontext, instrlist_t *ilist, instr_t *instr,
 
     if (!mangle_calls)
         return;
+    retaddr = get_call_return_address(dcontext, ilist, instr);
 
     /* Convert near, indirect calls.  The jump to the exit_stub that
      * jumps to indirect_branch_lookup was already inserted into the
@@ -1990,19 +2027,6 @@ mangle_indirect_call(dcontext_t *dcontext, instrlist_t *ilist, instr_t *instr,
      * an indirect call to a direct call. In that case, mangle later
      * inserts a direct exit stub.
      */
-
-    /* If a client changes an instr, or our own mangle_rel_addr() does,
-     * the raw bits won't be valid but the translation should be */
-    curaddr = (ptr_uint_t) instr_get_translation(instr);
-    if (curaddr == 0 && instr_raw_bits_valid(instr))
-        curaddr = (ptr_uint_t) instr_get_raw_bits(instr);
-    ASSERT(curaddr != 0);
-    if (instr_raw_bits_valid(instr))
-        retaddr = curaddr + instr->length;
-    else /* mangle_rel_addr() may have changed length: use original! */
-        retaddr = (ptr_uint_t) decode_next_pc(dcontext, (byte *)curaddr);
-    ASSERT(retaddr != 0);
-
     /* If this call is marked for conversion, do minimal processing.
      * FIXME Just a note that converted calls are not subjected to any of
      * the specialized builds' processing further down.
@@ -5486,7 +5510,7 @@ static void
 insert_inline_reg_save(dcontext_t *dcontext, clean_call_info_t *cci,
                        instrlist_t *ilist, instr_t *where, opnd_t *args)
 {
-    IF_DEBUG(callee_info_t *info = cci->callee_info;)
+    DEBUG_DECLARE(callee_info_t *info = cci->callee_info;)
     int i;
 
     /* Spill XSP to TLS_XAX_SLOT because it's not exposed to the client. */
@@ -5641,3 +5665,6 @@ insert_inline_clean_call(dcontext_t *dcontext, clean_call_info_t *cci,
      * leave it for higher optimization level.
      */
 }
+
+#endif /* !STANDALONE_DECODER */
+/***************************************************************************/

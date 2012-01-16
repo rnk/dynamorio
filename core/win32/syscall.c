@@ -1,5 +1,5 @@
 /* **********************************************************
- * Copyright (c) 2011 Google, Inc.  All rights reserved.
+ * Copyright (c) 2011-2012 Google, Inc.  All rights reserved.
  * Copyright (c) 2006-2010 VMware, Inc.  All rights reserved.
  * **********************************************************/
 
@@ -348,7 +348,7 @@ syscall_while_native(app_state_at_intercept_t *state)
     if (dcontext == NULL) {
         /* unknown thread */
         return AFTER_INTERCEPT_LET_GO; /* do syscall natively */
-    } else if (dcontext->thread_record->under_dynamo_control == UNDER_DYN_HACK) {
+    } else if (IS_UNDER_DYN_HACK(dcontext->thread_record->under_dynamo_control)) {
         /* this trampoline is our ticket to taking control again prior
          * to the image entry point
          * we often hit this on NtAllocateVirtualMemory from HeapCreate for
@@ -999,7 +999,7 @@ add_dr_env_vars(dcontext_t *dcontext, HANDLE phandle, wchar_t **env_ptr)
     size_t tot_sz = 0, app_sz, sz;
     size_t got;
     wchar_t *new_env = NULL;
-    wchar_t buf[MAX_REGISTRY_PARAMETER];
+    wchar_t buf[MAX_OPTIONS_STRING];
     bool need_rununder = true, need_autoinject = true, need_options = true,
         need_logdir = true;
     size_t sz_rununder = 0, sz_autoinject = 0, sz_options = 0, sz_logdir = 0;
@@ -1062,25 +1062,41 @@ add_dr_env_vars(dcontext_t *dcontext, HANDLE phandle, wchar_t **env_ptr)
     if (need_rununder) {
         sz_rununder = wcslen(L_DYNAMORIO_VAR_RUNUNDER) +
             strlen(get_config_val(DYNAMORIO_VAR_RUNUNDER)) + 2/*=+0*/;
-        sz_rununder = MIN(sz_rununder, BUFFER_SIZE_ELEMENTS(buf)) * sizeof(*env);
+        if (sz_rununder > BUFFER_SIZE_ELEMENTS(buf)) {
+            SYSLOG_INTERNAL(SYSLOG_WARNING, "truncating DR env var for child");
+            sz_rununder = BUFFER_SIZE_ELEMENTS(buf);
+        }
+        sz_rununder *= sizeof(*env);
         tot_sz += sz_rununder;
     }
     if (need_autoinject) {
         sz_autoinject = wcslen(L_DYNAMORIO_VAR_AUTOINJECT) +
             strlen(get_config_val(DYNAMORIO_VAR_AUTOINJECT)) + 2/*=+0*/;
-        sz_autoinject = MIN(sz_autoinject, BUFFER_SIZE_ELEMENTS(buf)) * sizeof(*env);
+        if (sz_autoinject > BUFFER_SIZE_ELEMENTS(buf)) {
+            SYSLOG_INTERNAL(SYSLOG_WARNING, "truncating DR env var for child");
+            sz_autoinject = BUFFER_SIZE_ELEMENTS(buf);
+        }
+        sz_autoinject *= sizeof(*env);
         tot_sz += sz_autoinject;
     }
     if (need_options) {
         sz_options = wcslen(L_DYNAMORIO_VAR_OPTIONS) +
             strlen(get_config_val(DYNAMORIO_VAR_OPTIONS)) + 2/*=+0*/;
-        sz_options = MIN(sz_options, BUFFER_SIZE_ELEMENTS(buf)) * sizeof(*env);
+        if (sz_options > BUFFER_SIZE_ELEMENTS(buf)) {
+            SYSLOG_INTERNAL(SYSLOG_WARNING, "truncating DR env var for child");
+            sz_options = BUFFER_SIZE_ELEMENTS(buf);
+        }
+        sz_options *= sizeof(*env);
         tot_sz += sz_options;
     }
     if (need_logdir) {
         sz_logdir = wcslen(L_DYNAMORIO_VAR_LOGDIR) +
             strlen(get_config_val(DYNAMORIO_VAR_LOGDIR)) + 2/*=+0*/;
-        sz_logdir = MIN(sz_logdir, BUFFER_SIZE_ELEMENTS(buf)) * sizeof(*env);
+        if (sz_logdir > BUFFER_SIZE_ELEMENTS(buf)) {
+            SYSLOG_INTERNAL(SYSLOG_WARNING, "truncating DR env var for child");
+            sz_logdir = BUFFER_SIZE_ELEMENTS(buf);
+        }
+        sz_logdir *= sizeof(*env);
         tot_sz += sz_logdir;
     }
 
@@ -1205,10 +1221,10 @@ add_dr_env_vars(dcontext_t *dcontext, HANDLE phandle, wchar_t **env_ptr)
 static bool
 not_first_thread_in_new_process(HANDLE process_handle, HANDLE thread_handle)
 {
-    CONTEXT cxt;
-    cxt.ContextFlags = CONTEXT_DR_STATE;
-    if (NT_SUCCESS(nt_get_context(thread_handle, &cxt)))
-        return !is_first_thread_in_new_process(process_handle, &cxt);
+    char buf[MAX_CONTEXT_SIZE];
+    CONTEXT *cxt = nt_initialize_context(buf, CONTEXT_DR_STATE);
+    if (NT_SUCCESS(nt_get_context(thread_handle, cxt)))
+        return !is_first_thread_in_new_process(process_handle, cxt);
     return false;
 }
 
@@ -1480,21 +1496,21 @@ presys_SetContextThread(dcontext_t *dcontext, reg_t *param_base)
              * FIXME: this isn't transparent as we have to clobber
              * fields in the app cxt: should restore in post-syscall.
              */
-            CONTEXT alt_cxt;
-            alt_cxt.ContextFlags = CONTEXT_DR_STATE;
+            char buf[MAX_CONTEXT_SIZE];
+            CONTEXT *alt_cxt = nt_initialize_context(buf, CONTEXT_DR_STATE);
             STATS_INC(num_app_setcontext_no_control);
-            if (thread_get_context(tr, &alt_cxt) &&
-                translate_context(tr, &alt_cxt, true/*set memory*/)) {
+            if (thread_get_context(tr, alt_cxt) &&
+                translate_context(tr, alt_cxt, true/*set memory*/)) {
                 LOG(THREAD, LOG_SYSCALLS, 2, "no CONTROL flag on original cxt:\n");
                 DOLOG(3, LOG_SYSCALLS, { dump_context_info(cxt, THREAD, true); });
                 cxt->ContextFlags |= CONTEXT_CONTROL;
-                cxt->CXT_XIP = alt_cxt.CXT_XIP;
-                cxt->CXT_XFLAGS = alt_cxt.CXT_XFLAGS;
-                cxt->CXT_XSP = alt_cxt.CXT_XSP;
-                cxt->CXT_XBP = alt_cxt.CXT_XBP;
+                cxt->CXT_XIP = alt_cxt->CXT_XIP;
+                cxt->CXT_XFLAGS = alt_cxt->CXT_XFLAGS;
+                cxt->CXT_XSP = alt_cxt->CXT_XSP;
+                cxt->CXT_XBP = alt_cxt->CXT_XBP;
                 IF_X64(ASSERT_NOT_IMPLEMENTED(false)); /* Rbp not part of CONTROL */
-                cxt->SegCs = alt_cxt.SegCs;
-                cxt->SegSs = alt_cxt.SegSs;
+                cxt->SegCs = alt_cxt->SegCs;
+                cxt->SegSs = alt_cxt->SegSs;
                 LOG(THREAD, LOG_SYSCALLS, 3, "changed cxt:\n");
                 DOLOG(3, LOG_SYSCALLS, { dump_context_info(cxt, THREAD, true); });
                 /* don't care about other regs -- if app didn't
@@ -1745,7 +1761,7 @@ presys_FreeVirtualMemory(dcontext_t *dcontext, reg_t *param_base)
     }
 
     if (!is_phandle_me(process_handle)) {
-        IPC_ALERT("ERROR: FreeVirtualMemory %s "PFX" "PIFX" on another process\n",
+        IPC_ALERT("ERROR: FreeVirtualMemory %s "PFX" "PIFX" on another process",
                   type == MEM_DECOMMIT ? "MEM_DECOMMIT" : "MEM_RELEASE",
                   base, size);
         return;
@@ -2060,7 +2076,7 @@ presys_UnmapViewOfSection(dcontext_t *dcontext, reg_t *param_base)
         "syscall: NtUnmapViewOfSection "PFX" size="PIFX"\n", base, size);
         
     if (!is_phandle_me(process_handle)) {
-        IPC_ALERT("ERROR: UnmapViewOfSection on another process\n");
+        IPC_ALERT("ERROR: UnmapViewOfSection on another process");
         return;
     }
 
@@ -2491,7 +2507,8 @@ postsys_CreateUserProcess(dcontext_t *dcontext, reg_t *param_base, bool success)
         if (TESTALL(PROCESS_VM_OPERATION|PROCESS_VM_READ|
                     PROCESS_VM_WRITE|PROCESS_QUERY_INFORMATION, rights)) {
             if (create_suspended) {
-                CONTEXT context;
+                char buf[MAX_CONTEXT_SIZE];
+                CONTEXT *context;
                 CONTEXT *cxt = NULL;
                 int res;
                 if (get_os_version() >= WINDOWS_VERSION_VISTA &&
@@ -2501,10 +2518,10 @@ postsys_CreateUserProcess(dcontext_t *dcontext, reg_t *param_base, bool success)
                      * to do thread injection.  On Vista+ we don't see the
                      * NtCreateThread so we do it here.  PR 215423.
                      */
-                    context.ContextFlags = CONTEXT_DR_STATE;
-                    res = nt_get_context(thread_handle, &context);
+                    context = nt_initialize_context(buf, CONTEXT_DR_STATE);
+                    res = nt_get_context(thread_handle, context);
                     if (NT_SUCCESS(res))
-                        cxt = &context;
+                        cxt = context;
                     else {
                         LOG(THREAD, LOG_SYSCALLS, 1,
                             "syscall: NtCreateUserProcess: WARNING: failed to get cxt of "
@@ -2554,7 +2571,8 @@ postsys_GetContextThread(dcontext_t *dcontext, reg_t *param_base, bool success)
     CONTEXT *cxt = (CONTEXT *) postsys_param(dcontext, param_base, 1);
     thread_record_t *trec;
     thread_id_t tid = thread_id_from_handle(thread_handle);
-    CONTEXT alt_cxt;
+    char buf[MAX_CONTEXT_SIZE];
+    CONTEXT *alt_cxt;
     CONTEXT *xlate_cxt;
     LOG(THREAD, LOG_SYSCALLS|LOG_THREADS, 1,
         "syscall: NtGetContextThread handle="PFX" (tid=%d) flags=0x%x"
@@ -2607,22 +2625,22 @@ postsys_GetContextThread(dcontext_t *dcontext, reg_t *param_base, bool success)
              * no further permissions are needed to acquire them so we
              * get our own context w/ them.
              */
-            alt_cxt.ContextFlags = CONTEXT_DR_STATE;
+            alt_cxt = nt_initialize_context(buf, CONTEXT_DR_STATE);
             /* if asking for own context, thread_get_context() will point at
              * dynamorio_syscall_* and we'll fail to translate so we special-case
              */
             if (tid == get_thread_id()) {
-                mcontext_to_context(&alt_cxt, mc);
-                alt_cxt.CXT_XIP = (ptr_uint_t) dcontext->asynch_target;
+                mcontext_to_context(alt_cxt, mc);
+                alt_cxt->CXT_XIP = (ptr_uint_t) dcontext->asynch_target;
                 translate = false;
-            } else if (!thread_get_context(trec, &alt_cxt)) {
+            } else if (!thread_get_context(trec, alt_cxt)) {
                 ASSERT_NOT_REACHED();
                 /* FIXME: just don't translate -- right now won't hurt us since
                  * we don't translate other than the pc anyway.
                  */
                 return;
             }
-            xlate_cxt = &alt_cxt;
+            xlate_cxt = alt_cxt;
         }
 
         SELF_PROTECT_LOCAL(trec->dcontext, WRITABLE);
@@ -2678,12 +2696,9 @@ postsys_GetContextThread(dcontext_t *dcontext, reg_t *param_base, bool success)
             }
             if (TESTALL(CONTEXT_YMM_FLAG, cxt->ContextFlags) &&
                 preserve_xmm_caller_saved()) {
-                /* FIXME i#437: ymm are inside XSTATE cstruct which should be
-                 * laid out like this: {CONTEXT, CONTEXT_EX, XSTATE}, but
-                 * should read CONTEXT_EX fields to verify.
-                 * See also comments in context_to_mcontext().
-                 */
-                ASSERT_NOT_IMPLEMENTED(false && "i#437: no ymm CONTEXT support yet");
+                byte *ymmh_area = context_ymmh_saved_area(cxt);
+                ASSERT(ymmh_area != NULL);
+                memcpy(ymmh_area, context_ymmh_saved_area(xlate_cxt), YMMH_SAVED_SIZE);
             }
         }
         SELF_PROTECT_LOCAL(trec->dcontext, READONLY);
@@ -2725,9 +2740,9 @@ postsys_SuspendThread(dcontext_t *dcontext, reg_t *param_base, bool success)
      * synch, use trylocks in case suspended thread is holding any locks */
     if (mutex_trylock(&thread_initexit_lock)) {
         if (!mutex_testlock(&all_threads_lock)) {
-            CONTEXT cxt;
+            char buf[MAX_CONTEXT_SIZE];
+            CONTEXT *cxt = nt_initialize_context(buf, CONTEXT_DR_STATE);
             thread_record_t *tr;
-            cxt.ContextFlags = CONTEXT_DR_STATE;
             /* know thread isn't holding any of the locks we will need */
             LOG(THREAD, LOG_SYNCH, 2, 
                 "SuspendThread got necessary locks to test if thread %d suspended at good spot without resuming\n", 
@@ -2738,9 +2753,9 @@ postsys_SuspendThread(dcontext_t *dcontext, reg_t *param_base, bool success)
                  * a thread that is in the process of exiting. 
                  * synch_with_thread will take care of the last case at
                  * least so we fall through to that. */
-            } else if (thread_get_context(tr, &cxt)) {
+            } else if (thread_get_context(tr, cxt)) {
                 priv_mcontext_t mc;
-                context_to_mcontext(&mc, &cxt);
+                context_to_mcontext(&mc, cxt);
                 SELF_PROTECT_LOCAL(tr->dcontext, WRITABLE);
                 if (at_safe_spot(tr, &mc, 
                                  THREAD_SYNCH_SUSPENDED_VALID_MCONTEXT)) {
@@ -2950,7 +2965,7 @@ postsys_AllocateVirtualMemory(dcontext_t *dcontext, reg_t *param_base, bool succ
             process_handle, process_id_from_handle(process_handle));
         DODEBUG({
             if (prot_is_executable(prot)) {
-                IPC_ALERT("NtAllocateVirtualMemory for process "PFX" %d prot=%s\n",
+                IPC_ALERT("NtAllocateVirtualMemory for process "PFX" %d prot=%s",
                           process_handle, process_id_from_handle(process_handle), 
                           prot_string(prot));
             }
@@ -3061,7 +3076,7 @@ postsys_QueryVirtualMemory(dcontext_t *dcontext, reg_t *param_base, bool success
             }
         }
     } else {
-        IPC_ALERT("Warning: QueryVirtualMemory on another process\n");
+        IPC_ALERT("Warning: QueryVirtualMemory on another process");
     }
 }
 
@@ -3412,7 +3427,7 @@ postsys_MapViewOfSection(dcontext_t *dcontext, reg_t *param_base, bool success)
                 dr_strfree(file HEAPACCT(ACCT_VMAREAS));
         }
     } else {
-        IPC_ALERT("WARNING: MapViewOfSection on another process\n");
+        IPC_ALERT("WARNING: MapViewOfSection on another process");
     }
 }
 
@@ -3475,7 +3490,7 @@ postsys_DuplicateObject(dcontext_t *dcontext, reg_t *param_base, bool success)
                 dr_strfree(file HEAPACCT(ACCT_VMAREAS));
             }
         } else {
-            IPC_ALERT("WARNING: handle via IPC may mess up section-to-handle mapping\n");
+            IPC_ALERT("WARNING: handle via IPC may mess up section-to-handle mapping");
         }
     }
 }
@@ -3812,4 +3827,3 @@ dr_syscall_invoke_another(void *drcontext)
 # endif
 }
 #endif /* CLIENT_INTERFACE */
-

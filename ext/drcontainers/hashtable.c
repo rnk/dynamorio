@@ -411,12 +411,42 @@ hashtable_remove(hashtable_t *table, void *key)
     return res;
 }
 
-void
-hashtable_delete(hashtable_t *table)
+bool
+hashtable_remove_range(hashtable_t *table, void *start, void *end)
+{
+    bool res = false;
+    uint i;
+    hash_entry_t *e, *prev_e, *next_e;
+    if (table->synch)
+        hashtable_lock(table);
+    for (i = 0; i < HASHTABLE_SIZE(table->table_bits); i++) {
+        for (e = table->table[i], prev_e = NULL; e != NULL; e = next_e) {
+            next_e = e->next;
+            if (e->key >= start && e->key < end) {
+                if (prev_e == NULL)
+                    table->table[i] = e->next;
+                else
+                    prev_e->next = e->next;
+                if (table->str_dup)
+                    hash_free(e->key, strlen((const char *)e->key) + 1);
+                if (table->free_payload_func != NULL)
+                    (table->free_payload_func)(e->payload);
+                hash_free(e, sizeof(*e));
+                table->entries--;
+                res = true;
+            } else
+                prev_e = e;
+        }
+    }
+    if (table->synch)
+        hashtable_unlock(table);
+    return res;
+}
+
+static void
+hashtable_clear_internal(hashtable_t *table)
 {
     uint i;
-    if (table->synch)
-        dr_mutex_lock(table->lock);
     for (i = 0; i < HASHTABLE_SIZE(table->table_bits); i++) {
         hash_entry_t *e = table->table[i];
         while (e != NULL) {
@@ -429,6 +459,25 @@ hashtable_delete(hashtable_t *table)
             e = nexte;
         }
     }
+    table->entries = 0;
+}
+ 
+void
+hashtable_clear(hashtable_t *table)
+{
+    if (table->synch)
+        dr_mutex_lock(table->lock);
+    hashtable_clear_internal(table);
+    if (table->synch)
+        dr_mutex_unlock(table->lock);
+}
+ 
+void
+hashtable_delete(hashtable_t *table)
+{
+    if (table->synch)
+        dr_mutex_lock(table->lock);
+    hashtable_clear_internal(table);
     hash_free(table->table, (size_t)HASHTABLE_SIZE(table->table_bits) *
               sizeof(hash_entry_t*));
     table->table = NULL;

@@ -125,7 +125,7 @@ extern char **__environ;
 #ifdef RCT_IND_BRANCH
 #  include "../rct.h"
 #endif
-#include "syscall.h"            /* our own local copy */
+#include "include/syscall.h"            /* our own local copy */
 #include "../module_shared.h"
 #include "os_private.h"
 #include "../synch.h"
@@ -405,6 +405,35 @@ __errno_location(void) {
     }
 }
 
+
+#if defined(HAVE_TLS) && defined(CLIENT_INTERFACE)
+/* i#598 
+ * (gdb) x/20i (*(errno_loc_t)0xf721e413)
+ * 0xf721e413 <__errno_location>:       push   %ebp
+ * 0xf721e414 <__errno_location+1>:     mov    %esp,%ebp
+ * 0xf721e416 <__errno_location+3>:     call   <__x86.get_pc_thunk.cx>
+ * 0xf721e41b <__errno_location+8>:     add    $0x166bd9,%ecx
+ * 0xf721e421 <__errno_location+14>:    mov    -0x1c(%ecx),%eax
+ * 0xf721e427 <__errno_location+20>:    add    %gs:0x0,%eax
+ * 0xf721e42e <__errno_location+27>:    pop    %ebp
+ * 0xf721e42f <__errno_location+28>:    ret
+ *
+ * __errno_location calcuates the errno location by adding
+ * TLS's base with errno's offset in TLS.
+ * However, because the TLS has been switched in os_tls_init,
+ * the calculated address is wrong.
+ * We first get the errno offset in TLS at init time and
+ * calculate correct address by adding the app's tls base.
+ */
+static int libc_errno_tls_offs;
+static int *
+our_libc_errno_loc(void)
+{
+    void *app_tls = os_get_app_seg_base(NULL, LIB_SEG_TLS);
+    return (int *)(app_tls + libc_errno_tls_offs);
+}
+#endif
+
 /* i#238/PR 499179: libc errno preservation
  *
  * Errno location is per-thread so we store the
@@ -460,6 +489,15 @@ get_libc_errno_location(bool do_init)
             }
         }
         module_iterator_stop(mi);
+#if defined(HAVE_TLS) && defined(CLIENT_INTERFACE)
+        /* i#598, init the libc errno's offset */
+        if (INTERNAL_OPTION(private_loader)) {
+            void *dr_lib_tls_base = os_get_dr_seg_base(NULL, LIB_SEG_TLS);
+            ASSERT(dr_lib_tls_base != NULL && libc_errno_loc != NULL);
+            libc_errno_tls_offs = (void *)libc_errno_loc() - dr_lib_tls_base;
+            libc_errno_loc = &our_libc_errno_loc;
+        }
+#endif
     }
     return libc_errno_loc;
 }
@@ -1127,6 +1165,11 @@ clear_ldt_entry(uint index)
     asm volatile("mov %0,%%"ASM_XAX"; mov %%"ASM_XAX", %"ASM_SEG";" \
                  : : "m" ((val)) : ASM_XAX);
 
+#define WRITE_GS(val) \
+    ASSERT(sizeof(val) == sizeof(reg_t));                               \
+    asm volatile("mov %0,%%"ASM_XAX"; mov %%"ASM_XAX", %"LIB_ASM_SEG";" \
+                 : : "m" ((val)) : ASM_XAX);
+
 static uint
 read_selector(reg_id_t seg)
 {
@@ -1347,7 +1390,7 @@ set_tls(ushort tls_offs, void *value)
  * Should we export this to clients?  For now they can get
  * this information via opnd_compute_address().
  */
-static byte *
+byte *
 get_segment_base(uint seg)
 {
     if (seg == SEG_CS || seg == SEG_SS || seg == SEG_DS || seg == SEG_ES)
@@ -1725,6 +1768,9 @@ os_tls_init()
                 initialize_ldt_struct(&desc, base, GDT_NO_SIZE_LIMIT, index);
                 res = dynamorio_syscall(SYS_set_thread_area, 1, &desc);
                 ASSERT(res >= 0);
+                /* i558 update lib seg reg to enforce the segment changes */
+                selector = GDT_SELECTOR(index);
+                WRITE_GS(selector);
             }
 # endif
         } else {
@@ -2123,7 +2169,7 @@ get_thread_private_dcontext(void)
      * thread's initialization (see comments below on that).
      */
     if (!is_segment_register_initialized())
-        return NULL;
+        return (IF_CLIENT_INTERFACE(standalone_library ? GLOBAL_DCONTEXT :) NULL);
     /* We used to check tid and return NULL to distinguish parent from child, but
      * that was affecting performance (xref PR 207366: but I'm leaving the assert in
      * for now so debug build will still incur it).  So we fixed the cases that
@@ -3722,9 +3768,7 @@ change_protection(byte *pc, size_t length, bool writable)
     return set_protection(pc, length, flags);
 }
 
-/* make pc's page writable
- * FIXME: how get current protection?  would like to keep old read/exec flags
- */
+/* make pc's page writable */
 bool
 make_writable(byte *pc, size_t size)
 {
@@ -3732,6 +3776,12 @@ make_writable(byte *pc, size_t size)
     app_pc start_page = (app_pc) PAGE_START(pc);
     size_t prot_size = (size == 0) ? PAGE_SIZE : size;
     uint prot = PROT_EXEC|PROT_READ|PROT_WRITE;
+    /* if can get current protection then keep old read/exec flags.
+     * this is crucial on modern linux kernels which refuse to mark stack +x.
+     */
+    if (!is_in_dynamo_dll(pc)/*avoid allmem assert*/ &&
+        get_memory_info(pc, NULL, NULL, &prot))
+        prot |= PROT_WRITE;
 
     ASSERT(start_page == pc && ALIGN_FORWARD(size, PAGE_SIZE) == size);
 #ifdef IA32_ON_IA64
@@ -3772,9 +3822,7 @@ bool make_copy_on_writable(byte *pc, size_t size)
     return make_writable(pc, size);
 }
 
-/* make pc's page unwritable 
- * FIXME: how get current protection?  would like to keep old read/exec flags
- */
+/* make pc's page unwritable */
 void
 make_unwritable(byte *pc, size_t size)
 {
@@ -3782,6 +3830,12 @@ make_unwritable(byte *pc, size_t size)
     app_pc start_page = (app_pc) PAGE_START(pc);
     size_t prot_size = (size == 0) ? PAGE_SIZE : size;
     uint prot = PROT_EXEC|PROT_READ;
+    /* if can get current protection then keep old read/exec flags.
+     * this is crucial on modern linux kernels which refuse to mark stack +x.
+     */
+    if (!is_in_dynamo_dll(pc)/*avoid allmem assert*/ &&
+        get_memory_info(pc, NULL, NULL, &prot))
+        prot &= ~PROT_WRITE;
 
     ASSERT(start_page == pc && ALIGN_FORWARD(size, PAGE_SIZE) == size);
     /* inc stats before making unwritable, in case messing w/ data segment */
@@ -4655,6 +4709,7 @@ os_switch_lib_tls(dcontext_t *dcontext, bool to_app)
     case TLS_TYPE_GDT: {
         our_modify_ldt_t desc;
         uint index;
+        uint selector;
         os_local_state_t *os_tls = get_os_tls();
         index = SELECTOR_INDEX(IF_X64_ELSE(os_tls->app_fs, os_tls->app_gs));
         if (to_app) {
@@ -4668,6 +4723,9 @@ os_switch_lib_tls(dcontext_t *dcontext, bool to_app)
         }
         res = dynamorio_syscall(SYS_set_thread_area, 1, &desc);
         ASSERT(res >= 0);
+        /* i558 update lib seg reg to enforce the segment changes */
+        selector = GDT_SELECTOR(index);
+        WRITE_GS(selector);
         LOG(THREAD, LOG_LOADER, 2,
             "os_switch_lib_tls: set_thread_area successful "
             "for base "PFX"\n", base);
@@ -6561,15 +6619,39 @@ maps_iterator_next(maps_iter_t *iter)
                  perm, (unsigned long*)&iter->offset, &iter->inode,
                  iter->comment_buffer);
     if (iter->vm_start == iter->vm_end) {
-        /* i#366: skip empty region: weird that the kernel puts it in */
-        LOG(GLOBAL, LOG_VMAREAS, 2, 
-            "maps_iterator_next: skipping empty region 0x%08x\n", iter->vm_start);
+        /* i#366 & i#599: Merge an empty regions caused by stack guard pages
+         * into the stack region if the stack region is less than one page away.
+         * Otherwise skip it.  Some Linux kernels (2.6.32 has been observed)
+         * have empty entries for the stack guard page.  We drop the permissions
+         * on the guard page, because Linux always insists that it has rwxp
+         * perms, no matter how we change the protections.  The actual stack
+         * region has the perms we expect.
+         * XXX: We could get more accurate info if we looked at
+         * /proc/self/smaps, which has a Size: 4k line for these "empty"
+         * regions.
+         */
+        app_pc empty_start = iter->vm_start;
+        bool r;
+        LOG(GLOBAL, LOG_VMAREAS, 2,
+            "maps_iterator_next: skipping or merging empty region 0x%08x\n",
+            iter->vm_start);
         /* don't trigger the maps-file-changed check.
          * slight risk of a race where we'll pass back earlier/overlapping
          * region: we'll live with it.
          */
         iter->vm_start = NULL;
-        return maps_iterator_next(iter);
+        r = maps_iterator_next(iter);
+        /* We could check to see if we're combining with the [stack] section,
+         * but that doesn't work if there are multiple stacks or the stack is
+         * split into multiple maps entries, so we merge any empty region within
+         * one page of the next region.
+         */
+        if (empty_start <= iter->vm_start &&
+            iter->vm_start <= empty_start + PAGE_SIZE) {
+            /* Merge regions if the next region was zero or one page away. */
+            iter->vm_start = empty_start;
+        }
+        return r;
     }
     if (iter->vm_start <= prev_start) {
         /* the maps file has expanded underneath us (presumably due to our
@@ -7307,6 +7389,11 @@ find_executable_vm_areas(void)
     while (maps_iterator_next(&iter)) {
         bool image = false;
         size_t size = iter.vm_end - iter.vm_start;
+        /* i#479, hide private module and match Windows's behavior */
+        bool skip = dynamo_vm_area_overlap(iter.vm_start, iter.vm_end) &&
+            !is_in_dynamo_dll(iter.vm_start) /* our own text section is ok */
+            /* client lib text section is ok (xref i#487) */
+            IF_CLIENT_INTERFACE(&& !is_in_client_lib(iter.vm_start));
         DEBUG_DECLARE(char *map_type = "Private");
         /* we can't really tell what's a stack and what's not, but we rely on
          * our passing NULL preventing rwx regions from being added to executable
@@ -7328,7 +7415,11 @@ find_executable_vm_areas(void)
          * ld.so we now gracefully handle other objects like vdso in gaps in
          * module, but it's simpler to leave this ordering here.
          */
-        if (strncmp(iter.comment, VSYSCALL_PAGE_MAPS_NAME,
+        if (skip) {
+            /* i#479, hide private module and match Windows's behavior */
+            LOG(GLOBAL, LOG_VMAREAS, 2, PFX"-"PFX" skipping: internal DR region\n",
+                iter.vm_start, iter.vm_end);            
+        } else if (strncmp(iter.comment, VSYSCALL_PAGE_MAPS_NAME,
                     strlen(VSYSCALL_PAGE_MAPS_NAME)) == 0
             IF_X64_ELSE(|| strncmp(iter.comment, VSYSCALL_REGION_MAPS_NAME,
                                    strlen(VSYSCALL_REGION_MAPS_NAME)) == 0,
@@ -7436,7 +7527,8 @@ find_executable_vm_areas(void)
          * it has no way of determining if this is a stack b/c we don't have
          * a dcontext at this point -- so we just don't pass the stack
          */
-        if (app_memory_allocation(NULL, iter.vm_start, (iter.vm_end - iter.vm_start),
+        if (!skip /* i#479, hide private module and match Windows's behavior */ &&
+            app_memory_allocation(NULL, iter.vm_start, (iter.vm_end - iter.vm_start),
                                   iter.prot, image _IF_DEBUG(map_type))) {
             count++;
         }

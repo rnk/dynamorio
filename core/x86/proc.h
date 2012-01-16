@@ -1,4 +1,5 @@
 /* **********************************************************
+ * Copyright (c) 2011 Google, Inc.  All rights reserved.
  * Copyright (c) 2000-2010 VMware, Inc.  All rights reserved.
  * **********************************************************/
 
@@ -234,6 +235,11 @@ extern size_t cache_line_size;
 
 #define CACHE_LINE_SIZE() cache_line_size
 
+/* xcr0 and xstate_bv feature bits */
+#define XCR0_AVX 4
+#define XCR0_SSE 2
+#define XCR0_FP  1
+
 void proc_init(void);
 
 DR_API
@@ -263,6 +269,18 @@ DR_API
 /** Returns one of the VENDOR_ constants. */
 uint
 proc_get_vendor(void);
+
+DR_API
+/**
+ * Sets the vendor to the given VENDOR_ constant.
+ * This function is supplied to support decoding or encoding with respect to
+ * other than the current processor being executed on.  The change in vendor
+ * will be seen by the decoder and encoder, as well as the rest of the
+ * system.
+ * \return the prior vendor, or -1 on an invalid argument.
+ */
+int
+proc_set_vendor(uint new_vendor);
 
 DR_API
 /** 

@@ -1,6 +1,6 @@
 /* *******************************************************************************
+ * Copyright (c) 2010-2012 Google, Inc.  All rights reserved.
  * Copyright (c) 2011 Massachusetts Institute of Technology  All rights reserved.
- * Copyright (c) 2010-2011 Google, Inc.  All rights reserved.
  * Copyright (c) 2003-2010 VMware, Inc.  All rights reserved.
  * *******************************************************************************/
 
@@ -335,6 +335,12 @@
      */
     OPTION_DEFAULT_INTERNAL(uint, client_lib_tls_size, 1,
                             "number of pages used for client libraries' TLS memory")
+    /* Controls whether we register symbol files with gdb.  This has very low
+     * overhead if gdb is not attached, and if it is, we probably want to have
+     * symbols anyway.
+     */
+    OPTION_DEFAULT_INTERNAL(bool, privload_register_gdb, true,
+                            "register private loader DLLs with gdb")
 # endif
 # ifdef WINDOWS
     /* Heap isolation for private dll copies.  Valid only with -private_loader. */
@@ -357,8 +363,17 @@
         if (options->code_api) {
             /* PR 202669: larger stack size since we're saving a 512-byte
              * buffer on the stack when saving fp state.
+             * Also, C++ RTL initialization (even when a C++
+             * client does little else) can take a lot of stack space.
+             * Furthermore, dbghelp.dll usage via drsyms has been observed
+             * to require 36KB, which is already beyond the minimum to
+             * share gencode in the same 64K alloc as the stack.
+             *
+             * XXX: if we raise this beyond 56KB we should adjust the
+             * logic in heap_mmap_reserve_post_stack() to handle sharing the
+             * tail end of a multi-64K-region stack.
              */
-            options->stack_size = 20*1024;
+            options->stack_size = MAX(options->stack_size, 56*1024);
 
             /* For CI builds we'll disable elision by default since we
              * expect most CI users will prefer a view of the
@@ -592,7 +607,14 @@
         IF_DEBUG_ELSE_0(60)*3*1000, /* disabled in release */
         "timeout (in ms) before assuming a deadlock had occurred (0 to disable)")
 
-    OPTION_DEFAULT(uint_size, stack_size, IF_X64_ELSE(20*1024,12*1024),
+    OPTION_DEFAULT(uint_size, stack_size,
+                   /* the CI build has a larger MAX_OPTIONS_STRING so we need
+                    * a larger stack even w/ no client present.
+                    * 32KB is the max that will still allow sharing per-thread
+                    * gencode in the same 64KB alloc as the stack: we stay
+                    * under that w/ no client.
+                    */
+                   IF_CLIENT_INTERFACE_ELSE(24*1024,IF_X64_ELSE(20*1024,12*1024)),
                    "size of thread-private stacks, in KB")
     /* PR 415959: smaller vmm block size makes this both not work and not needed
      * on Linux.
@@ -1286,11 +1308,19 @@
     /* FIXME - do we want to make any of the -early_inject* options dynamic?
      * if so be sure we update os.c:early_inject_location on change etc. */
     OPTION_DEFAULT(bool, early_inject, true, "inject early")
-    OPTION_DEFAULT(bool, early_inject_map, false, "inject early via map NYI")
+#if 0 /* FIXME i#234 NYI: not ready to enable just yet */
+    OPTION_DEFAULT(bool, early_inject_map, true, "inject earliest via map")
+    /* see enum definition is os_shared.h for notes on what works with which
+     * os version */
+    OPTION_DEFAULT(uint, early_inject_location, 5 /* INJECT_LOCATION_KiUserApc */,
+        "where to hook for early_injection.  default is earliest injection: anything else will be later.")
+#else
+    OPTION_DEFAULT(bool, early_inject_map, false, "inject earliest via map")
     /* see enum definition is os_shared.h for notes on what works with which
      * os version */
     OPTION_DEFAULT(uint, early_inject_location, 4 /* INJECT_LOCATION_LdrDefault */,
-        "where to hook for early_injection, LdrDefault picks the best location for this OS version, see enum for rest")
+        "where to hook for early_injection.  default is earliest injection: anything else will be later.")
+#endif
     OPTION_DEFAULT(uint_addr, early_inject_address, 0,
         "specify the address to hook at for INJECT_LOCATION_LdrCustom")
 #ifdef WINDOWS /* probably the surrounding options should also be under this ifdef */

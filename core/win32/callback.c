@@ -1,5 +1,5 @@
 /* **********************************************************
- * Copyright (c) 2010-2011 Google, Inc.  All rights reserved.
+ * Copyright (c) 2010-2012 Google, Inc.  All rights reserved.
  * Copyright (c) 2002-2010 VMware, Inc.  All rights reserved.
  * **********************************************************/
 
@@ -210,7 +210,7 @@ intercept_asynch_common(thread_record_t *tr, bool intercept_unknown)
      * 4) fully under DR
      */
     DOSTATS({
-        if (tr->under_dynamo_control == UNDER_DYN_HACK)
+        if (IS_UNDER_DYN_HACK(tr->under_dynamo_control))
             STATS_INC(num_asynch_while_lost);
     });
     return (tr->under_dynamo_control || IS_CLIENT_THREAD(tr->dcontext));
@@ -2488,7 +2488,7 @@ asynch_retakeover_if_native()
 {
     thread_record_t *tr = thread_lookup(get_thread_id());
     ASSERT(tr != NULL);
-    if (tr->under_dynamo_control == UNDER_DYN_HACK) {
+    if (IS_UNDER_DYN_HACK(tr->under_dynamo_control)) {
         ASSERT(!reached_image_entry_yet());
         /* must do a complete takeover-after-native */
         retakeover_after_native(tr, INTERCEPT_EARLY_ASYNCH);
@@ -2871,8 +2871,9 @@ intercept_ldr_init(app_state_at_intercept_t *state)
                 return AFTER_INTERCEPT_LET_GO;
         } else {
             /* ntdll!LdrInitializeThunk is only used for initializing new
-             * threads so we should never get here */
-            ASSERT_NOT_REACHED();
+             * threads so we should never get here unless early injected
+             */
+            ASSERT(dr_earliest_injected);
         }
         asynch_retakeover_if_native(); /* FIXME - this is unneccesary */
         state->callee_arg = (void *) false /* use cur dcontext */;
@@ -3147,7 +3148,7 @@ intercept_apc(app_state_at_intercept_t *state)
                 *((app_pc *)cxt->CXT_XSP) = (app_pc)get_mcontext(dcontext)->xsi;
             } else {
                 /* should only get here w/ non-DR-mangled syscall if was native! */
-                ASSERT(dcontext->thread_record->under_dynamo_control == UNDER_DYN_HACK);
+                ASSERT(IS_UNDER_DYN_HACK(dcontext->thread_record->under_dynamo_control));
             }
         } else if (cxt->CXT_XIP == (ptr_uint_t) nt_continue_dynamo_start) {
             /* NtContinue entered kernel and was interrupted for another APC
@@ -3984,6 +3985,7 @@ dump_context_info(CONTEXT *context, file_t file, bool all)
     /* For PR 264138 */
     if (all || TESTALL(CONTEXT_XMM_FLAG, context->ContextFlags)) {
         int i, j;
+        byte *ymmh_area;
         for (i=0; i<NUM_XMM_SAVED; i++) {
             LOG(file, LOG_ASYNCH, 2, "xmm%d=0x", i);
             /* This would be simpler if we had uint64 fields in dr_xmm_t but
@@ -3992,11 +3994,16 @@ dump_context_info(CONTEXT *context, file_t file, bool all)
                 LOG(file, LOG_ASYNCH, 2, "%08x", CXT_XMM(context, i)->u32[j]);
             }
             NEWLINE;
+            if (TESTALL(CONTEXT_YMM_FLAG, context->ContextFlags)) {
+                ymmh_area = context_ymmh_saved_area(context);
+                LOG(file, LOG_ASYNCH, 2, "ymmh%d=0x", i);
+                for (j = 0; j < 4; j++) {
+                    LOG(file, LOG_ASYNCH, 2, "%08x",
+                        YMMH_AREA(ymmh_area, i).u32[j]);
+                }
+                NEWLINE;
+            }
         }
-    }
-    if (all || TESTALL(CONTEXT_YMM_FLAG, context->ContextFlags)) {
-        /* FIXME i#437: NYI.  See comments in context_to_mcontext(). */
-        ASSERT_NOT_IMPLEMENTED(all && "i#437: no ymm CONTEXT support yet");
     }
 
     if (all || context->ContextFlags & CONTEXT_FLOATING_POINT) {
@@ -4323,11 +4330,13 @@ client_exception_event(dcontext_t *dcontext, CONTEXT *cxt,
      * plenty of stack space.
      */
     dr_exception_t einfo;
-    dr_mcontext_t xl8_dr_mcontext = {sizeof(dr_mcontext_t),};
-    dr_mcontext_t raw_dr_mcontext = {sizeof(dr_mcontext_t),};
+    dr_mcontext_t xl8_dr_mcontext;
+    dr_mcontext_t raw_dr_mcontext;
     fragment_t *fragment;
     fragment_t  wrapper;
     bool pass_to_app;
+    dr_mcontext_init(&xl8_dr_mcontext);
+    dr_mcontext_init(&raw_dr_mcontext);
     einfo.record = pExcptRec;
     context_to_mcontext(dr_mcontext_as_priv_mcontext(&xl8_dr_mcontext), cxt);
     einfo.mcontext = &xl8_dr_mcontext;
@@ -4361,8 +4370,12 @@ client_exception_event(dcontext_t *dcontext, CONTEXT *cxt,
         swap_peb_pointer(dcontext, false/*to app*/);
 
     if (pass_to_app) {
+        CLIENT_ASSERT(einfo.mcontext->flags == DR_MC_ALL,
+                      "exception mcontext flags cannot be changed");
         mcontext_to_context(cxt, dr_mcontext_as_priv_mcontext(einfo.mcontext));
     } else {
+        CLIENT_ASSERT(einfo.raw_mcontext->flags == DR_MC_ALL,
+                      "exception mcontext flags cannot be changed");
         mcontext_to_context(cxt, dr_mcontext_as_priv_mcontext(einfo.raw_mcontext));
         /* Now re-execute the faulting instr, or go to
          * new context specified by client, skipping
@@ -4638,7 +4651,7 @@ intercept_exception(app_state_at_intercept_t *state)
          * code) don't support a native thread that we want to retakeover (ref
          * case 6069). So, we just treat the thread as a native_exec thread
          * and wait for a later retakeover point to regain control. */
-        if (takeover == UNDER_DYN_HACK) {
+        if (IS_UNDER_DYN_HACK(takeover)) {
             STATS_INC(num_except_while_lost);
             thread_is_lost = true;
             takeover = false;
@@ -6079,7 +6092,7 @@ intercept_load_dll(app_state_at_intercept_t *state)
             ASSERT_CURIOSITY(false);
         }
         return AFTER_INTERCEPT_LET_GO;
-    } else if (control_all_threads && tr->under_dynamo_control == UNDER_DYN_HACK) {
+    } else if (control_all_threads && IS_UNDER_DYN_HACK(tr->under_dynamo_control)) {
         dcontext_t *dcontext = get_thread_private_dcontext();
         /* trying to open debugbox causes IIS to fail, so don't SYSLOG_INTERNAL */
         LOG(THREAD, LOG_ASYNCH, 1, "ERROR: load_dll: we lost control of thread %d\n",
@@ -6134,8 +6147,8 @@ intercept_unload_dll(app_state_at_intercept_t *state)
             ASSERT_CURIOSITY(false);
         }
         return AFTER_INTERCEPT_LET_GO;
-    } else if (tr->under_dynamo_control != UNDER_DYN_HACK &&
-        !intercept_asynch_for_self(false/*no unknown threads*/)) {
+    } else if (!IS_UNDER_DYN_HACK(tr->under_dynamo_control) &&
+               !intercept_asynch_for_self(false/*no unknown threads*/)) {
         LOG(GLOBAL, LOG_VMAREAS, 1, "WARNING: no-asynch thread unloading a dll\n");
         return AFTER_INTERCEPT_LET_GO;
     }
@@ -6221,7 +6234,7 @@ intercept_unload_dll(app_state_at_intercept_t *state)
      * unloaded in the syscall NtUnmapViewOfSection
      * (there are many unload calls that do not end up unmapping)
      */
-    if (control_all_threads && tr->under_dynamo_control == UNDER_DYN_HACK)
+    if (control_all_threads && IS_UNDER_DYN_HACK(tr->under_dynamo_control))
         retakeover_after_native(tr, INTERCEPT_UNLOAD_DLL);
     return AFTER_INTERCEPT_TAKE_OVER;
 }
@@ -6231,7 +6244,7 @@ intercept_unload_dll(app_state_at_intercept_t *state)
 void
 retakeover_after_native(thread_record_t *tr, retakeover_point_t where)
 {
-    ASSERT(tr->under_dynamo_control == UNDER_DYN_HACK || 
+    ASSERT(IS_UNDER_DYN_HACK(tr->under_dynamo_control) || 
            dr_injected_secondary_thread);
     tr->under_dynamo_control = true;
     SELF_UNPROTECT_DATASEC(DATASEC_RARELY_PROT);
@@ -6527,14 +6540,14 @@ intercept_image_entry(app_state_at_intercept_t *state)
             return AFTER_INTERCEPT_LET_GO;
         }
 
-        ASSERT(thread_lookup(get_thread_id())->under_dynamo_control != UNDER_DYN_HACK); 
+        ASSERT(IS_UNDER_DYN_HACK(thread_lookup(get_thread_id())->under_dynamo_control));
     }
 
     if (dynamo_initialized) {
         thread_record_t *tr = thread_lookup(get_thread_id());
         /* FIXME: we must unprot .data here and again for retakeover: worth optimizing? */
         set_reached_image_entry();
-        if ((tr != NULL && tr->under_dynamo_control == UNDER_DYN_HACK)
+        if ((tr != NULL && IS_UNDER_DYN_HACK(tr->under_dynamo_control))
             || dr_injected_secondary_thread) {
             LOG(THREAD_GET, LOG_ASYNCH, 1, "inside intercept_image_entry\n");
             /* we were native, retakeover */
@@ -6821,6 +6834,9 @@ callback_interception_init_start(void)
      * after client init, and that leaving interception_code off exec areas
      * and writable during client init is ok
      */
+
+    /* now that drmarker is set up, fill in windbg commands (i#522) */
+    privload_add_windbg_cmds();
 }
 
 void
@@ -7779,7 +7795,7 @@ insert_jmp_at_tramp_entry(byte *trampoline, byte *target)
 /* Returns POINTER_MAX on failure.
  * Assumes that cs, ss, ds, and es are flat.
  */
-static byte *
+byte *
 get_segment_base(uint seg)
 {
     if (seg == SEG_TLS)

@@ -1,5 +1,5 @@
 /* **********************************************************
- * Copyright (c) 2011 Google, Inc.  All rights reserved.
+ * Copyright (c) 2011-2012 Google, Inc.  All rights reserved.
  * Copyright (c) 2000-2010 VMware, Inc.  All rights reserved.
  * **********************************************************/
 
@@ -51,6 +51,9 @@
 /* to avoid changing all our internal REG_ constants we define this for DR itself */
 #define DR_REG_ENUM_COMPATIBILITY 1
 
+/* to avoid duplicating code we use our own exported macros */
+#define DR_FAST_IR 1
+
 /* can't include decode.h, it includes us, just declare struct */
 struct instr_info_t;
 
@@ -93,8 +96,8 @@ struct instr_info_t;
  * We also assume that the DR_SEG_ constants are invalid as pointers for
  * our use in instr_info_t.code.
  * Also, reg_names array in encode.c corresponds to this enum order.
- * Plus, reg_fixer array in instr.c.
  * Plus, reg_mc_offset array in arch.c.
+ * Plus, dr_reg_fixer array in instr.c.
  * Lots of optimizations assume same ordering of registers among
  * 32, 16, and 8  i.e. eax same position (first) in each etc.
  * reg_rm_selectable() assumes the GPR registers, mmx, and xmm are all in a row.
@@ -193,7 +196,7 @@ typedef byte opnd_size_t; /* contains a DR_REG_ or OPSZ_ enum value */
 /* DR_API EXPORT END */
 /* indexed by enum */
 extern const char * const reg_names[];
-extern const reg_id_t reg_fixer[];
+extern const reg_id_t dr_reg_fixer[];
 /* DR_API EXPORT BEGIN */
 
 #define DR_REG_START_64    DR_REG_RAX  /**< Start of 64-bit general register enum values */
@@ -452,6 +455,20 @@ extern const reg_id_t reg_fixer[];
 #endif
 
 /* typedef is in globals.h */
+/* deliberately NOT adding doxygen comments to opnd_t fields b/c users
+ * should use our macros
+ */
+/* DR_API EXPORT BEGIN */
+
+#ifdef DR_FAST_IR
+/**
+ * opnd_t type exposed for optional "fast IR" access.  Note that DynamoRIO
+ * reserves the right to change this structure across releases and does
+ * not guarantee binary or source compatibility when this structure's fields
+ * are directly accessed.  If the OPND_ macros are used, DynamoRIO does
+ * guarantee source compatibility, but not binary compatibility.  If binary
+ * compatibility is desired, do not use the fast IR feature.
+ */
 struct _opnd_t {
     byte kind;
     /* size field only used for immed_ints and addresses
@@ -501,6 +518,8 @@ struct _opnd_t {
         void *addr;             /* REL_ADDR_kind and ABS_ADDR_kind */
     } value;
 };
+#endif /* DR_FAST_IR */
+/* DR_API EXPORT END */
 
 /* We assert that our fields are packed properly in arch_init().
  * We could use #pragma pack to shrink x64 back down to 12 bytes (it's at 16
@@ -512,7 +531,10 @@ struct _opnd_t {
  */
 #define EXPECTED_SIZEOF_OPND (3*sizeof(uint) IF_X64(+4/*struct size padding*/))
 
-/* x86 operand kinds */
+/* deliberately NOT adding doxygen comments b/c users should use our macros */
+/* DR_API EXPORT BEGIN */
+#ifdef DR_FAST_IR
+/** x86 operand kinds */
 enum {
     NULL_kind,
     IMMED_INTEGER_kind,
@@ -529,6 +551,8 @@ enum {
 #endif
     LAST_kind,      /* sentinal; not a valid opnd kind */
 };
+#endif /* DR_FAST_IR */
+/* DR_API EXPORT END */
 
 /* functions to build an operand */
 
@@ -1440,6 +1464,7 @@ DR_API
 /** 
  * Returns the value of the register \p reg, selected from the passed-in
  * register values.  Supports only general-purpose registers.
+ * \p mc->flags must include DR_MC_CONTROL and DR_MC_INTEGER.
  */
 reg_t
 reg_get_value(reg_id_t reg, dr_mcontext_t *mc);
@@ -1451,6 +1476,7 @@ reg_get_value_priv(reg_id_t reg, priv_mcontext_t *mc);
 DR_API
 /**
  * Sets the register \p reg in the passed in mcontext \p mc to \p value.
+ * \p mc->flags must include DR_MC_CONTROL and DR_MC_INTEGER.
  * \note Current release is limited to setting pointer-sized registers only
  * (no sub-registers, and no non-general-purpose registers).
  */
@@ -1468,6 +1494,7 @@ DR_API
  * except for TLS references on Windows (fs: for 32-bit, gs: for 64-bit)
  * or typical fs: or gs: references on Linux.  For far addresses the
  * calling thread's segment selector is used.
+ * \p mc->flags must include DR_MC_CONTROL and DR_MC_INTEGER.
  */
 app_pc
 opnd_compute_address(opnd_t opnd, dr_mcontext_t *mc);
@@ -1594,8 +1621,21 @@ enum {
     INSTR_OUR_MANGLING          = 0x80000000,
 };
 
+/* DR_API EXPORT TOFILE dr_ir_instr.h */
+
 /* FIXME: could shrink prefixes, eflags, opcode, and flags fields
  * this struct isn't a memory bottleneck though b/c it isn't persistent
+ */
+/* DR_API EXPORT BEGIN */
+
+#ifdef DR_FAST_IR
+/**
+ * instr_t type exposed for optional "fast IR" access.  Note that DynamoRIO
+ * reserves the right to change this structure across releases and does
+ * not guarantee binary or source compatibility when this structure's fields
+ * are directly accessed.  If the instr_ accessor routines are used, DynamoRIO does
+ * guarantee source compatibility, but not binary compatibility.  If binary
+ * compatibility is desired, do not use the fast IR feature.
  */
 struct _instr_t {
     /* flags contains the constants defined above */
@@ -1644,8 +1684,8 @@ struct _instr_t {
     instr_t   *next;
 
 }; /* instr_t */
-
-/* DR_API EXPORT TOFILE dr_ir_instr.h */
+#endif /* DR_FAST_IR */
+/* DR_API EXPORT END */
 
 /* functions to inspect and manipulate the fields of an instr_t 
  * NB: a number of instr_ routines are declared in arch_exports.h.
@@ -1933,7 +1973,8 @@ DR_API
  * instructions (i.e., non meta-instructions: see
  * #instr_ok_to_mangle), the translation should always be set.  Pick
  * the application address that if executed will be equivalent to
- * restarting \p instr.
+ * restarting \p instr.  Currently the translation address must lie
+ * within the existing bounds of the containing code block.
  * Returns the supplied \p instr (for easy chaining).  Use
  * #instr_get_app_pc to see the current value of the translation.
  */
@@ -2420,6 +2461,7 @@ DR_API
  * Otherwise, returns the effective address of the first memory operand
  * when the operands are considered in this order: destinations and then
  * sources.  The address is computed using the passed-in registers.
+ * \p mc->flags must include DR_MC_CONTROL and DR_MC_INTEGER.
  */
 app_pc
 instr_compute_address(instr_t *instr, dr_mcontext_t *mc);
@@ -2438,6 +2480,7 @@ DR_API
  * instr_compute_address() and returned in \p addr; whether it is a
  * write is returned in \p is_write.  Either or both OUT variables can
  * be NULL.
+ * \p mc->flags must include DR_MC_CONTROL and DR_MC_INTEGER.
  */
 bool
 instr_compute_address_ex(instr_t *instr, dr_mcontext_t *mc, uint index,
@@ -4342,10 +4385,13 @@ enum {
 /* 951 */     OP_vfnmsub231ss,   /* &vex_W_extensions[29][0], */ /**< vfnmsub231ss opcode */
 /* 952 */     OP_vfnmsub231sd,   /* &vex_W_extensions[29][1], */ /**< vfnmsub231sd opcode */
 
+/* 953 */     OP_movq2dq,        /* &prefix_extensions[61][1], */ /**< movq2dq opcode */
+/* 954 */     OP_movdq2q,        /* &prefix_extensions[61][3], */ /**< movdq2q opcode */
+
     /* Keep these at the end so that ifdefs don't change internal enum values */
 #ifdef IA32_ON_IA64
-/* 953 */     OP_jmpe,       /* &extensions[13][6], */ /**< jmpe opcode */
-/* 954 */     OP_jmpe_abs,   /* &second_byte[0xb8], */ /**< jmpe_abs opcode */
+/* 955 */     OP_jmpe,       /* &extensions[13][6], */ /**< jmpe opcode */
+/* 956 */     OP_jmpe_abs,   /* &second_byte[0xb8], */ /**< jmpe_abs opcode */
 #endif
 
     OP_AFTER_LAST,

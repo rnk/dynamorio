@@ -52,7 +52,8 @@ if ("${CMAKE_GENERATOR}" MATCHES "Visual Studio")
     add_custom_command(OUTPUT "${output}"
       DEPENDS "${PROJECT_SOURCE_DIR}/core/x86/asm_defines.asm"
         "${PROJECT_SOURCE_DIR}/make/CMake_asm.cmake"
-        "${PROJECT_BINARY_DIR}/configure.h)"
+        "${PROJECT_BINARY_DIR}/configure.h"
+        "${CMAKE_CURRENT_SOURCE_DIR}/${source}.asm"
       COMMAND "${CMAKE_C_COMPILER}" ARGS ${CMAKE_CPP_FLAGS}
         /I "${PROJECT_BINARY_DIR}" ${extradefs}
         -E ${CPP_NO_LINENUM} "${CMAKE_CURRENT_SOURCE_DIR}/${source}.asm"
@@ -116,11 +117,8 @@ set(CORE_SRCS
   synch.c
   buildmark.c
   loader_shared.c
+  io.c
   )
-if (UNIX OR CLIENT_INTERFACE)
-  # PR 219380: ntdll._vnsprintf doesn't support printing floats so we export ours
-  set(CORE_SRCS ${CORE_SRCS} io.c)
-endif (UNIX OR CLIENT_INTERFACE)
 
 if (WIN32 AND NOT X64)
   # PR 219380: to avoid __ftol2_sse from libc
@@ -261,9 +259,11 @@ endif ()
 # rather than a separate BUILD_INCLUDES option we always build
 # include headers if building core (or if building docs or samples as
 # they have real dependencies)
-add_dependencies(dynamorio api_headers)
+if (CLIENT_INTERFACE OR APP_EXPORTS)
+  add_dependencies(dynamorio api_headers)
+endif ()
 
-add_library(${PRELOAD_NAME} SHARED ${PRELOAD_SRCS})
+add_library(${PRELOAD_NAME} SHARED ${PRELOAD_SRCS} ${SYSLOG_SRCS} ${EVENTS_SRCS})
 # We do not issue:
 #   target_link_libraries(${PRELOAD_NAME} dynamorio)
 # b/c preload dynamically loads dynamorio by name and does not have a
@@ -284,6 +284,23 @@ if ("${CMAKE_GENERATOR}" MATCHES "Visual Studio")
   # for parallel build correctness we need a target dependence
   add_dependencies(${PRELOAD_NAME} ${x86_noncore_asm_tgt} ${preinject_asm_tgt})
 endif ()
+
+# static decoding library
+add_library(drdecode
+  instrlist.c
+  x86/decode.c
+  x86/decode_table.c
+  x86/encode.c
+  x86/instr.c
+  x86/disassemble.c
+  x86/decode_fast.c
+  x86/mangle.c
+  x86/decodelib.c
+  ${SYSLOG_SRCS}
+  ${EVENTS_SRCS}
+  )
+set_target_properties(drdecode PROPERTIES
+  COMPILE_FLAGS "-DNOT_DYNAMORIO_CORE_PROPER -DSTANDALONE_DECODER")
 
 ###########################################################################
 # linux build customization
@@ -495,6 +512,10 @@ else (UNIX)
     set(dynamorio_link_flags 
       "${dynamorio_link_flags} /export:dr_try_start")
   endif (CLIENT_INTERFACE)
+  if (WINDOWS)
+    set(dynamorio_link_flags
+      "${dynamorio_link_flags} /export:dynamorio_earliest_init_takeover")
+  endif (WINDOWS)
 
   set_target_properties(dynamorio PROPERTIES LINK_FLAGS "${dynamorio_link_flags}")
   # case 4125: we link with msvcrt.lib for vc8 /O2's use of _alldvrm
@@ -519,7 +540,8 @@ else (UNIX)
     # not bothering with map files
     "${LD_FLAGS} /incremental:no /subsystem:console /NODEFAULTLIB")
   set_target_properties(drinjectlib PROPERTIES LINK_FLAGS "${drinjectlib_link_flags}")
-  target_link_libraries(drinjectlib ${WIN32_C_LIB} ntdll kernel32 advapi32 imagehlp)
+  target_link_libraries(drinjectlib drdecode ${WIN32_C_LIB} ntdll
+    kernel32 advapi32 imagehlp)
   # drinject.exe needs a copy in the bin dir
   add_custom_command(TARGET drinjectlib POST_BUILD COMMAND ${CMAKE_COMMAND}
     ARGS -E copy "${CMAKE_LIBRARY_OUTPUT_DIRECTORY}/drinjectlib.dll"
@@ -597,3 +619,5 @@ else (UNIX)
   DR_install(TARGETS drearlyhelp2 RUNTIME DESTINATION ${INSTALL_LIB_BASE})
 endif (UNIX)
 
+DR_install(TARGETS drdecode EXPORT ${exported_targets_name}
+  DESTINATION ${INSTALL_LIB})

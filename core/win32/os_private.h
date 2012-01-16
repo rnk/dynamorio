@@ -1,5 +1,5 @@
 /* **********************************************************
- * Copyright (c) 2011 Google, Inc.  All rights reserved.
+ * Copyright (c) 2011-2012 Google, Inc.  All rights reserved.
  * Copyright (c) 2005-2010 VMware, Inc.  All rights reserved.
  * **********************************************************/
 
@@ -67,6 +67,17 @@ extern app_pc dynamo_dll_start;
 extern app_pc dynamo_dll_end;
 
 extern dcontext_t *early_inject_load_helper_dcontext;
+
+/* passed to early injection init by parent */
+typedef struct {
+    byte *dr_base;
+    byte *ntdll_base;
+    byte *tofree_base;
+    byte *hook_location;
+    char dynamorio_lib_path[MAX_PATH];
+} earliest_args_t;
+
+#define EARLY_INJECT_HOOK_SIZE 5
 
 bool
 is_first_thread_in_new_process(HANDLE process_handle, CONTEXT *cxt);
@@ -254,7 +265,7 @@ os_rename_file_in_directory(IN HANDLE rootdir,
 /* thread-shared only needs 4 pages on 32-bit but -thread_private needs 5
  * in case we hook the image entry on an early cbret
  */
-#define INTERCEPTION_CODE_SIZE IF_X64_ELSE(7*4096,5*4096)
+#define INTERCEPTION_CODE_SIZE IF_X64_ELSE(8*4096,6*4096)
 
 /* see notes in intercept_new_thread() about these values */
 #define THREAD_START_ADDR IF_X64_ELSE(CXT_XCX, CXT_XAX)
@@ -270,6 +281,7 @@ dr_marker_t*
 get_drmarker(void);
 
 #define UNDER_DYN_HACK 0xab
+#define IS_UNDER_DYN_HACK(val) ((byte)(val) == UNDER_DYN_HACK)
 
 byte *
 intercept_syscall_wrapper(byte **ptgt_pc /* IN/OUT */, 
@@ -345,21 +357,41 @@ void dump_context_info(CONTEXT *context, file_t file, bool all);
  * Since this affects only what we request from the kernel, asking
  * for floating point w/o underlying sse support is not a problem.
  */
-#ifndef CONTEXT_XSTATE /* defined in VS2008+ */
-# define CONTEXT_XSTATE (IF_X64_ELSE(CONTEXT_AMD64,CONTEXT_i386) | 0x20L)
+#ifdef CONTEXT_XSTATE
+# undef CONTEXT_XSTATE /* defined in VS2008+ */
 #endif
+/* i#437: 
+ * http://msdn.microsoft.com/en-us/library/windows/desktop/hh134240(v=vs.85).aspx
+ * Win 7 SP1 is the first version of Windows supporting the AVX API.
+ * The value for CONTEXT_XSTATE is different between Win 7 and Win 7 SP1.
+ * A single MACRO is not enough to set the CONTEXT_XSTATE across different
+ * Windows, so we use a global variable instead and set the value at runtime.
+ */
+extern uint context_xstate;
+/* avx is supported only if both hardware and os support it */
+extern bool avx_supported;
+#define CONTEXT_XSTATE context_xstate
 #define CONTEXT_XMM_FLAG IF_X64_ELSE(CONTEXT_FLOATING_POINT, CONTEXT_EXTENDED_REGISTERS)
 #define CONTEXT_YMM_FLAG CONTEXT_XSTATE
 #define CONTEXT_PRESERVE_XMM IF_X64_ELSE(true, is_wow64_process(NT_CURRENT_PROCESS))
-#define CONTEXT_PRESERVE_YMM (YMM_ENABLED())
-#define CONTEXT_DR_STATE (CONTEXT_INTEGER | CONTEXT_CONTROL | \
-                          (CONTEXT_PRESERVE_XMM ? CONTEXT_XMM_FLAG : 0U) |\
+#define CONTEXT_PRESERVE_YMM (avx_supported)
+#define CONTEXT_DR_STATE_NO_YMM  (CONTEXT_INTEGER | CONTEXT_CONTROL | \
+                                  (CONTEXT_PRESERVE_XMM ? CONTEXT_XMM_FLAG : 0U))
+#define CONTEXT_DR_STATE (CONTEXT_DR_STATE_NO_YMM | \
                           (CONTEXT_PRESERVE_YMM ? CONTEXT_YMM_FLAG : 0U))
 /* FIXME i#444: including CONTEXT_YMM_FLAG blindly results in STATUS_NOT_SUPPORTED in
  * inject_into_thread()'s NtGetContextThread so for now we remove it:
  */
 #define CONTEXT_DR_STATE_ALLPROC (CONTEXT_INTEGER | CONTEXT_CONTROL | \
                                   CONTEXT_XMM_FLAG | 0/*CONTEXT_YMM_FLAG: see above*/)
+
+#define XSTATE_HEADER_SIZE 0x40  /* 512 bits */
+#define YMMH_AREA(ymmh_area, i) (((dr_xmm_t*)ymmh_area)[i])
+#ifdef X64
+# define MAX_CONTEXT_SIZE       0x680 /* 0x66f from win-7 sp1 */
+#else
+# define MAX_CONTEXT_SIZE       0x480 /* 0x463 from win-7 sp1 */
+#endif
 
 enum {
       EXCEPTION_INFORMATION_READ_EXECUTE_FAULT = 0,
@@ -647,5 +679,33 @@ get_process_primary_SID(void);
 bool
 convert_NT_to_Dos_path(OUT wchar_t *buf, IN const wchar_t *fname,
                        IN size_t buf_len/*# elements*/);
+
+CONTEXT *
+nt_initialize_context(char *buf, DWORD flags);
+
+bool
+os_supports_avx();
+
+byte *
+context_ymmh_saved_area(CONTEXT *cxt);
+
+bool
+convert_to_NT_file_path(OUT wchar_t *buf, IN const char *fname,
+                        IN size_t buf_len/*# elements*/);
+
+/* in loader.c */
+void
+privload_add_windbg_cmds(void);
+
+/* early injection bootstrapping */
+bool
+privload_bootstrap_dynamorio_imports(byte *dr_base, byte *ntdll_base);
+
+bool
+bootstrap_protect_virtual_memory(void *base, size_t size, uint prot, uint *old_prot);
+
+/* in ntdll.c, set via arg from parent for earliest inj */
+void
+set_ntdll_base(app_pc base);
 
 #endif /* _OS_PRIVATE_H_ */

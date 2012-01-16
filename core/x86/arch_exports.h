@@ -1,5 +1,5 @@
 /* **********************************************************
- * Copyright (c) 2011 Google, Inc.  All rights reserved.
+ * Copyright (c) 2011-2012 Google, Inc.  All rights reserved.
  * Copyright (c) 2000-2010 VMware, Inc.  All rights reserved.
  * **********************************************************/
 
@@ -50,6 +50,9 @@
 /* PR 264138: we must preserve xmm0-5 if on a 64-bit kernel.
  * On Linux we must preserve all xmm registers.
  * If AVX is enabled we save ymm.
+ * i#437: YMM is an extension of XMM from 128-bit to 256-bit without
+ * adding new ones, so code operating on XMM often also operates on YMM,
+ * and thus some *XMM* macros also apply to *YMM*.
  */
 #define XMM_REG_SIZE  16
 #define YMM_REG_SIZE  32
@@ -57,6 +60,8 @@
 #define XMM_SLOTS_SIZE  (NUM_XMM_SLOTS*XMM_SAVED_REG_SIZE)
 #define XMM_SAVED_SIZE  (NUM_XMM_SAVED*XMM_SAVED_REG_SIZE)
 #define YMM_ENABLED() (proc_has_feature(FEATURE_AVX))
+#define YMMH_REG_SIZE (YMM_REG_SIZE/2) /* upper half */
+#define YMMH_SAVED_SIZE (NUM_XMM_SLOTS*YMMH_REG_SIZE)
 
 typedef enum {
     IBL_NONE = -1,
@@ -692,6 +697,7 @@ void copy_mcontext(priv_mcontext_t *src, priv_mcontext_t *dst);
 bool dr_mcontext_to_priv_mcontext(priv_mcontext_t *dst, dr_mcontext_t *src);
 bool priv_mcontext_to_dr_mcontext(dr_mcontext_t *dst, priv_mcontext_t *src);
 priv_mcontext_t *dr_mcontext_as_priv_mcontext(dr_mcontext_t *mc);
+void dr_mcontext_init(dr_mcontext_t *mc);
 void dump_mcontext(priv_mcontext_t *context, file_t f, bool dump_xml);
 const char *get_branch_type_name(ibl_branch_type_t branch_type);
 ibl_branch_type_t get_ibl_branch_type(instr_t *instr);
@@ -827,14 +833,16 @@ void dr_fxsave(byte *buf_aligned);
 void dr_fnsave(byte *buf_aligned);
 void dr_fxrstor(byte *buf_aligned);
 void dr_frstor(byte *buf_aligned);
-#ifdef STACK_GUARD_PAGE
+# ifdef STACK_GUARD_PAGE
 /* PR203701: If the dstack is exhausted we'll use this function to
  * call internal_exception_info() with a separate exception stack.
  */
 void call_intr_excpt_alt_stack(dcontext_t *dcontext, EXCEPTION_RECORD *pExcptRec,
                                CONTEXT *cxt, byte *stack);
-#endif
+# endif
+void dynamorio_earliest_init_takeover(void);
 #else /* LINUX */
+void client_int_syscall(void);
 ptr_int_t dynamorio_syscall(uint sysnum, uint num_args, ...);
 void dynamorio_sigreturn(void);
 void dynamorio_sys_exit(void);
@@ -886,6 +894,10 @@ instrlist_disassemble(dcontext_t *dcontext, app_pc tag,
 static inline bool
 use_addr_prefix_on_short_disp(void)
 {
+#ifdef STANDALONE_DECODER
+    /* Not worth providing control over this.  Go w/ most likely best choice. */
+    return false;
+#else
     /* -ibl_addr_prefix => addr prefix everywhere */
     return (DYNAMO_OPTION(ibl_addr_prefix) || 
             /* PR 212807, PR 209709: addr prefix is noticeably worse
@@ -917,6 +929,7 @@ use_addr_prefix_on_short_disp(void)
      * - enter/exit - speed?
      * - interception routines - speed?
      */
+#endif /* STANDALONE_DECODER */
 }
 
 /* Merge w/ _LENGTH enum below? */
@@ -1650,9 +1663,30 @@ DR_API
  * If instr is a cti with an instr_t target, the note fields of instr and
  * of the target must be set with the respective offsets of each instr_t!
  * (instrlist_encode does this automatically, if the target is in the list).
+ * x86 instructions can occupy up to 17 bytes, so the caller should ensure
+ * the target location has enough room to avoid overflow.
  */
 byte * 
 instr_encode(dcontext_t *dcontext, instr_t *instr, byte *pc);
+
+DR_API
+/** 
+ * Encodes \p instr into the memory at \p copy_pc in preparation for copying
+ * to \p final_pc.  Any pc-relative component is encoded as though the
+ * instruction were located at \p final_pc.  This allows for direct copying
+ * of the encoded bytes to \p final_pc without re-relativization.
+ *
+ * Uses the x86/x64 mode stored in instr, not the mode of the current thread.
+ * Returns the pc after the encoded instr, or NULL if the encoding failed.
+ * If instr is a cti with an instr_t target, the note fields of instr and
+ * of the target must be set with the respective offsets of each instr_t!
+ * (instrlist_encode does this automatically, if the target is in the list).
+ * x86 instructions can occupy up to 17 bytes, so the caller should ensure
+ * the target location has enough room to avoid overflow.
+ */
+byte * 
+instr_encode_to_copy(dcontext_t *dcontext, instr_t *instr, byte *copy_pc,
+                     byte *final_pc);
 
 /* DR_API EXPORT TOFILE dr_ir_instrlist.h */
 DR_API
@@ -1666,10 +1700,42 @@ DR_API
  * the note field of each instr_t in ilist will be overwritten, and if any
  * instr_t targets are not in \p ilist, they must have their note fields set with
  * their offsets relative to pc.
+ * x86 instructions can occupy up to 17 bytes each, so the caller should ensure
+ * the target location has enough room to avoid overflow.
  */
 byte *
 instrlist_encode(dcontext_t *dcontext, instrlist_t *ilist, byte *pc,
                  bool has_instr_jmp_targets);
+
+DR_API
+/** 
+ * Encodes each instruction in \p ilist in turn in contiguous memory
+ * starting \p copy_pc in preparation for copying to \p final_pc.  Any
+ * pc-relative instruction is encoded as though the instruction list were
+ * located at \p final_pc.  This allows for direct copying of the
+ * encoded bytes to \p final_pc without re-relativization.
+ *
+ * Returns the pc after all of the encodings, or NULL if any one
+ * of the encodings failed.
+ *
+ * Uses the x86/x64 mode stored in each instr, not the mode of the current thread.
+ *
+ * In order for instr_t operands to be encoded properly,
+ * \p has_instr_jmp_targets must be true.  If \p has_instr_jmp_targets is true,
+ * the note field of each instr_t in ilist will be overwritten, and if any
+ * instr_t targets are not in \p ilist, they must have their note fields set with
+ * their offsets relative to pc.
+ *
+ * If \p max_pc is non-NULL, computes the total size required to encode the
+ * instruction liast before performing any encoding.  If the whole list will not
+ * fit starting at \p copy_pc without exceeding \p max_pc, returns NULL without
+ * encoding anything.  Otherwise encodes as normal.  Note that x86 instructions
+ * can occupy up to 17 bytes each, so if \p max_pc is NULL, the caller should
+ * ensure the target location has enough room to avoid overflow.
+ */
+byte *
+instrlist_encode_to_copy(dcontext_t *dcontext, instrlist_t *ilist, byte *copy_pc,
+                         byte *final_pc, byte *max_pc, bool has_instr_jmp_targets);
 
 /* in mangle.c */
 void insert_clean_call_with_arg_jmp_if_ret_true(dcontext_t *dcontext, instrlist_t *ilist,

@@ -1,5 +1,5 @@
 /* **********************************************************
- * Copyright (c) 2011 Google, Inc.  All rights reserved.
+ * Copyright (c) 2011-2012 Google, Inc.  All rights reserved.
  * Copyright (c) 2000-2010 VMware, Inc.  All rights reserved.
  * **********************************************************/
 
@@ -57,7 +57,7 @@ typedef ushort cxt_seg_t;
 /* It looks like both CONTEXT.Xmm0 and CONTEXT.FltSave.XmmRegisters[0] are filled in.
  * We use the latter so that we don't have to hardcode the index.
  */
-# define CXT_XMM(cxt, idx) ((dr_ymm_t*)&((cxt)->FltSave.XmmRegisters[idx]))
+# define CXT_XMM(cxt, idx) ((dr_xmm_t*)&((cxt)->FltSave.XmmRegisters[idx]))
 /* FIXME i#437: need CXT_YMM */
 /* they kept the 32-bit EFlags field; sure, the upper 32 bits of Rflags
  * are undefined right now, but doesn't seem very forward-thinking. */
@@ -80,7 +80,7 @@ typedef DWORD cxt_seg_t;
  */
 # define FXSAVE_XMM0_OFFSET 160
 # define CXT_XMM(cxt, idx) \
-    ((dr_ymm_t*)&((cxt)->ExtendedRegisters[FXSAVE_XMM0_OFFSET + (idx)*16]))
+    ((dr_xmm_t*)&((cxt)->ExtendedRegisters[FXSAVE_XMM0_OFFSET + (idx)*16]))
 #endif
 
 #include "../os_shared.h"
@@ -198,6 +198,8 @@ thread_set_context(thread_record_t *tr, CONTEXT *context);
 #define START_DATA_SECTION(name, prot) ACTUAL_PRAGMA( data_seg(name) )
 #define VAR_IN_SECTION(name) /* nothing */
 #define END_DATA_SECTION() ACTUAL_PRAGMA( data_seg() )
+#define START_DO_NOT_OPTIMIZE ACTUAL_PRAGMA( optimize("g", off) )
+#define END_DO_NOT_OPTIMIZE ACTUAL_PRAGMA( optimize("g", on) )
 
 #ifdef DEBUG
 void print_dynamo_regions(void);
@@ -374,6 +376,8 @@ void detach_helper(int detach_type); /* needs to be exported for nudge.c */
 extern bool doing_detach;
 
 void early_inject_init(void);
+void earliest_inject_init(byte *arg_ptr);
+void earliest_inject_cleanup(byte *arg_ptr);
 
 /* in module.c */
 app_pc get_module_preferred_base_safe(app_pc pc);
@@ -447,11 +451,17 @@ bool private_lib_handle_cb(dcontext_t *dcontext, app_pc pc);
 /* our copy of the PEB for isolation (i#249) */
 PEB *get_private_peb(void);
 bool should_swap_peb_pointer(void);
+bool is_using_app_peb(dcontext_t *dcontext);
 void swap_peb_pointer(dcontext_t *dcontext, bool to_priv);
 /* Meant for use on detach only: restore app values and does not update
  * or swap private values.  Up to caller to synchronize w/ other thread.
  */
 void restore_peb_pointer_for_thread(dcontext_t *dcontext);
+/* searches in standard paths instead of requiring abs path.
+ * exported for dr_enable_console_printing().
+ * XXX: should have an os-shared version.
+ */
+app_pc privload_load_private_library(const char *name);
 #endif
 
 

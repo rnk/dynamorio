@@ -292,6 +292,17 @@ DR_API
  * thread-private basic blocks (e.g., self-modifying code).  In this
  * case, clients should be prepared to see duplicate tags without an
  * intermediate deletion.
+ * 
+ * \note A client can change the control flow of the application by 
+ * changing the control transfer instruction at end of the basic block.
+ * If a basic block is ended with a non-control transfer instruction,
+ * a non-meta jump instruction can be inserted. 
+ * If a basic block is ended with a conditional branch,
+ * \p instrlist_set_fall_through_target can be used to change the
+ * fall-through target.
+ * If a basic block is ended with a call instruction, 
+ * \p instrlist_set_return_target can be used to change the return 
+ * target of the call. 
  */
 void
 dr_register_bb_event(dr_emit_flags_t (*func)
@@ -537,7 +548,8 @@ DR_API
  * placed in the code cache.  This guarantee varies depending on the
  * type of cache consistency being used by DR.
  *
- * The client can update \p mcontext.pc in this callback.
+ * The client can update \p mcontext.pc in this callback.  The client
+ * should not change \p mcontext.flags: it should remain DR_MC_ALL.
  *
  * \note The passed-in \p drcontext may correspond to a different thread
  * than the thread executing the callback.  Do not assume that the
@@ -600,7 +612,12 @@ typedef struct _dr_fault_fragment_info_t {
  * information.
  */
 typedef struct _dr_restore_state_info_t {
-    /** The application machine state at the translation point. */
+    /**
+     * The application machine state at the translation point.
+     * The client can update register values and the program counter
+     * by changing this context.  The client should not change \p
+     * mcontext.flags: it should remain DR_MC_ALL.
+     */
     dr_mcontext_t *mcontext;
     /** Whether raw_mcontext is valid. */
     bool raw_mcontext_valid;
@@ -609,6 +626,7 @@ typedef struct _dr_restore_state_info_t {
      * interruption point inside the code cache.  Clients are
      * cautioned when examining code cache instructions to not rely on
      * any details of code inserted other than their own.
+     * Modifying this context will not affect the translation.
      */
     dr_mcontext_t *raw_mcontext;
     /**
@@ -641,7 +659,7 @@ DR_API
  *   the translation.  When DR is translating not for a fault but for
  *   thread relocation, the \p restore_memory parameter will be false.
  *   Such translation can target a meta-instruction that can fault
- *   (see instr_set_meta_may_fault()).  For that scenario, a client
+ *   (i.e., it has a non-NULL translation field).  For that scenario, a client
  *   can choose not to translate.  Such instructions do not always
  *   require full translation for faults, and allowing translation
  *   failure removes the requirement that a client must translate at
@@ -840,13 +858,19 @@ dr_unregister_module_unload_event(void (*func)(void *drcontext,
  * machine context and the Win32 exception record.
  */
 typedef struct _dr_exception_t {
-    dr_mcontext_t *mcontext;   /**< Machine context at exception point. */
+    /**
+     * Machine context at exception point.  The client should not
+     * change \p mcontext.flags: it should remain DR_MC_ALL.
+     */
+    dr_mcontext_t *mcontext;
     EXCEPTION_RECORD *record; /**< Win32 exception record. */
     /** 
      * The raw pre-translated machine state at the exception interruption
      * point inside the code cache.  Clients are cautioned when examining
      * code cache instructions to not rely on any details of code inserted
      * other than their own.
+     * The client should not change \p raw_mcontext.flags: it should
+     * remain DR_MC_ALL.
      */
     dr_mcontext_t *raw_mcontext;
     /**
@@ -1048,13 +1072,19 @@ typedef struct _dr_siginfo_t {
     int sig;
     /** The context of the thread receiving the signal. */
     void *drcontext;
-    /** The application machine state at the signal interruption point. */
+    /**
+     * The application machine state at the signal interruption point.
+     * The client should not change \p mcontext.flags: it should
+     * remain DR_MC_ALL.
+     */
     dr_mcontext_t *mcontext;
     /** 
      * The raw pre-translated machine state at the signal interruption
      * point inside the code cache.  NULL for delayable signals.  Clients
      * are cautioned when examining code cache instructions to not rely on
      * any details of code inserted other than their own.
+     * The client should not change \p mcontext.flags: it should
+     * remain DR_MC_ALL.
      */
     dr_mcontext_t *raw_mcontext;
     /** Whether raw_mcontext is valid. */
@@ -1421,6 +1451,14 @@ void *
 dr_standalone_init(void);
 
 /* DR_API EXPORT BEGIN */
+
+#ifdef API_EXPORT_ONLY
+/**
+ * Use this dcontext for use with the standalone static decoder library.
+ * Pass it whenever a decoding-related API routine asks for a context.
+ */
+#define GLOBAL_DCONTEXT  ((void *)-1)
+#endif
 
 /**************************************************
  * UTILITY ROUTINES
@@ -1944,6 +1982,15 @@ dr_mutex_trylock(void *mutex);
 
 DR_API
 /**
+ * Returns true iff \p mutex is owned by the calling thread.
+ * This routine is only available in debug builds.
+ * In release builds it always returns true.
+ */
+bool
+dr_mutex_self_owns(void *mutex);
+
+DR_API
+/**
  * Creates and initializes a read-write lock.  A read-write lock allows
  * multiple readers or alternatively a single writer.  The lock
  * restrictions for mutexes apply (see dr_mutex_create()).
@@ -1985,6 +2032,40 @@ DR_API
 /** Returns whether the calling thread owns the write lock on \p rwlock. */
 bool
 dr_rwlock_self_owns_write_lock(void *rwlock);
+
+DR_API
+/**
+ * Creates and initializes a recursive lock.  A recursive lock allows
+ * the same thread to acquire it multiple times.  The lock
+ * restrictions for mutexes apply (see dr_mutex_create()).
+ */
+void *
+dr_recurlock_create(void);
+
+DR_API
+/** Deletes \p reclock. */
+void
+dr_recurlock_destroy(void *reclock);
+
+DR_API
+/** Acquires \p reclock, or increments the ownership count if already owned. */
+void
+dr_recurlock_lock(void *reclock);
+
+DR_API
+/** Decrements the ownership count of \p reclock and releases if zero. */
+void
+dr_recurlock_unlock(void *reclock);
+
+DR_API
+/** Tries once to acquire \p reclock and returns whether successful. */
+bool
+dr_recurlock_trylock(void *reclock);
+
+DR_API
+/** Returns whether the calling thread owns \p reclock. */
+bool
+dr_recurlock_self_owns(void *reclock);
 
 /* DR_API EXPORT BEGIN */
 /**************************************************
@@ -2376,6 +2457,28 @@ DR_API
 void
 dr_close_file(file_t f);
 
+DR_API
+/**
+ * Renames the file \p src to \p dst, replacing an existing file named \p dst if
+ * \p replace is true.
+ * Atomic if \p src and \p dst are on the same filesystem.
+ * Returns true if successful.
+ */
+bool
+dr_rename_file(const char *src, const char *dst, bool replace);
+
+DR_API
+/**
+ * Deletes the file referred to by \p filename.
+ * Returns true if successful.
+ * On both Linux and Windows, if filename refers to a symlink, the symlink will
+ * be deleted and not the target of the symlink.
+ * On Windows, this will fail to delete any file was not opened with
+ * FILE_SHARE_DELETE and is still open.
+ */
+bool
+dr_delete_file(const char *filename);
+
 DR_API 
 /** Flushes any buffers for file \p f. */
 void
@@ -2434,7 +2537,70 @@ DR_API
 file_t
 dr_dup_file_handle(file_t f);
 
-/* TODO add delete_file, rename/move_file, copy_file, get_file_size, truncate_file etc.
+DR_API
+/**
+ * Determines the size of the file \p fd.
+ * On success, returns the size in \p size.
+ * \return whether successful.
+ */
+bool
+dr_file_size(file_t fd, OUT uint64 *size);
+
+/* The extra BEGIN END is to get spacing nice. */
+/* DR_API EXPORT BEGIN */
+/* DR_API EXPORT END */
+/* DR_API EXPORT BEGIN */
+/* flags for use with dr_map_file() */
+/**
+ * If set, changes to mapped memory are private to the mapping process and
+ * are not reflected in the underlying file.  If not set, changes are visible
+ * to other processes that map the same file, and will be propagated
+ * to the file itself.
+ */
+#define DR_MAP_PRIVATE               0x1
+#ifdef LINUX
+/**
+ * If set, indicates that the passed-in start address is required rather than a
+ * hint.  On Linux, this has the same semantics as mmap with MAP_FIXED: i.e.,
+ * any existing mapping in [addr,addr+size) will be unmapped.  This flags is not
+ * supported on Windows.
+ */
+#define DR_MAP_FIXED                 0x2
+#endif
+/* DR_API EXPORT END */
+
+DR_API
+/**
+ * Memory-maps \p size bytes starting at offset \p offs from the file \p f
+ * at address \p addr with privileges \p prot.
+ *
+ * @param[in] f The file to map.
+ * @param[in,out] size The requested size to map.  Upon successful return,
+ *   contains the actual mapped size.
+ * @param[in] offs The offset within the file at which to start the map.
+ * @param[in] addr The requested start address of the map.  Unless \p fixed
+ *   is true, this is just a hint and may not be honored.
+ * @param[in] prot The access privileges of the mapping, composed of
+ *   the DR_MEMPROT_READ, DR_MEMPROT_WRITE, and DR_MEMPROT_EXEC bits.
+ * @param[in] flags Optional DR_MAP_* flags.
+ *
+ * \note Mapping image files for execution is not supported.
+ *
+ * \return the start address of the mapping, or NULL if unsuccessful.
+ */
+void *
+dr_map_file(file_t f, INOUT size_t *size, uint64 offs, app_pc addr, uint prot,
+            uint flags);
+
+DR_API
+/**
+ * Unmaps a portion of a file mapping previously created by dr_map_file().
+ * \return whether successful.
+ */
+bool
+dr_unmap_file(void *map, size_t size);
+
+/* TODO add copy_file, truncate_file etc.
  * All should be easy though at some point should perhaps tell people to just use the raw
  * systemcalls, esp for linux where they're documented and let them provide their own
  * wrappers. */
@@ -2563,13 +2729,14 @@ DR_API
 /**
  * Stdout printing that won't interfere with the
  * application's own printing.  Currently non-buffered.
- * \note On Windows, this routine is not able to print to the cmd window
- * (issue 261).  The drsym_write_to_console() routine in the \p drsyms
- * Extension can be used to accomplish that.
+ * \note On Windows, this routine is not able to print to the \p cmd window
+ * unless dr_enable_console_printing() is called ahead of time, and
+ * even then there are limitations: see dr_enable_console_printing().
  * \note On Windows, this routine does not support printing floating
  * point values.  Use dr_snprintf() instead.
  * \note If the data to be printed is large it will be truncated to
- * an internal buffer size.
+ * an internal buffer size.  Use dr_snprintf() and dr_write_file() for
+ * large output.
  */
 void 
 dr_printf(const char *fmt, ...);
@@ -2578,14 +2745,15 @@ DR_API
 /**
  * Printing to a file that won't interfere with the
  * application's own printing.  Currently non-buffered.
- * \note On Windows, this routine is not able to print to STDOUT
- * or STDERR in the cmd window (issue 261).  The
- * drsym_write_to_console() routine in the \p drsyms Extension can be
- * used to accomplish that.
+ * \note On Windows, this routine is not able to print to STDOUT or
+ * STDERR in the \p cmd window unless dr_enable_console_printing() is
+ * called ahead of time, and even then there are limitations: see
+ * dr_enable_console_printing().
  * \note On Windows, this routine does not support printing floating
  * point values.  Use dr_snprintf() instead.
  * \note If the data to be printed is large it will be truncated to
- * an internal buffer size.  Use dr_write_file() to print large buffers.
+ * an internal buffer size.  Use dr_snprintf() and dr_write_file() for
+ * large output.
  * \note On Linux this routine does not check for errors like EINTR.  Use
  * dr_write_file() if that is a concern.
  * \note When printing floating-point values, the caller's code should
@@ -2594,6 +2762,61 @@ DR_API
  */
 void
 dr_fprintf(file_t f, const char *fmt, ...);
+
+#ifdef WINDOWS
+DR_API
+/**
+ * Enables dr_printf() and dr_fprintf() to work with a console window
+ * (viz., \p cmd).  Loads a private copy of kernel32.dll (if not
+ * already loaded) in order to accomplish this.  To keep the default
+ * DR lean and mean, loading kernel32.dll is not performed by default.
+ *
+ * This routine must be called during client initialization (\p dr_init()).
+ * If called later, it will fail.
+ *
+ * Without calling this routine, dr_printf() and dr_fprintf() will not
+ * print anything in a console window.
+ *
+ * Even after calling this routine, there are significant limitations
+ * to console printing support in DR:
+ * 
+ *  - On Windows versions from Vista onward, it does not work for
+ *    64-bit applications.
+ *  - On Windows versions prior to Vista, it does not work from
+ *    the exit event.  Once the application terminates its state with
+ *    csrss (toward the very end of ExitProcess), no output will show
+ *    up on the console.  We have no good solution here yet as exiting
+ *    early is not ideal.
+ *  - It does not work at all from graphical applications, even when they are
+ *    launched from a console.
+ *  - In the future, with earliest injection (Issue 234), writing to the
+ *    console may not work from the client init event.
+ *
+ * These limitations stem from the complex arrangement of the console
+ * window in Windows, where printing to it involves sending a message
+ * in an undocumented format to the \p csrss process, rather than a
+ * simple write to a file handle.  We recommend using a terminal
+ * window such as cygwin's \p rxvt rather than the \p cmd window, or
+ * alternatively redirecting all output to a file, which will solve
+ * all of the above limitations.
+ *
+ * Returns whether successful.
+ */
+bool
+dr_enable_console_printing(void);
+
+DR_API
+/**
+ * Returns true if the current standard error handle belongs to a
+ * console window (viz., \p cmd).  DR's dr_printf() and dr_fprintf()
+ * do not work with such console windows unless
+ * dr_enable_console_printing() is called ahead of time, and even then
+ * there are limitations detailed in dr_enable_console_printing().
+ * This routine may result in loading a private copy of kernel32.dll.
+ */
+bool
+dr_using_console(void);
+#endif
 
 DR_API
 /**
@@ -2666,6 +2889,19 @@ dr_set_tls_field(void *drcontext, void *value);
 
 DR_API
 /**
+ * Get DR's segment base pointed at \p segment_register.
+ * It can be used to get the base of thread-local storage segment
+ * used by #dr_raw_tls_calloc.
+ *
+ * \note It should not be called on thread exit event, 
+ * as the thread exit event may be invoked from other threads.
+ * See #dr_register_thread_exit_event for details.
+ */
+void *
+dr_get_dr_segment_base(IN reg_id_t segment_register);
+
+DR_API
+/**
  * Allocates \p num_slots contiguous thread-local storage slots that
  * can be directly accessed via an offset from \p segment_register.
  * These slots will be initialized to 0 for each new thread.
@@ -2673,6 +2909,8 @@ DR_API
  * These slots are disjoint from the #dr_spill_slot_t register spill slots
  * and the client tls field (dr_get_tls_field()).
  * Returns whether or not the slots were successfully obtained.
+ * The segment base pointed at \p segment_register can be obtained
+ * using #dr_get_dr_segment_base. 
  *
  * \note These slots are useful for thread-shared code caches.  With
  * thread-private caches, DR's memory pools are guaranteed to be
@@ -2863,7 +3101,8 @@ DR_API
  *   been translated and so may contain raw code cache values.  The function
  *   will be called from a signal handler that may have interrupted a
  *   lock holder or other critical code, so it must be careful in its
- *   operations.  If a general timer that does not interrupt client code
+ *   operations: keep it as simple as possible, and avoid lock usage or
+ *   I/O operations. If a general timer that does not interrupt client code
  *   is required, the client should create a separate thread via
  *   dr_create_client_thread() (which is guaranteed to have a private
  *   itimer) and set the itimer there, where the callback function can
@@ -3390,6 +3629,9 @@ DR_API
  * fields in dr_mcontext_t are valid for this process
  * (i.e., whether this process is 64-bit or WOW64, and the processor
  * supports SSE).
+ * \note If DR_MC_MULTIMEDIA is not specified when calling dr_get_mcontext(),
+ * the xmm fields will not be filled in regardless of the return value
+ * of this routine.
  */
 bool
 dr_mcontext_xmm_fields_valid(void);
@@ -3399,7 +3641,9 @@ dr_mcontext_xmm_fields_valid(void);
 
 DR_API
 /**
- * Copies the current application machine context to \p context.
+ * Copies the fields of the current application machine context selected
+ * by the \p flags field of \p context into \p context.
+ *
  * This routine may only be called from:
  * - A clean call invoked by dr_insert_clean_call() or dr_prepare_for_call() 
  * - A pre- or post-syscall event (dr_register_pre_syscall_event(), 
@@ -3415,8 +3659,9 @@ DR_API
  * - A thread init event (dr_register_thread_init_event()) for all but
  *   the initial thread.
  *
- * Does NOT copy the pc field, except for system call events, when it
- * will point at the post-syscall address.
+ * Even when DR_MC_CONTROL is specified, does NOT copy the pc field,
+ * except for system call events, when it will point at the
+ * post-syscall address.
  *
  * Returns false if called from the init event or the initial thread's
  * init event; returns true otherwise (cannot distinguish whether the
@@ -3427,8 +3672,14 @@ DR_API
  * structure as known at compile time.  If the size field is invalid,
  * this routine will return false.
  *
- * \note NUM_XMM_SLOTS in the dr_mcontext_t.xmm array are filled in, but
- * only if dr_mcontext_fields_valid() returns true.
+ * The flags field of \p context must be set to the desired amount of
+ * information using the dr_mcontext_flags_t values.  Asking for
+ * multimedia registers incurs a higher performance cost.  An invalid
+ * flags value will return false.
+ *
+ * \note NUM_XMM_SLOTS in the dr_mcontext_t.xmm array are filled in,
+ * but only if dr_mcontext_xmm_fields_valid() returns true and
+ * DR_MC_MULTIMEDIA is set in the flags field.
  *
  * \note The context is the context saved at the dr_insert_clean_call() or
  * dr_prepare_for_call() points.  It does not correct for any registers saved
@@ -3445,7 +3696,9 @@ dr_get_mcontext(void *drcontext, dr_mcontext_t *context);
 #ifdef CLIENT_INTERFACE
 DR_API
 /**
- * Sets the application machine context to \p context.
+ * Sets the fields of the application machine context selected by the
+ * flags field of \p context to the values in \p context.
+ *
  * This routine may only be called from:
  * - A clean call invoked by dr_insert_clean_call() or dr_prepare_for_call() 
  * - A pre- or post-syscall event (dr_register_pre_syscall_event(), 
@@ -3461,10 +3714,16 @@ DR_API
  * If the size field of \p context is invalid, this routine will
  * return false.  A dr_mcontext_t obtained from DR will have the size field set.
  *
+ * The flags field of \p context must be set to select the desired
+ * fields for copying, using the dr_mcontext_flags_t values.  Asking
+ * to copy multimedia registers incurs a higher performance cost.  An
+ * invalid flags value will return false.
+ *
  * \return whether successful.
  *
  * \note The xmm fields are only set for processes where the underlying
- * processor supports them.  For dr_insert_clean_call() that requested \p
+ * processor supports them (and when DR_MC_MULTIMEDIA is set in the flags field).
+ * For dr_insert_clean_call() that requested \p
  * save_fpstate, the xmm values set here override that saved state.  Use
  * dr_mcontext_xmm_fields_valid() to determine whether the xmm fields are valid.
  */
@@ -3480,15 +3739,18 @@ DR_API
  * dr_insert_clean_call() or dr_prepare_for_call()) or an exception event with the
  * state specified in \p mcontext (including pc, and including the xmm fields
  * that are valid according to dr_mcontext_xmm_fields_valid()).
+ * The flags field of \p context must contain DR_MC_ALL; using a partial set
+ * of fields is not suported.
  *
  * \note dr_get_mcontext() can be used to get the register state (except pc)
  * saved in dr_insert_clean_call() or dr_prepare_for_call()
  *
  * \note If floating point state was saved by dr_prepare_for_call() or
- * dr_insert_clean_call() it is not restored (other than the valid xmm fields
- * according to dr_mcontext_xmm_fields_valid()).  The caller should instead
- * manually save and restore the floating point state with proc_save_fpstate()
- * and proc_restore_fpstate() if necessary.
+ * dr_insert_clean_call() it is not restored (other than the valid xmm
+ * fields according to dr_mcontext_xmm_fields_valid(), if
+ * DR_MC_MULTIMEDIA is specified in the flags field).  The caller
+ * should instead manually save and restore the floating point state
+ * with proc_save_fpstate() and proc_restore_fpstate() if necessary.
  *
  * \note If the caller wishes to set any other state (such as xmm
  * registers that are not part of the mcontext) they may do so by just
@@ -3502,7 +3764,7 @@ DR_API
  * \return false if unsuccessful; if successful, does not return.
  */
 bool
-dr_redirect_execution(dr_mcontext_t *mcontext);
+dr_redirect_execution(dr_mcontext_t *context);
 
 /* DR_API EXPORT TOFILE dr_tools.h */
 /* DR_API EXPORT BEGIN */
@@ -3716,6 +3978,15 @@ DR_API
  */
 app_pc
 dr_app_pc_from_cache_pc(byte *cache_pc);
+
+DR_API
+/**
+ * Returns whether the given thread indicated by \p drcontext
+ * is currently using the application version of its system state.
+ * \sa dr_switch_to_dr_state(), dr_switch_to_app_state()
+ */
+bool
+dr_using_app_state(void *drcontext);
 
 DR_API
 /**

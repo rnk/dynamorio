@@ -1,5 +1,5 @@
 /* **********************************************************
- * Copyright (c) 2010-2011 Google, Inc.  All rights reserved.
+ * Copyright (c) 2010-2012 Google, Inc.  All rights reserved.
  * Copyright (c) 2003-2010 VMware, Inc.  All rights reserved.
  * **********************************************************/
 
@@ -152,6 +152,9 @@ struct _local_state_extended_t *get_local_state_extended(void);
 /* Returns POINTER_MAX on failure.
  * Assumes that cs, ss, ds, and es are flat.
  */
+byte *
+get_segment_base(uint seg);
+
 byte *
 get_app_segment_base(uint seg);
 #endif
@@ -888,7 +891,10 @@ enum {
      * automatically on NT, so LdrDefault for NT uses -early_inject_address if
      * specified or else disables early injection (xref 7806). */
     /* Beyond this point not expected to need address determination */
-    INJECT_LOCATION_KiUserApc        = 5, /* NYI as must use map which is NYI */
+    /* Earliest injection via remote map.
+     * On Vista+ this is treated as LdrInitializeThunk as there is no init APC.
+     */
+    INJECT_LOCATION_KiUserApc        = 5,
     INJECT_LOCATION_KiUserException  = 6, /* No good, Ldr init issues */
     INJECT_LOCATION_MAX = INJECT_LOCATION_KiUserException,
 };

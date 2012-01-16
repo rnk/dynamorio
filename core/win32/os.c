@@ -1,5 +1,5 @@
 /* **********************************************************
- * Copyright (c) 2010-2011 Google, Inc.  All rights reserved.
+ * Copyright (c) 2010-2012 Google, Inc.  All rights reserved.
  * Copyright (c) 2000-2010 VMware, Inc.  All rights reserved.
  * **********************************************************/
 
@@ -100,6 +100,7 @@ process_id_t win32_pid = 0;
 /* we store here to enable TEB.ProcessEnvironmentBlock as a spill slot */
 void *peb_ptr;
 static int os_version;
+static int os_sp_ver;
 static const char *os_name;
 app_pc vsyscall_page_start = NULL;
 /* pc kernel will claim app is at while in syscall */
@@ -266,6 +267,10 @@ DECLARE_FREQPROT_VAR(static bool do_once_DllMain, false);
 /* DLL entry point 
  * N.B.: dynamo interprets this routine!
  */
+/* get_nth_stack_frames_call_target() assumes that DllMain has a frame pointer
+ * so we cannot optimize it (i#566)
+ */
+START_DO_NOT_OPTIMIZE
 bool WINAPI /* get link warning 4216 if export via APIENTRY */
 DllMain(HANDLE hModule, DWORD reason_for_call, LPVOID Reserved)
 {
@@ -332,6 +337,7 @@ DllMain(HANDLE hModule, DWORD reason_for_call, LPVOID Reserved)
     }
     return true;
 }
+END_DO_NOT_OPTIMIZE
 
 #ifdef WINDOWS_PC_SAMPLE
 static profile_t *global_profile = NULL;
@@ -492,6 +498,26 @@ exit_global_profiles()
  **
  ****************************************************************************/
 
+bool
+os_supports_avx()
+{
+    /* XXX: what about the WINDOWS Server 2008 R2? */
+    if (os_version == WINDOWS_VERSION_7 && os_sp_ver == 1)
+        return true;
+    return false;
+}
+
+static uint
+get_context_xstate_flag(void)
+{
+    /* i#437: AVX is supported on Windows 7 SP1 and Windows Server 2008 R2 SP1
+     * win7sp1+ both should be 0x40.
+     */
+    if (os_supports_avx())
+        return (IF_X64_ELSE(CONTEXT_AMD64, CONTEXT_i386) | 0x40L);
+    return IF_X64_ELSE((CONTEXT_AMD64 | 0x20L), (CONTEXT_i386 | 0x40L));
+}
+
 /* FIXME: Right now error reporting will work here, but once we have our
  * error reporting syscalls going through wrappers and requiring this
  * init routine, we'll have to have a fallback here that dynamically
@@ -506,6 +532,7 @@ void
 windows_version_init()
 {
     PEB *peb = get_own_peb();
+
     /* choose appropriate syscall array (the syscall numbers change from
      * one version of windows to the next!
      * they may even change at different patch levels)
@@ -518,13 +545,26 @@ windows_version_init()
         /* WinNT or descendents */
         if (peb->OSMajorVersion == 6 && peb->OSMinorVersion == 1) {
             module_handle_t ntdllh = get_ntdll_base();
-            if (module_is_64bit(get_ntdll_base()) ||
-                is_wow64_process(NT_CURRENT_PROCESS)) {
-                syscalls = (int *) windows_7_x64_syscalls;
-                os_name = "Microsoft Windows 7 x64";
+            /* i#437: ymm/avx is supported after Win-7 SP1 */
+            if (get_proc_address(ntdllh, "RtlCopyContext") != NULL) {
+                os_sp_ver = 1;
+                if (module_is_64bit(get_ntdll_base()) ||
+                    is_wow64_process(NT_CURRENT_PROCESS)) {
+                    syscalls = (int *) windows_7_x64_syscalls;
+                    os_name = "Microsoft Windows 7 x64 SP1";
+                } else {
+                    syscalls = (int *) windows_7_syscalls;
+                    os_name = "Microsoft Windows 7 SP1";
+                }
             } else {
-                syscalls = (int *) windows_7_syscalls;
-                os_name = "Microsoft Windows 7";
+                if (module_is_64bit(get_ntdll_base()) ||
+                    is_wow64_process(NT_CURRENT_PROCESS)) {
+                    syscalls = (int *) windows_7_x64_syscalls;
+                    os_name = "Microsoft Windows 7 x64 SP0";
+                } else {
+                    syscalls = (int *) windows_7_syscalls;
+                    os_name = "Microsoft Windows 7 SP0";
+                }
             }
             os_version = WINDOWS_VERSION_7;
         } else if (peb->OSMajorVersion == 6 && peb->OSMinorVersion == 0) {
@@ -533,6 +573,7 @@ windows_version_init()
              * the existence of NtReplacePartitionUnit to detect sp1 - see
              * PR 246402.  They also differ for 32-bit vs 64-bit/wow64. */
             if (get_proc_address(ntdllh, "NtReplacePartitionUnit") != NULL) {
+                os_sp_ver = 1;
                 if (module_is_64bit(get_ntdll_base()) ||
                     is_wow64_process(NT_CURRENT_PROCESS)) {
                     syscalls = (int *) windows_vista_sp1_x64_syscalls;
@@ -640,6 +681,8 @@ windows_version_init()
         FATAL_USAGE_ERROR(BAD_OS_VERSION, 4, get_application_name(),
                           get_application_pid(), PRODUCT_NAME, os_name);
     }
+    /* i#437: get the context_xstate after os version is determined */
+    context_xstate = get_context_xstate_flag();
 }
 
 /* Note that assigning a process to a Job is done only after it has
@@ -815,8 +858,10 @@ os_init(void)
         TLS_NUM_SLOTS, IF_X64_ELSE("gs", "fs"), tls_local_state_offs);
     ASSERT_CURIOSITY(proc_is_cache_aligned(get_local_state()) || 
                      DYNAMO_OPTION(tls_align != 0));
-    tls_dcontext_offs = os_tls_offset(TLS_DCONTEXT_SLOT);
-    ASSERT(tls_dcontext_offs != TLS_UNINITIALIZED);
+    if (IF_CLIENT_INTERFACE_ELSE(!standalone_library, true)) {
+        tls_dcontext_offs = os_tls_offset(TLS_DCONTEXT_SLOT);
+        ASSERT(tls_dcontext_offs != TLS_UNINITIALIZED);
+    }
 
     DOLOG(1, LOG_VMAREAS, { print_modules(GLOBAL, DUMP_NOT_XML); });
     DOLOG(2, LOG_TOP, { print_mem_quota(); });
@@ -1703,6 +1748,7 @@ get_dynamorio_library_path()
         app_pc pb = (app_pc)&get_dynamorio_library_path;
 
         /* here's where we set the library path */
+        ASSERT(!dr_earliest_injected); /* should be already set for earliest */
         get_module_name(pb, dynamorio_library_path, MAXIMUM_PATH);
     }
     return dynamorio_library_path;
@@ -1841,7 +1887,8 @@ inject_into_process(dcontext_t *dcontext, HANDLE process_handle, CONTEXT *cxt,
      * ntdll32.dll at early inject point, so thread injection only.  PR 215423.
      */
     if (DYNAMO_OPTION(early_inject) && !is_wow64_process(process_handle)) {
-        ASSERT(early_inject_address != NULL);
+        ASSERT(early_inject_address != NULL ||
+               !INJECT_LOCATION_IS_LDR(early_inject_location));
         /* FIXME if early_inject_address == NULL then early_inject_init failed
          * to find the correct address to use.  Don't expect that to happen,
          * but if it does could fall back to late injection (though we can't
@@ -1857,8 +1904,11 @@ inject_into_process(dcontext_t *dcontext, HANDLE process_handle, CONTEXT *cxt,
     }
     
     if (!res) {
-        SYSLOG_INTERNAL_ERROR("ERROR: injection into child process failed");
-        ASSERT_NOT_REACHED();
+        SYSLOG_INTERNAL_ERROR("ERROR: injection from pid=%d of %s into child "
+                              "process %d failed", get_process_id(), library,
+                              process_id_from_handle(process_handle));
+        /* FIXME i#49: this can happen for a 64-bit child of a 32-bit parent */
+        ASSERT_CURIOSITY(false && "injection into child failed: 32 to 64?");
         return false;       /* for compilation correctness and release builds */
     }
     return true;
@@ -2787,7 +2837,9 @@ find_executable_vm_areas()
          * on our mod list or executable area list
          */
         bool skip = dynamo_vm_area_overlap(pb, pb + mbi.RegionSize) &&
-            !is_in_dynamo_dll(pb); /* our own text section is ok */
+            !is_in_dynamo_dll(pb) /* our own text section is ok */
+            /* client lib text section is ok (xref i#487) */
+            IF_CLIENT_INTERFACE(&& !is_in_client_lib(pb));
         ASSERT(pb == mbi.BaseAddress);
         DOLOG(2, LOG_VMAREAS, {
             if (skip) {
@@ -2938,11 +2990,11 @@ get_local_state_extended()
 
 /* returns the thread-private dcontext pointer for the calling thread */
 dcontext_t*
-get_thread_private_dcontext()
+get_thread_private_dcontext(void)
 {
     /* This routine cannot be used before processwide os_init sets up the TLS index. */
     if (tls_dcontext_offs == TLS_UNINITIALIZED)
-        return NULL;
+        return (IF_CLIENT_INTERFACE(standalone_library ? GLOBAL_DCONTEXT :) NULL);
     /*
      * We don't need to check whether this thread has been initialized under us - 
      * Windows sets the value to 0 for us, so we'll just return NULL.
@@ -3316,10 +3368,10 @@ thread_terminate(thread_record_t *tr)
 bool
 thread_get_mcontext(thread_record_t *tr, priv_mcontext_t *mc)
 {
-    CONTEXT cxt;
-    cxt.ContextFlags = CONTEXT_DR_STATE;
-    if (thread_get_context(tr, &cxt)) {
-        context_to_mcontext(mc, &cxt);
+    char buf[MAX_CONTEXT_SIZE];
+    CONTEXT *cxt = nt_initialize_context(buf, CONTEXT_DR_STATE);
+    if (thread_get_context(tr, cxt)) {
+        context_to_mcontext(mc, cxt);
         return true;
     }
     return false;
@@ -3328,10 +3380,10 @@ thread_get_mcontext(thread_record_t *tr, priv_mcontext_t *mc)
 bool
 thread_set_mcontext(thread_record_t *tr, priv_mcontext_t *mc)
 {
-    CONTEXT cxt;
-    cxt.ContextFlags = CONTEXT_DR_STATE;
-    mcontext_to_context(&cxt, mc);
-    return thread_set_context(tr, &cxt);
+    char buf[MAX_CONTEXT_SIZE];
+    CONTEXT *cxt = nt_initialize_context(buf, CONTEXT_DR_STATE);
+    mcontext_to_context(cxt, mc);
+    return thread_set_context(tr, cxt);
 }
 
 bool
@@ -3359,10 +3411,10 @@ thread_set_self_context(void *cxt)
 void
 thread_set_self_mcontext(priv_mcontext_t *mc)
 {
-    CONTEXT cxt;
-    cxt.ContextFlags = CONTEXT_DR_STATE;
-    mcontext_to_context(&cxt, mc);
-    thread_set_self_context(&cxt);
+    char buf[MAX_CONTEXT_SIZE];
+    CONTEXT *cxt = nt_initialize_context(buf, CONTEXT_DR_STATE);
+    mcontext_to_context(cxt, mc);
+    thread_set_self_context(cxt);
     ASSERT_NOT_REACHED();
 }
 
@@ -4391,7 +4443,7 @@ convert_NT_to_Dos_path(OUT wchar_t *buf, IN const wchar_t *fname,
     return false;
 }
 
-static bool
+bool
 convert_to_NT_file_path(OUT wchar_t *buf, IN const char *fname,
                         IN size_t buf_len/*# elements*/)
 {
@@ -4792,6 +4844,7 @@ os_close_protected(file_t f)
     os_close(f);
 }
 
+#ifndef NOT_DYNAMORIO_CORE_PROPER /* so drinject can use drdecode's copy */
 /* We take in size_t count to match linux, but Nt{Read,Write}File only
  * takes in a ULONG (==uint), though they return a ULONG_PTR (size_t)
  */
@@ -4814,6 +4867,7 @@ os_write(file_t f, const void *buf, size_t count)
     }
     return out;
 }
+#endif
 
 /* We take in size_t count to match linux, but Nt{Read,Write}File only
  * takes in a ULONG (==uint), though they return a ULONG_PTR (size_t)
@@ -5885,7 +5939,8 @@ detach_helper(int detach_type)
     bool *cleanup_tpc;
     bool translate_cxt;
     bool detach_stacked_callbacks;
-    CONTEXT cxt;
+    char buf[MAX_CONTEXT_SIZE];
+    CONTEXT *cxt;
     DEBUG_DECLARE(bool ok;)
 
     /* Caller (generic_nudge_handler) should have already checked these and
@@ -5927,7 +5982,7 @@ detach_helper(int detach_type)
 
     ASSERT(dynamo_initialized);
     ASSERT(!dynamo_exited);
-    cxt.ContextFlags = CONTEXT_DR_STATE;
+    cxt = nt_initialize_context(buf, CONTEXT_DR_STATE);
     my_id = get_thread_id();
 
     ASSERT(detach_type < DETACH_NORMAL_TYPE || 
@@ -5994,7 +6049,7 @@ detach_helper(int detach_type)
     {
         bool did_unhook = false;
         for (i = 0; i < num_threads; i++) {
-            if (threads[i]->under_dynamo_control == UNDER_DYN_HACK) {
+            if (IS_UNDER_DYN_HACK(threads[i]->under_dynamo_control)) {
                 LOG(GLOBAL, LOG_ALL, 1, 
                     "Detach : unpatching image entry point (from thread %d)\n",
                     threads[i]->id);
@@ -6062,25 +6117,25 @@ detach_helper(int detach_type)
             my_thread_index = i;
             continue;
         }
-        res = thread_get_context(threads[i], &cxt);
+        res = thread_get_context(threads[i], cxt);
         ASSERT(res);
-        /* FIXME : callback UNDER_DYN_HACK hack again */
-        if (threads[i]->under_dynamo_control == UNDER_DYN_HACK) {
+        /* XXX : callback UNDER_DYN_HACK hack again */
+        if (IS_UNDER_DYN_HACK(threads[i]->under_dynamo_control)) {
             LOG(GLOBAL, LOG_ALL, 1, 
                 "Detach : thread %d running natively since lost control at callback "
                 "return and have not regained it, no need to translate context\n", 
                 threads[i]->id);
             /* We don't expect to be at do_syscall (and therefore require translation
              * even though native) since we should've re-taken over by then. */
-            ASSERT(!is_at_do_syscall(dcontext, (app_pc)cxt.CXT_XIP,
-                                     (byte *)cxt.CXT_XSP));
+            ASSERT(!is_at_do_syscall(dcontext, (app_pc)cxt->CXT_XIP,
+                                     (byte *)cxt->CXT_XSP));
             translate_cxt = false;
         }
         if (translate_cxt) {
             LOG(GLOBAL, LOG_ALL, 1, 
-                "Detach : recreating address for "PFX"\n", cxt.CXT_XIP);
+                "Detach : recreating address for "PFX"\n", cxt->CXT_XIP);
             /* fine to call this for native thread, will return cxt right back */
-            res = translate_context(threads[i], &cxt, true/*restore memory*/);
+            res = translate_context(threads[i], cxt, true/*restore memory*/);
             ASSERT(res);
             if (!threads[i]->under_dynamo_control) {
                 LOG(GLOBAL, LOG_ALL, 1, 
@@ -6125,15 +6180,15 @@ detach_helper(int detach_type)
             /* handle special case of vsyscall, need to hack the return address
              * on the stack as part of the translation */
             if (get_syscall_method() == SYSCALL_METHOD_SYSENTER &&
-                cxt.CXT_XIP == (ptr_uint_t) vsyscall_after_syscall) {
+                cxt->CXT_XIP == (ptr_uint_t) vsyscall_after_syscall) {
                 ASSERT(get_os_version() >= WINDOWS_VERSION_XP);
                 /* handle special case of vsyscall */
                 /* case 5441 Sygate hack means after_syscall will be at
                  * esp+4 (esp will point to sysenter_ret_address in ntdll) */
-                if (*(cache_pc *)(cxt.CXT_XSP+
+                if (*(cache_pc *)(cxt->CXT_XSP+
                                   (DYNAMO_OPTION(sygate_sysenter) ? XSP_SZ : 0)) ==
                     after_do_syscall_code(dcontext) ||
-                    *(cache_pc *)(cxt.CXT_XSP+
+                    *(cache_pc *)(cxt->CXT_XSP+
                                   (DYNAMO_OPTION(sygate_sysenter) ? XSP_SZ : 0)) ==
                     after_shared_syscall_code(dcontext)) {
                     LOG(GLOBAL, LOG_ALL, 1, 
@@ -6142,8 +6197,8 @@ detach_helper(int detach_type)
                         threads[i]->id, POST_SYSCALL_PC(dcontext));
                     /* need to restore sysenter_storage for Sygate hack */
                     if (DYNAMO_OPTION(sygate_sysenter))
-                        *(app_pc *)(cxt.CXT_XSP+XSP_SZ) = dcontext->sysenter_storage;
-                    *(app_pc *)cxt.CXT_XSP = POST_SYSCALL_PC(dcontext);
+                        *(app_pc *)(cxt->CXT_XSP+XSP_SZ) = dcontext->sysenter_storage;
+                    *(app_pc *)cxt->CXT_XSP = POST_SYSCALL_PC(dcontext);
                 } else {
                     LOG(GLOBAL, LOG_ALL, 1,
                         "Detach, thread %d suspended at vsyscall with ret to "
@@ -6152,9 +6207,9 @@ detach_helper(int detach_type)
                 }
             }
             LOG(GLOBAL, LOG_ALL, 1, 
-                "Detach : pc = "PFX" for thread %d\n", cxt.CXT_XIP, threads[i]->id);
-            ASSERT(!is_dynamo_address((app_pc)cxt.CXT_XIP)&&
-                   !in_fcache((app_pc)cxt.CXT_XIP));
+                "Detach : pc = "PFX" for thread %d\n", cxt->CXT_XIP, threads[i]->id);
+            ASSERT(!is_dynamo_address((app_pc)cxt->CXT_XIP)&&
+                   !in_fcache((app_pc)cxt->CXT_XIP));
             /* FIXME case 7457: if the thread is suspended after it
              * received a fault but before the kernel copied the faulting
              * context to the user mode structures for the handler, it could
@@ -6163,7 +6218,7 @@ detach_helper(int detach_type)
             /* FIXME: switch to using set_synched_thread_context() once we address
              * the context storage issue
              */
-            res = thread_set_context(threads[i], &cxt);
+            res = thread_set_context(threads[i], cxt);
             ASSERT(res);
 #ifdef CLIENT_INTERFACE
             /* i#249: restore app's PEB pointer */
@@ -6313,7 +6368,7 @@ bool
 is_thread_currently_native(thread_record_t *tr)
 {
     return (!tr->under_dynamo_control ||
-            tr->under_dynamo_control == UNDER_DYN_HACK);
+            IS_UNDER_DYN_HACK(tr->under_dynamo_control));
 }
 
 /* contended path of mutex operations */
@@ -6829,6 +6884,62 @@ early_inject_init()
     ASSERT(get_allocation_base(early_inject_address) == get_ntdll_base());
     LOG(GLOBAL, LOG_TOP, 1, "early_inject found address "PFX" to use\n",
         early_inject_address);
+}
+
+/* Called with DR library mapped in but without its imports processed.
+ * DR is not initialized at all so be careful what you call here.
+ */
+void
+earliest_inject_init(byte *arg_ptr)
+{
+    earliest_args_t *args = (earliest_args_t *) arg_ptr;
+
+    /* Set up imports w/o making any library calls */
+    if (!privload_bootstrap_dynamorio_imports(args->dr_base, args->ntdll_base)) {
+        /* XXX: how handle failure?  too early to ASSERT.  how bail?
+         * should we just silently go native?
+         */
+    } else {
+        /* Restore +rx to hook location before DR init scans it */
+        uint old_prot;
+        if (!bootstrap_protect_virtual_memory(args->hook_location,
+                                              EARLY_INJECT_HOOK_SIZE,
+                                              PAGE_EXECUTE_READ, &old_prot)) {
+            /* XXX: again, how handle failure? */
+        }
+    }
+
+    /* We can't walk Ldr list to get this so set it from parent args */
+    set_ntdll_base(args->ntdll_base);
+
+    /* We can't get DR path from Ldr list b/c DR won't be in there even once
+     * it's initialized so we pass it in from parent.
+     * Imports are set up so we can call strncpy now.
+     */
+    strncpy(dynamorio_library_path, args->dynamorio_lib_path,
+            BUFFER_SIZE_ELEMENTS(dynamorio_library_path));
+    NULL_TERMINATE_BUFFER(dynamorio_library_path);
+
+    /* XXX i#627: handle extra early threads
+     *   "for apc early hook, need special handling in callback.c to replace
+     *   the early hook and then touch up the hook code to handle any queued
+     *   up threads (and be finally early remote thread safe)."
+     * which implies the hook should have 1st thread invoke DR and the others
+     * spin in some fashion: for now not handling super-early threads
+     */
+}
+
+/* For cleanup we can't do before DR syscalls are set up */
+void
+earliest_inject_cleanup(byte *arg_ptr)
+{
+    earliest_args_t *args = (earliest_args_t *) arg_ptr;
+    byte *tofree = args->tofree_base;
+    NTSTATUS res;
+
+    /* Free tofree (which contains args) */
+    res = nt_remote_free_virtual_memory(NT_CURRENT_PROCESS, tofree);
+    ASSERT(NT_SUCCESS(res));
 }
 
 #define SECURITY_MAX_SID_STRING_SIZE                            \

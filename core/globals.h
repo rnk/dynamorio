@@ -1,5 +1,5 @@
 /* **********************************************************
- * Copyright (c) 2011 Google, Inc.  All rights reserved.
+ * Copyright (c) 2011-2012 Google, Inc.  All rights reserved.
  * Copyright (c) 2000-2010 VMware, Inc.  All rights reserved.
  * **********************************************************/
 
@@ -356,7 +356,8 @@ typedef struct _client_flush_req_t {
 /* for -thin_client we don't allocate client_data currently, also client_data could be
  * NULL during thread startup or teardown (i.e. mutex_wait_contended_lock() usage) */
 #define IS_CLIENT_THREAD(dcontext) \
-    ((dcontext) != NULL && (dcontext)->client_data != NULL && \
+    ((dcontext) != NULL && dcontext != GLOBAL_DCONTEXT && \
+     (dcontext)->client_data != NULL && \
      (dcontext)->client_data->is_client_thread)
 
 /* Client interface-specific data for dcontexts */
@@ -469,6 +470,7 @@ bool is_currently_on_dstack(dcontext_t *dcontext);
 #ifdef WINDOWS
 extern bool    dr_early_injected;
 extern int     dr_early_injected_location;
+extern bool    dr_earliest_injected;
 extern bool    dr_injected_primary_thread;
 extern bool    dr_injected_secondary_thread;
 extern bool    dr_late_injected_primary_thread;

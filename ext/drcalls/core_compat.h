@@ -81,10 +81,6 @@
 # define IF_DEBUG(stmt)
 #endif
 
-/* TODO(rnk): We use this to allocate thread-shared instrlists, but it violates
- * the abstraction barrier. */
-#define GLOBAL_DCONTEXT  ((void*)(ptr_uint_t)-1)
-
 /* TODO(rnk): Expose TRY/EXCEPT/FINALLY utils to clients. */
 #define TRY_EXCEPT(dc, try_stmt, except_stmt) try_stmt
 

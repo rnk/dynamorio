@@ -309,9 +309,17 @@ if (UNIX)
     set(ARCH_CFLAGS "-m32")
   endif (X64)
   set(ARCH_LDFLAGS "${ARCH_CFLAGS}")
+  set(ARCH_DEBUG "${ARCH_CFLAGS}") # somehow not being propagated so we set here
 else (UNIX)
   set(ARCH_CFLAGS "")
+  # we don't add /debug here (=> SHARED_LINKER flags) since can't remove
   set(ARCH_LDFLAGS "")
+  if (RUNNING_OVER_SSH)
+    set(ARCH_DEBUG "")
+  else (RUNNING_OVER_SSH)
+    # ensure we get proper debugging (i#567)
+    set(ARCH_DEBUG "/debug")
+  endif (RUNNING_OVER_SSH)
 endif (UNIX)
 
 if (NOT DEFINED DynamoRIO_DIR)
@@ -324,7 +332,7 @@ if (NOT DynamoRIO_FOUND)
 endif(NOT DynamoRIO_FOUND)
 
 # Force global changes now, and set ORIG_CMAKE_C_FLAGS
-configure_DynamoRIO_global(OFF)
+configure_DynamoRIO_global(OFF ON)
 
 # configure_DynamoRIO_global() cleared the absolute flags for us.
 # We now use PROPERTIES to set for each test.
@@ -517,8 +525,9 @@ function(add_exe test source)
   endif ("${srccode}" MATCHES "ifndef ASM_CODE_ONLY")
 
   add_executable(${test} ${test_srcs})
+
   set_target_properties(${test} PROPERTIES
-    LINK_FLAGS "${ARCH_CFLAGS}"
+    LINK_FLAGS "${ARCH_DEBUG}"
     # we don't want the default rpath of <builddir>/lib as it makes
     # it hard to use other DR builds w/ these apps
     SKIP_BUILD_RPATH ON)
@@ -563,6 +572,7 @@ function(tobuild_dll test source dr_ops)
     set(lib_srcs ${lib_srcs} ${tools_c} ${tools_asm})
   endif ()
   add_library(${test}.dll SHARED ${lib_srcs})
+  set_target_properties(${test}.dll PROPERTIES LINK_FLAGS "${ARCH_DEBUG}")
   target_link_libraries(${test} ${test}.dll)
   if ("${srccode}" MATCHES "include \"tools\\.h\"" AND
       "${CMAKE_GENERATOR}" MATCHES "Visual Studio")
@@ -613,6 +623,7 @@ function(tobuild_ci test source client_ops dr_ops exe_ops)
         endif ("${srccode}" MATCHES "ifndef ASM_CODE_ONLY")
 
         add_library(${test}.appdll SHARED ${lib_srcs})
+        set_target_properties(${test}.appdll PROPERTIES LINK_FLAGS "${ARCH_DEBUG}")
         # so far these are all dynamically loaded so we don't bother
         # with "target_link_libraries(${test} ${test}.appdll)"
         if ("${srccode}" MATCHES "include \"tools\\.h\"" AND
@@ -624,6 +635,7 @@ function(tobuild_ci test source client_ops dr_ops exe_ops)
   endif (NOT "${source}" MATCHES "\\.runall$")
 
   add_library(${test}.dll SHARED ${client_source})
+  set_target_properties(${test}.dll PROPERTIES LINK_FLAGS "${ARCH_DEBUG}")
   if (NOT "${source}" MATCHES "cpp\\.cpp")
     # to avoid changing all the REG_ constants we ask for compatibility
     set(DynamoRIO_REG_COMPATIBILITY ON)
@@ -641,7 +653,7 @@ function(tobuild_ci test source client_ops dr_ops exe_ops)
 endfunction(tobuild_ci)
 
 # client interface standalone app
-function(tobuild_api test source dr_ops exe_ops)
+function(tobuild_api test source dr_ops exe_ops decoder)
   add_exe(${test} ${source})
   # save property since configure_DynamoRIO_standalone will clobber it
   get_target_property(pre_lflags ${test} LINK_FLAGS)
@@ -649,14 +661,24 @@ function(tobuild_api test source dr_ops exe_ops)
   set(DynamoRIO_RPATH OFF)
   # to avoid changing all the REG_ constants we ask for compatibility
   set(DynamoRIO_REG_COMPATIBILITY ON)
-  configure_DynamoRIO_standalone(${test})
+  if (decoder)
+    configure_DynamoRIO_decoder(${test})
+    set(extra_flags "-DSTANDALONE_DECODER")
+  else ()
+    configure_DynamoRIO_standalone(${test})
+    set(extra_flags "-DSTANDALONE")
+  endif ()
+  # append to properties set by configure_DynamoRIO_standalone
+  get_target_property(prop_cflags ${test} COMPILE_FLAGS)
+  if (NOT prop_cflags)
+    set(prop_cflags "")
+  endif ()
+  set(prop_cflags "${prop_cflags} ${extra_flags}")
   # we don't set -DUSE_DYNAMO on the target to avoid setting
   # it for tools.c and thus adding dependencies on api headers
   # to other tests
   set_source_files_properties(${source} PROPERTIES
     COMPILE_FLAGS "-DUSE_DYNAMO")
-  # append to properties set by configure_DynamoRIO_standalone
-  get_target_property(prop_cflags ${test} COMPILE_FLAGS)
   # since we're including configure.h we do not want any default defines
   string(REGEX REPLACE "-DX64" "" prop_cflags "${prop_cflags}")
   string(REGEX REPLACE "-DLINUX" "" prop_cflags "${prop_cflags}")
@@ -755,6 +777,24 @@ function(mark_execstack target)
   endif (UNIX)
 endfunction(mark_execstack)
 
+function(append_link_flags target newflags)
+  get_target_property(cur_ldflags ${target} LINK_FLAGS)
+  # cmake should add an APPEND option
+  set_target_properties(${target} PROPERTIES
+    LINK_FLAGS "${cur_ldflags} ${newflags}")
+endfunction(append_link_flags)
+
+function(remove_debug_flag target)
+  if (WIN32)
+    # for years we had no /debug.  we added it recently in i#567 and it broke
+    # a few tests.  removing it from those to get them passing until we can
+    # take a deeper look.
+    get_target_property(cur_ldflags ${target} LINK_FLAGS)
+    string(REGEX REPLACE "/debug" "" cur_ldflags ${cur_ldflags})
+    set_target_properties(${target} PROPERTIES LINK_FLAGS "${cur_ldflags}")
+  endif (WIN32)
+endfunction(remove_debug_flag)
+
 ###########################################################################
 # RUNNING
 
@@ -801,7 +841,8 @@ function(template2expect outexpect template runops)
   # we need a list: else passed as a single arg in quotes
   string(REGEX REPLACE " " ";" deflist "${defines} ${rundefs}")
   execute_process(COMMAND
-    ${CMAKE_CPP} ${CMAKE_CPP_FLAGS} ${deflist} -E ${CPP_NO_LINENUM} ${template}
+    ${CMAKE_CPP} ${CMAKE_CPP_FLAGS} ${deflist} -E ${CPP_NO_LINENUM}
+      ${CPP_KEEP_WHITESPACE} ${template}
     RESULT_VARIABLE cpp_result
     ERROR_VARIABLE cpp_err
     OUTPUT_VARIABLE cpp_out
@@ -816,6 +857,11 @@ function(template2expect outexpect template runops)
     message(FATAL_ERROR "*** ${CMAKE_CPP} failed: ***\n${cpp_err}")
   endif (cpp_result OR cpp_err)
 
+  # remove // comments since we use -traditional-cpp to preserve whitespace
+  # on linux
+  string(REGEX REPLACE "(\r?\n)//[^\n]*" "" cpp_out "${cpp_out}")
+  string(REGEX REPLACE "^//[^\n]*" "" cpp_out "${cpp_out}")
+  
   # remove blank lines left by cpp directives
   string(REGEX REPLACE
     "(\r?\n)+"
@@ -1143,6 +1189,13 @@ function(torun_runall name test ops)
   # FIXME NYI i#120
 endfunction(torun_runall)
 
+function(disable_optimizations_for_file source_file)
+  get_source_file_property(cflags "${source_file}" COMPILE_FLAGS)
+  string(REGEX REPLACE "[/-]O[1-9]" "" cflags "${cflags}")
+  set_source_files_properties("${source_file}" PROPERTIES
+    COMPILE_FLAGS "${cflags}")
+endfunction(disable_optimizations_for_file)
+
 ###########################################################################
 # tests
 
@@ -1198,6 +1251,7 @@ if (CLIENT_INTERFACE)
     tobuild_ci(client.syscall-mod client-interface/syscall-mod.c "" "" "")
     tobuild_ci(client.nudge_test client-interface/nudge_test.runall "" "" "")
     tobuild_ci(client.timer client-interface/timer.c "" "" "")
+    tobuild_ci(client.cbr-retarget client-interface/cbr-retarget.c "" "" "")
   else (UNIX)
     tobuild_ci(client.events client-interface/events.c "" "" "")
     tobuild_ci(client.events_cpp client-interface/events_cpp.cpp "" "" "")
@@ -1211,6 +1265,10 @@ if (CLIENT_INTERFACE)
     #tobuild_ci_runall(client.decode-bb client-interface/decode-bb.runall "" "" "")
     #tobuild_ci_runall(client.nudge_test client-interface/nudge_test.runall "" "" "")
     #tobuild_ci_runall(client.pc-check client-interface/pc-check.runall "" "" "")
+    if (NOT X64)
+      # FIXME i#16, does not work in Win-X64 because of inline assembly code.
+      tobuild_ci(client.cbr-retarget client-interface/cbr-retarget.c "" "" "")
+    endif (NOT X64)
   endif (UNIX)
   tobuild_ci(client.file_io client-interface/file_io.c
     "${CMAKE_CURRENT_SOURCE_DIR}/client-interface/file_io_data.txt" "" "")
@@ -1228,6 +1286,11 @@ if (CLIENT_INTERFACE)
   tobuild_ci(client.unregister client-interface/unregister.c "" "" "")
   tobuild_ci(client.inline client-interface/inline.c "" "-opt_cleancall 3" "")
 
+  # Test passing a really long (600 chars) client option string.
+  tobuild_ci(client.large_options client-interface/large_options.c
+    "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+    "" "")
+
   tobuild_ci(client.drmgr-test client-interface/drmgr-test.c "" "" "")
   use_DynamoRIO_extension(client.drmgr-test.dll drmgr)
   if (UNIX)
@@ -1240,14 +1303,25 @@ if (CLIENT_INTERFACE)
   tochcon(client.drwrap-test.appdll textrel_shlib_t)
   if (WIN32)
     # export from asm code
-    set_target_properties(client.drwrap-test.appdll PROPERTIES LINK_FLAGS
-      "/export:makes_tailcall")
+    append_link_flags(client.drwrap-test.appdll "/export:makes_tailcall")
   endif (WIN32)
 
+  tobuild_ci(client.drsyms-test client-interface/drsyms-test.cpp ""
+    "-stack_size 36K"
+    "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/libclient.drsyms-test.appdll.so")
+  # Disable optimizations for the exe and appdll to allow stack tracing.
+  disable_optimizations_for_file(client-interface/drsyms-test.cpp)
+  disable_optimizations_for_file(client-interface/drsyms-test.appdll.cpp)
+  use_DynamoRIO_extension(client.drsyms-test.dll drsyms)
+  use_DynamoRIO_extension(client.drsyms-test.dll drwrap)  # Makes testing easy
+
   tobuild_api(api.dis api/dis.c "-syntax_intel"
-    "${CMAKE_CURRENT_SOURCE_DIR}/api/dis-udis86-randtest.raw")
-  tobuild_api(api.ir api/ir.c "" "")
-  tobuild_api(api.startstop api/startstop.c "" "")
+    "${CMAKE_CURRENT_SOURCE_DIR}/api/dis-udis86-randtest.raw" OFF)
+  tobuild_api(api.ir api/ir.c "" "" OFF)
+  tobuild_api(api.startstop api/startstop.c "" "" OFF)
+  # test static decoder library
+  tobuild_api(api.ir-static api/ir.c "" "" ON)
+  tobuild_api(api.static api/static.c "" "" ON)
 endif (CLIENT_INTERFACE)
 
 if (UNIX)
@@ -1305,9 +1379,8 @@ if (UNIX)
   tobuild(linux.sigplain101 linux/sigplain101.c)
   tobuild(linux.sigplain110 linux/sigplain110.c)
   tobuild(linux.sigplain111 linux/sigplain111.c)
+  tobuild(linux.sigcontext linux/sigcontext.c)
   tobuild(linux.thread linux/thread.c)
-
-  # FIXME TOFILE: nondet failures: still some races or sthg
   tobuild(linux.threadexit linux/threadexit.c)
   tobuild(linux.threadexit2 linux/threadexit2.c)
 
@@ -1324,7 +1397,7 @@ if (UNIX)
 
   tobuild(pthreads.pthreads pthreads/pthreads.c)
   tobuild(pthreads.pthreads_exit pthreads/pthreads_exit.c)
-  tobuild(pthreads.ptsig pthreads/ptsig.c)
+  tobuild(pthreads.ptsig_FLAKY pthreads/ptsig.c)
 
   if (NOT X64)
     # FIXME i#16: these tests need to be fixed to compile for x64
@@ -1345,7 +1418,7 @@ if (UNIX)
   torunonly(linux.reset linux/infloop linux/reset.runall "" "-v")
   if (NOT X64)
     # XXX: 64-bit support not quite there yet
-    torunonly(linux.freeze linux/infloop linux/freeze.runall
+    torunonly(linux.freeze_FLAKY linux/infloop linux/freeze.runall
       "-coarse_units -coarse_enable_freeze" "-v")
   endif (NOT X64)
 
@@ -1354,13 +1427,13 @@ if (UNIX)
   file(MAKE_DIRECTORY "${PCACHE_SHARED_DIR}")
   if (NOT X64)
     # XXX: 64-bit support not quite there yet
-    torunonly(linux.persist linux/infloop linux/persist.runall
+    torunonly(linux.persist_FLAKY linux/infloop linux/persist.runall
       "-coarse_units -coarse_split_calls -coarse_enable_freeze -coarse_freeze_min_size 0 -no_persist_per_user -no_validate_owner_dir" "-v")
-    torunonly(linux.persist-use linux/infloop linux/persist-use.runall
+    torunonly(linux.persist-use_FLAKY linux/infloop linux/persist-use.runall
       "-use_persisted -coarse_units -coarse_split_calls -no_persist_per_user -no_validate_owner_dir" "-v")
   endif (NOT X64)
   # when running tests in parallel: have to generate pcaches first
-  set(linux.persist-use_depends linux.persist)
+  set(linux.persist-use_FLAKY_depends linux.persist_FLAKY)
 else (UNIX)
   if (VPS)
     # too flaky across platforms so we limit to VPS only: not too useful
@@ -1371,8 +1444,7 @@ else (UNIX)
   tobuild(win32.crtprcs win32/crtprcs.c)
 
   tobuild_dll(win32.delaybind win32/delaybind.c "")
-  set_target_properties(win32.delaybind PROPERTIES
-    LINK_FLAGS "/delayload:win32.delaybind.dll.dll /delay:unload")
+  append_link_flags(win32.delaybind "/delayload:win32.delaybind.dll.dll /delay:unload")
   tobind(win32.delaybind)
   tobind(win32.delaybind.dll)
 
@@ -1385,21 +1457,26 @@ else (UNIX)
   # FIXME i#192: oomtest ends up killing parent shell: investigate, fix, re-enable!
   #tobuild(win32.oomtest win32/oomtest.c)
   if (TEST_SUITE) # failing on win7 (i#422) so run only in suite
-    tobuild(win32.partial_map win32/partial_map.c)
+    # Keep exe name same, is checked in DR.
+    add_exe(win32.partial_map win32/partial_map.c)
+    torunonly(win32.partial_map_FLAKY win32.partial_map win32/partial_map.c "" "")
   endif (TEST_SUITE)
   tobuild(win32.protect-datasec win32/protect-datasec.c)
   tobuild_dll(win32.rebased win32/rebased.c "")
   if (TEST_SUITE) # fails non-det so run only in suite
-    tobuild_dll(win32.reload win32/reload.c "")
+    tobuild_dll(win32.reload_FLAKY win32/reload.c "")
   endif (TEST_SUITE)
   tobuild_dll(win32.reload-newaddr win32/reload-newaddr.c "")
   # FIXME i#267: fix curiosities and re-enable
   #tobuild_dll(win32.reload-race win32/reload-race.c "")
+
   tobuild_dll(win32.section-max win32/section-max.c "")
+  remove_debug_flag(win32.section-max.dll) # i#567: breaks w/ /debug
+
   tobuild(win32.suspend win32/suspend.c)
   tobuild(win32.threadchurn win32/threadchurn.c)
   if (TEST_SUITE) # occasionally fails so run only in suite
-    tobuild(win32.threadexit win32/threadexit.c)
+    tobuild(win32.threadexit_FLAKY win32/threadexit.c)
   endif (TEST_SUITE)
   # PR 215238 covers re-enabling threadinjection
   #tobuild(win32.threadinjection win32/threadinjection.c)
@@ -1410,8 +1487,12 @@ else (UNIX)
   tobuild(win32.winapc win32/winapc.c)
   tobuild(win32.winthread win32/winthread.c)
 
+  set(apc_shellcode security-win32.apc-shellcode)
+  if (X64)
+    set(apc_shellcode "${apc_shellcode}_FLAKY")
+  endif ()
   if (NOT X64 OR TEST_SUITE) # fail on x64 so run only in suite
-    tobuild(security-win32.apc-shellcode security-win32/apc-shellcode.c)
+    tobuild("${apc_shellcode}" security-win32/apc-shellcode.c)
   endif ()
 
   if (NOT X64)
@@ -1433,21 +1514,20 @@ else (UNIX)
 
     tobuild_dll(security-win32.aslr-ind security-win32/aslr-ind.c "")
     if (TEST_SUITE) # fails non-det so run only in suite
-      tobuild(security-win32.codemod-threads security-win32/codemod-threads.c)
+      tobuild(security-win32.codemod-threads_FLAKY security-win32/codemod-threads.c)
     endif (TEST_SUITE)
 
     # we tweak cflags in set_cflags() rather than passing extra param all
     # the way through: adding helper func layers gets awkward w/ PARENT_SCOPE
     tobuild(security-win32.except-execution security-win32/except-execution.c)
     # we match exe addresses in output so no ASLR
-    set_target_properties(security-win32.except-execution PROPERTIES
-      LINK_FLAGS "/dynamicbase:no")
-    
+    append_link_flags(security-win32.except-execution "/dynamicbase:no")
+
     tobuild(security-win32.except-thread security-win32/except-thread.c)
     tobuild(security-win32.gbop-test security-win32/gbop-test.c)
 
     if (TEST_SUITE) # fails non-det so run only in suite
-      tobuild(security-win32.hooker security-win32/hooker.c)
+      tobuild(security-win32.hooker_FLAKY security-win32/hooker.c)
     endif (TEST_SUITE)
     tobuild(security-win32.hooker-ntdll security-win32/hooker-ntdll.c)
     tobuild(security-win32.indexisting security-win32/indexisting.c)
@@ -1457,6 +1537,7 @@ else (UNIX)
 
   tobuild(security-win32.sd_tester security-win32/sd_tester.c)
   tobuild(security-win32.sec-adata security-win32/sec-adata.c)
+  remove_debug_flag(security-win32.sec-adata) # i#567: breaks w/ /debug
 
   # FIXME: getting warnings from pragmas in src code:
   #   secalign-fixed.dll.c.obj : warning LNK4229: invalid directive '/fixed' encountered; ignored
@@ -1466,17 +1547,19 @@ else (UNIX)
   # I checked secalign-fixed.dll.dll and it does have 0x2000 alignment and has
   # no relocations, so not sure what the warnings imply.  Did not check the others.
   tobuild_dll(security-win32.secalign-fixed security-win32/secalign-fixed.c "")
-  set_target_properties(security-win32.secalign-fixed.dll PROPERTIES
-    LINK_FLAGS "/dynamicbase:no /fixed")
+  append_link_flags(security-win32.secalign-fixed.dll "/dynamicbase:no /fixed")
 
   tobuild_dll(security-win32.sec-fixed security-win32/sec-fixed.c "")
-  set_target_properties(security-win32.sec-fixed.dll PROPERTIES
-    LINK_FLAGS "/dynamicbase:no /fixed")
+  append_link_flags(security-win32.sec-fixed.dll "/dynamicbase:no /fixed")
 
   tobuild_dll(security-win32.sec-xdata security-win32/sec-xdata.c "")
+  remove_debug_flag(security-win32.sec-xdata) # i#567: breaks w/ /debug
+  remove_debug_flag(security-win32.sec-xdata.dll) # i#567: breaks w/ /debug
+
   # PR 209235 covers re-enabling selfmod-threads
   #tobuild(security-win32.selfmod-threads security-win32/selfmod-threads.c)
   tobuild(security-win32.TestNTFlush security-win32/TestNTFlush.c)
+  remove_debug_flag(security-win32.TestNTFlush) # i#567: breaks w/ /debug
 
   # FIXME: enable once have .runall support
   #tobuild_runall(runall.calc-detach runall/calc-detach.runall "")
@@ -1509,9 +1592,9 @@ tobuild(security-common.decode-bad-stack security-common/decode-bad-stack.c)
 tochcon(security-common.decode-bad-stack execmem_exec_t)
 mark_execstack(security-common.decode-bad-stack)
 if (TEST_SUITE) # fails non-det (i#423) so run only in suite
-  tobuild(security-common.jmp_from_trace security-common/jmp_from_trace.c)
+  tobuild(security-common.jmp_from_trace_FLAKY security-common/jmp_from_trace.c)
+  tochcon(security-common.jmp_from_trace_FLAKY textrel_shlib_t)
 endif (TEST_SUITE)
-tochcon(security-common.jmp_from_trace textrel_shlib_t)
 tobuild(security-common.retexisting security-common/retexisting.c)
 tobuild(security-common.ret_noncall_trace security-common/ret_noncall_trace.c)
 tobuild(security-common.retnonexisting security-common/retnonexisting.c)
@@ -1525,12 +1608,21 @@ if (NOT X64)
 endif (NOT X64)
 tobuild(security-common.selfmod security-common/selfmod.c)
 tochcon(security-common.selfmod textrel_shlib_t)
-if (NOT X64 OR TEST_SUITE) # fail on x64 so run only in suite
-  tobuild(security-common.TestAllocWE security-common/TestAllocWE.c)
-  tobuild(security-common.TestMemProtChg security-common/TestMemProtChg.c)
-  tochcon(security-common.TestMemProtChg wine_exec_t)
-  mark_execstack(security-common.TestMemProtChg)
+
+set(TestAllocWE "security-common.TestAllocWE")
+set(TestMemProtChg "security-common.TestMemProtChg")
+if (X64) # fail on x64
+  set(TestAllocWE "${TestAllocWE}_FLAKY")
+  set(TestMemProtChg "${TestMemProtChg}_FLAKY")
 endif ()
+if (NOT X64 OR TEST_SUITE) # fail on x64 so run only in suite
+  tobuild(${TestAllocWE} security-common/TestAllocWE.c)
+  remove_debug_flag(${TestAllocWE}) # i#567: breaks w/ /debug
+  tobuild(${TestMemProtChg} security-common/TestMemProtChg.c)
+  remove_debug_flag(${TestMemProtChg}) # i#567: breaks w/ /debug
+  tochcon(${TestMemProtChg} wine_exec_t)
+  mark_execstack(${TestMemProtChg})
+endif (NOT X64 OR TEST_SUITE)
 
 if (BUILD_DRCALLS)
   tobuild_drcalls(drcalls.leancall          "ext-drcalls/leancall.c" "" "" "")

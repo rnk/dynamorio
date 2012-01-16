@@ -41,6 +41,8 @@
 
 #include "dr_api.h"
 #include "drmgr.h"
+#include "client_tools.h"
+
 #include <string.h> /* memset */
 
 #ifdef LINUX
@@ -51,11 +53,12 @@
  * so we leave SHOW_RESULTS undefined
  */
 
+/* Unlike in api sample, always print to stderr. */
+#define DISPLAY_STRING(msg) dr_fprintf(STDERR, "%s\n", msg);
+
 #ifdef WINDOWS
-# define DISPLAY_STRING(msg) dr_fprintf(STDERR, "%s\n", msg);
 # define ATOMIC_INC(var) _InterlockedIncrement((volatile LONG *)&var)
 #else
-# define DISPLAY_STRING(msg) dr_fprintf(STDERR, "%s\n", msg);
 # define ATOMIC_INC(var) __asm__ __volatile__("lock incl %0" : "=m" (var) : : "memory")
 #endif
 
@@ -218,7 +221,7 @@ event_pre_syscall(void *drcontext, int sysnum)
             return true; /* data unreadable: execute normally */
         if (dr_is_wow64()) {
             /* store the xcx emulation parameter for wow64 */
-            dr_mcontext_t mc = {sizeof(mc),};
+            dr_mcontext_t mc = {sizeof(mc),DR_MC_ALL,};
             dr_get_mcontext(drcontext, &mc);
             data->xcx = mc.xcx;
         }
@@ -290,7 +293,7 @@ event_post_syscall(void *drcontext, int sysnum)
                  * need to determine the parameter from the ntdll
                  * wrapper.
                  */
-                dr_mcontext_t mc = {sizeof(mc),};
+                dr_mcontext_t mc = {sizeof(mc),DR_MC_ALL,};
                 dr_get_mcontext(drcontext, &mc);
                 mc.xcx = data->xcx;
                 dr_set_mcontext(drcontext, &mc);

@@ -41,13 +41,10 @@
 
 #include <unistd.h>
 
-/* For FC8:
- * We do not want bits/sigcontext.h from signal.h, since we want X86_FXSR_MAGIC
- * from asm/sigcontext.h, which duplicates many struct defs from bits/sigcontext.h
+/* We want to build on older toolchains so we have our own copy of signal
+ * data structures
  */
-#define _BITS_SIGCONTEXT_H  1
-#include <signal.h>
-#include <asm/sigcontext.h> /* for X86_FXSR_MAGIC */
+#include "include/sigcontext.h"
 
 #include <sys/time.h>
 #include <sys/types.h>
@@ -178,6 +175,7 @@ int default_action[] = {
     /* 61 */ DEFAULT_TERMINATE,
     /* 62 */ DEFAULT_TERMINATE,
     /* 63 */ DEFAULT_TERMINATE,
+    /* 64 */ DEFAULT_TERMINATE,
 };
 
 /* We know that many signals are always asynchronous.
@@ -253,6 +251,7 @@ bool can_always_delay[] = {
     /* 61 */                       true,
     /* 62 */                       true,
     /* 63 */                       true,
+    /* 64 */                       true,
 };
 
 static inline bool
@@ -331,7 +330,7 @@ void copy_kernel_sigset_to_sigset(kernel_sigset_t *kset, sigset_t *uset)
     /* do this the slow way...I don't want to make assumptions about
      * structure of user sigset_t
      */
-    for (sig=1; sig<MAX_SIGNUM; sig++) {
+    for (sig=1; sig<=MAX_SIGNUM; sig++) {
         if (kernel_sigismember(kset, sig))
             sigaddset(uset, sig);
     }
@@ -346,7 +345,7 @@ void copy_sigset_to_kernel_sigset(sigset_t *uset, kernel_sigset_t *kset)
     /* do this the slow way...I don't want to make assumptions about
      * structure of user sigset_t
      */
-    for (sig=1; sig<MAX_SIGNUM; sig++) {
+    for (sig=1; sig<=MAX_SIGNUM; sig++) {
         if (sigismember(uset, sig))
             kernel_sigaddset(kset, sig);
     }
@@ -390,6 +389,9 @@ typedef struct sigframe {
     char *pretcode;
     int sig;
     struct sigcontext sc;
+    /* Since 2.6.28, this fpstate has been unused and the real fpstate
+     * is at the end of the struct so it can include xstate
+     */
     struct _fpstate fpstate;
     unsigned long extramask[_NSIG_WORDS-1];
     char retcode[RETCODE_SIZE];
@@ -404,6 +406,7 @@ typedef struct sigframe {
      * UPDATE: actually we do invoke SYS_*sigreturn
      */
     int sig_noclobber;
+    /* In 2.6.28+, fpstate/xstate goes here */
 } sigframe_plain_t;
 
 /* the rt frame is used for SA_SIGINFO signals */
@@ -423,9 +426,16 @@ typedef struct rt_sigframe {
     void *puc;
     struct siginfo info;
     kernel_ucontext_t uc;
-    struct _fpstate fpstate;
+    /* Prior to 2.6.28, "struct _fpstate fpstate" was here.  Rather than
+     * try to reproduce that exact layout and detect the underlying kernel
+     * (the safest way would be to send ourselves a signal and examine the
+     * frame, rather than relying on uname, to handle backports), we use
+     * the new layout even on old kernels.  The app should use the fpstate
+     * pointer in the sigcontext anyway.
+     */
     char retcode[RETCODE_SIZE];
 #endif
+    /* In 2.6.28+, fpstate/xstate goes here */
 } sigframe_rt_t;
 
 
@@ -443,6 +453,13 @@ typedef struct rt_sigframe {
 #define APP_HAS_SIGSTACK(info) \
   ((info)->app_sigstack.ss_sp != NULL && (info)->app_sigstack.ss_flags != SS_DISABLE)
 
+/* even though we don't execute xsave ourselves, kernel will do xrestore on sigreturn
+ * so we have to obey alignment for avx
+ */
+#define AVX_ALIGNMENT 64
+#define FPSTATE_ALIGNMENT 16
+#define XSTATE_ALIGNMENT (YMM_ENABLED() ? AVX_ALIGNMENT : FPSTATE_ALIGNMENT)
+
 /* we have to queue up both rt and non-rt signals because we delay
  * their delivery.
  * PR 304708: we now leave in rt form right up until we copy to the
@@ -451,12 +468,11 @@ typedef struct rt_sigframe {
  */
 typedef struct _sigpending_t {
     sigframe_rt_t rt_frame;
-#ifdef X64
     /* fpstate is no longer kept inside the frame, and is not always present.
      * if we delay we need to ensure we have room for it.
+     * we statically keep room for full xstate in case we need it.
      */
-    struct _fpstate __attribute__ ((aligned (16))) fpstate;
-#endif
+    struct _xstate __attribute__ ((aligned (AVX_ALIGNMENT))) xstate;
 #ifdef CLIENT_INTERFACE
     /* i#182/PR 449996: we provide the faulting access address for SIGSEGV, etc. */
     byte *access_address;
@@ -464,13 +480,17 @@ typedef struct _sigpending_t {
     struct _sigpending_t *next;
 } sigpending_t;
 
-#ifdef X64
 /* Extra space needed to put the signal frame on the app stack.
- * We assume the stack pointer is 8-aligned already, so at most we
- * need another 8 to align to 16.
+ * We assume the stack pointer is 4-aligned already.
  */
-# define X64_FRAME_EXTRA (sizeof(struct _fpstate) + 8)
-#endif
+/* An extra 4 for trailing FP_XSTATE_MAGIC2 */
+#define AVX_FRAME_EXTRA (sizeof(struct _xstate) + AVX_ALIGNMENT - 4 + 4)
+#define FPSTATE_FRAME_EXTRA (sizeof(struct _fpstate) + FPSTATE_ALIGNMENT - 4)
+#define XSTATE_FRAME_EXTRA (YMM_ENABLED() ? AVX_FRAME_EXTRA : FPSTATE_FRAME_EXTRA)
+
+#define AVX_DATA_SIZE (sizeof(struct _xstate) + 4)
+#define FPSTATE_DATA_SIZE (sizeof(struct _fpstate))
+#define XSTATE_DATA_SIZE (YMM_ENABLED() ? AVX_DATA_SIZE : FPSTATE_DATA_SIZE)
 
 /* PR 204556: DR/clients use itimers so we need to emulate the app's usage */
 typedef struct _itimer_info_t {
@@ -529,11 +549,11 @@ typedef struct _thread_sig_info_t {
     thread_itimer_info_t (*itimer)[NUM_ITIMERS];
 
     /* cache restorer validity.  not shared: inheriter will re-populate. */
-    int restorer_valid[MAX_SIGNUM];
+    int restorer_valid[SIGARRAY_SIZE];
 
     /* rest of app state */
     stack_t app_sigstack;
-    sigpending_t *sigpending[MAX_SIGNUM];
+    sigpending_t *sigpending[SIGARRAY_SIZE];
     /* "lock" to prevent interrupting signal from messing up sigpending array */
     bool accessing_sigpending;
     kernel_sigset_t app_sigblocked;
@@ -842,10 +862,21 @@ convert_fxsave_to_fpstate(struct _fpstate *fpstate,
 static void
 save_xmm(dcontext_t *dcontext, sigframe_rt_t *frame)
 {
+    /* see comments at call site: can't just do xsave */
     int i;
     struct sigcontext *sc = get_sigcontext_from_rt_frame(frame);
+    struct _xstate *xstate = (struct _xstate *) sc->fpstate;
     if (!preserve_xmm_caller_saved())
         return;
+    if (YMM_ENABLED()) {
+        /* all ymm regs are in our mcontext.  the only other thing
+         * in xstate is the xgetbv.
+         */
+        uint bv_high, bv_low;
+        asm volatile("mov $0, %%ecx; xgetbv; mov %%edx, %0; mov %%eax, %1"
+                     : "=m" (bv_high), "=m" (bv_low) : : "eax","edx","ecx");
+        xstate->xstate_hdr.xstate_bv = (((uint64)bv_high)<<32) | bv_low;
+    }
     for (i=0; i<NUM_XMM_SAVED; i++) {
         /* we assume no padding */
 #ifdef X64
@@ -853,22 +884,26 @@ save_xmm(dcontext_t *dcontext, sigframe_rt_t *frame)
         memcpy(&sc->fpstate->xmm_space[i*4], &get_mcontext(dcontext)->ymm[i],
                XMM_REG_SIZE);
         if (YMM_ENABLED()) {
-            /* FIXME i#437: ymm top halves are inside struct _xstate.
-             * We should augment sigpending_t and X64_FRAME_EXTRA to
-             * store _xstate and not just _fpstate, and update save_xmm()
-             * and sigcontext_to_mcontext() (and vice versa).
-             */
-            ASSERT_NOT_IMPLEMENTED(false && "i#437: no ymm sig context support yet");
+            /* i#637: ymm top halves are inside struct _xstate */
+            memcpy(&xstate->ymmh.ymmh_space[i * 4], 
+                   ((void *)&get_mcontext(dcontext)->ymm[i]) + XMM_REG_SIZE,
+                   YMMH_REG_SIZE);
         }
 #else
         memcpy(&sc->fpstate->_xmm[i], &get_mcontext(dcontext)->ymm[i], XMM_REG_SIZE);
-        if (YMM_ENABLED())
-            ASSERT_NOT_IMPLEMENTED(false && "i#437: no ymm sig context support yet");
+        if (YMM_ENABLED()) {
+            /* i#637: ymm top halves are inside struct _xstate */
+            memcpy(&xstate->ymmh.ymmh_space[i * 4], 
+                   ((void *)&get_mcontext(dcontext)->ymm[i]) + XMM_REG_SIZE,
+                   YMMH_REG_SIZE);
+        }
 #endif
     }
 }
 
-/* We can't tell whether the app has used fpstate yet so we preserve every time */
+/* We can't tell whether the app has used fpstate yet so we preserve every time
+ * (i#641 covers optimizing that)
+ */
 static void
 save_fpstate(dcontext_t *dcontext, sigframe_rt_t *frame)
 {
@@ -881,20 +916,15 @@ save_fpstate(dcontext_t *dcontext, sigframe_rt_t *frame)
     struct sigcontext *sc = get_sigcontext_from_rt_frame(frame);
     LOG(THREAD, LOG_ASYNCH, 3, "save_fpstate\n");
     if (sc->fpstate == NULL) {
-#ifdef X64
-        /* fpstate is not inlined, so before getting here someone (copy_frame_to_*,
-         * or thread_set_self_context) is supposed to lay it out and point at it
+        /* Nothing to do: there was no fpstate to save at the time the kernel
+         * gave us this frame.
+         * It's possible that by the time we deliver the signal
+         * there is some state: but it's up to the caller to set up room
+         * for fpstate and point at it in that case.
          */
-        ASSERT_NOT_REACHED();
-        return; /* just continue w/o saving */
-#else
-        /* may be NULL due to lazy fp state saving by kernel */
-        sc->fpstate = &frame->fpstate;
-#endif
+        return;
     } else {
-        LOG(THREAD, LOG_ASYNCH, 3,
-            "ptr="PFX", struct="PFX"\n",
-            sc->fpstate, IF_X64_ELSE(NULL, &frame->fpstate));
+        LOG(THREAD, LOG_ASYNCH, 3, "ptr="PFX"\n", sc->fpstate);
     }
     if (proc_has_feature(FEATURE_FXSR)) {
         LOG(THREAD, LOG_ASYNCH, 3, "\ttemp="PFX"\n", temp);
@@ -926,7 +956,12 @@ save_fpstate(dcontext_t *dcontext, sigframe_rt_t *frame)
 
     /* the app's xmm registers may be saved away in priv_mcontext_t, in which
      * case we need to copy those values instead of using what was in
-     * the physical xmm registers
+     * the physical xmm registers.
+     * because of this, we can't just execute "xsave".  we still need to
+     * execute xgetbv though.  xsave is very expensive so not worth doing
+     * when xgetbv is all we need; if in the future they add status words,
+     * etc. we can't get any other way then we'll have to do it, but best
+     * to avoid for now.
      */
     save_xmm(dcontext, frame);
 }
@@ -970,7 +1005,7 @@ os_itimers_thread_shared(void)
 void
 signal_init()
 {
-    IF_X64(ASSERT(ALIGNED(offsetof(sigpending_t, fpstate), 16)));
+    IF_X64(ASSERT(ALIGNED(offsetof(sigpending_t, xstate), AVX_ALIGNMENT)));
     os_itimers_thread_shared();
 }
 
@@ -1189,7 +1224,7 @@ signal_thread_inherit(dcontext_t *dcontext, void *clone_record)
             mutex_lock(info->shared_lock);
             (*info->shared_refcount)++;
 #ifdef DEBUG
-            for (i = 0; i < MAX_SIGNUM; i++) {
+            for (i = 1; i <= MAX_SIGNUM; i++) {
                 if (info->app_sigaction[i] != NULL) {
                     LOG(THREAD, LOG_ASYNCH, 2, "\thandler for signal %d is "PFX"\n",
                         i, info->app_sigaction[i]->handler);
@@ -1201,9 +1236,9 @@ signal_thread_inherit(dcontext_t *dcontext, void *clone_record)
             /* copy handlers */
             LOG(THREAD, LOG_ASYNCH, 2, "inheriting signal handlers from parent\n");
             info->app_sigaction = (kernel_sigaction_t **)
-                handler_alloc(dcontext, MAX_SIGNUM * sizeof(kernel_sigaction_t *));
-            memset(info->app_sigaction, 0, MAX_SIGNUM * sizeof(kernel_sigaction_t *));
-            for (i = 0; i < MAX_SIGNUM; i++) {
+                handler_alloc(dcontext, SIGARRAY_SIZE * sizeof(kernel_sigaction_t *));
+            memset(info->app_sigaction, 0, SIGARRAY_SIZE * sizeof(kernel_sigaction_t *));
+            for (i = 1; i <= MAX_SIGNUM; i++) {
                 ASSERT(record->info.restorer_valid[i] == -1);
                 if (record->info.app_sigaction[i] != NULL) {
                     info->app_sigaction[i] = (kernel_sigaction_t *)
@@ -1215,9 +1250,9 @@ signal_thread_inherit(dcontext_t *dcontext, void *clone_record)
                 }
             }
             info->we_intercept = (bool *)
-                handler_alloc(dcontext, MAX_SIGNUM * sizeof(bool));
+                handler_alloc(dcontext, SIGARRAY_SIZE * sizeof(bool));
             memcpy(info->we_intercept, record->info.we_intercept,
-                   MAX_SIGNUM * sizeof(bool));
+                   SIGARRAY_SIZE * sizeof(bool));
             mutex_lock(&record->info.child_lock);
             record->info.num_unstarted_children--;
             mutex_unlock(&record->info.child_lock);
@@ -1271,11 +1306,11 @@ signal_thread_inherit(dcontext_t *dcontext, void *clone_record)
         }
 
         info->app_sigaction = (kernel_sigaction_t **)
-            handler_alloc(dcontext, MAX_SIGNUM * sizeof(kernel_sigaction_t *));
-        memset(info->app_sigaction, 0, MAX_SIGNUM * sizeof(kernel_sigaction_t *));
-        memset(&info->restorer_valid, -1, MAX_SIGNUM * sizeof(info->restorer_valid[0]));
-        info->we_intercept = (bool *) handler_alloc(dcontext, MAX_SIGNUM * sizeof(bool));
-        memset(info->we_intercept, 0, MAX_SIGNUM * sizeof(bool));
+            handler_alloc(dcontext, SIGARRAY_SIZE * sizeof(kernel_sigaction_t *));
+        memset(info->app_sigaction, 0, SIGARRAY_SIZE * sizeof(kernel_sigaction_t *));
+        memset(&info->restorer_valid, -1, SIGARRAY_SIZE * sizeof(info->restorer_valid[0]));
+        info->we_intercept = (bool *) handler_alloc(dcontext, SIGARRAY_SIZE * sizeof(bool));
+        memset(info->we_intercept, 0, SIGARRAY_SIZE * sizeof(bool));
                 
         info->shared_itimer = false; /* we'll set to true if a child is created */
         init_itimer(dcontext, true/*first*/);
@@ -1286,7 +1321,7 @@ signal_thread_inherit(dcontext_t *dcontext, void *clone_record)
              * we always intercept all signals.  We also check here
              * for handlers the app registered before our init.
              */
-            for (i=1; i<MAX_SIGNUM; i++) {
+            for (i=1; i<=MAX_SIGNUM; i++) {
                 /* cannot intercept KILL or STOP */
                 if (i != SIGKILL && i != SIGSTOP &&
                     /* FIXME PR 297033: we don't support intercepting DEFAULT_STOP /
@@ -1324,7 +1359,7 @@ signal_thread_inherit(dcontext_t *dcontext, void *clone_record)
             intercept_signal(dcontext, info, NUDGESIG_SIGNUM);
         
             /* process any handlers app registered before our init */
-            for (i=1; i<MAX_SIGNUM; i++) {
+            for (i=1; i<=MAX_SIGNUM; i++) {
                 if (info->we_intercept[i]) {
                     /* intercept_signal already stored pre-existing handler */
                     continue;
@@ -1409,7 +1444,7 @@ signal_fork_init(dcontext_t *dcontext)
         init_itimer(dcontext, true/*first*/);
     }
     info->num_unstarted_children = 0;
-    for (i = 0; i < MAX_SIGNUM; i++) {
+    for (i = 1; i <= MAX_SIGNUM; i++) {
         /* "A child created via fork(2) initially has an empty pending signal set" */
         dcontext->signals_pending = false;
         while (info->sigpending[i] != NULL) {
@@ -1456,7 +1491,7 @@ signal_thread_exit(dcontext_t *dcontext)
     }
     if (!info->shared_app_sigaction || *info->shared_refcount == 0) {
         LOG(THREAD, LOG_ASYNCH, 2, "signal handler cleanup:\n");
-        for (i = 0; i < MAX_SIGNUM; i++) {
+        for (i = 1; i <= MAX_SIGNUM; i++) {
             if (info->app_sigaction[i] != NULL) {
                 /* restore to old handler, but not if exiting whole
                  * process: else may get itimer during cleanup, so we
@@ -1480,8 +1515,8 @@ signal_thread_exit(dcontext_t *dcontext)
                 }
             }
         }
-        handler_free(dcontext, info->app_sigaction, MAX_SIGNUM * sizeof(kernel_sigaction_t *));
-        handler_free(dcontext, info->we_intercept, MAX_SIGNUM * sizeof(bool));
+        handler_free(dcontext, info->app_sigaction, SIGARRAY_SIZE * sizeof(kernel_sigaction_t *));
+        handler_free(dcontext, info->we_intercept, SIGARRAY_SIZE * sizeof(bool));
         if (info->shared_lock != NULL) {
             DELETE_LOCK(*info->shared_lock);
             global_heap_free(info->shared_lock, sizeof(mutex_t) HEAPACCT(ACCT_OTHER));
@@ -1516,7 +1551,7 @@ signal_thread_exit(dcontext_t *dcontext)
                              HEAPACCT(ACCT_OTHER));
         }
     }
-    for (i = 0; i < MAX_SIGNUM; i++) {
+    for (i = 1; i <= MAX_SIGNUM; i++) {
         /* pending queue is per-thread and not shared */
         while (info->sigpending[i] != NULL) {
             sigpending_t *temp = info->sigpending[i];
@@ -1601,7 +1636,7 @@ intercept_signal(dcontext_t *dcontext, thread_sig_info_t *info, int sig)
     int rc;
     kernel_sigaction_t act;
     kernel_sigaction_t oldact;
-    ASSERT(sig < MAX_SIGNUM);
+    ASSERT(sig <= MAX_SIGNUM);
 
     set_our_handler_sigact(&act, sig);
     /* arm the signal */
@@ -1714,7 +1749,7 @@ handle_clone(dcontext_t *dcontext, uint flags)
             *info->shared_itimer_underDR = 1;
             info->shared_itimer_lock = (recursive_lock_t *)
                 global_heap_alloc(sizeof(*info->shared_itimer_lock) HEAPACCT(ACCT_OTHER));
-            ASSIGN_INIT_RECURSIVE_LOCK_FREE(*info->shared_itimer_lock, shared_lock);
+            ASSIGN_INIT_RECURSIVE_LOCK_FREE(*info->shared_itimer_lock, shared_itimer_lock);
         } /* else, some ancestor already created */
     }
 }
@@ -1728,7 +1763,7 @@ handle_sigaction(dcontext_t *dcontext, int sig, const kernel_sigaction_t *act,
     thread_sig_info_t *info = (thread_sig_info_t *) dcontext->signal_field;
     kernel_sigaction_t *save;
     kernel_sigaction_t *non_const_act = (kernel_sigaction_t *) act;
-    ASSERT(sig < MAX_SIGNUM);
+    ASSERT(sig <= MAX_SIGNUM);
 
     if (act != NULL) {
         /* app is installing a new action */
@@ -1811,7 +1846,7 @@ handle_post_sigaction(dcontext_t *dcontext, int sig, const kernel_sigaction_t *a
                       kernel_sigaction_t *oact, size_t sigsetsize)
 {
     thread_sig_info_t *info = (thread_sig_info_t *) dcontext->signal_field;
-    ASSERT(sig < MAX_SIGNUM);
+    ASSERT(sig <= MAX_SIGNUM);
     if (oact != NULL) {
         /* FIXME: hold lock across the syscall?!?
          * else could be modified and get wrong old action?
@@ -1882,7 +1917,7 @@ set_blocked(dcontext_t *dcontext, kernel_sigset_t *set, bool absolute)
         /* discard current blocked signals, re-set from new mask */
         kernel_sigemptyset(&info->app_sigblocked);
     } /* else, OR in the new set */
-    for (i=0; i<MAX_SIGNUM; i++) {
+    for (i=1; i<=MAX_SIGNUM; i++) {
         if (info->we_intercept[i] && kernel_sigismember(set, i)) {
             kernel_sigaddset(&info->app_sigblocked, i);
         }
@@ -1893,6 +1928,31 @@ set_blocked(dcontext_t *dcontext, kernel_sigset_t *set, bool absolute)
         dump_sigset(dcontext, &info->app_sigblocked);
     }
 #endif
+}
+
+/* Scans over info->sigpending to see if there are any unblocked, pending
+ * signals, and sets dcontext->signals_pending if there are.  Do this after
+ * modifying the set of signals blocked by the application.
+ */
+static void
+check_signals_pending(dcontext_t *dcontext, thread_sig_info_t *info)
+{
+    int i;
+
+    if (dcontext->signals_pending)
+        return;
+
+    for (i=1; i<=MAX_SIGNUM; i++) {
+        if (info->sigpending[i] != NULL &&
+            !kernel_sigismember(&info->app_sigblocked, i)) {
+            /* We only update the application's set of blocked signals from
+             * syscall handlers, so we know we'll go back to dispatch and see
+             * this flag right away.
+             */
+            dcontext->signals_pending = true;
+            break;
+        }
+    }
 }
 
 void
@@ -1909,7 +1969,7 @@ handle_sigprocmask(dcontext_t *dcontext, int how, kernel_sigset_t *set,
             /* The set of blocked signals is the union of the current
              * set and the set argument.
              */
-            for (i=0; i<MAX_SIGNUM; i++) {
+            for (i=1; i<=MAX_SIGNUM; i++) {
                 if (info->we_intercept[i] && kernel_sigismember(set, i)) {
                     kernel_sigaddset(&info->app_sigblocked, i);
                     kernel_sigdelset(set, i);
@@ -1919,7 +1979,7 @@ handle_sigprocmask(dcontext_t *dcontext, int how, kernel_sigset_t *set,
             /* The signals in set are removed from the current set of
              *  blocked signals.
              */
-            for (i=0; i<MAX_SIGNUM; i++) {
+            for (i=1; i<=MAX_SIGNUM; i++) {
                 if (info->we_intercept[i] && kernel_sigismember(set, i)) {
                     kernel_sigdelset(&info->app_sigblocked, i);
                     kernel_sigdelset(set, i);
@@ -1928,7 +1988,7 @@ handle_sigprocmask(dcontext_t *dcontext, int how, kernel_sigset_t *set,
         } else if (how == SIG_SETMASK) {
             /* The set of blocked signals is set to the argument set. */
             kernel_sigemptyset(&info->app_sigblocked);
-            for (i=0; i<MAX_SIGNUM; i++) {
+            for (i=1; i<=MAX_SIGNUM; i++) {
                 if (info->we_intercept[i] && kernel_sigismember(set, i)) {
                     kernel_sigaddset(&info->app_sigblocked, i);
                     kernel_sigdelset(set, i);
@@ -1950,18 +2010,7 @@ handle_sigprocmask(dcontext_t *dcontext, int how, kernel_sigset_t *set,
          * get w/o dynamo?  This goes away if we deliver signals
          * prior to letting app do a syscall.
          */
-        if (!dcontext->signals_pending) {
-            for (i=0; i<MAX_SIGNUM; i++) {
-                if (info->sigpending[i] != NULL &&
-                    !kernel_sigismember(&info->app_sigblocked, i)) {
-                    /* since we're now in DR syscall handler, we know we'll
-                     * go back to dispatch and see this flag right away
-                     */
-                    dcontext->signals_pending = true;
-                    break;
-                }
-            }
-        }
+        check_signals_pending(dcontext, info);
     }
 }
 
@@ -1973,7 +2022,7 @@ handle_post_sigprocmask(dcontext_t *dcontext, int how, kernel_sigset_t *set,
     thread_sig_info_t *info = (thread_sig_info_t *) dcontext->signal_field;
     int i;
     if (oset != NULL) {
-        for (i=0; i<MAX_SIGNUM; i++) {
+        for (i=1; i<=MAX_SIGNUM; i++) {
             if (info->we_intercept[i] &&
                 /* use the pre-syscall value: do not take into account changes
                  * from this syscall itself! (PR 523394)
@@ -1996,7 +2045,7 @@ handle_sigsuspend(dcontext_t *dcontext, kernel_sigset_t *set,
     info->in_sigsuspend = true;
     info->app_sigblocked_save = info->app_sigblocked;
     kernel_sigemptyset(&info->app_sigblocked);
-    for (i=0; i<MAX_SIGNUM; i++) {
+    for (i=1; i<=MAX_SIGNUM; i++) {
         if (info->we_intercept[i] && kernel_sigismember(set, i)) {
             kernel_sigaddset(&info->app_sigblocked, i);
             kernel_sigdelset(set, i);
@@ -2077,6 +2126,21 @@ dump_fpstate(dcontext_t *dcontext, struct _fpstate *fp)
     }
 #endif
     /* ignore padding */
+    if (YMM_ENABLED()) {
+        struct _xstate *xstate = (struct _xstate *) fp;
+        if (fp->sw_reserved.magic1 == FP_XSTATE_MAGIC1) {
+            ASSERT(fp->sw_reserved.xstate_size >= sizeof(*xstate));
+            ASSERT(TEST(XCR0_AVX, fp->sw_reserved.xstate_bv));
+            LOG(THREAD, LOG_ASYNCH, 1, "\txstate_bv = 0x"HEX64_FORMAT_STRING"\n",
+                xstate->xstate_hdr.xstate_bv);
+            for (i=0; i<NUM_XMM_SLOTS; i++) {
+                LOG(THREAD, LOG_ASYNCH, 1, "\tymmh%d = ", i);
+                for (j=0; j<4; j++)
+                    LOG(THREAD, LOG_ASYNCH, 1, "%04x ", xstate->ymmh.ymmh_space[i*4+j]);
+                LOG(THREAD, LOG_ASYNCH, 1, "\n");
+            }
+        }
+    }
 }
 
 static void
@@ -2130,7 +2194,7 @@ static void
 dump_sigset(dcontext_t *dcontext, kernel_sigset_t *set)
 {
     int sig;
-    for (sig=1; sig<MAX_SIGNUM; sig++) {
+    for (sig=1; sig<=MAX_SIGNUM; sig++) {
         if (kernel_sigismember(set, sig))
             LOG(THREAD, LOG_ASYNCH, 1, "\t%d = blocked\n", sig);
     }
@@ -2183,7 +2247,6 @@ is_on_alt_stack(dcontext_t *dcontext, byte *sp)
 #endif
 }
 
-/* FIXME: should copy xmm here too for client access; xref save_xmm() */
 void
 sigcontext_to_mcontext(priv_mcontext_t *mc, struct sigcontext *sc)
 {
@@ -2208,9 +2271,32 @@ sigcontext_to_mcontext(priv_mcontext_t *mc, struct sigcontext *sc)
     mc->r14 = sc->r14;
     mc->r15 = sc->r15;
 #endif
+    if (sc->fpstate != NULL) {
+        int i;
+        for (i=0; i<NUM_XMM_SLOTS; i++) {
+            memcpy(&mc->ymm[i], &sc->fpstate->IF_X64_ELSE(xmm_space[i*4],_xmm[i]),
+                   XMM_REG_SIZE);
+        }
+        if (YMM_ENABLED()) {
+            struct _xstate *xstate = (struct _xstate *) sc->fpstate;
+            if (sc->fpstate->sw_reserved.magic1 == FP_XSTATE_MAGIC1) {
+                ASSERT(sc->fpstate->sw_reserved.xstate_size >= sizeof(*xstate));
+                ASSERT(TEST(XCR0_AVX, sc->fpstate->sw_reserved.xstate_bv));
+                for (i=0; i<NUM_XMM_SLOTS; i++) {
+                    memcpy(&mc->ymm[i].u32[4], &xstate->ymmh.ymmh_space[i*4],
+                           YMMH_REG_SIZE);
+                }
+            }
+        }
+    }
 }
 
-/* FIXME: should copy xmm here too for client access; xref save_xmm() */
+/* Note that unlike mcontext_to_context(), this routine does not fill in
+ * any state that is not present in the mcontext: in particular, it assumes
+ * the sigcontext already contains the native fpstate.  If the caller
+ * is generating a synthetic sigcontext, the caller should call
+ * save_fpstate() before calling this routine.
+ */
 void
 mcontext_to_sigcontext(struct sigcontext *sc, priv_mcontext_t *mc)
 {
@@ -2234,6 +2320,24 @@ mcontext_to_sigcontext(struct sigcontext *sc, priv_mcontext_t *mc)
     sc->r14 = mc->r14;
     sc->r15 = mc->r15;
 #endif
+    if (sc->fpstate != NULL) {
+        int i;
+        for (i=0; i<NUM_XMM_SLOTS; i++) {
+            memcpy(&sc->fpstate->IF_X64_ELSE(xmm_space[i*4],_xmm[i]), &mc->ymm[i],
+                   XMM_REG_SIZE);
+        }
+        if (YMM_ENABLED()) {
+            struct _xstate *xstate = (struct _xstate *) sc->fpstate;
+            if (sc->fpstate->sw_reserved.magic1 == FP_XSTATE_MAGIC1) {
+                ASSERT(sc->fpstate->sw_reserved.xstate_size >= sizeof(*xstate));
+                ASSERT(TEST(XCR0_AVX, sc->fpstate->sw_reserved.xstate_bv));
+                for (i=0; i<NUM_XMM_SLOTS; i++) {
+                    memcpy(&xstate->ymmh.ymmh_space[i*4], &mc->ymm[i].u32[4],
+                           YMMH_REG_SIZE);
+                }
+            }
+        }
+    }
 }
 
 /* Returns whether successful.  If avoid_failure, tries to translate
@@ -2245,7 +2349,6 @@ translate_sigcontext(dcontext_t *dcontext,  struct sigcontext *sc, bool avoid_fa
     bool success = false;
     priv_mcontext_t mcontext;
  
-    /* FIXME: what about floating-point state?  mmx regs? */
     sigcontext_to_mcontext(&mcontext, sc);
     /* FIXME: if cannot find exact match, we're in trouble!
      * probably ok to delay, since that indicates not a synchronous
@@ -2293,16 +2396,19 @@ thread_set_self_context(void *cxt)
     /* Unlike Windows we can't say "only set this subset of the
      * full machine state", so we need to get the rest of the state,
      */
-    sigframe_rt_t frame; /* for x64, 440 bytes */
+    sigframe_rt_t frame;
     struct sigcontext *sc = (struct sigcontext *) cxt;
     app_pc xsp_for_sigreturn;
 #ifdef VMX86_SERVER
     ASSERT_NOT_IMPLEMENTED(false); /* PR 405694: can't use regular sigreturn! */
 #endif
-#ifdef X64
-    struct _fpstate __attribute__ ((aligned (16))) fpstate; /* 512 bytes */
-    frame.uc.uc_mcontext.fpstate = &fpstate;
-#endif
+    /* We need room for full xstate if nec (this is x86=944, x64=832 bytes).
+     * A real signal frame would be var-sized but we don't want to dynamically
+     * allocate, and only the kernel looks at this, so no risk of some
+     * app seeing a weird frame size.
+     */
+    struct _xstate __attribute__ ((aligned (AVX_ALIGNMENT))) xstate;
+    frame.uc.uc_mcontext.fpstate = &xstate.fpstate;
     memset(&frame, 0, sizeof(frame));
     frame.uc.uc_mcontext = *sc;
     save_fpstate(dcontext, &frame);
@@ -2418,8 +2524,10 @@ get_sigcontext_from_pending(thread_sig_info_t *info, int sig)
 }
 
 /* Returns the address on the appropriate signal stack where we should copy
- * the frame.  Includes spaces for fpstate for x64.
- * If frame is NULL, assumes signal happened while in DR.
+ * the frame.
+ * If frame is NULL, assumes signal happened while in DR and has been delayed,
+ * and thus we need to provide fpstate regardless of whether the original
+ * had it.  If frame is non-NULL, matches frame's amount of fpstate.
  */
 static byte *
 get_sigstack_frame_ptr(dcontext_t *dcontext, int sig, sigframe_rt_t *frame)
@@ -2465,9 +2573,29 @@ get_sigstack_frame_ptr(dcontext_t *dcontext, int sig, sigframe_rt_t *frame)
     /* now get frame pointer: need to go down to first field of frame */
     sp = (byte *) (((ptr_uint_t)(sp - get_app_frame_size(info, sig)))
                    & IF_X64_ELSE(-16ul, -8ul));
-#ifdef X64
-    sp -= X64_FRAME_EXTRA;
-#endif
+    if (frame == NULL) {
+        /* XXX i#641: we always include space for full xstate,
+         * even if we don't use it all, which does not match what the
+         * kernel does, but we're not tracking app actions to know whether
+         * we can skip lazy fpstate on the delay
+         */
+        sp -= XSTATE_FRAME_EXTRA;
+    } else {
+        if (sc->fpstate != NULL) {
+            /* The kernel doesn't seem to lazily include avx, so we don't either,
+             * which simplifies all our frame copying: if YMM_ENABLED() and the
+             * fpstate pointer is non-NULL, then we assume there's space for
+             * full xstate
+             */
+            sp -= XSTATE_FRAME_EXTRA;
+            DODEBUG({
+                if (YMM_ENABLED()) {
+                    ASSERT_CURIOSITY(sc->fpstate->sw_reserved.magic1 == FP_XSTATE_MAGIC1);
+                    ASSERT(sc->fpstate->sw_reserved.extended_size <= XSTATE_FRAME_EXTRA);
+                }
+            });
+        }
+    }
     /* PR 369907: don't forget the redzone */
     sp -= REDZONE_SIZE;
     return sp;
@@ -2478,10 +2606,17 @@ static void
 convert_frame_to_nonrt(dcontext_t *dcontext, int sig, sigframe_rt_t *f_old,
                        sigframe_plain_t *f_new)
 {
+    struct sigcontext *sc_old = get_sigcontext_from_rt_frame(f_old);
     f_new->pretcode = f_old->pretcode;
     f_new->sig = f_old->sig;
     memcpy(&f_new->sc, &f_old->uc.uc_mcontext, sizeof(struct sigcontext));
-    memcpy(&f_new->fpstate, &f_old->fpstate, sizeof(struct _fpstate));
+    if (sc_old->fpstate != NULL) {
+        /* up to caller to include enough space for fpstate at end */
+        byte *new_fpstate = (byte *)
+            ALIGN_FORWARD(((byte *)f_new) + sizeof(*f_new), XSTATE_ALIGNMENT);
+        memcpy(new_fpstate, sc_old->fpstate, XSTATE_DATA_SIZE);
+        f_new->sc.fpstate = (struct _fpstate *) new_fpstate;
+    }
     f_new->sc.oldmask = f_old->uc.uc_sigmask.sig[0];
     memcpy(&f_new->extramask, &f_old->uc.uc_sigmask.sig[1],
            (_NSIG_WORDS-1) * sizeof(uint));
@@ -2496,9 +2631,10 @@ static void
 convert_frame_to_nonrt_partial(dcontext_t *dcontext, int sig, sigframe_rt_t *f_old,
                                sigframe_plain_t *f_new, size_t size)
 {
-    sigframe_plain_t f_plain;
-    convert_frame_to_nonrt(dcontext, sig, f_old, &f_plain);
-    memcpy(f_new, &f_plain, size);
+    char frame_plus_xstate[sizeof(sigframe_plain_t) + AVX_FRAME_EXTRA];
+    sigframe_plain_t *f_plain = (sigframe_plain_t *) frame_plus_xstate;
+    convert_frame_to_nonrt(dcontext, sig, f_old, f_plain);
+    memcpy(f_new, f_plain, size);
 }
 #endif
 
@@ -2553,15 +2689,12 @@ fixup_rtframe_pointers(dcontext_t *dcontext, int sig,
 #ifndef X64
     f_new->pinfo = &(f_new->info);
     f_new->puc = &(f_new->uc);
-    /* if fpstate ptr is not NULL, update it to new frame's fpstate struct */
-    if (f_new->uc.uc_mcontext.fpstate != NULL)
-        f_new->uc.uc_mcontext.fpstate = &f_new->fpstate;
-#else
+#endif
     if (f_old->uc.uc_mcontext.fpstate != NULL) {
         uint frame_size = get_app_frame_size(info, sig);
         byte *frame_end = ((byte *)f_new) + frame_size;
-        byte *tgt = (byte *) ALIGN_FORWARD(frame_end, 16);
-        ASSERT(tgt - frame_end <= X64_FRAME_EXTRA);
+        byte *tgt = (byte *) ALIGN_FORWARD(frame_end, XSTATE_ALIGNMENT);
+        ASSERT(tgt - frame_end <= XSTATE_FRAME_EXTRA);
         memcpy(tgt, f_old->uc.uc_mcontext.fpstate, sizeof(struct _fpstate));
         f_new->uc.uc_mcontext.fpstate = (struct _fpstate *) tgt;
         LOG(THREAD, LOG_ASYNCH, level+1, "\tfpstate old="PFX" new="PFX"\n",
@@ -2570,11 +2703,11 @@ fixup_rtframe_pointers(dcontext_t *dcontext, int sig,
         /* if fpstate is not set up, we're delivering signal immediately,
          * and we shouldn't need an fpstate since DR code won't modify it;
          * only if we delayed will we need it, and when delaying we make
-         * room and set up the pointer in copy_frame_to_pending
+         * room and set up the pointer in copy_frame_to_pending.
+         * xref i#641.
          */
         LOG(THREAD, LOG_ASYNCH, level+1, "\tno fpstate needed\n");
     }
-#endif
     LOG(THREAD, LOG_ASYNCH, level, "\tretaddr = "PFX"\n", f_new->pretcode);
 #ifdef RETURN_AFTER_CALL
     info->signal_restorer_retaddr = (app_pc) f_new->pretcode;
@@ -2602,10 +2735,8 @@ copy_frame_to_stack(dcontext_t *dcontext, int sig, sigframe_rt_t *frame, byte *s
 #endif
     byte *check_pc;
     uint size = frame_size;
-#ifdef X64
-    size += X64_FRAME_EXTRA;
-    ASSERT(rtframe);
-#endif
+    struct sigcontext *sc = get_sigcontext_from_rt_frame(frame);
+    size += (sc->fpstate == NULL ? 0 : XSTATE_FRAME_EXTRA);
 
     LOG(THREAD, LOG_ASYNCH, 3, "copy_frame_to_stack: rt=%d, src="PFX", sp="PFX"\n",
         rtframe, frame, sp);
@@ -2701,9 +2832,11 @@ copy_frame_to_stack(dcontext_t *dcontext, int sig, sigframe_rt_t *frame, byte *s
             LOG(THREAD, LOG_ASYNCH, 3, "\tleaving pretcode with old value\n");
 # endif
         }
-        /* if fpstate ptr is not NULL, update it to new frame's fpstate struct */
-        if (f_new->sc.fpstate != NULL)
-            f_new->sc.fpstate = &f_new->fpstate;
+        /* convert_frame_to_nonrt*() should have updated fpstate pointer.
+         * The inlined fpstate is no longer used on new kernels, and we do that
+         * as well on older kernels.
+         */
+        ASSERT(f_new->sc.fpstate != &f_new->fpstate);
         LOG(THREAD, LOG_ASYNCH, 3, "\tretaddr = "PFX"\n", f_new->pretcode);
 # ifdef RETURN_AFTER_CALL
         info->signal_restorer_retaddr = (app_pc) f_new->pretcode;
@@ -2732,19 +2865,23 @@ copy_frame_to_pending(dcontext_t *dcontext, int sig, sigframe_rt_t *frame
     }
 #endif
     memcpy(dst, frame, sizeof(*dst));
-#ifdef X64
+
+    /* For lazy fpstate, it's possible there was no fpstate when the kernel
+     * sent us the frame, but in between then and now the app executed some
+     * fp or xmm/ymm instrs.  Today we always add fpstate just in case.
+     * XXX i#641 optimization: track whether any fp/xmm/ymm
+     * instrs happened and avoid this.
+     */
     /* we'll fill in updated fpstate at delivery time, but we go ahead and
      * copy now in case our own retrieval somehow misses some fields
      */
     if (frame->uc.uc_mcontext.fpstate != NULL) {
-        memcpy(&info->sigpending[sig]->fpstate, frame->uc.uc_mcontext.fpstate,
-               sizeof(info->sigpending[sig]->fpstate));
+        memcpy(&info->sigpending[sig]->xstate, frame->uc.uc_mcontext.fpstate,
+               /* XXX: assuming full xstate if avx is enabled */
+               XSTATE_DATA_SIZE);
     }
     /* we must set the pointer now so that later save_fpstate, etc. work */
-    dst->uc.uc_mcontext.fpstate = &info->sigpending[sig]->fpstate;        
-#else
-    dst->uc.uc_mcontext.fpstate = &dst->fpstate;
-#endif
+    dst->uc.uc_mcontext.fpstate = (struct _fpstate *) &info->sigpending[sig]->xstate;        
 #ifdef CLIENT_INTERFACE
     info->sigpending[sig]->access_address = access_address;
 #endif
@@ -2771,8 +2908,8 @@ send_signal_to_client(dcontext_t *dcontext, int sig, sigframe_rt_t *frame,
      */
     si.mcontext = heap_alloc(dcontext, sizeof(*si.mcontext) HEAPACCT(ACCT_OTHER));
     si.raw_mcontext = heap_alloc(dcontext, sizeof(*si.raw_mcontext) HEAPACCT(ACCT_OTHER));
-    si.mcontext->size = sizeof(*si.mcontext);
-    si.raw_mcontext->size = sizeof(*si.raw_mcontext);
+    dr_mcontext_init(si.mcontext);
+    dr_mcontext_init(si.raw_mcontext);
     /* i#207: fragment tag and fcache start pc on fault. */
     si.fault_fragment_info.tag = NULL;
     si.fault_fragment_info.cache_start_pc = NULL;
@@ -2814,9 +2951,13 @@ send_signal_to_client(dcontext_t *dcontext, int sig, sigframe_rt_t *frame,
     if (action == DR_SIGNAL_DELIVER ||
         action == DR_SIGNAL_REDIRECT) {
         /* propagate client changes */
+        CLIENT_ASSERT(si.mcontext->flags == DR_MC_ALL,
+                      "signal mcontext flags cannot be changed");
         mcontext_to_sigcontext(sc, dr_mcontext_as_priv_mcontext(si.mcontext));
     } else if (action == DR_SIGNAL_SUPPRESS && raw_sc != NULL) {
         /* propagate client changes */
+        CLIENT_ASSERT(si.raw_mcontext->flags == DR_MC_ALL,
+                      "signal mcontext flags cannot be changed");
         mcontext_to_sigcontext(raw_sc, dr_mcontext_as_priv_mcontext(si.raw_mcontext));
     }
     heap_free(dcontext, si.mcontext, sizeof(*si.mcontext) HEAPACCT(ACCT_OTHER));
@@ -3270,7 +3411,7 @@ record_pending_signal(dcontext_t *dcontext, int sig, kernel_ucontext_t *ucxt,
 
             /* special heap alloc always uses sizeof(sigpending_t) blocks */
             pend = special_heap_alloc(info->sigheap);
-            ASSERT(sig > 0 && sig < MAX_SIGNUM);
+            ASSERT(sig > 0 && sig <= MAX_SIGNUM);
 
             /* to avoid accumulating signals if we're slow in presence of
              * a high-rate itimer we only keep 2 alarm signals (PR 596768)
@@ -3506,11 +3647,9 @@ sig_should_swap_stack(struct clone_and_swap_args *args, kernel_ucontext_t *ucxt)
          * copy to dstack from the tos at the signal interruption point.
          */
         args->stack = dcontext->dstack;
-# ifdef X64
         /* leave room for fpstate */
-        args->stack -= X64_FRAME_EXTRA;
-        args->stack = (byte *) ALIGN_BACKWARD(args->stack, 16);
-# endif
+        args->stack -= XSTATE_FRAME_EXTRA;
+        args->stack = (byte *) ALIGN_BACKWARD(args->stack, XSTATE_ALIGNMENT);
         args->tos = (byte *) sc->SC_XSP;
         return true;
     } else
@@ -4062,6 +4201,7 @@ execute_handler_from_dispatch(dcontext_t *dcontext, int sig)
     /* FIXME: we should clear fpstate for app handler itself as that's
      * how our own handler is executed.
      */
+    ASSERT(sc->fpstate != NULL); /* not doing i#641 yet */
     save_fpstate(dcontext, frame);
 #ifdef DEBUG
     if (stats->loglevel >= 3 && (stats->logmask & LOG_ASYNCH) != 0) {
@@ -4355,7 +4495,7 @@ receive_pending_signal(dcontext_t *dcontext)
     info->accessing_sigpending = true;
     /* barrier to prevent compiler from moving the above write below the loop */
     __asm__ __volatile__("" : : : "memory");
-    for (sig = 0; sig < MAX_SIGNUM; sig++) {
+    for (sig = 1; sig <= MAX_SIGNUM; sig++) {
         if (info->sigpending[sig] != NULL) {
             bool executing = true;
             if (kernel_sigismember(&info->app_sigblocked, sig)) {
@@ -4378,7 +4518,7 @@ receive_pending_signal(dcontext_t *dcontext)
     info->accessing_sigpending = false;
 
     /* we only clear this on a call to us where we find NO pending signals */
-    if (sig == MAX_SIGNUM) {
+    if (sig > MAX_SIGNUM) {
         LOG(THREAD, LOG_ASYNCH, 3, "\tclearing signals_pending flag\n");
         dcontext->signals_pending = false;
     }
@@ -4422,7 +4562,7 @@ handle_sigreturn(dcontext_t *dcontext, bool rt)
         if (frame->sig != sig)
             LOG(THREAD, LOG_ASYNCH, 1, "WARNING: app sig handler clobbered sig param\n");
 #endif
-        ASSERT(sig > 0 && sig < MAX_SIGNUM && IS_RT_FOR_APP(info, sig));
+        ASSERT(sig > 0 && sig <= MAX_SIGNUM && IS_RT_FOR_APP(info, sig));
         /* FIXME: what if handler called sigaction and requested rt
          * when itself was non-rt?
          */
@@ -4447,7 +4587,7 @@ handle_sigreturn(dcontext_t *dcontext, bool rt)
             sig, frame->sig);
         if (frame->sig != sig)
             LOG(THREAD, LOG_ASYNCH, 1, "WARNING: app sig handler clobbered sig param\n");
-        ASSERT(sig > 0 && sig < MAX_SIGNUM && !IS_RT_FOR_APP(info, sig));
+        ASSERT(sig > 0 && sig <= MAX_SIGNUM && !IS_RT_FOR_APP(info, sig));
         sc = get_sigcontext_from_app_frame(info, sig, (void *) frame);
         /* discard blocked signals, re-set from prev mask stored in frame */
         prevset.sig[0] = frame->sc.oldmask;
@@ -4455,6 +4595,10 @@ handle_sigreturn(dcontext_t *dcontext, bool rt)
             memcpy(&prevset.sig[1], &frame->extramask, sizeof(frame->extramask));
         set_blocked(dcontext, &prevset, true/*absolute*/);
     }
+
+    /* Make sure we deliver pending signals that are now unblocked.
+     */
+    check_signals_pending(dcontext, info);
 
     /* We abandoned the previous context, so we need to start
      * interpreting anew.  Regardless of whether we handled the signal
@@ -4589,7 +4733,8 @@ os_forge_exception(app_pc target_pc, exception_type_t type)
      */
     dcontext_t *dcontext = get_thread_private_dcontext();
     thread_sig_info_t *info = (thread_sig_info_t *) dcontext->signal_field;
-    sigframe_rt_t frame;
+    char frame_plus_xstate[sizeof(sigframe_rt_t) + AVX_FRAME_EXTRA];
+    sigframe_rt_t *frame = (sigframe_rt_t *) frame_plus_xstate;
     int sig;
     where_am_i_t cur_whereami = dcontext->whereami;
     switch (type) {
@@ -4604,16 +4749,17 @@ os_forge_exception(app_pc target_pc, exception_type_t type)
     /* since we always delay delivery, we always want an rt frame.  we'll convert
      * to a plain frame on delivery.
      */
-    memset(&frame, 0, sizeof(frame));
-    frame.info.si_signo = sig;
+    memset(frame, 0, sizeof(frame));
+    frame->info.si_signo = sig;
 #ifndef X64
-    frame.sig = sig;
-    frame.pinfo = &frame.info;
-    frame.puc = (void *) &frame.uc;
-    frame.uc.uc_mcontext.fpstate = &frame.fpstate;
+    frame->sig = sig;
+    frame->pinfo = &frame->info;
+    frame->puc = (void *) &frame->uc;
 #endif
-    mcontext_to_sigcontext(&frame.uc.uc_mcontext, get_mcontext(dcontext));
-    frame.uc.uc_mcontext.SC_XIP = (reg_t) target_pc;
+    frame->uc.uc_mcontext.fpstate = (struct _fpstate *)
+        ALIGN_FORWARD(frame_plus_xstate + sizeof(*frame), XSTATE_ALIGNMENT);
+    mcontext_to_sigcontext(&frame->uc.uc_mcontext, get_mcontext(dcontext));
+    frame->uc.uc_mcontext.SC_XIP = (reg_t) target_pc;
     /* we'll fill in fpstate at delivery time
      * FIXME: it seems to work w/o filling in the other state:
      * I'm leaving segments, cr2, etc. all zero.
@@ -4623,15 +4769,15 @@ os_forge_exception(app_pc target_pc, exception_type_t type)
      * Windows.  Or we can switch to approach #2.
      */
     if (sig_has_restorer(info, sig))
-        frame.pretcode = (char *) info->app_sigaction[sig]->restorer;
+        frame->pretcode = (char *) info->app_sigaction[sig]->restorer;
     else
-        frame.pretcode = (char *) dynamorio_sigreturn;
+        frame->pretcode = (char *) dynamorio_sigreturn;
 
     /* We assume that we do not need to translate the context when forged.
      * If we did, we'd move this below enter_nolinking() (and update
      * record_pending_signal() to do the translation).
      */
-    record_pending_signal(dcontext, sig, &frame.uc, &frame, true/*forged*/
+    record_pending_signal(dcontext, sig, &frame->uc, frame, true/*forged*/
                           _IF_CLIENT(NULL));
 
     /* For most callers this is not necessary and we only do it to match
@@ -5072,8 +5218,10 @@ handle_alarm(dcontext_t *dcontext, int sig, kernel_ucontext_t *ucxt)
     if (invoke_cb) {
         /* invoke after setting new itimer value */
         /* we save stack space by allocating superset dr_mcontext_t */
-        dr_mcontext_t dmc = {sizeof(dmc),};
-        priv_mcontext_t *mc = dr_mcontext_as_priv_mcontext(&dmc);
+        dr_mcontext_t dmc;
+        priv_mcontext_t *mc;
+        dr_mcontext_init(&dmc);
+        mc = dr_mcontext_as_priv_mcontext(&dmc);
         sigcontext_to_mcontext(mc, sc);
         if ((*info->itimer)[which].cb != NULL)
             (*(*info->itimer)[which].cb)(dcontext, mc);

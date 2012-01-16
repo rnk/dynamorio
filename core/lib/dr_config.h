@@ -34,11 +34,8 @@
 #ifndef _DR_CONFIG_H_
 #define _DR_CONFIG_H_ 1
 
-#ifdef WINDOWS
-
 /* DR_API EXPORT TOFILE dr_config.h */
 /* DR_API EXPORT BEGIN */
-#ifdef WINDOWS
 /****************************************************************************
  * Deployment API
  */
@@ -53,7 +50,9 @@
  */
 
 /** Maximum length of a registered process's options string */
-#define DR_MAX_OPTIONS_LENGTH 512
+#define DR_MAX_OPTIONS_LENGTH 2048
+
+#ifdef WINDOWS
 
 /** Specifies DynamoRIO's operation mode. */
 typedef enum {
@@ -119,6 +118,12 @@ typedef enum {
 
     /** Nudge operation timed out waiting for target process to finish handling a nudge.*/
     DR_NUDGE_TIMEOUT,
+
+    /** Field length exceeded, probably due to a too-long option string */
+    DR_CONFIG_STRING_TOO_LONG,
+
+    /** Failed to write to the config file. */
+    DR_CONFIG_FILE_WRITE_FAILED,
 
 } dr_config_status_t;
 
@@ -869,7 +874,5 @@ dr_nudge_all(client_id_t client_id,
 #endif /* WINDOWS */
 
 /* DR_API EXPORT END */
-
-#endif /* WINDOWS */
 
 #endif /* _DR_CONFIG_H_ */

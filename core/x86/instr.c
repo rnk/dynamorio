@@ -1,5 +1,5 @@
 /* **********************************************************
- * Copyright (c) 2011 Google, Inc.  All rights reserved.
+ * Copyright (c) 2011-2012 Google, Inc.  All rights reserved.
  * Copyright (c) 2000-2010 VMware, Inc.  All rights reserved.
  * **********************************************************/
 
@@ -56,7 +56,7 @@
 # include "vmkuw.h" /* VMKUW_SYSCALL_GATEWAY */
 #endif
 
-#ifdef DEBUG
+#if defined(DEBUG) && !defined(STANDALONE_DECODER)
 /* case 10450: give messages to clients */
 # undef ASSERT /* N.B.: if have issues w/ DYNAMO_OPTION, re-instate */
 # undef ASSERT_TRUNCATE
@@ -796,7 +796,7 @@ dr_reg_parm(uint n)
 }
 
 /* Maps sub-registers to their containing register. */
-const reg_id_t reg_fixer[]={
+const reg_id_t dr_reg_fixer[]={
     REG_NULL,
     REG_XAX,  REG_XCX,  REG_XDX,  REG_XBX,  REG_XSP,  REG_XBP,  REG_XSI,  REG_XDI,
     REG_R8,   REG_R9,   REG_R10,  REG_R11,  REG_R12,  REG_R13,  REG_R14,  REG_R15,
@@ -826,7 +826,7 @@ void
 reg_check_reg_fixer(void)
 {
     /* ignore REG_INVALID, so should equal REG_LAST_ENUM */
-    CLIENT_ASSERT(sizeof(reg_fixer)/sizeof(reg_fixer[0]) == REG_LAST_ENUM + 1,
+    CLIENT_ASSERT(sizeof(dr_reg_fixer)/sizeof(dr_reg_fixer[0]) == REG_LAST_ENUM + 1,
                   "internal register enum error");
 }
 #endif
@@ -854,17 +854,17 @@ opnd_uses_reg(opnd_t opnd, reg_id_t reg)
         return false;
 
     case REG_kind: 
-        return (reg_fixer[reg] == reg_fixer[opnd_get_reg(opnd)]);
+        return (dr_reg_fixer[reg] == dr_reg_fixer[opnd_get_reg(opnd)]);
 
     case BASE_DISP_kind: 
-        return (reg_fixer[reg] == reg_fixer[opnd_get_base(opnd)] || 
-                reg_fixer[reg] == reg_fixer[opnd_get_index(opnd)] ||
-                reg_fixer[reg] == reg_fixer[opnd_get_segment(opnd)]);
+        return (dr_reg_fixer[reg] == dr_reg_fixer[opnd_get_base(opnd)] || 
+                dr_reg_fixer[reg] == dr_reg_fixer[opnd_get_index(opnd)] ||
+                dr_reg_fixer[reg] == dr_reg_fixer[opnd_get_segment(opnd)]);
 
 #ifdef X64
     case REL_ADDR_kind:
     case ABS_ADDR_kind:
-        return (reg_fixer[reg] == reg_fixer[opnd_get_segment(opnd)]);
+        return (dr_reg_fixer[reg] == dr_reg_fixer[opnd_get_segment(opnd)]);
 #endif
 
     default: 
@@ -1307,7 +1307,7 @@ reg_get_value_priv(reg_id_t reg, priv_mcontext_t *mc)
     if (reg >= REG_START_64 && reg <= REG_STOP_64)
         return reg_get_value_helper(reg, mc);
     if (reg >= REG_START_32 && reg <= REG_STOP_32) {
-        reg_t val = reg_get_value_helper(reg_fixer[reg], mc);
+        reg_t val = reg_get_value_helper(dr_reg_fixer[reg], mc);
         return (val & 0x00000000ffffffff);
     }
 #else
@@ -1316,14 +1316,14 @@ reg_get_value_priv(reg_id_t reg, priv_mcontext_t *mc)
     }
 #endif
     if (reg >= REG_START_8 && reg <= REG_STOP_8) {
-        reg_t val = reg_get_value_helper(reg_fixer[reg], mc);
+        reg_t val = reg_get_value_helper(dr_reg_fixer[reg], mc);
         if (reg >= REG_AH && reg <= REG_BH)
             return ((val & 0x0000ff00) >> 8);
         else /* all others are the lower 8 bits */
             return (val & 0x000000ff);
     }
     if (reg >= REG_START_16 && reg <= REG_STOP_16) {
-        reg_t val = reg_get_value_helper(reg_fixer[reg], mc);
+        reg_t val = reg_get_value_helper(dr_reg_fixer[reg], mc);
         return (val & 0x0000ffff);
     }
     /* mmx, xmm, and segment cannot be part of address 
@@ -1382,9 +1382,13 @@ opnd_compute_address_priv(opnd_t opnd, priv_mcontext_t *mc)
                   "opnd_compute_address: must pass memory reference");
     if (opnd_is_far_base_disp(opnd)) {
 #ifdef X86
+# ifdef STANDALONE_DECODER
+        seg_base = 0; /* not supported */
+# else
         seg_base = (ptr_uint_t) get_app_segment_base(opnd_get_segment(opnd));
         if (seg_base == POINTER_MAX) /* failure */
             seg_base = 0;
+# endif
 #endif
     }
 #ifdef X64
@@ -1433,7 +1437,7 @@ get_register_name(reg_id_t reg)
 reg_id_t
 reg_to_pointer_sized(reg_id_t reg)
 {
-    return reg_fixer[reg];
+    return dr_reg_fixer[reg];
 }
 
 reg_id_t
@@ -1564,13 +1568,13 @@ reg_overlap(reg_id_t r1, reg_id_t r2)
     if (r1 == REG_NULL || r2 == REG_NULL)
         return false;
     /* The XH registers do NOT overlap with the XL registers; else, the
-     * reg_fixer is the answer.
+     * dr_reg_fixer is the answer.
      */
     if ((r1 >= REG_START_8HL && r1 <= REG_STOP_8HL) &&
         (r2 >= REG_START_8HL && r2 <= REG_STOP_8HL) &&
         r1 != r2)
         return false;
-    return (reg_fixer[r1] == reg_fixer[r2]);
+    return (dr_reg_fixer[r1] == dr_reg_fixer[r2]);
 }
 
 /* returns the register's representation as 3 bits in a modrm byte,
@@ -1943,7 +1947,7 @@ private_instr_encode(dcontext_t *dcontext, instr_t *instr, bool always_cache)
 #ifdef X64
         instr_set_rip_rel_valid(instr, rip_rel_valid);
 #endif
-        copy_and_re_relativize_raw_instr(dcontext, instr, tmp);
+        copy_and_re_relativize_raw_instr(dcontext, instr, tmp, tmp);
         instr->bytes = tmp;
         instr_set_operands_valid(instr, valid);
     }
@@ -2636,7 +2640,7 @@ instr_allocate_raw_bits(dcontext_t *dcontext, instr_t *instr, uint num_bytes)
 instr_t * 
 instr_set_translation(instr_t *instr, app_pc addr)
 {
-#ifdef WINDOWS
+#if defined(WINDOWS) && !defined(STANDALONE_DECODER)
     /* The first jump (to the trampoline) in a landing pad is never interpreted
      * (see must_not_be_elided(), so we come here only for the second jump
      * (back to the instruction after the hook, which is always 32-bit.  For
@@ -3047,7 +3051,7 @@ instr_decode_cti(dcontext_t *dcontext, instr_t *instr)
         byte *next_pc;
         /* decode_cti() will use the dcontext mode, but we want the instr mode */
         IF_X64(bool old_mode = set_x86_mode(dcontext, instr_get_x86_mode(instr));)
-        DEBUG_DECLARE(int old_len = instr->length;)
+        DEBUG_EXT_DECLARE(int old_len = instr->length;)
         CLIENT_ASSERT(instr_raw_bits_valid(instr),
                       "instr_decode_cti: raw bits are invalid");
         instr_reuse(dcontext, instr);
@@ -3076,7 +3080,7 @@ instr_decode_opcode(dcontext_t *dcontext, instr_t *instr)
         /* decode_opcode() will use the dcontext mode, but we want the instr mode */
         bool old_mode = set_x86_mode(dcontext, instr_get_x86_mode(instr));
 #endif
-        DEBUG_DECLARE(int old_len = instr->length;)
+        DEBUG_EXT_DECLARE(int old_len = instr->length;)
         CLIENT_ASSERT(instr_raw_bits_valid(instr),
                       "instr_decode_opcode: raw bits are invalid");
         instr_reuse(dcontext, instr);
@@ -3108,7 +3112,7 @@ instr_decode(dcontext_t *dcontext, instr_t *instr)
         /* decode() will use the current dcontext mode, but we want the instr mode */
         bool old_mode = set_x86_mode(dcontext, instr_get_x86_mode(instr));
 #endif
-        DEBUG_DECLARE(int old_len = instr->length;)
+        DEBUG_EXT_DECLARE(int old_len = instr->length;)
         CLIENT_ASSERT(instr_raw_bits_valid(instr), "instr_decode: raw bits are invalid");
         instr_reuse(dcontext, instr);
         next_pc = decode(dcontext, instr_get_raw_bits(instr), instr);
@@ -3363,7 +3367,7 @@ bool instr_writes_to_reg(instr_t *instr, reg_id_t reg)
 
     for (i=0; i<instr_num_dsts(instr); i++) {
         opnd=instr_get_dst(instr, i);
-        if (opnd_is_reg(opnd)&&(reg_fixer[opnd_get_reg(opnd)]==reg_fixer[reg]))
+        if (opnd_is_reg(opnd)&&(dr_reg_fixer[opnd_get_reg(opnd)]==dr_reg_fixer[reg]))
             return true;
     }
     return false;
@@ -4051,6 +4055,31 @@ instr_is_syscall(instr_t *instr)
     return false;
 }
 
+#ifdef WINDOWS
+DR_API
+bool
+instr_is_wow64_syscall(instr_t *instr)
+{
+    opnd_t tgt;
+# ifdef STANDALONE_DECODER
+    if (instr_get_opcode(instr) != OP_call_ind)
+        return false;
+# else
+    if (!is_wow64_process(NT_CURRENT_PROCESS) ||
+        instr_get_opcode(instr) != OP_call_ind)
+        return false;
+    CLIENT_ASSERT(get_syscall_method() == SYSCALL_METHOD_WOW64,
+                  "wow64 system call inconsistency");
+# endif
+    tgt = instr_get_target(instr);
+    return (opnd_is_far_base_disp(tgt) &&
+            opnd_get_segment(tgt) == SEG_FS &&
+            opnd_get_base(tgt) == REG_NULL &&
+            opnd_get_index(tgt) == REG_NULL &&
+            opnd_get_disp(tgt) == WOW64_TIB_OFFSET);
+}
+#endif
+
 /* looks for mov_imm and mov_st and xor w/ src==dst,
  * returns the constant they set their dst to
  */
@@ -4205,6 +4234,7 @@ instr_is_undefined(instr_t *instr)
              instr_get_opcode(instr) == OP_ud2b));
 }
 
+DR_API
 /* Given a cbr, change the opcode (and potentially branch hint
  * prefixes) to that of the inverted branch condition.
  */
@@ -4980,6 +5010,7 @@ instr_is_nop(instr_t *inst)
     return false;
 }
 
+#ifndef STANDALONE_DECODER
 /****************************************************************************/
 /* dcontext convenience routines */
 
@@ -5357,7 +5388,7 @@ instr_is_reg_spill_or_restore(dcontext_t *dcontext, instr_t *instr,
     if (dcontext != GLOBAL_DCONTEXT &&
         instr_check_mcontext_spill_restore(dcontext, instr, spill,
                                            reg, &check_disp)) {
-        int offs = opnd_get_reg_dcontext_offs(reg_fixer[*reg]);
+        int offs = opnd_get_reg_dcontext_offs(dr_reg_fixer[*reg]);
         if (offs != -1 && check_disp == offs) {
             if (tls != NULL)
                 *tls = false;
@@ -5409,25 +5440,6 @@ instr_raw_is_rip_rel_lea(byte *pc, byte *read_end)
 }
 #endif
 
-#ifdef WINDOWS
-bool
-instr_is_wow64_syscall(instr_t *instr)
-{
-    opnd_t tgt;
-    if (!is_wow64_process(NT_CURRENT_PROCESS) ||
-        instr_get_opcode(instr) != OP_call_ind)
-        return false;
-    CLIENT_ASSERT(get_syscall_method() == SYSCALL_METHOD_WOW64,
-                  "wow64 system call inconsistency");
-    tgt = instr_get_target(instr);
-    return (opnd_is_far_base_disp(tgt) &&
-            opnd_get_segment(tgt) == SEG_FS &&
-            opnd_get_base(tgt) == REG_NULL &&
-            opnd_get_index(tgt) == REG_NULL &&
-            opnd_get_disp(tgt) == WOW64_TIB_OFFSET);
-}
-#endif
-
 uint
 move_mm_reg_opcode(bool aligned16, bool aligned32)
 {
@@ -5442,3 +5454,6 @@ move_mm_reg_opcode(bool aligned16, bool aligned32)
         return (aligned16 ? OP_movaps : OP_movups);
     }
 }
+
+#endif /* !STANDALONE_DECODER */
+/****************************************************************************/

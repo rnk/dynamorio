@@ -50,6 +50,7 @@
  */
 
 #include "dr_api.h"
+#include "client_tools.h"
 
 #define MINSERT instrlist_meta_preinsert
 
@@ -59,15 +60,6 @@
  * guess it makes this client easily extendable.
  */
 #define HASH_TABLE_SIZE 7919
-
-#define ASSERT(x) \
-    do {                                                        \
-        if (!(x)) {                                             \
-            dr_fprintf(STDERR, "ASSERT failed on line %d", __LINE__);    \
-            dr_flush_file(dr_get_stdout_file());                \
-            dr_abort();                                         \
-        }                                                       \
-    } while (0)                             
 
 typedef enum {
     CBR_NONE      = 0x00,
@@ -219,7 +211,7 @@ void insert(hash_table_t table, app_pc addr, cbr_state_t state)
 
 static void at_taken(app_pc src, app_pc targ)
 {
-    dr_mcontext_t mcontext = {sizeof(mcontext),};
+    dr_mcontext_t mcontext = {sizeof(mcontext),DR_MC_ALL,};
     void *drcontext = dr_get_current_drcontext();
 
     /* 
@@ -245,7 +237,7 @@ static void at_taken(app_pc src, app_pc targ)
 
 static void at_not_taken(app_pc src, app_pc fall)
 {
-    dr_mcontext_t mcontext = {sizeof(mcontext),};
+    dr_mcontext_t mcontext = {sizeof(mcontext),DR_MC_ALL,};
     void *drcontext = dr_get_current_drcontext();
 
     /* 

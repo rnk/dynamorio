@@ -239,6 +239,15 @@ static client_lib_t client_libs[MAX_CLIENT_LIBS] = {{0,}};
 static size_t num_client_libs = 0;
 
 #ifdef WINDOWS
+/* private kernel32 lib, used to print to console */
+static bool print_to_console;
+static shlib_handle_t priv_kernel32;
+typedef BOOL (WINAPI *kernel32_WriteFile_t)
+    (HANDLE, LPCVOID, DWORD, LPDWORD, LPOVERLAPPED);
+static kernel32_WriteFile_t kernel32_WriteFile;
+#endif
+
+#ifdef WINDOWS
 /* used for nudge support */
 static bool block_client_nudge_threads = false;
 DECLARE_CXTSWPROT_VAR(static int num_client_nudge_threads, 0);
@@ -263,6 +272,10 @@ add_callback(callback_list_t *vec, void (*func)(void), bool unprotect)
 {
     if (func == NULL) {
         CLIENT_ASSERT(false, "trying to register a NULL callback");
+        return;
+    }
+    if (standalone_library) {
+        CLIENT_ASSERT(false, "events not supported in standalone library mode");
         return;
     }
 
@@ -400,8 +413,8 @@ add_client_lib(char *path, char *id_str, char *options)
         if (strstr(err, "wrong ELF class") == NULL)
 #endif
             CLIENT_ASSERT(false, msg);
-        SYSLOG(SYSLOG_ERROR, CLIENT_LIBRARY_UNLOADABLE, 3, 
-               get_application_name(), get_application_pid(), msg);
+        SYSLOG(SYSLOG_ERROR, CLIENT_LIBRARY_UNLOADABLE, 4,
+               get_application_name(), get_application_pid(), path, msg);
     }
     else {
         /* PR 250952: version check */
@@ -430,7 +443,7 @@ add_client_lib(char *path, char *id_str, char *options)
                 path, client_libs[idx].start, client_libs[idx].end);
 #ifdef X64
             /* provide a better error message than the heap assert */
-            CLIENT_ASSERT(client_libs[idx].start < (app_pc)(ptr_int_t)INT_MAX,
+            CLIENT_ASSERT(client_libs[idx].start < MAX_LOW_2GB,
                           "64-bit client library must have base in lower 2GB");
             request_region_be_heap_reachable(client_libs[idx].start,
                                              client_libs[idx].end -
@@ -610,7 +623,8 @@ instrument_exit(void)
     /* Note - currently own initexit lock when this is called (see PR 227619). */
 
     /* support dr_get_mcontext() from the exit event */
-    get_thread_private_dcontext()->client_data->mcontext_in_dcontext = true;
+    if (!standalone_library)
+        get_thread_private_dcontext()->client_data->mcontext_in_dcontext = true;
     call_all(exit_callbacks, int (*)(),
              /* It seems the compiler is confused if we pass no var args
               * to the call_all macro.  Bogus NULL arg */
@@ -647,7 +661,8 @@ is_in_client_lib(app_pc addr)
             return true;
         }
     }
-    if (vmvector_overlap(client_aux_libs, addr, addr+1))
+    if (client_aux_libs != NULL &&
+        vmvector_overlap(client_aux_libs, addr, addr+1))
         return true;
     return false;
 }
@@ -1303,6 +1318,13 @@ instrument_basic_block(dcontext_t *dcontext, app_pc tag, instrlist_t *bb,
 
     dcontext->client_data->mcontext_in_dcontext = false;
 
+    if (IF_DEBUG_ELSE(for_trace, false)) {
+        CLIENT_ASSERT(instrlist_get_return_target(bb) == NULL &&
+                      instrlist_get_fall_through_target(bb) == NULL,
+                      "instrlist_set_return/fall_through_target"
+                      " cannot be used on traces");
+    }
+
 #ifdef DEBUG
     LOG(THREAD, LOG_INTERP, 3, "\nafter instrumentation:\n");
     if (stats->loglevel >= 3 && (stats->logmask & LOG_INTERP) != 0)
@@ -1362,6 +1384,11 @@ instrument_trace(dcontext_t *dcontext, app_pc tag, instrlist_t *trace,
                  (void *)dcontext, (void *)tag, trace, translating);
 
     DODEBUG({ check_ilist_translations(trace); });
+
+    CLIENT_ASSERT(instrlist_get_return_target(trace) == NULL &&
+                  instrlist_get_fall_through_target(trace) == NULL,
+                  "instrlist_set_return/fall_through_target"
+                  " cannot be used on traces");
 
     dcontext->client_data->mcontext_in_dcontext = false;
 
@@ -1608,7 +1635,8 @@ instrument_module_load_trigger(app_pc modbase)
             os_get_module_info_unlock();
             instrument_module_load(client_data, false /*loading now*/);
             dr_free_module_data(client_data);
-        }
+        } else
+            os_get_module_info_unlock();
     }
 }
 
@@ -1756,7 +1784,8 @@ instrument_security_violation(dcontext_t *dcontext, app_pc target_pc,
     dr_security_violation_action_t dr_action, dr_action_original;
     app_pc source_pc = NULL;
     fragment_t *last;
-    dr_mcontext_t dr_mcontext = {sizeof(dr_mcontext_t),};
+    dr_mcontext_t dr_mcontext;
+    dr_mcontext_init(&dr_mcontext);
 
     if (security_violation_callbacks.num == 0)
         return;
@@ -1875,6 +1904,7 @@ instrument_nudge(dcontext_t *dcontext, client_id_t id, uint64 arg)
 {
     size_t i;
 
+    CLIENT_ASSERT(!standalone_library, "API not supported in standalone mode");
     ASSERT(dcontext != NULL && dcontext != GLOBAL_DCONTEXT &&
            dcontext == get_thread_private_dcontext());
     /* synch_with_all_threads and flush API assume that client nudge threads
@@ -2297,6 +2327,7 @@ dr_memory_protect(void *base, size_t size, uint new_prot)
      * the patch_proof_list: and maybe it is safer to disallow client
      * from putting hooks in ntdll.
      */
+    CLIENT_ASSERT(!standalone_library, "API not supported in standalone mode");
     if (!dynamo_vm_area_overlap(base, ((byte *)base) + size)) {
         uint mod_prot = new_prot;
         uint res = app_memory_protection_change(get_thread_private_dcontext(),
@@ -2398,6 +2429,7 @@ dr_try_setup(void *drcontext, void **try_cxt)
      */
     dcontext_t *dcontext = (dcontext_t *) drcontext;
     try_except_context_t *try_state;
+    CLIENT_ASSERT(!standalone_library, "API not supported in standalone mode");
     ASSERT(dcontext != NULL && dcontext == get_thread_private_dcontext());
     ASSERT(try_cxt != NULL);
     /* We allocate on the heap to avoid having to expose the try_except_context_t
@@ -2422,6 +2454,7 @@ dr_try_stop(void *drcontext, void *try_cxt)
 {
     dcontext_t *dcontext = (dcontext_t *) drcontext;
     try_except_context_t *try_state = (try_except_context_t *) try_cxt;
+    CLIENT_ASSERT(!standalone_library, "API not supported in standalone mode");
     ASSERT(dcontext != NULL && dcontext == get_thread_private_dcontext());
     ASSERT(try_state != NULL);
     POP_TRY_BLOCK(dcontext, *try_state); 
@@ -2595,6 +2628,13 @@ dr_mutex_trylock(void *mutex)
 }
 
 DR_API
+bool
+dr_mutex_self_owns(void *mutex)
+{
+    return IF_DEBUG_ELSE(OWN_MUTEX((mutex_t *)mutex), true);
+}
+
+DR_API
 void *
 dr_rwlock_create(void)
 {
@@ -2653,6 +2693,53 @@ bool
 dr_rwlock_self_owns_write_lock(void *rwlock)
 {
     return self_owns_write_lock((read_write_lock_t *)rwlock);
+}
+
+DR_API
+void *
+dr_recurlock_create(void)
+{
+    void *reclock = (void *) HEAP_TYPE_ALLOC(GLOBAL_DCONTEXT, recursive_lock_t,
+                                             ACCT_CLIENT, UNPROTECTED);
+    ASSIGN_INIT_RECURSIVE_LOCK_FREE(*((recursive_lock_t *)reclock), dr_client_mutex);
+    return reclock;
+}
+
+DR_API
+void
+dr_recurlock_destroy(void *reclock)
+{
+    DELETE_RECURSIVE_LOCK(*((recursive_lock_t *) reclock));
+    HEAP_TYPE_FREE(GLOBAL_DCONTEXT, (recursive_lock_t *)reclock, recursive_lock_t,
+                   ACCT_CLIENT, UNPROTECTED);
+}
+
+DR_API
+void
+dr_recurlock_lock(void *reclock)
+{
+    acquire_recursive_lock((recursive_lock_t *)reclock);
+}
+
+DR_API
+void
+dr_recurlock_unlock(void *reclock)
+{
+    release_recursive_lock((recursive_lock_t *)reclock);
+}
+
+DR_API
+bool
+dr_recurlock_trylock(void *reclock)
+{
+    return try_recursive_lock((recursive_lock_t *)reclock);
+}
+
+DR_API
+bool
+dr_recurlock_self_owns(void *reclock)
+{
+    return self_owns_recursive_lock((recursive_lock_t *)reclock);
 }
 
 /***************************************************************************
@@ -2922,6 +3009,25 @@ dr_close_file(file_t f)
     os_close_protected(f);
 }
 
+DR_API
+/* Renames the file src to dst. */
+bool
+dr_rename_file(const char *src, const char *dst, bool replace)
+{
+    return os_rename_file(src, dst, replace);
+}
+
+DR_API
+/* Deletes a file. */
+bool
+dr_delete_file(const char *filename)
+{
+    /* os_delete_mapped_file should be a superset of os_delete_file, so we use
+     * it.
+     */
+    return os_delete_mapped_file(filename);
+}
+
 DR_API 
 /* Flushes any buffers for file f
  */
@@ -2986,6 +3092,31 @@ dr_dup_file_handle(file_t f)
     else
         return ht;
 #endif
+}
+
+DR_API
+bool
+dr_file_size(file_t fd, OUT uint64 *size)
+{
+    return os_get_file_size_by_handle(fd, size);
+}
+
+DR_API
+void *
+dr_map_file(file_t f, size_t *size INOUT, uint64 offs, app_pc addr, uint prot,
+            uint flags)
+{
+    return (void *) map_file(f, size, offs, addr, prot,
+                             TEST(DR_MAP_PRIVATE, flags),
+                             false/*!image*/,
+                             IF_WINDOWS_ELSE(false, TEST(DR_MAP_FIXED, flags)));
+}
+
+DR_API
+bool
+dr_unmap_file(void *map, size_t size)
+{
+    return unmap_file((byte *) map, size);
 }
 
 DR_API
@@ -3124,6 +3255,7 @@ dr_messagebox(const char *fmt, ...)
     char msg[MAX_LOG_LENGTH];
     wchar_t wmsg[MAX_LOG_LENGTH];
     va_list ap;
+    CLIENT_ASSERT(!standalone_library, "API not supported in standalone mode");
     va_start(ap, fmt);
     vsnprintf(msg, BUFFER_SIZE_ELEMENTS(msg), fmt, ap);
     NULL_TERMINATE_BUFFER(msg);
@@ -3136,14 +3268,93 @@ dr_messagebox(const char *fmt, ...)
         dcontext->client_data->client_thread_safe_for_synch = false;
     va_end(ap);
 }
-#endif
+
+static bool
+dr_write_to_console(bool to_stdout, const char *fmt, va_list ap)
+{
+    bool res = true;
+    char msg[MAX_LOG_LENGTH];
+    uint written;
+    int len;
+    HANDLE std;
+    ASSERT(priv_kernel32 != NULL &&
+           kernel32_WriteFile != NULL);
+    /* kernel32!GetStdHandle(STD_OUTPUT_HANDLE) == our PEB-based get_stdout_handle */
+    std = (to_stdout ? get_stdout_handle() : get_stderr_handle());
+    if (std == INVALID_HANDLE_VALUE)
+        return false;
+    len = vsnprintf(msg, BUFFER_SIZE_ELEMENTS(msg), fmt, ap);
+    /* Let user know if message was truncated */
+    if (len < 0 || len == BUFFER_SIZE_ELEMENTS(msg))
+        res = false;
+    NULL_TERMINATE_BUFFER(msg);
+    /* Make this routine work in all kinds of windows by going through
+     * kernel32!WriteFile, which will call WriteConsole for us.
+     */
+    res = res &&
+        kernel32_WriteFile(std, msg, (DWORD) strlen(msg), (LPDWORD) &written, NULL);
+    return res;
+}
+
+DR_API
+bool
+dr_using_console(void)
+{
+    /* We detect cmd window using what kernel32!WriteFile uses: a handle
+     * having certain bits set.
+     */
+    return (((ptr_int_t)get_stderr_handle() & 0x10000003) == 0x3);
+}
+
+DR_API
+bool
+dr_enable_console_printing(void)
+{
+    /* b/c private loader sets cxt sw code up front based on whether have windows
+     * priv libs or not, this can only be called during dr_init()
+     */
+    if (dynamo_initialized) {
+        CLIENT_ASSERT(false, "dr_enable_console_printing() must be called from dr_init");
+        return false;
+    }
+    if (!dr_using_console())
+        return true;
+    if (!INTERNAL_OPTION(private_loader))
+        return false;
+    if (!print_to_console) {
+        if (priv_kernel32 == NULL) {
+            /* Not using load_shared_library() b/c it won't search paths
+             * for us.  XXX: should add os-shared interface for
+             * locate-and-load.
+             */
+            priv_kernel32 = (shlib_handle_t) privload_load_private_library("kernel32.dll");
+        }
+        if (priv_kernel32 != NULL && kernel32_WriteFile == NULL) {
+            kernel32_WriteFile = (kernel32_WriteFile_t)
+                lookup_library_routine(priv_kernel32, "WriteFile");
+        }
+        /* We go ahead and cache whether dr_using_console().  If app really
+         * changes its console, client could call this routine again
+         * as a workaround.  Seems unlikely: better to have better perf.
+         */
+        print_to_console = (priv_kernel32 != NULL &&
+                            kernel32_WriteFile != NULL);
+    }
+    return print_to_console;
+}
+#endif /* WINDOWS */
 
 DR_API void
 dr_printf(const char *fmt, ...)
 {
     va_list ap;
     va_start(ap, fmt);
-    do_file_write(STDOUT, fmt, ap);
+#ifdef WINDOWS
+    if (print_to_console)
+        dr_write_to_console(true/*stdout*/, fmt, ap);
+    else
+#endif
+        do_file_write(STDOUT, fmt, ap);
     va_end(ap);
 }
 
@@ -3152,7 +3363,12 @@ dr_fprintf(file_t f, const char *fmt, ...)
 {
     va_list ap;
     va_start(ap, fmt);
-    do_file_write(f, fmt, ap);
+#ifdef WINDOWS
+    if ((f == STDOUT || f == STDERR) && print_to_console)
+        dr_write_to_console(f == STDOUT, fmt, ap);
+    else
+#endif
+        do_file_write(f, fmt, ap);
     va_end(ap);
 }
 
@@ -3167,12 +3383,11 @@ dr_snprintf(char *buf, size_t max, const char *fmt, ...)
     /* PR 219380: we use our_vsnprintf instead of ntdll._vsnprintf b/c the
      * latter does not support floating point (while ours does not support
      * wide chars: but we also forward _snprintf to ntdll for clients).
+     * Plus, our_vsnprintf returns -1 for > max chars (matching Windows
+     * behavior, but which Linux libc version does not do).
      */
     res = our_vsnprintf(buf, max, fmt, ap);
     va_end(ap);
-    /* Normalize Linux behavior to match Windows */
-    if ((size_t)res > max)
-        res = -1;
     return res;
 }
 
@@ -3210,6 +3425,7 @@ void *
 dr_get_current_drcontext(void)
 {
     dcontext_t *dcontext = get_thread_private_dcontext();
+    CLIENT_ASSERT(!standalone_library, "API not supported in standalone mode");
     return (void *) dcontext;
 }
 
@@ -3243,6 +3459,12 @@ dr_set_tls_field(void *drcontext, void *value)
     dcontext->client_data->user_field = value;
 }
 
+DR_API void *
+dr_get_dr_segment_base(IN reg_id_t seg)
+{
+    return get_segment_base(seg);
+}
+
 DR_API
 bool
 dr_raw_tls_calloc(OUT reg_id_t *segment_register,
@@ -3271,6 +3493,7 @@ void
 dr_thread_yield(void)
 {
     dcontext_t *dcontext = get_thread_private_dcontext();
+    CLIENT_ASSERT(!standalone_library, "API not supported in standalone mode");
     if (IS_CLIENT_THREAD(dcontext))
         dcontext->client_data->client_thread_safe_for_synch = true;
     thread_yield();
@@ -3284,6 +3507,7 @@ void
 dr_sleep(int time_ms)
 {
     dcontext_t *dcontext = get_thread_private_dcontext();
+    CLIENT_ASSERT(!standalone_library, "API not supported in standalone mode");
     if (IS_CLIENT_THREAD(dcontext))
         dcontext->client_data->client_thread_safe_for_synch = true;
     thread_sleep(time_ms);
@@ -3298,6 +3522,7 @@ dr_client_thread_set_suspendable(bool suspendable)
 {
     /* see notes in synch_with_all_threads() */
     dcontext_t *dcontext = get_thread_private_dcontext();
+    CLIENT_ASSERT(!standalone_library, "API not supported in standalone mode");
     if (!IS_CLIENT_THREAD(dcontext))
         return false;
     dcontext->client_data->suspendable = suspendable;
@@ -3317,6 +3542,7 @@ dr_suspend_all_other_threads(OUT void ***drcontexts,
     dcontext_t *my_dcontext = get_thread_private_dcontext();
     int i;
 
+    CLIENT_ASSERT(!standalone_library, "API not supported in standalone mode");
     CLIENT_ASSERT(thread_owns_no_locks(my_dcontext),
                   "dr_suspend_all_other_threads cannot be called while holding a lock");
     CLIENT_ASSERT(drcontexts != NULL && num_suspended != NULL,
@@ -3436,6 +3662,7 @@ dr_set_itimer(int which, uint millisec,
               void (*func)(void *drcontext, dr_mcontext_t *mcontext))
 {
     dcontext_t *dcontext = get_thread_private_dcontext();
+    CLIENT_ASSERT(!standalone_library, "API not supported in standalone mode");
     if (func == NULL)
         return false;
     return set_itimer_callback(dcontext, which, millisec, NULL,
@@ -3446,6 +3673,7 @@ uint
 dr_get_itimer(int which)
 {
     dcontext_t *dcontext = get_thread_private_dcontext();
+    CLIENT_ASSERT(!standalone_library, "API not supported in standalone mode");
     return get_itimer_frequency(dcontext, which);
 }
 # endif /* LINUX */
@@ -3918,6 +4146,7 @@ reg_t
 dr_read_saved_reg(void *drcontext, dr_spill_slot_t slot)
 {
     dcontext_t *dcontext = (dcontext_t *) drcontext;
+    CLIENT_ASSERT(!standalone_library, "API not supported in standalone mode");
     CLIENT_ASSERT(drcontext != NULL, "dr_read_saved_reg: drcontext cannot be NULL");
     CLIENT_ASSERT(drcontext != GLOBAL_DCONTEXT,
                   "dr_read_saved_reg: drcontext is invalid");
@@ -3945,6 +4174,7 @@ void
 dr_write_saved_reg(void *drcontext, dr_spill_slot_t slot, reg_t value)
 {
     dcontext_t *dcontext = (dcontext_t *) drcontext;
+    CLIENT_ASSERT(!standalone_library, "API not supported in standalone mode");
     CLIENT_ASSERT(drcontext != NULL, "dr_write_saved_reg: drcontext cannot be NULL");
     CLIENT_ASSERT(drcontext != GLOBAL_DCONTEXT,
                   "dr_write_saved_reg: drcontext is invalid");
@@ -4398,6 +4628,8 @@ dr_get_mcontext_priv(dcontext_t *dcontext, dr_mcontext_t *dmc, priv_mcontext_t *
          */
         CLIENT_ASSERT(dmc->size == sizeof(dr_mcontext_t),
                       "dr_mcontext_t.size field not set properly");
+        CLIENT_ASSERT(dmc->flags != 0 && (dmc->flags & ~(DR_MC_ALL)) == 0,
+                      "dr_mcontext_t.flags field not set properly");
     } else
         CLIENT_ASSERT(dmc == NULL, "invalid internal params");
 
@@ -4444,7 +4676,7 @@ dr_get_mcontext_priv(dcontext_t *dcontext, dr_mcontext_t *dmc, priv_mcontext_t *
     /* esp is a dstack value -- get the app stack's esp from the dcontext */
     if (mc != NULL)
         mc->xsp = get_mcontext(dcontext)->xsp;
-    else
+    else if (TEST(DR_MC_CONTROL, dmc->flags))
         dmc->xsp = get_mcontext(dcontext)->xsp;
 
     /* XXX: should we set the pc field? */
@@ -4468,6 +4700,10 @@ dr_set_mcontext(void *drcontext, dr_mcontext_t *context)
     CLIENT_ASSERT(!TEST(SELFPROT_DCONTEXT, DYNAMO_OPTION(protect_mask)),
                   "DR context protection NYI");
     CLIENT_ASSERT(context != NULL, "invalid context");
+    CLIENT_ASSERT(context->size == sizeof(dr_mcontext_t),
+                  "dr_mcontext_t.size field not set properly");
+    CLIENT_ASSERT(context->flags != 0 && (context->flags & ~(DR_MC_ALL)) == 0,
+                  "dr_mcontext_t.flags field not set properly");
 
     /* i#117/PR 395156: allow dr_[gs]et_mcontext where accurate */
     /* PR 207947: support mcontext access from syscall events */
@@ -4487,8 +4723,10 @@ dr_set_mcontext(void *drcontext, dr_mcontext_t *context)
     if (!dr_mcontext_to_priv_mcontext((priv_mcontext_t *)state, context))
         return false;
 
-    /* esp will be restored from a field in the dcontext */
-    get_mcontext(dcontext)->xsp = context->xsp;
+    if (TEST(DR_MC_CONTROL, context->flags)) {
+        /* esp will be restored from a field in the dcontext */
+        get_mcontext(dcontext)->xsp = context->xsp;
+    }
 
     /* XXX: should we support setting the pc field? */
 
@@ -4500,6 +4738,12 @@ bool
 dr_redirect_execution(dr_mcontext_t *mcontext)
 {
     dcontext_t *dcontext = get_thread_private_dcontext();
+    CLIENT_ASSERT(!standalone_library, "API not supported in standalone mode");
+    ASSERT(dcontext != NULL);
+    CLIENT_ASSERT(mcontext->size == sizeof(dr_mcontext_t),
+                  "dr_mcontext_t.size field not set properly");
+    CLIENT_ASSERT(mcontext->flags == DR_MC_ALL,
+                  "dr_mcontext_t.flags must be DR_MC_ALL");
 
     /* PR 352429: squash current trace.
      * FIXME: will clients use this so much that this will be a perf issue?
@@ -4549,6 +4793,7 @@ dr_delete_fragment(void *drcontext, void *tag)
     dcontext_t *dcontext = (dcontext_t *)drcontext;
     fragment_t *f;
     bool deletable = false;
+    CLIENT_ASSERT(!standalone_library, "API not supported in standalone mode");
     CLIENT_ASSERT(!SHARED_FRAGMENTS_ENABLED(),
                   "dr_delete_fragment() only valid with -thread_private");
     CLIENT_ASSERT(drcontext != NULL, "dr_delete_fragment(): drcontext cannot be NULL");
@@ -4610,6 +4855,7 @@ dr_replace_fragment(void *drcontext, void *tag, instrlist_t *ilist)
     dcontext_t *dcontext = (dcontext_t *) drcontext;
     bool frag_found;
     fragment_t * f;
+    CLIENT_ASSERT(!standalone_library, "API not supported in standalone mode");
     CLIENT_ASSERT(!SHARED_FRAGMENTS_ENABLED(),
                   "dr_replace_fragment() only valid with -thread_private");
     CLIENT_ASSERT(drcontext != NULL, "dr_replace_fragment(): drcontext cannot be NULL");
@@ -4714,6 +4960,7 @@ bool
 dr_flush_region(app_pc start, size_t size)
 {
     dcontext_t *dcontext = get_thread_private_dcontext();
+    CLIENT_ASSERT(!standalone_library, "API not supported in standalone mode");
     ASSERT(dcontext != NULL);
 
     /* Flush requires !couldbelinking. FIXME - not all event callbacks to the client are
@@ -4753,6 +5000,7 @@ bool
 dr_unlink_flush_region(app_pc start, size_t size)
 {
     dcontext_t *dcontext = get_thread_private_dcontext();
+    CLIENT_ASSERT(!standalone_library, "API not supported in standalone mode");
     ASSERT(dcontext != NULL);
 
     /* This routine won't work with coarse_units */
@@ -4944,7 +5192,10 @@ dr_app_pc_from_cache_pc(byte *cache_pc)
 {
     app_pc res = NULL;
     dcontext_t *dcontext = get_thread_private_dcontext();
-    bool waslinking = is_couldbelinking(dcontext);
+    bool waslinking;
+    CLIENT_ASSERT(!standalone_library, "API not supported in standalone mode");
+    ASSERT(dcontext != NULL);
+    waslinking = is_couldbelinking(dcontext);
     if (!waslinking)
         enter_couldbelinking(dcontext, NULL, false);
     /* suppress asserts about faults in meta instrs */
@@ -4954,6 +5205,18 @@ dr_app_pc_from_cache_pc(byte *cache_pc)
     if (!waslinking)
         enter_nolinking(dcontext, NULL, false);
     return res;
+}
+
+DR_API
+bool
+dr_using_app_state(void *drcontext)
+{
+#if defined(WINDOWS) && defined(CLIENT_INTERFACE)
+    dcontext_t *dcontext = (dcontext_t *) drcontext;
+    if (INTERNAL_OPTION(private_peb) && should_swap_peb_pointer())
+        return is_using_app_peb(dcontext);
+#endif
+    return true;
 }
 
 DR_API
@@ -5227,4 +5490,3 @@ dr_insert_get_seg_base(void *drcontext, instrlist_t *ilist, instr_t *instr,
 }
 
 #endif /* CLIENT_INTERFACE */
-

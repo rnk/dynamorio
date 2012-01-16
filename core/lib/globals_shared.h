@@ -1,5 +1,5 @@
 /* **********************************************************
- * Copyright (c) 2011 Google, Inc.  All rights reserved.
+ * Copyright (c) 2011-2012 Google, Inc.  All rights reserved.
  * Copyright (c) 2003-2010 VMware, Inc.  All rights reserved.
  * **********************************************************/
 
@@ -302,17 +302,18 @@ extern file_t our_stdin;
 typedef uint client_id_t;
 
 #ifdef API_EXPORT_ONLY
+#ifndef DR_FAST_IR
 /**
  * Internal structure of opnd_t is below abstraction layer.
  * But compiler needs to know field sizes to copy it around
  */
 typedef struct {
-#ifdef X64
+# ifdef X64
     uint black_box_uint;
     uint64 black_box_uint64;
-#else
+# else
     uint black_box_uint[3];
-#endif
+# endif
 } opnd_t;
 
 /**
@@ -321,12 +322,18 @@ typedef struct {
  * instead of always allocated on the heap.
  */
 typedef struct {
-#ifdef X64
+# ifdef X64
     uint black_box_uint[26];
-#else
+# else
     uint black_box_uint[16];
-#endif
+# endif
 } instr_t;
+#else
+struct _opnd_t;
+typedef struct _opnd_t opnd_t;
+struct _instr_t;
+typedef struct _instr_t instr_t;
+#endif /* !DR_FAST_IR */
 #endif /* API_EXPORT_ONLY */
 
 #ifndef IN
@@ -731,9 +738,11 @@ typedef int stats_int_t;
 /* Maximum length of option string from config file.
  * For CLIENT_INTERFACE we need more than 512 bytes to fit multiple options
  * w/ paths.  However, we have stack buffers in config.c and options.c
- * (look for MAX_OPTION_LENGTH there), so we can't make this too big.
+ * (look for MAX_OPTION_LENGTH there), so we can't make this too big
+ * unless we increase the default -stack_size even further.
+ * N.B.: there is a separate define in dr_config.h, DR_MAX_OPTIONS_LENGTH.
  */
-# define MAX_OPTIONS_STRING    1024
+# define MAX_OPTIONS_STRING    2048
 # define MAX_CONFIG_VALUE      MAX_OPTIONS_STRING
 #endif
 /* Maximum length of any individual list option's string */
@@ -1515,34 +1524,6 @@ enum {
  * so we have no alignment declarations there at the moment either.
  */
 
-/* PR 306394: for 32-bit xmm0-7 are caller-saved, and are touched by
- * libc routines invoked by DR in some Linux systems (xref i#139),
- * so they should be saved in 32-bit Linux.
- */
-/* Xref i#139:
- * XMM register preservation will cause extra runtime overhead.
- * We test it over 32-bit SPEC2006 on a 64-bit Debian Linux, which shows 
- * that DR with xmm preservation adds negligible overhead over DR without 
- * xmm preservation.
- * It means xmm preservation would have little performance impact over 
- * DR base system. This is mainly because DR's own operations' overhead 
- * is much higher than the context switch overhead.
- * However, if a program is running with a DR client which performs many 
- * clean calls (one or more per basic block), xmm preservation may
- * have noticable impacts, i.e. pushing bbs over the max size limit, 
- * and could have a noticeable performance hit.
- */
-#ifdef WINDOWS
-# define NUM_XMM_SAVED 6 /* xmm0-5; for 32-bit we have space for xmm0-7 */
-#else
-# ifdef X64
-#  define NUM_XMM_SAVED 16 /* xmm0-15 */
-# else
-/* i#139: save xmm0-7 registers in 32-bit Linux. */
-#  define NUM_XMM_SAVED 8 /* xmm0-7 */
-# endif
-#endif
-
 /* DR_API EXPORT TOFILE dr_defines.h */
 /* DR_API EXPORT BEGIN */
 /** 128-bit XMM register. */
@@ -1584,6 +1565,9 @@ typedef union _dr_ymm_t {
 /* If this is increased, you'll probably need to increase the size of
  * inject_into_thread's buf and INTERCEPTION_CODE_SIZE (for Windows).
  * Also, update NUM_XMM_SLOTS in x86.asm and get_xmm_caller_saved.
+ * i#437: YMM is an extension of XMM from 128-bit to 256-bit without
+ * adding new ones, so code operating on XMM often also operates on YMM,
+ * and thus some *XMM* macros also apply to *YMM*.
  */
 #endif
 #ifdef X64
@@ -1598,6 +1582,31 @@ typedef union _dr_ymm_t {
 # define PRE_XMM_PADDING 24 /**< Bytes of padding before xmm/ymm dr_mcontext_t slots */
 #endif
 
+/** Values for the flags field of dr_mcontext_t */
+typedef enum {
+    /**
+     * Selects the xdi, xsi, xbp, xbx, xdx, xcx, xax, and r8-r15 fields (i.e.,
+     * all of the general-purpose registers excluding xsp, xip, and xflags).
+     */
+    DR_MC_INTEGER    = 0x01,
+    /**
+     * Selects the xsp, xflags, and xip fields.
+     * \note: The xip field is only honored as an input for
+     * dr_redirect_execution(), and as an output for system call
+     * events.
+     */
+    DR_MC_CONTROL    = 0x02,
+    /**
+     * Selects the ymm (and xmm) fields.  This flag is ignored unless
+     * dr_mcontext_xmm_fields_valid() returns true.  If
+     * dr_mcontext_xmm_fields_valid() returns false, the application values of
+     * the multimedia registers remain in the registers themselves.
+     */
+    DR_MC_MULTIMEDIA = 0x04,
+    /** Selects all fields */
+    DR_MC_ALL        = (DR_MC_INTEGER | DR_MC_CONTROL | DR_MC_MULTIMEDIA),
+} dr_mcontext_flags_t;
+
 /**
  * Machine context structure.
  */
@@ -1607,6 +1616,15 @@ typedef struct _dr_mcontext_t {
      * in the fields to support forward compatibility.
      */
     size_t size;
+    /**
+     * The valid fields of this structure.  This field must be set prior to
+     * filling in the fields.  For input requests (dr_get_mcontext()), this
+     * indicates which fields should be written.  Writing the multimedia fields
+     * frequently can incur a performance hit.  For output requests
+     * (dr_set_mcontext() and dr_redirect_execution()), this indicates which
+     * fields will be copied to the actual context.
+     */
+    dr_mcontext_flags_t flags;
 #include "mcxtx.h"
 } dr_mcontext_t;
 /* DR_API EXPORT END */
@@ -1615,5 +1633,28 @@ typedef struct _dr_mcontext_t {
 typedef struct _priv_mcontext_t {
 #include "mcxtx.h"
 } priv_mcontext_t;
+
+/* PR 306394: for 32-bit xmm0-7 are caller-saved, and are touched by
+ * libc routines invoked by DR in some Linux systems (xref i#139),
+ * so they should be saved in 32-bit Linux.
+ */
+/* Xref i#139:
+ * XMM register preservation will cause extra runtime overhead.
+ * We test it over 32-bit SPEC2006 on a 64-bit Debian Linux, which shows 
+ * that DR with xmm preservation adds negligible overhead over DR without 
+ * xmm preservation.
+ * It means xmm preservation would have little performance impact over 
+ * DR base system. This is mainly because DR's own operations' overhead 
+ * is much higher than the context switch overhead.
+ * However, if a program is running with a DR client which performs many 
+ * clean calls (one or more per basic block), xmm preservation may
+ * have noticable impacts, i.e. pushing bbs over the max size limit, 
+ * and could have a noticeable performance hit.
+ */
+/* We now save everything but we keep separate NUM_XMM_SLOTS vs NUM_XMM_SAVED
+ * in case we go back to not saving some slots in the future: e.g., w/o
+ * CLIENT_INTERFACE we could control our own libs enough to avoid some saves.
+ */
+#define NUM_XMM_SAVED NUM_XMM_SLOTS
 
 #endif /* ifndef _GLOBALS_SHARED_H_ */

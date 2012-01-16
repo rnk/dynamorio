@@ -1,4 +1,5 @@
 /* *******************************************************************************
+ * Copyright (c) 2011 Google, Inc.  All rights reserved.
  * Copyright (c) 2011 Massachusetts Institute of Technology  All rights reserved.
  * *******************************************************************************/
 
@@ -60,15 +61,21 @@ static const char *system_lib_paths[] = {
     "/lib/tls/i686/cmov",
     "/usr/lib",
     "/lib",
+    "/usr/local/lib",       /* Ubuntu: /etc/ld.so.conf.d/libc.conf */
 #ifndef X64
-    "/lib/i386-linux-gnu",  /* 32-bit Ubuntu */
     "/lib32/tls/i686/cmov",
     "/usr/lib32",
     "/lib32",
+    /* 32-bit Ubuntu */
+    "/lib/i386-linux-gnu",
+    "/usr/lib/i386-linux-gnu",
 #else
     "/lib64/tls/i686/cmov",
     "/usr/lib64",
     "/lib64",
+    /* 64-bit Ubuntu */
+    "/lib/x86_64-linux-gnu",     /* /etc/ld.so.conf.d/x86_64-linux-gnu.conf */
+    "/usr/lib/x86_64-linux-gnu", /* /etc/ld.so.conf.d/x86_64-linux-gnu.conf */
 #endif
 };
 #define NUM_SYSTEM_LIB_PATHS \
@@ -265,6 +272,31 @@ privload_unload_imports(privmod_t *privmod)
     return true;
 }
 
+/* Register a symbol file with gdb.  This symbol needs to be exported so that
+ * gdb can find it even when full debug information is unavailable.  We do
+ * *not* consider it part of DR's public API.
+ * i#531: gdb support for private loader
+ */
+DYNAMORIO_EXPORT void
+dr_gdb_add_symbol_file(const char *filename, ELF_ADDR textaddr)
+{
+    /* Do nothing.  If gdb is attached with libdynamorio.so-gdb.py loaded, it
+     * will stop here and lift the argument values.
+     */
+    /* FIXME: This only passes the text section offset.  gdb can accept
+     * additional "-s<section> <address>" arguments to locate data sections.
+     * This would be useful for setting watchpoints on client global variables.
+     */
+    /* FIXME: This design does not support attaching.  Traditionally, this is
+     * implemented by maintaining a doubly-linked list of modules that can be
+     * read from gdb when it attaches.  We can use the existing privmod_t list
+     * in loader_shared.c and perform registration from privload_finalize_load.
+     * However, we will need to either save the section offsets in
+     * privload_map_and_relocate (which runs before heap initialization) or
+     * re-map the file in privload_finalize_load.
+     */
+}
+
 app_pc
 privload_map_and_relocate(const char *filename, size_t *size OUT)
 {
@@ -421,16 +453,19 @@ privload_map_and_relocate(const char *filename, size_t *size OUT)
     }
     ASSERT(last_end == lib_end);
 
-#ifdef DEBUG
-    /* Add debugging comment about how to get symbol information in gdb. */
-    SYSLOG_INTERNAL_INFO("In GDB, use add-symbol-file %s %p"
-                         " to add symbol information",
-                         filename, 
-                         delta + module_get_text_section(file_map, file_size));
-#endif
+    ELF_ADDR text_addr =
+        delta + module_get_text_section(file_map, file_size);
+    if (IF_CLIENT_INTERFACE_ELSE(INTERNAL_OPTION(privload_register_gdb), false)) {
+        dr_gdb_add_symbol_file(filename, text_addr);
+    } else {
+        /* Add debugging comment about how to get symbol information in gdb. */
+        SYSLOG_INTERNAL_INFO("In GDB, use add-symbol-file %s %p"
+                             " to add symbol information",
+                             filename, text_addr);
+    }
     LOG(GLOBAL, LOG_LOADER, 1,
         "for debugger: add-symbol-file %s %p\n",
-        filename, delta + module_get_text_section(file_map, file_size));
+        filename, text_addr);
     /* unmap the file_map */
     (*unmap_func)(file_map, file_size);
     os_close(fd); /* no longer needed */
@@ -608,6 +643,11 @@ privload_locate(const char *name, privmod_t *dep,
             os_file_has_elf_so_header(filename))
             return true;
     }
+
+    /* Cannot find the library */
+    SYSLOG(SYSLOG_ERROR, CLIENT_LIBRARY_UNLOADABLE, 4,
+           get_application_name(), get_application_pid(), name,
+           "\n\tUnable to locate library! Try adding path to LD_LIBRARY_PATH");
     return false;
 }
 
@@ -855,10 +895,20 @@ static tls_info_t tls_info;
  * libc source code, not a standard header file, cannot include but calculate.
  */
 static size_t tcb_size;  /* thread control block size */
+/* thread control block header type from 
+ * nptl/sysdeps/x86_64/tls.h and nptl/sysdeps/i386/tls.h 
+ */
 typedef struct _tcb_head_t {
     void *tcb;
     void *dtv;
     void *self;
+    int multithread;
+#ifdef X64
+    int gscope_flag;
+#endif
+    ptr_uint_t sysinfo;
+    ptr_uint_t stack_guard;
+    ptr_uint_t pointer_guard;
 } tcb_head_t;
 
 #define TCB_TLS_ALIGN 32
@@ -929,7 +979,10 @@ privload_tls_init(void *app_tp)
      * and then uses memory at the end of the last page for tcb, 
      * so we assume the tcb is until the end of a page.
      */
-    tcb_size = ALIGN_FORWARD(app_tp, PAGE_SIZE) - (reg_t)app_tp;
+    /* When app_tp is page aligned, assume tcb_size is PAGE_SIZE instead of 0,
+     * so add 1 before aligning forward.
+     */
+    tcb_size = ALIGN_FORWARD(app_tp + 1, PAGE_SIZE) - (reg_t)app_tp;
     ASSERT(tls_info.offset <= max_client_tls_size - tcb_size);
     dr_tp = dr_tp + max_client_tls_size - tcb_size;
     LOG(GLOBAL, LOG_LOADER, 2, "%s adjust thread pointer to "PFX"\n",
@@ -948,6 +1001,8 @@ privload_tls_init(void *app_tp)
            PAGE_SIZE);
     ((tcb_head_t *)dr_tp)->tcb  = dr_tp;
     ((tcb_head_t *)dr_tp)->self = dr_tp;
+    /* i#555: replace app's vsyscall with DR's int0x80 syscall */
+    ((tcb_head_t *)dr_tp)->sysinfo = (ptr_uint_t)client_int_syscall;
 
     for (i = 0; i < tls_info.num_mods; i++) {
         os_privmod_data_t *opd = tls_info.mods[i]->os_privmod_data;
@@ -996,6 +1051,21 @@ redirect___tls_get_addr(tls_index_t *ti)
             tls_info.offs[ti->ti_module] + ti->ti_offset);
 }
 
+static void *
+redirect____tls_get_addr()
+{
+    tls_index_t *ti;
+    /* XXX: in some version of ___tls_get_addr, ti is passed via xax 
+     * How can I generalize it?
+     */
+    asm("mov %%"ASM_XAX", %0" : "=m"((ti)) : : ASM_XAX);
+    LOG(GLOBAL, LOG_LOADER, 4, "__tls_get_addr: module: %d, offset: %d\n",
+        ti->ti_module, ti->ti_offset);
+    ASSERT(ti->ti_module < tls_info.num_mods);
+    return (os_get_dr_seg_base(NULL, LIB_SEG_TLS) - 
+            tls_info.offs[ti->ti_module] + ti->ti_offset);
+}
+
 typedef struct _redirect_import_t {
     const char *name;
     app_pc func;
@@ -1011,6 +1081,7 @@ static const redirect_import_t redirect_imports[] = {
      * Any other functions need to be redirected?
      */
     {"__tls_get_addr", (app_pc)redirect___tls_get_addr},
+    {"___tls_get_addr", (app_pc)redirect____tls_get_addr},
 };
 #define REDIRECT_IMPORTS_NUM (sizeof(redirect_imports)/sizeof(redirect_imports[0]))
 
@@ -1027,4 +1098,3 @@ privload_redirect_sym(ELF_ADDR *r_addr, const char *name)
     }
     return false;
 }
-

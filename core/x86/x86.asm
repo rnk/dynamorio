@@ -1,5 +1,5 @@
 /* **********************************************************
- * Copyright (c) 2011 Google, Inc.  All rights reserved.
+ * Copyright (c) 2011-2012 Google, Inc.  All rights reserved.
  * Copyright (c) 2001-2010 VMware, Inc.  All rights reserved.
  * ********************************************************** */
 
@@ -69,7 +69,7 @@
 START_FILE
 
 #ifdef LINUX
-# include "syscall.h"
+# include "../linux/include/syscall.h"
 #endif
         
 #define RESTORE_FROM_DCONTEXT_VIA_REG(reg,offs,dest) mov dest, PTRSZ [offs + reg]
@@ -222,7 +222,10 @@ DECL_EXTERN(fixup_rtframe_pointers)
 #ifdef LINUX
 DECL_EXTERN(dr_setjmp_sigmask)
 #endif
-    
+#ifdef WINDOWS
+DECL_EXTERN(dynamorio_earliest_init_takeover_C)
+#endif
+
 /* non-functions: these make us non-PIC! (PR 212290) */
 DECL_EXTERN(exiting_thread_count)
 DECL_EXTERN(initstack)
@@ -1076,6 +1079,19 @@ syscall_0args:
         /* return val is in eax for us */
         ret
         END_FUNC(dynamorio_syscall)
+
+/* FIXME: this function should be in #ifdef CLIENT_INTERFACE
+ * However, the compiler complains about it in
+ * vps-debug-internal-32 build, so we remove the ifdef now.
+ */
+/* i#555: to avoid client use app's vsyscall, we enforce all clients 
+ * use int 0x80 for system call.
+ */
+        DECLARE_FUNC(client_int_syscall)
+GLOBAL_LABEL(client_int_syscall:)
+        int      HEX(80)
+        ret
+        END_FUNC(client_int_syscall)
 #endif /* LINUX */
 #ifndef NOT_DYNAMORIO_CORE_PROPER
 #ifdef LINUX
@@ -1692,22 +1708,33 @@ GLOBAL_LABEL(call_intr_excpt_alt_stack:)
 #else
 # define REG_XAX_SEGWIDTH eax
 #endif
+/* Need a second volatile register for any calling convention.  In all
+ * conventions, XCX is volatile, but it's ARG4 on Lin64 and ARG1 on Win64.
+ * Using XCX on Win64 is fine, but on Lin64 it clobbers ARG4 so we use XDI as
+ * the free reg instead.
+ */
+#if defined(LINUX) && defined(X64)
+# define FREE_REG rdi
+#else
+# define FREE_REG REG_XCX
+#endif
 GLOBAL_LABEL(get_segments_defg:)
-        xor      eax, eax
-        mov      REG_XBX, ARG1
+        xor      eax, eax           /* Zero XAX, use it for reading segments. */
+        mov      FREE_REG, ARG1
         mov      ax, ds
-        mov      [REG_XBX], REG_XAX_SEGWIDTH
-        mov      REG_XBX, ARG2
+        mov      [FREE_REG], REG_XAX_SEGWIDTH
+        mov      FREE_REG, ARG2
         mov      ax, es
-        mov      [REG_XBX], REG_XAX_SEGWIDTH
-        mov      REG_XBX, ARG3
+        mov      [FREE_REG], REG_XAX_SEGWIDTH
+        mov      FREE_REG, ARG3
         mov      ax, fs
-        mov      [REG_XBX], REG_XAX_SEGWIDTH
-        mov      REG_XBX, ARG4
+        mov      [FREE_REG], REG_XAX_SEGWIDTH
+        mov      FREE_REG, ARG4
         mov      ax, gs
-        mov      [REG_XBX], REG_XAX_SEGWIDTH
+        mov      [FREE_REG], REG_XAX_SEGWIDTH
         ret
         END_FUNC(get_segments_defg)
+#undef FREE_REG
 #undef REG_XAX_SEGWIDTH
 
 /* void get_own_context_helper(CONTEXT *cxt)
@@ -2003,13 +2030,51 @@ GLOBAL_LABEL(load_dynamo_failure:)
         POPF
         /* we assume reading beyond TOS is ok here (no signals on windows) */
         /* we assume xmm0-5 do not need to be restored */
-        /* restore app xsp (POPGPR doesn't): didn't pop pc, so +ARG_SZ */
-        mov      REG_XSP, [-PRIV_MCXT_SIZE + MCONTEXT_XSP_OFFS + ARG_SZ + REG_XSP]
+        /* restore app xsp (POPGPR doesn't) */
+        mov      REG_XSP, [-MCONTEXT_PC_OFFS + MCONTEXT_XSP_OFFS + REG_XSP]
         jmp      PTRSZ [-ARG_SZ + REG_XSP]      /* jmp to app start_pc */
 
         ret
         END_FUNC(load_dynamo_failure)
         
+# ifndef NOT_DYNAMORIO_CORE_PROPER
+/* void dynamorio_earliest_init_takeover(void)
+ *
+ * Called from hook code for earliest injection.
+ * Since we want to resume at the hooked app code as though nothing
+ * happened w/o going first to hooking code to restore regs, caller
+ * passed us args pointed at by xax.  We then preserve regs and call
+ * C code.  C code takes over when it returns to use.  We restore
+ * regs and return to app code.
+ * Executes on app stack but we assume app stack is fine at this point.
+ */
+        DECLARE_EXPORTED_FUNC(dynamorio_earliest_init_takeover)
+GLOBAL_LABEL(dynamorio_earliest_init_takeover:)
+        PUSHGPR
+# ifdef EARLIEST_INIT_DEBUGBREAK
+        /* giant loop so can attach debugger, then change ebx to 1
+         * to step through rest of code */
+        mov      ebx, HEX(7fffffff)
+dynamorio_earliest_init_repeat_outer:
+        mov      esi, HEX(7fffffff)
+dynamorio_earliest_init_repeatme:
+        dec      esi
+        cmp      esi, 0
+        jg       dynamorio_earliest_init_repeatme
+        dec      ebx
+        cmp      ebx, 0
+        jg       dynamorio_earliest_init_repeat_outer
+# endif
+        /* args are pointed at by xax */
+        CALLC1(dynamorio_earliest_init_takeover_C, REG_XAX)
+        /* we will either be under DR control or running natively at this point */
+
+        /* restore */
+        POPGPR
+        ret
+        END_FUNC(dynamorio_earliest_init_takeover)
+# endif /* NOT_DYNAMORIO_CORE_PROPER */
+
 #endif /* WINDOWS */
 
 END_FILE

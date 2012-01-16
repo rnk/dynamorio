@@ -77,7 +77,38 @@ typedef enum {
     DRSYM_ERROR_LINE_NOT_AVAILABLE, /**< Operation failed: line info not available */
     DRSYM_ERROR_NOT_IMPLEMENTED,    /**< Operation failed: not yet implemented */
     DRSYM_ERROR_FEATURE_NOT_AVAILABLE, /**< Operation failed: not available */
+    DRSYM_ERROR_NOMEM,              /**< Operation failed: not enough memory */
 } drsym_error_t;
+
+/** Bitfield of options to each DRSyms operation. */
+typedef enum {
+    DRSYM_LEAVE_MANGLED = 0x00,     /**< Do not demangle C++ symbols. */
+    /**
+     * Demangle C++ symbols, omitting templates and parameter types.  On Linux,
+     * both templates and parameters are collapsed to <> and () respectively.
+     * On Windows, templates are still expanded, and parameters are omitted
+     * without parentheses.
+     */
+    DRSYM_DEMANGLE      = 0x01,
+    /** Demangle template arguments and parameter types. */
+    DRSYM_DEMANGLE_FULL = 0x02,
+    DRSYM_DEFAULT_FLAGS = DRSYM_DEMANGLE,   /**< Default flags. */
+} drsym_flags_t;
+
+/**
+ * Bitfield indicating the availability of different kinds of debugging
+ * information for a module.  The first 8 bits are reserved for platform
+ * independent qualities of the debug info, while the rest indicate exactly
+ * which kind of debug information is present.
+ */
+typedef enum {
+    DRSYM_SYMBOLS    = (1 <<  0), /**< Any symbol information beyond exports. */
+    DRSYM_LINE_NUMS  = (1 <<  1), /**< Any line number info. */
+    /* Platform-dependent types. */
+    DRSYM_ELF_SYMTAB = (1 <<  8), /**< ELF .symtab symbol names. */
+    DRSYM_DWARF_LINE = (1 <<  9), /**< DWARF line info. */
+    DRSYM_PDB        = (1 << 10), /**< Windows PDB files. */
+} drsym_debug_kind_t;
 
 /** Data structure that holds symbol information */
 typedef struct _drsym_info_t {
@@ -97,6 +128,9 @@ typedef struct _drsym_info_t {
     size_t start_offs;
     /** Output: offset from module base of end of symbol */
     size_t end_offs;
+    /** Output: type of the debug info available for this module */
+    drsym_debug_kind_t debug_kind;
+
     /**
      * Output: size of data available for name.  Only name_size bytes will be
      * copied to name.
@@ -139,13 +173,84 @@ DR_EXPORT
  * @param[in] modoffs The offset from the base of the module specifying the address
  *   to be queried.
  * @param[in,out] info Information about the symbol at the queried address.
+ * @param[in]  flags   Options for the operation.  Ignored on Windows.
  */
 drsym_error_t
-drsym_lookup_address(const char *modpath, size_t modoffs, drsym_info_t *info /*INOUT*/);
+drsym_lookup_address(const char *modpath, size_t modoffs, drsym_info_t *info /*INOUT*/,
+                     uint flags);
+
+enum {
+    DRSYM_TYPE_OTHER,  /**< Unknown type, cannot downcast. */
+    DRSYM_TYPE_INT,    /**< Integer, cast to drsym_int_type_t. */
+    DRSYM_TYPE_PTR,    /**< Pointer, cast to drsym_ptr_type_t. */
+    DRSYM_TYPE_FUNC,   /**< Function, cast to drsym_func_type_t. */
+    /* Additional type kinds will be added as needed. */
+};
+
+/**
+ * Base type information.
+ * Use the 'kind' member to downcast to a more specific type.
+ */
+typedef struct _drsym_type_t {
+    uint kind;      /**< Type kind, i.e. DRSYM_TYPE_INT or DRSYM_TYPE_PTR. */
+    size_t size;    /**< Type size. */
+} drsym_type_t;
+
+#ifdef _MSC_VER
+# pragma warning(push)
+# pragma warning(disable : 4200)
+#endif
+
+typedef struct _drsym_func_type_t {
+    drsym_type_t type;
+    drsym_type_t *ret_type;
+    int num_args;
+    /* We want to maintain C89 compat for exported headers so we avoid [0] and
+     * waste the space on a zero-arg func type
+     */
+    drsym_type_t *arg_types[1];  /**< Flexible array of size num_args. */
+} drsym_func_type_t;
+
+#ifdef _MSC_VER
+# pragma warning(pop)
+#endif
+
+typedef struct _drsym_int_type_t {
+    drsym_type_t type;
+    bool is_signed;
+} drsym_int_type_t;
+
+typedef struct _drsym_ptr_type_t {
+    drsym_type_t type;
+    drsym_type_t *elt_type;
+} drsym_ptr_type_t;
+
+DR_EXPORT
+/**
+ * Retrieves function type information for a given module offset.  After a
+ * successful execution, \p *func_type points to the function type.  All memory
+ * used to represent the types comes from \p buf, so the caller only needs to
+ * dispose \p buf to free them.  Returns DRSYM_ERROR_NOMEM if the buffer is not
+ * big enough.
+ *
+ * @param[in] modpath    The full path to the module to be queried.
+ * @param[in] modoffs    The offset from the base of the module specifying
+ *                       the start address of the function.
+ * @param[out] buf       Memory used for the types.
+ * @param[in] buf_sz     Number of bytes in \p buf.
+ * @param[out] func_type Pointer to the type of the function.
+ */
+drsym_error_t
+drsym_get_func_type(const char *modpath, size_t modoffs,
+                    char *buf, size_t buf_sz,
+                    drsym_func_type_t **func_type /*OUT*/);
 
 DR_EXPORT
 /**
  * Retrieves the address for a given symbol name.
+ *
+ * On Windows, we don't support the DRSYM_DEMANGLE_FULL flag.  Also on Windows,
+ * if DRSYM_DEMANGLE is set, \p symbol must include the template arguments.
  *
  * @param[in] modpath The full path to the module to be queried.
  * @param[in] symbol The name of the symbol being queried.
@@ -153,18 +258,20 @@ DR_EXPORT
  *   string to look up.
  * @param[out] modoffs The offset from the base of the module specifying the address
  *   of the specified symbol.
+ * @param[in]  flags   Options for the operation.  Ignored on Windows.
  */
 drsym_error_t
-drsym_lookup_symbol(const char *modpath, const char *symbol, size_t *modoffs /*OUT*/);
+drsym_lookup_symbol(const char *modpath, const char *symbol, size_t *modoffs /*OUT*/,
+                    uint flags);
 
 /** 
  * Type for drsym_enumerate_symbols and drsym_search_symbols callback function.
  * Returns whether to continue the enumeration or search.
  *
- * @param[in] name    Name of the symbol.
- * @param[in] modoffs Offset of the symbol from the module base.
- * @param[in] data    User parameter passed to drsym_enumerate_symbols() or
- *                    drsym_search_symbols().
+ * @param[in]  name    Name of the symbol.
+ * @param[out] modoffs Offset of the symbol from the module base.
+ * @param[in]  data    User parameter passed to drsym_enumerate_symbols() or
+ *                     drsym_search_symbols().
  */
 typedef bool (*drsym_enumerate_cb)(const char *name, size_t modoffs, void *data);
 
@@ -177,9 +284,45 @@ DR_EXPORT
  * @param[in] modpath   The full path to the module to be queried.
  * @param[in] callback  Function to call for each symbol found.
  * @param[in] data      User parameter passed to callback.
+ * @param[in] flags     Options for the operation.  Ignored on Windows.
  */
 drsym_error_t
-drsym_enumerate_symbols(const char *modpath, drsym_enumerate_cb callback, void *data);
+drsym_enumerate_symbols(const char *modpath, drsym_enumerate_cb callback, void *data,
+                        uint flags);
+
+DR_EXPORT
+/**
+ * Given a mangled or decorated C++ symbol, outputs the source name into \p dst.
+ * If the unmangled name requires more than \p dst_sz bytes, it is truncated and
+ * null-terminated to fit into \p dst.  If the unmangling fails, \p symbol is
+ * copied as-is into \p dst, and truncated and null-terminated to fit.
+ * Returns zero if the name could not be unmangled, and the number of characters
+ * required to store the name if it succeeded.  If there was overflow, the
+ * return value may be an estimate of the required size, so a second attempt
+ * with the return value is not guaranteed to be successful.  If the caller
+ * needs the full name, they may need to make multiple attempts with a larger
+ * buffer.
+ *
+ * @param[out] dst      Output buffer for demangled name.
+ * @param[in]  dst_sz   Size of the output buffer in bytes.
+ * @param[in]  mangled  Mangled C++ symbol to demangle.
+ * @param[in]  flags    Options for the operation.  DRSYM_DEMANGLE is implied.
+ */
+size_t
+drsym_demangle_symbol(char *dst, size_t dst_sz, const char *mangled,
+                      uint flags);
+
+DR_EXPORT
+/**
+ * Outputs the kind of debug information available for the module \p modpath in
+ * \p *kind if the operation succeeds.
+ *
+ * @param[in]  modpath   The full path to the module to be queried.
+ * @param[out] kind      The kind of debug information available.
+ */
+drsym_error_t
+drsym_get_module_debug_kind(const char *modpath,
+                            drsym_debug_kind_t *kind /*OUT*/);
 
 #ifdef WINDOWS
 DR_EXPORT
@@ -211,39 +354,6 @@ drsym_error_t
 drsym_search_symbols(const char *modpath, const char *match, bool full,
                      drsym_enumerate_cb callback, void *data);
 #endif
-
-DR_EXPORT
-/**
- * Returns true if the current standard error handle belongs to a console
- * window (viz., \p cmd).  DR's dr_printf() and dr_fprintf() do not work
- * with such console windows.  drsym_write_to_console() can be used instead.
- */
-bool
-drsym_using_console(void);
-
-DR_EXPORT
-/**
- * Writes a message to standard error in the current console window.
- * This can be used as a work around for Issue 261 where DR's
- * dr_printf() and dr_fprintf() do not work with console windows
- * (i.e., the \p cmd window).
- *
- * Unfortunately there are significant limitations to this console
- * printing support:
- * 
- *  - It does not work from the exit event.  Once the application terminates
- *    its state with csrss (toward the very end of ExitProcess), no output
- *    will show up on the console.  We have no good solution here yet as exiting
- *    early is not ideal.
- *  - It does not work at all from graphical applications, even when they are
- *    launched from a console.
- *  - In the future, with earliest injection (Issue 234), writing to the
- *    console may not work from the client init event.
- *
- * @param[in] fmt Format string, followed by printf-style args to print.
- */
-bool
-drsym_write_to_console(const char *fmt, ...);
 
 /*@}*/ /* end doxygen group */
 

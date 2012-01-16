@@ -47,7 +47,7 @@
 #endif
 /* avoid mistake of lower-case assert */
 #define assert assert_no_good_use_ASSERT_instead
-#ifdef DEBUG
+#if defined(DEBUG) && !defined(STANDALONE_DECODER)
 # ifdef INTERNAL
 /* cast to void to avoid gcc warning "statement with no effect" when used as
  * a statement and x is a compile-time false
@@ -522,6 +522,12 @@ enum {
     LOCK_RANK(eventlog_mutex), /* < datasec_selfprot_lock only for hello_message */
     LOCK_RANK(datasec_selfprot_lock),
     LOCK_RANK(thread_stats_lock),
+#ifdef LINUX
+    /* shared_itimer_lock is used in timer signal handling, which could happen at
+     * anytime, so we put it at the innermost.
+     */
+    LOCK_RANK(shared_itimer_lock), 
+#endif
     LOCK_RANK(innermost_lock), /* innermost internal lock, head of all locks list */
 };
 
@@ -912,6 +918,8 @@ uint hashtable_num_bits(uint size);
     (((reachable_region_start) < ((byte *)POINTER_MAX) - INT_MAX) ?          \
      (reachable_region_start) + INT_MAX : (byte *)POINTER_MAX)
 
+#define MAX_LOW_2GB ((byte*)(ptr_uint_t)INT_MAX)
+
 /* alignment helpers, alignment must be power of 2 */
 #define ALIGNED(x, alignment) ((((ptr_uint_t)x) & ((alignment)-1)) == 0)
 #define ALIGN_FORWARD(x, alignment) \
@@ -1005,11 +1013,14 @@ bool bitmap_check_consistency(bitmap_t b, uint bitmap_size, uint expect_free);
 # define MAX_LOG_LENGTH IF_X64_ELSE(1280, 768)
 #else
 /* need more space for printing out longer option strings */
-# define MAX_LOG_LENGTH 1384
+/* CLIENT_INTERFACE build has larger stack and 2048 option length so go bigger
+ * so clients don't have dr_printf truncated as often
+ */
+# define MAX_LOG_LENGTH IF_CLIENT_INTERFACE_ELSE(2048,1384)
 #endif
 #define MAX_LOG_LENGTH_MINUS_ONE (MAX_LOG_LENGTH-1) /* for splitting long buffers */
 
-#ifdef DEBUG
+#if defined(DEBUG) && !defined(STANDALONE_DECODER)
 # define LOG(file, mask, level, ...) do {        \
   if (stats != NULL &&                           \
       stats->loglevel >= (level) &&              \
@@ -1031,6 +1042,7 @@ bool bitmap_check_consistency(bitmap_t b, uint bitmap_size, uint expect_free);
 #  define DOLOG DOELOG
 #  define LOG_DECLARE(declaration) declaration
 # else
+/* XXX: this means LOG_DECLARE and LOG are different for non-INTERNAL */
 #  define DOLOG(level, mask, statement)
 #  define LOG_DECLARE(declaration)
 # endif /* INTERNAL */
@@ -1049,6 +1061,11 @@ bool bitmap_check_consistency(bitmap_t b, uint bitmap_size, uint expect_free);
 #endif
 void print_log(file_t logfile, uint mask, uint level, char *fmt, ...);
 void print_file(file_t f, char *fmt, ...);
+
+/* For repeated appending to a buffer.  The "sofar" var should be set
+ * to 0 by the caller before the first call to print_to_buffer.
+ */
+bool print_to_buffer(char *buf, size_t bufsz, size_t *sofar INOUT, const char *fmt, ...);
 
 char *memprot_string(uint prot);
 
@@ -1451,7 +1468,16 @@ enum {LONGJMP_EXCEPTION = 1};
 #   define DODEBUGINT(statement) /* nothing */
 #endif
 
-#ifdef DEBUG
+/* for use in CLIENT_ASSERT or elsewhere that exists even if
+ * STANDALONE_DECODER is defined, unless CLIENT_INTERFACE is off
+ */
+#if defined(DEBUG) && (defined(CLIENT_INTERFACE) || !defined(STANDALONE_DECODER))
+#   define DEBUG_EXT_DECLARE(declaration) declaration
+#else
+#   define DEBUG_EXT_DECLARE(declaration)
+#endif
+
+#if defined(DEBUG) && !defined(STANDALONE_DECODER)
 #   define DODEBUG(statement) do { statement } while (0)
 #   define DEBUG_DECLARE(declaration) declaration
 #   define DOSTATS(statement) do { statement } while (0)
@@ -1474,7 +1500,7 @@ enum {LONGJMP_EXCEPTION = 1};
         (dcontext->thread_stats)->stat##_thread
 #   define THREAD_STATS_ON(dcontext)                                    \
         (dcontext != NULL && INTERNAL_OPTION(thread_stats) &&           \
-         dcontext->thread_stats != NULL)
+         dcontext != GLOBAL_DCONTEXT && dcontext->thread_stats != NULL)
 #   define DO_THREAD_STATS(dcontext, statement) do {                    \
         if (THREAD_STATS_ON(dcontext)) {                                \
             statement;                                                  \
@@ -1707,7 +1733,7 @@ notify(syslog_event_type_t priority, bool internal, bool synch,
 #define SYSLOG_NO_OPTION_SYNCH(type, id, sub, ...) \
     SYSLOG_COMMON(false, type, id, sub, __VA_ARGS__) 
 
-#ifdef INTERNAL
+#if defined(INTERNAL) && !defined(STANDALONE_DECODER)
 # define SYSLOG_INTERNAL(type, ...) \
       SYSLOG_INTERNAL_COMMON(true, type, __VA_ARGS__)
 # define SYSLOG_INTERNAL_NO_OPTION_SYNCH(type, ...) \

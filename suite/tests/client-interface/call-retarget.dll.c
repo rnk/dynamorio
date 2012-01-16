@@ -48,22 +48,23 @@ dr_emit_flags_t bb_event(void *drcontext, void* tag, instrlist_t *bb, bool for_t
             next_next_instr = NULL;
 
         if (instr_is_nop(instr) && 
-            next_instr != NULL && instr_is_nop(next_instr) && 
-            instr_is_call_direct(next_next_instr)) {
-
-            /* The first nop followed by a direct call is a marker
-             * for the function we want to call.
-             */
-            if (target == NULL) {
-                target = instr_get_branch_target_pc(next_next_instr);
+            next_instr != NULL && instr_is_nop(next_instr)) {
+            if (instr_is_call_direct(next_next_instr)) {
+                /* The first nop followed by a direct call is a marker
+                 * for the function we want to call.
+                 */
+                if (target == NULL) {
+                    target = instr_get_branch_target_pc(next_next_instr);
+                }
+                /* The second nop followd by a direct call is a marker
+                 * for the call we want to modify.
+                 */
+                else {
+                    instr_set_branch_target_pc(next_next_instr, target);
+                    /* set the return target as the call instr to call bar */
+                    instrlist_set_return_target(bb, instr_get_app_pc(next_next_instr));
+                }
             }
-            /* The second nop followd by a direct call is a marker
-             * for the call we want to modify.
-             */
-            else {
-                instr_set_branch_target_pc(next_next_instr, target);
-            }
-
             break;
         }
     }

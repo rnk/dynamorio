@@ -80,6 +80,20 @@ if (UNIX)
     PATTERN "runstats*"
     EXCLUDE)
 
+  # Set up our debugging support for gdb in the build directory.
+  # We need to compute the final path of libdynamorio.so, with version number
+  # applied for gdb's script autoloading to work.
+  get_target_property(libdynamorio_so dynamorio LOCATION)
+  get_target_property(soversion dynamorio SOVERSION)
+  set(libdynamorio_so "${libdynamorio_so}.${soversion}")
+  execute_process(COMMAND
+    ${CMAKE_COMMAND} -E create_symlink
+    "${CMAKE_CURRENT_SOURCE_DIR}/libdynamorio.so-gdb.py"
+    "${libdynamorio_so}-gdb.py"
+    WORKING_DIRECTORY "${CMAKE_LIBRARY_OUTPUT_DIRECTORY}"
+    OUTPUT_QUIET)
+  configure_file(gdbinit ${CMAKE_BINARY_DIR}/.gdbinit)
+
   DR_install(TARGETS nudgeunix DESTINATION ${INSTALL_BIN})
 else (UNIX)
   # FIXME i#98: eventually upgrade to W4 with pragma exceptions.
@@ -166,3 +180,14 @@ else (UNIX)
   DR_install(TARGETS ${tgts} DESTINATION "${INSTALL_BIN}")
 
 endif (UNIX)
+
+if (X64)
+  set(SYMSFX "64")
+else (X64)
+  set(SYMSFX "")
+endif (X64)
+
+DR_install(FILES
+  "${CMAKE_CURRENT_SOURCE_DIR}/windbg-scripts/load_syms${SYMSFX}"
+  DESTINATION "${INSTALL_BIN}"
+  RENAME "load_syms${SYMSFX}.txt")

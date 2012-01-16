@@ -25,14 +25,16 @@
  *
  * Handles tailcalls made via direct jump.
  *
- * XXX: does not handle tailcalls made via indirect jump: so if the
- * containing call and the indirect tailcall target are both wrapped,
- * the indirect post cb will be missed.
+ * XXX: does not handle tailcalls made via indirect jump that are not
+ * via a simple address table: so if the containing call and the
+ * indirect tailcall target are both wrapped, the indirect post cb
+ * will be missed.
  */
 
 #include "dr_api.h"
 #include "drmgr.h"
 #include "hashtable.h"
+#include "drvector.h"
 #include <string.h>
 
 /* currently using asserts on internal logic sanity checks (never on
@@ -57,11 +59,20 @@ typedef struct _wrap_entry_t {
     app_pc func;
     void (*pre_cb)(void *, OUT void **);
     void (*post_cb)(void *, void *);
+    /* To support delayed removal.  We don't set pre_cb and post_cb
+     * to NULL instead b/c we want to support re-wrapping.
+     */
+    bool enabled;
     struct _wrap_entry_t *next;
 } wrap_entry_t;
 
 #define WRAP_TABLE_HASH_BITS 6
 static hashtable_t wrap_table;
+/* We need recursive locking on the table to support drwrap_unwrap
+ * being called from a post event so we use this lock instead of
+ * hashtable_lock(&wrap_table)
+ */
+static void *wrap_lock;
 
 static void
 wrap_entry_free(void *v)
@@ -76,32 +87,30 @@ wrap_entry_free(void *v)
     }
 }
 
-static bool
-is_wrapped_routine(app_pc pc)
-{
-    bool res;
-    hashtable_lock(&wrap_table);
-    res = (hashtable_lookup(&wrap_table, (void *)pc) != NULL);
-    hashtable_unlock(&wrap_table);
-    return res;
-}
-
 /* TLS.  OK to be callback-shared: just more nesting. */
 static int tls_idx;
 
 /* We could dynamically allocate: for now assuming no truly recursive func */
 #define MAX_WRAP_NESTING 64
 
+/* When a wrapping is disabled, we lazily flush, b/c it's less costly to
+ * execute the already-instrumented pre and post points than to do a flush.
+ * Only after enough executions do we decide the flush is worthwhile.
+ */
+#define DISABLED_COUNT_FLUSH_THRESHOLD 1024
+/* Lazy removal and flushing.  Protected by wrap_lock. */
+static uint disabled_count;
+
 typedef struct _per_thread_t {
     int wrap_level;
     /* record which wrap routine */
     app_pc last_wrap_func[MAX_WRAP_NESTING];
-    /* handle nested tailcalls */
-    app_pc tailcall_target[MAX_WRAP_NESTING];
-    app_pc tailcall_post_call[MAX_WRAP_NESTING];
+    /* record app esp to handle tailcalls, etc. */
+    reg_t app_esp[MAX_WRAP_NESTING];
     /* user_data for passing between pre and post cbs */
     size_t user_data_count[MAX_WRAP_NESTING];
     void **user_data[MAX_WRAP_NESTING];
+    void **user_data_pre_cb[MAX_WRAP_NESTING];
     void **user_data_post_cb[MAX_WRAP_NESTING];
     /* whether to skip */
     bool skip[MAX_WRAP_NESTING];
@@ -130,7 +139,6 @@ typedef struct _post_call_entry_t {
      * says "please add instru for this callee" and one saying "all
      * existing fragments have instru"
      */
-    app_pc callee;
     bool existing_instrumented;
 } post_call_entry_t;
 
@@ -329,6 +337,9 @@ drwrap_event_bb_insert(void *drcontext, void *tag, instrlist_t *bb, instr_t *ins
 static void
 drwrap_event_module_unload(void *drcontext, const module_data_t *info);
 
+static void
+drwrap_fragment_delete(void *dc/*may be NULL*/, void *tag);
+
 
 /***************************************************************************
  * INIT
@@ -366,7 +377,9 @@ drwrap_init(void)
     hashtable_init_ex(&post_call_table, POST_CALL_TABLE_HASH_BITS, HASH_INTPTR,
                       false/*!str_dup*/, false/*!synch*/, post_call_entry_free,
                       NULL, NULL);
+    wrap_lock = dr_recurlock_create();
     dr_register_module_unload_event(drwrap_event_module_unload);
+    dr_register_delete_event(drwrap_fragment_delete);
 
     tls_idx = drmgr_register_tls_field();
     if (tls_idx == -1)
@@ -394,6 +407,7 @@ drwrap_exit(void)
     hashtable_delete(&wrap_table);
     hashtable_delete(&call_site_table);
     hashtable_delete(&post_call_table);
+    dr_recurlock_destroy(wrap_lock);
     drmgr_exit();
 
     dr_mutex_unlock(exit_lock);
@@ -410,19 +424,32 @@ drwrap_thread_init(void *drcontext)
 }
 
 static void
+drwrap_free_user_data(void *drcontext, per_thread_t *pt, int i)
+{
+    if (pt->user_data[i] != NULL) {
+        dr_thread_free(drcontext, pt->user_data[i],
+                       sizeof(void*)*pt->user_data_count[i]);
+        pt->user_data[i] = NULL;
+    }
+    if (pt->user_data_pre_cb[i] != NULL) {
+        dr_thread_free(drcontext, pt->user_data_pre_cb[i],
+                       sizeof(void*)*pt->user_data_count[i]);
+        pt->user_data_pre_cb[i] = NULL;
+    }
+    if (pt->user_data_post_cb[i] != NULL) {
+        dr_thread_free(drcontext, pt->user_data_post_cb[i],
+                       sizeof(void*)*pt->user_data_count[i]);
+        pt->user_data_post_cb[i] = NULL;
+    }
+}
+
+static void
 drwrap_thread_exit(void *drcontext)
 {
     per_thread_t *pt = (per_thread_t *) drmgr_get_tls_field(drcontext, tls_idx);
     int i;
     for (i = 0; i < MAX_WRAP_NESTING; i++) {
-        if (pt->user_data[i] != NULL) {
-            dr_thread_free(drcontext, pt->user_data[i],
-                           sizeof(void*)*pt->user_data_count[i]);
-        }
-        if (pt->user_data_post_cb[i] != NULL) {
-            dr_thread_free(drcontext, pt->user_data_post_cb[i],
-                           sizeof(void*)*pt->user_data_count[i]);
-        }
+        drwrap_free_user_data(drcontext, pt, i);
     }
     dr_thread_free(drcontext, pt, sizeof(*pt));
 }
@@ -454,7 +481,10 @@ drwrap_replace(app_pc original, app_pc replacement, bool override)
         } else
             res = hashtable_add(&replace_table, (void *)original, (void *)replacement);
     }
-    /* XXX: we're assuming void* tag == pc */
+    /* XXX: we're assuming void* tag == pc
+     * XXX: dr_fragment_exists_at only looks at the tag, so with traces
+     * we could miss a post-call (if different instr stream, not a post-call)
+     */
     if (flush || dr_fragment_exists_at(dr_get_current_drcontext(), original)) {
         /* we do not guarantee faster than a lazy flush */
         if (!dr_unlink_flush_region(original, 1))
@@ -516,6 +546,17 @@ drwrap_event_bb_app2app(void *drcontext, void *tag, instrlist_t *bb,
  * FUNCTION WRAPPING
  */
 
+static void
+drwrap_flush_func(app_pc func)
+{
+    /* we can't flush while holding the lock.
+     * we do not guarantee faster than a lazy flush.
+     */
+    ASSERT(!dr_recurlock_self_owns(wrap_lock), "cannot hold lock while flushing");
+    if (!dr_unlink_flush_region(func, 1))
+        ASSERT(false, "wrap update flush failed");
+}
+
 static app_pc
 get_retaddr_at_entry(dr_mcontext_t *mc)
 {
@@ -531,7 +572,8 @@ get_retaddr_at_entry(dr_mcontext_t *mc)
 
 /* may not return */
 static void
-drwrap_mark_retaddr_for_instru(void *drcontext, app_pc pc, drwrap_context_t *wrapcxt)
+drwrap_mark_retaddr_for_instru(void *drcontext, app_pc pc, drwrap_context_t *wrapcxt,
+                               bool enabled)
 {
     post_call_entry_t *e;
     app_pc retaddr = wrapcxt->retaddr;
@@ -549,7 +591,6 @@ drwrap_mark_retaddr_for_instru(void *drcontext, app_pc pc, drwrap_context_t *wra
     if (e == NULL || !e->existing_instrumented) {
         if (e == NULL) {
             e = (post_call_entry_t *) dr_global_alloc(sizeof(*e));
-            e->callee = pc;
             e->existing_instrumented = false;
             hashtable_add(&post_call_table, (void*)retaddr, (void*)e);
         }
@@ -561,6 +602,15 @@ drwrap_mark_retaddr_for_instru(void *drcontext, app_pc pc, drwrap_context_t *wra
             /* I'd use dr_unlink_flush_region but it requires -enable_full_api */
             /* unlock for the flush */
             hashtable_unlock(&post_call_table);
+            if (!enabled) {
+                /* We have to continue to instrument post-wrap points
+                 * to avoid unbalanced pre vs post hooks, but these flushes
+                 * are expensive so let's get rid of the disabled wraps.
+                 */
+                dr_recurlock_lock(wrap_lock);
+                disabled_count = DISABLED_COUNT_FLUSH_THRESHOLD + 1;
+                dr_recurlock_unlock(wrap_lock);
+            }
             /* XXX: have a STATS mechanism to count flushes and add call
              * site analysis if too many flushes
              */
@@ -573,7 +623,7 @@ drwrap_mark_retaddr_for_instru(void *drcontext, app_pc pc, drwrap_context_t *wra
             if (e != NULL) /* selfmod could disappear once have PR 408529 */
                 e->existing_instrumented = true;
             hashtable_unlock(&post_call_table);
-            /* Since the flush will remove the fragment we're already in,
+            /* Since the flush may remove the fragment we're already in,
              * we have to redirect execution to the callee again.
              */
             wrapcxt->mc->xip = pc;
@@ -592,16 +642,18 @@ drwrap_in_callee(app_pc pc)
     void *drcontext = dr_get_current_drcontext();
     per_thread_t *pt = (per_thread_t *) drmgr_get_tls_field(drcontext, tls_idx);
     wrap_entry_t *wrap, *e;
-    dr_mcontext_t mc = {sizeof(mc),};
+    dr_mcontext_t mc;
     uint idx;
     drwrap_context_t wrapcxt;
+    mc.size = sizeof(mc);
+    mc.flags = DR_MC_ALL; /* b/c we might call dr_redirect_execution() */
     ASSERT(pc != NULL, "drwrap_in_callee: pc is NULL!");
     ASSERT(pt != NULL, "drwrap_in_callee: pt is NULL!");
 
     dr_get_mcontext(drcontext, &mc);
     drwrap_context_init(&wrapcxt, pc, &mc, get_retaddr_at_entry(&mc));
 
-    hashtable_lock(&wrap_table);
+    dr_recurlock_lock(wrap_lock);
 
     /* ensure we have post-call instru */
     wrap = hashtable_lookup(&wrap_table, (void *)pc);
@@ -609,15 +661,16 @@ drwrap_in_callee(app_pc pc)
         if (wrapcxt.retaddr != NULL) {
             hashtable_lock(&post_call_table);
             if (hashtable_lookup(&post_call_table, (void*)wrapcxt.retaddr) == NULL) {
+                bool enabled = wrap->enabled;
                 /* this function may not return: but in that case it will redirect
                  * and we'll come back here to do the wrapping.
                  * release all locks.
                  */
                 hashtable_unlock(&post_call_table);
-                hashtable_unlock(&wrap_table);
-                drwrap_mark_retaddr_for_instru(drcontext, pc, &wrapcxt);
+                dr_recurlock_unlock(wrap_lock);
+                drwrap_mark_retaddr_for_instru(drcontext, pc, &wrapcxt, enabled);
                 /* if we come back, re-lookup */
-                hashtable_lock(&wrap_table);
+                dr_recurlock_lock(wrap_lock);
                 wrap = hashtable_lookup(&wrap_table, (void *)pc);
             } else
                 hashtable_unlock(&post_call_table);
@@ -625,30 +678,49 @@ drwrap_in_callee(app_pc pc)
     }
 
     pt->wrap_level++;
+    ASSERT(pt->wrap_level >= 0, "wrapping level corrupted");
     ASSERT(pt->wrap_level < MAX_WRAP_NESTING, "max wrapped nesting reached");
     if (pt->wrap_level >= MAX_WRAP_NESTING) {
-        hashtable_unlock(&wrap_table);
+        dr_recurlock_unlock(wrap_lock);
         return; /* we'll have to skip stuff */
     }
     pt->last_wrap_func[pt->wrap_level] = pc;
+    pt->app_esp[pt->wrap_level] = mc.xsp;
+#ifdef DEBUG
+    for (idx = 0; idx < (uint) pt->wrap_level; idx++) {
+        ASSERT(pt->app_esp[idx] >= pt->app_esp[pt->wrap_level],
+               "stack pointer off: may miss post-wrap points");
+    }
+#endif
+    
     /* because the list could change between pre and post events we count
      * and store here instead of maintaining count in wrap_table
      */
     for (idx = 0, e = wrap; e != NULL; idx++, e = e->next)
         ; /* nothing */
+    /* if we skipped the postcall we didn't free prior data yet */
+    drwrap_free_user_data(drcontext, pt, pt->wrap_level);
     pt->user_data_count[pt->wrap_level] = idx;
     pt->user_data[pt->wrap_level] = dr_thread_alloc(drcontext, sizeof(void*)*idx);
+    /* we have to keep both b/c we allow one to be null (i#562) */
+    pt->user_data_pre_cb[pt->wrap_level] = dr_thread_alloc(drcontext, sizeof(void*)*idx);
     pt->user_data_post_cb[pt->wrap_level] = dr_thread_alloc(drcontext, sizeof(void*)*idx);
 
     for (idx = 0; wrap != NULL; idx++, wrap = wrap->next) {
         /* if the list does change try to match up in post */
+        pt->user_data_pre_cb[pt->wrap_level][idx] = (void *) wrap->pre_cb;
         pt->user_data_post_cb[pt->wrap_level][idx] = (void *) wrap->post_cb;
-        (*wrap->pre_cb)(&wrapcxt, &pt->user_data[pt->wrap_level][idx]);
+        if (!wrap->enabled) {
+            disabled_count++;
+            continue;
+        }
+        if (wrap->pre_cb != NULL)
+            (*wrap->pre_cb)(&wrapcxt, &pt->user_data[pt->wrap_level][idx]);
         /* was there a request to skip? */
         if (pt->skip[pt->wrap_level])
             break;
     } 
-    hashtable_unlock(&wrap_table);
+    dr_recurlock_unlock(wrap_lock);
     if (pt->skip[pt->wrap_level]) {
         /* drwrap_skip_call already adjusted the stack and pc */
         dr_redirect_execution(wrapcxt.mc);
@@ -660,19 +732,19 @@ drwrap_in_callee(app_pc pc)
 
 /* called via clean call at return address(es) of callee */
 static void
-drwrap_after_callee(app_pc pc, app_pc retaddr)
+drwrap_after_callee_func(void *drcontext, dr_mcontext_t *mc,
+                         app_pc pc, app_pc retaddr)
 {
-    void *drcontext = dr_get_current_drcontext();
     per_thread_t *pt = (per_thread_t *) drmgr_get_tls_field(drcontext, tls_idx);
-    wrap_entry_t *wrap;
-    dr_mcontext_t mc = {sizeof(mc),};
+    wrap_entry_t *wrap, *next;
     uint idx;
     drwrap_context_t wrapcxt;
+    drvector_t toflush = {0,};
+    bool do_flush = false;
     ASSERT(pc != NULL, "drwrap_after_callee: pc is NULL!");
     ASSERT(pt != NULL, "drwrap_after_callee: pt is NULL!");
 
-    dr_get_mcontext(drcontext, &mc);
-    drwrap_context_init(&wrapcxt, pc, &mc, retaddr);
+    drwrap_context_init(&wrapcxt, pc, mc, retaddr);
 
     if (pt->wrap_level >= MAX_WRAP_NESTING) {
         pt->wrap_level--;
@@ -684,134 +756,131 @@ drwrap_after_callee(app_pc pc, app_pc retaddr)
         return; /* skip the post-func cbs */
     }
 
-    /* process any skipped post-tailcall events */
-    while (pt->wrap_level > 0 &&
-           /* tailcall was recorded at cur level minus one */
-           pt->tailcall_target[pt->wrap_level - 1] != NULL) {
-        /* We've missed the return from a tailcalled alloc routine,
-         * so process that now before this "outer" return.  PR 418138.
-         */
-        app_pc inner_func = pt->tailcall_target[pt->wrap_level - 1];
-        app_pc inner_post = pt->tailcall_post_call[pt->wrap_level - 1];
-        /* If the tailcall was not an exit from the outer (e.g., it's
-         * an exit from a helper routine) just clear and proceed.
-         * We assume no self-recursive tailcalls.
-         */
-        pt->tailcall_target[pt->wrap_level - 1] = NULL;
-        pt->tailcall_post_call[pt->wrap_level - 1] = NULL;
-        if (inner_func != pc) {
-            /* tailcall bypassed inner_func before outer func */
-            ASSERT(pt->wrap_level > 1, "tailcall mistake");
-            drwrap_after_callee(inner_func, inner_post);
-        }
-    }
-    if (pt->wrap_level < MAX_WRAP_NESTING &&
-        pt->last_wrap_func[pt->wrap_level] != pc) {
-        /* a jump or other transfer to a post-call site, where the
-         * transfer happens inside a heap routine and so we can't use
-         * the wrap_level==0 check above.  we distinguish
-         * from a real post-call by comparing the last_wrap_func.
-         * this was hit in PR 465516.
-         */
-        return;
-    }
-
-    hashtable_lock(&wrap_table);
+    dr_recurlock_lock(wrap_lock);
     wrap = hashtable_lookup(&wrap_table, (void *)pc);
-    for (idx = 0; wrap != NULL; idx++, wrap = wrap->next) {
+    for (idx = 0; wrap != NULL; idx++, wrap = next) {
         /* handle the list changing between pre and post events */
         uint tmp = idx;
+        /* handle drwrap_unwrap being called in post_cb */
+        next = wrap->next;
+        if (!wrap->enabled) {
+            disabled_count++;
+            continue;
+        }
         /* we may have to skip some entries */
         for (; idx < pt->user_data_count[pt->wrap_level]; idx++) {
-            if (wrap->post_cb == pt->user_data_post_cb[pt->wrap_level][idx])
+            /* we have to check both b/c we allow one to be null (i#562) */
+            if (wrap->pre_cb == pt->user_data_pre_cb[pt->wrap_level][idx] &&
+                wrap->post_cb == pt->user_data_post_cb[pt->wrap_level][idx])
                 break; /* all set */
         }
         if (idx == pt->user_data_count[pt->wrap_level]) {
-            /* we didn't find it, it must be new, so had no pre => skip post */
+            /* we didn't find it, it must be new, so had no pre => skip post
+             * (even if only has post, to be consistent w/ timing)
+             */
             idx = tmp; /* reset */
-        } else {
+        } else if (wrap->post_cb != NULL) {
             (*wrap->post_cb)(&wrapcxt, pt->user_data[pt->wrap_level][idx]);
+            /* note that at this point wrap might be deleted */
         }
     } 
-    hashtable_unlock(&wrap_table);
+    if (disabled_count > DISABLED_COUNT_FLUSH_THRESHOLD) {
+        /* Lazy removal and flushing.  To be non-lazy requires storing
+         * info inside unwrap and/or limiting when unwrap can be called.
+         * Lazy also means a wrap reversing an unwrap doesn't cost anything.
+         * More importantly, flushes are expensive, so we batch them up here.
+         * We can't flush while holding the lock so we use a local vector.
+         */
+        uint i;
+        drvector_init(&toflush, 10, false/*no synch: wrapcxt-local*/, NULL);
+        for (i = 0; i < HASHTABLE_SIZE(wrap_table.table_bits); i++) {
+            hash_entry_t *he, *next_he;
+            for (he = wrap_table.table[i]; he != NULL; he = next_he) {
+                wrap_entry_t *prev = NULL, *next;
+                next_he = he->next; /* allow removal */
+                for (wrap = (wrap_entry_t *) he->payload; wrap != NULL;
+                     prev = wrap, wrap = next) {
+                    next = wrap->next;
+                    if (!wrap->enabled) {
+                        if (prev == NULL) {
+                            if (next == NULL) {
+                                /* No wrappings left for this function so
+                                 * let's flush it
+                                 */
+                                drvector_append(&toflush, (void *)wrap->func);
+                                hashtable_remove(&wrap_table, (void *)wrap->func);
+                                wrap = NULL; /* don't double-free */
+                            } else {
+                                hashtable_add_replace(&wrap_table, (void *)wrap->func,
+                                                      (void *)next);
+                            }
+                        } else
+                            prev->next = next;
+                        if (wrap != NULL)
+                            dr_global_free(wrap, sizeof(*wrap));
+                    }
+                }
+            }
+        }
+        do_flush = true;
+        disabled_count = 0;
+    }
+    dr_recurlock_unlock(wrap_lock);
     if (wrapcxt.mc_modified)
         dr_set_mcontext(drcontext, wrapcxt.mc);
 
-    dr_thread_free(drcontext, pt->user_data[pt->wrap_level],
-                   sizeof(void*)*pt->user_data_count[pt->wrap_level]);
-    dr_thread_free(drcontext, pt->user_data_post_cb[pt->wrap_level],
-                   sizeof(void*)*pt->user_data_count[pt->wrap_level]);
-    pt->user_data[pt->wrap_level] = NULL;
-    pt->user_data_post_cb[pt->wrap_level] = NULL;
+    if (do_flush) {
+        /* handle delayed flushes while holding no lock 
+         * XXX: optimization: combine nearby addresses to reduce # flushes
+         */
+        uint i;
+        for (i = 0; i < toflush.entries; i++)
+            drwrap_flush_func((app_pc)toflush.array[i]);
+        drvector_delete(&toflush);
+    }
+
+    drwrap_free_user_data(drcontext, pt, pt->wrap_level);
 
     ASSERT(pt->wrap_level >= 0, "internal wrapping error");
     pt->wrap_level--;
 }
 
-/* called via clean call at tailcall jmp
- * post_call is the address after the jmp instr
- */
+/* called via clean call at return address(es) of callee */
 static void
-drwrap_handle_tailcall(app_pc callee, app_pc post_call)
+drwrap_after_callee(app_pc retaddr)
 {
-    /* For a func that uses a tailcall to call an alloc routine, we have
-     * to get the retaddr dynamically.
-     */
     void *drcontext = dr_get_current_drcontext();
     per_thread_t *pt = (per_thread_t *) drmgr_get_tls_field(drcontext, tls_idx);
-    /* ignore tailcall at very outer: we'll process at subsequent retaddr */
-    if (pt->wrap_level >= 0) {
-        /* Store the target so we can process both this and the "outer"
-         * alloc routine at the outer's post-call point (PR 418138).
-         */
-        ASSERT(pt->tailcall_target[pt->wrap_level] == NULL,
-               "tailcall var not cleaned up");
-        pt->tailcall_target[pt->wrap_level] = callee;
-        pt->tailcall_post_call[pt->wrap_level] = post_call;
-    }
-}
+    dr_mcontext_t mc;
+    mc.size = sizeof(mc);
+    mc.flags = DR_MC_ALL; /* client might examine multimedia regs */
+    ASSERT(pt != NULL, "drwrap_after_callee: pt is NULL!");
+    dr_get_mcontext(drcontext, &mc);
 
-static void
-drwrap_check_for_tailcall(void *drcontext, instrlist_t *bb, instr_t *inst)
-{
-    /* Look for tail call */
-    bool is_tail_call = false;
-    app_pc target;
-    dr_mcontext_t mc = {sizeof(mc),};
-    if (instr_get_opcode(inst) != OP_jmp)
-        return;
-    if (!dr_get_mcontext(drcontext, &mc)) {
-        ASSERT(false, "unable to get mc");
+    if (pt->wrap_level < 0) {
+        /* jump or other method of targeting post-call site w/o executing
+         * call; or, did an indirect call that no longer matches */
         return;
     }
-    target = opnd_get_pc(instr_get_target(inst));
-    if (is_wrapped_routine(target)) {
-        is_tail_call = true;
-    } else {
-        /* May jmp to plt jmp* */
-        instr_t callee;
-        instr_init(drcontext, &callee);
-        if (decode(drcontext, target, &callee) != NULL &&
-            instr_get_opcode(&callee) == OP_jmp_ind) {
-            opnd_t opnd = instr_get_target(&callee);
-            size_t read;
-            if (opnd_is_base_disp(opnd) && opnd_get_base(opnd) == DR_REG_NULL &&
-                opnd_get_index(opnd) == DR_REG_NULL) {
-                if (dr_safe_read(opnd_compute_address(opnd, &mc), sizeof(target),
-                                 &target, &read) && 
-                    read == sizeof(target) &&
-                    is_wrapped_routine(target))
-                    is_tail_call = true;
-            }
-        }
-        instr_free(drcontext, &callee);
-    }
-    if (is_tail_call) {
-        /* at runtime we'll record the tailcall so we can process it post-caller */
-        app_pc post_call = instr_get_app_pc(inst) + instr_length(drcontext, inst);
-        dr_insert_clean_call(drcontext, bb, inst, (void *)drwrap_handle_tailcall,
-                             false, 2, OPND_CREATE_INTPTR((ptr_int_t)target),
-                             OPND_CREATE_INTPTR((ptr_int_t)post_call));
+
+    /* process post for all funcs whose frames we bypassed.
+     * we assume they were all bypassed b/c of tailcalls and that their
+     * posts should be called (on an exception we clear out our data
+     * and won't come here; for longjmp we assume we want to call the post
+     * although the retval won't be there...XXX).
+     *
+     * we no longer store the callee for a post-call site b/c there
+     * can be multiple and it's complex to control which one is used
+     * (outer or inner or middle) consistently.  we don't need the
+     * callee to distinguish a jump or other transfer to a post-call
+     * site where the transfer happens inside a wrapped routine (passing
+     * the wrap_level==0 check above) b/c our stack
+     * check will identify whether we've left any wrapped routines we
+     * entered.
+     */
+    while (pt->wrap_level >= 0 && pt->app_esp[pt->wrap_level] < mc.xsp) {
+        drwrap_after_callee_func(drcontext, &mc,
+                                 pt->last_wrap_func[pt->wrap_level], retaddr);
     }
 }
 
@@ -836,60 +905,55 @@ drwrap_event_bb_insert(void *drcontext, void *tag, instrlist_t *bb, instr_t *ins
      * and flush, under the assumption that we won't have already seen the
      * return point and so won't have to incur the cost of a flush very often
      */
-    hashtable_lock(&wrap_table);
+    dr_recurlock_lock(wrap_lock);
     wrap = hashtable_lookup(&wrap_table, (void *)pc);
     if (wrap != NULL) {
         dr_insert_clean_call(drcontext, bb, inst, (void *)drwrap_in_callee,
                              false, 1, OPND_CREATE_INTPTR((ptr_int_t)pc));
     }
-    hashtable_unlock(&wrap_table);
+    dr_recurlock_unlock(wrap_lock);
 
     hashtable_lock(&post_call_table);
     post = (post_call_entry_t *) hashtable_lookup(&post_call_table, (void*)pc);
     if (post != NULL) {
+        post->existing_instrumented = true;
         dr_insert_clean_call(drcontext, bb, inst, (void *)drwrap_after_callee,
-                             false, 2,
-                             OPND_CREATE_INTPTR((ptr_int_t)post->callee),
+                             false, 1,
                              OPND_CREATE_INTPTR((ptr_int_t)pc));
     }
     hashtable_unlock(&post_call_table);
 
-    drwrap_check_for_tailcall(drcontext, bb, inst);
-
     return DR_EMIT_DEFAULT;
-}
-
-/* removes all entries with key in [start..end)
- * hashtable must use caller-synch
- * XXX: add to drcontainers
- */
-static void
-hashtable_remove_range(hashtable_t *table, byte *start, byte *end)
-{
-    uint i;
-    hashtable_lock(table);
-    for (i = 0; i < HASHTABLE_SIZE(table->table_bits); i++) {
-        hash_entry_t *he, *nxt;
-        for (he = table->table[i]; he != NULL; he = nxt) {
-            /* support hashtable_remove() while iterating */
-            nxt = he->next;
-            if ((byte *)he->key >= start && (byte *)he->key < end) {
-                hashtable_remove(table, he->key);
-            }
-        }
-    }
-    hashtable_unlock(table);
 }
 
 static void
 drwrap_event_module_unload(void *drcontext, const module_data_t *info)
 {
-    /* XXX i#114: should also remove from post_call_table and call_site_table
+    /* XXX: should also remove from post_call_table and call_site_table
      * on other code modifications: for now we assume no such
-     * changes to app code.
+     * changes to app code that's being targeted for wrapping.
      */
-    hashtable_remove_range(&call_site_table, info->start, info->end);
-    hashtable_remove_range(&post_call_table, info->start, info->end);
+    hashtable_remove_range(&call_site_table, (void *)info->start, (void *)info->end);
+    hashtable_remove_range(&post_call_table, (void *)info->start, (void *)info->end);
+}
+
+static void
+drwrap_fragment_delete(void *dc/*may be NULL*/, void *tag)
+{
+    /* For post_call_table, just like in our use of dr_fragment_exists_at, we
+     * assume no traces and that we only care about fragments starting there.
+     *
+     * XXX: if we had DRi#409 we could avoid doing this removal on
+     * non-cache-consistency deletion: though usually if we remove on our
+     * own flush we should re-mark as post-call w/o another flush since in
+     * most cases the post-call is reached via the call.
+     *
+     * An alternative would be to not remove here, to store the
+     * pre-call bytes, and to check on new bbs whether they changed.
+     */
+    hashtable_lock(&post_call_table);
+    hashtable_remove(&post_call_table, tag);
+    hashtable_unlock(&post_call_table);
 }
 
 DR_EXPORT
@@ -900,24 +964,29 @@ drwrap_wrap(app_pc func,
 {
     wrap_entry_t *wrap_cur, *wrap_new;
 
-    if (func == NULL || pre_func_cb == NULL || post_func_cb == NULL)
+    /* allow one side to be NULL (i#562) */
+    if (func == NULL || (pre_func_cb == NULL && post_func_cb == NULL))
         return false;
 
     wrap_new = dr_global_alloc(sizeof(*wrap_new));
     wrap_new->func = func;
     wrap_new->pre_cb = pre_func_cb;
     wrap_new->post_cb = post_func_cb;
+    wrap_new->enabled = true;
 
-    hashtable_lock(&wrap_table);
+    dr_recurlock_lock(wrap_lock);
     wrap_cur = hashtable_lookup(&wrap_table, (void *)func);
     if (wrap_cur != NULL) {
         /* we add in reverse order (documented in interface) */
         wrap_entry_t *e;
         /* things will break down w/ duplicate cbs */
         for (e = wrap_cur; e != NULL; e = e->next) {
-            if (e->pre_cb == pre_func_cb || e->post_cb == post_func_cb) {
+            if ((e->pre_cb != NULL && e->pre_cb == pre_func_cb) ||
+                (e->post_cb != NULL && e->post_cb == post_func_cb)) {
+                /* matches existing request: re-enable if necessary */
+                e->enabled = true;
                 dr_global_free(wrap_new, sizeof(*wrap_new));
-                hashtable_unlock(&wrap_table);
+                dr_recurlock_unlock(wrap_lock);
                 return false;
             }
         }
@@ -933,45 +1002,37 @@ drwrap_wrap(app_pc func,
                 ASSERT(false, "wrap update flush failed");
         }
     }
-    hashtable_unlock(&wrap_table);
+    dr_recurlock_unlock(wrap_lock);
     return true;
 }
 
 DR_EXPORT
 bool
 drwrap_unwrap(app_pc func,
-              void (*pre_func_cb)(void *wrapcxt, OUT void **user_data))
+              void (*pre_func_cb)(void *wrapcxt, OUT void **user_data),
+              void (*post_func_cb)(void *wrapcxt, void *user_data))
 {
     wrap_entry_t *wrap;
     bool res = false;
 
-    hashtable_lock(&wrap_table);
+    if (func == NULL ||
+        (pre_func_cb == NULL && post_func_cb == NULL))
+        return false;
+
+    dr_recurlock_lock(wrap_lock);
     wrap = hashtable_lookup(&wrap_table, (void *)func);
-    if (wrap != NULL) {
-        wrap_entry_t *prev;
-        for (prev = NULL; wrap != NULL; prev = wrap, wrap = wrap->next) {
-            if (wrap->pre_cb == pre_func_cb)
-                break;
-        }
-        if (wrap != NULL) {
+    for (; wrap != NULL; wrap = wrap->next) {
+        if (wrap->pre_cb == pre_func_cb &&
+            wrap->post_cb == post_func_cb) {
+            /* We use lazy removal and flushing to avoid complications of
+             * removing and flushing from a post-wrap callback (it's currently
+             * iterating, and it holds a lock).
+             */
+            wrap->enabled = false;
             res = true;
-            if (prev == NULL) {
-                if (wrap->next == NULL) {
-                    hashtable_remove(&wrap_table, (void *)func);
-                    wrap = NULL; /* don't double-free */
-                    /* we do not guarantee faster than a lazy flush */
-                    if (!dr_unlink_flush_region(func, 1))
-                        ASSERT(false, "wrap update flush failed");
-                } else {
-                    hashtable_add_replace(&wrap_table, (void *)func, (void *)wrap->next);
-                }
-            } else {
-                prev->next = wrap->next;
-            }
-            if (wrap != NULL)
-                dr_global_free(wrap, sizeof(*wrap));
+            break;
         }
     }
-    hashtable_unlock(&wrap_table);
+    dr_recurlock_unlock(wrap_lock);
     return res;
 }

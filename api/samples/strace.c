@@ -109,8 +109,13 @@ dr_init(client_id_t id)
                                         event_thread_context_exit);
     DR_ASSERT(tcls_idx != -1);
 #ifdef SHOW_RESULTS
-    if (dr_is_notify_on())
-	dr_fprintf(STDERR, "Client strace is running\n");
+    if (dr_is_notify_on()) {
+# ifdef WINDOWS
+        /* ask for best-effort printing to cmd window.  must be called in dr_init(). */
+        dr_enable_console_printing();
+# endif
+        dr_fprintf(STDERR, "Client strace is running\n");
+    }
 #endif
 }
 
@@ -214,7 +219,7 @@ event_pre_syscall(void *drcontext, int sysnum)
             return true; /* data unreadable: execute normally */
         if (dr_is_wow64()) {
             /* store the xcx emulation parameter for wow64 */
-            dr_mcontext_t mc = {sizeof(mc),};
+            dr_mcontext_t mc = {sizeof(mc),DR_MC_INTEGER/*only need xcx*/};
             dr_get_mcontext(drcontext, &mc);
             data->xcx = mc.xcx;
         }
@@ -286,7 +291,7 @@ event_post_syscall(void *drcontext, int sysnum)
                  * need to determine the parameter from the ntdll
                  * wrapper.
                  */
-                dr_mcontext_t mc = {sizeof(mc),};
+                dr_mcontext_t mc = {sizeof(mc),DR_MC_INTEGER/*only need xcx*/};
                 dr_get_mcontext(drcontext, &mc);
                 mc.xcx = data->xcx;
                 dr_set_mcontext(drcontext, &mc);

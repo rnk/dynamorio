@@ -33,13 +33,10 @@
 /* Test the clean call inliner. */
 
 #include "dr_api.h"
+#include "client_tools.h"
+
 #include <stddef.h> /* offsetof */
 #include <string.h> /* memset */
-
-#define ALIGN_BACKWARD(x, alignment) \
-        (((ptr_uint_t)x) & (~((ptr_uint_t)(alignment)-1)))
-#define ALIGN_FORWARD(x, alignment) \
-        ((((ptr_uint_t)x) + (((ptr_uint_t)alignment)-1)) & (~(((ptr_uint_t)alignment)-1)))
 
 #define CALLEE_ALIGNMENT 64
 
@@ -219,9 +216,9 @@ free_instrumentation_funcs(void)
 ptr_uint_t count;
 static uint callee_inlined;
 
-static dr_mcontext_t before_mcontext = {sizeof(before_mcontext),};
+static dr_mcontext_t before_mcontext = {sizeof(before_mcontext),DR_MC_ALL,};
 static int before_errno;
-static dr_mcontext_t after_mcontext = {sizeof(after_mcontext),};
+static dr_mcontext_t after_mcontext = {sizeof(after_mcontext),DR_MC_ALL,};
 static int after_errno;
 
 static void

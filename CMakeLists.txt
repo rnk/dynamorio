@@ -1,5 +1,5 @@
 # **********************************************************
-# Copyright (c) 2010-2011 Google, Inc.    All rights reserved.
+# Copyright (c) 2010-2012 Google, Inc.    All rights reserved.
 # Copyright (c) 2009-2010 VMware, Inc.    All rights reserved.
 # **********************************************************
 
@@ -128,13 +128,13 @@ include(CheckCCompilerFlag)
 
 # configurations that also have defines
 option(DEBUG "build with asserts and logging enabled")
-option(DRGUI_DEMO "build DRgui with a giant font for projecting")
+option(DRGUI_DEMO "build DRgui without the no-longer-supported Run, etc. controls" ON)
 
 # INTERNAL option now matches DEBUG
 if (DEBUG)
   set(INTERNAL_DEFAULT ON)
 else (DEBUG)
-  set(INTERNAL_DEFAULT 0FF)
+  set(INTERNAL_DEFAULT OFF)
 endif (DEBUG)
 set(INTERNAL "" CACHE STRING "for developer use: ON or OFF overrides default")
 if ("${INTERNAL}" STREQUAL "")
@@ -374,7 +374,7 @@ endif (EXISTS "${PROJECT_SOURCE_DIR}/.svn")
 
 # N.B.: once VERSION_NUMBER crosses 4.x we'll need to add another
 # symlink loop in core/CMakeLists.txt
-set(VERSION_NUMBER_DEFAULT "3.0.${VERSION_NUMBER_PATCHLEVEL}")
+set(VERSION_NUMBER_DEFAULT "3.1.${VERSION_NUMBER_PATCHLEVEL}")
 # do not store the default VERSION_NUMBER in the cache to prevent a stale one
 # from preventing future version updates in a pre-existing build dir
 set(VERSION_NUMBER "" CACHE STRING "Version number: leave empty for default")
@@ -599,6 +599,9 @@ if (UNIX)
     set(ASM_FLAGS "${ASM_FLAGS} --32")
     set(LD_FLAGS "-melf_i386")
   endif (X64)
+  if (DEBUG)
+    set(ASM_FLAGS "${ASM_FLAGS} -g")
+  endif (DEBUG)
   # there's no cmake warning control so we hardcode it
   set(WARN "-Wall -Werror")
   if (NOT CMAKE_COMPILER_IS_CLANG)
@@ -633,6 +636,7 @@ if (UNIX)
 
   set(CPP_KEEP_COMMENTS -C)
   set(CPP_NO_LINENUM -P)
+  set(CPP_KEEP_WHITESPACE -traditional-cpp)
   set(CMAKE_CPP_FLAGS "")
 else (UNIX)
   # FIXME: why isn't ${CMAKE_CL_NOLOGO} set?
@@ -654,10 +658,12 @@ else (UNIX)
   if (GENERATE_PDBS)
     set(DBG "/Zi")
     set(LINK_DBG "/debug")
+    set(ASM_DBG "/Zi /Zd")
   else (GENERATE_PDBS)
     # xref PR 192750 - runregression uses this to avoid over-ssh pdb issues
     set(DBG "")
     set(LINK_DBG "")
+    set(ASM_DBG "")
     # Default from cmake in DEBUG and RELWITHDEBINFO has /debug
     string(REGEX REPLACE "/debug" "" CMAKE_EXE_LINKER_FLAGS
       "${CMAKE_EXE_LINKER_FLAGS}")
@@ -675,11 +681,17 @@ else (UNIX)
   set(DBG_OPT "/Od")
   set(CPP_KEEP_COMMENTS /C)
   set(CPP_NO_LINENUM /EP)
+  set(CPP_KEEP_WHITESPACE "")
   set(CMAKE_CPP_FLAGS "/nologo")
-  set(ASM_FLAGS "/nologo")
+  set(ASM_FLAGS "/nologo ${ASM_DBG}")
   set(BASE_CXXFLAGS "${BASE_CFLAGS}")
 endif (UNIX)
 
+if (UNIX)
+ # i#646: cmake 2.8.5 requires ASM-ATT to find as: but we don't want to change
+ # all our vars to have -ATT suffix so we set the search list instead
+ set(CMAKE_ASM_COMPILER_INIT gas as)
+endif (UNIX)
 enable_language(ASM)
 # note that I had to fix a bug in /usr/share/cmake/Modules/CMakeASMInformation.cmake
 # where @VAR@ expansion was used, which only works for configure_file()
@@ -834,15 +846,15 @@ if (UNIX)
         # directory components are removed, so "../lib/" is fine
         "${CMAKE_OBJCOPY} --add-gnu-debuglink=<TARGET>.debug <TARGET>"
         # We can't strip everything since a client's _USES_DR_VERSION_ will be
-        # removed, so we only strip debug (-g) and local (-x), and preserve
-        # file attributes (-p):
-        "${CMAKE_STRIP} -g -x -p <TARGET>"
+        # removed, so we only strip debug (-g) and local (-x):
+        # i#572: We used to pass -p here, but that floors the mtime.
+        "${CMAKE_STRIP} -g -x <TARGET>"
         )
       SET(CMAKE_C_LINK_EXECUTABLE
         "<CMAKE_C_COMPILER> <FLAGS> <CMAKE_C_LINK_FLAGS> <LINK_FLAGS> <OBJECTS>  -o <TARGET> <LINK_LIBRARIES>"
         "${CMAKE_OBJCOPY} --only-keep-debug <TARGET> <TARGET>.debug"
         "${CMAKE_OBJCOPY} --add-gnu-debuglink=<TARGET>.debug <TARGET>"
-        "${CMAKE_STRIP} -g -x -p <TARGET>"
+        "${CMAKE_STRIP} -g -x <TARGET>"
         )
       set(CMAKE_CXX_CREATE_SHARED_LIBRARY
         # standard rule
@@ -853,15 +865,15 @@ if (UNIX)
         # directory components are removed, so "../lib/" is fine
         "${CMAKE_OBJCOPY} --add-gnu-debuglink=<TARGET>.debug <TARGET>"
         # We can't strip everything since a client's _USES_DR_VERSION_ will be
-        # removed, so we only strip debug (-g) and local (-x), and preserve
-        # file attributes (-p):
-        "${CMAKE_STRIP} -g -x -p <TARGET>"
+        # removed, so we only strip debug (-g) and local (-x):
+        # i#572: We used to pass -p here, but that floors the mtime.
+        "${CMAKE_STRIP} -g -x <TARGET>"
         )
       SET(CMAKE_CXX_LINK_EXECUTABLE
         "<CMAKE_CXX_COMPILER> <FLAGS> <CMAKE_CXX_LINK_FLAGS> <LINK_FLAGS> <OBJECTS>  -o <TARGET> <LINK_LIBRARIES>"
         "${CMAKE_OBJCOPY} --only-keep-debug <TARGET> <TARGET>.debug"
         "${CMAKE_OBJCOPY} --add-gnu-debuglink=<TARGET>.debug <TARGET>"
-        "${CMAKE_STRIP} -g -x -p <TARGET>"
+        "${CMAKE_STRIP} -g -x <TARGET>"
         )
     endif (NOT flag_present)
   endif (EXISTS ${CMAKE_OBJCOPY} AND EXISTS ${CMAKE_STRIP})
@@ -960,8 +972,8 @@ string(REGEX REPLACE
   "^[0-9]+\\.([0-9]+)\\..*" "\\1" VERSION_NUMBER_MINOR "${VERSION_NUMBER}")
 math(EXPR VERSION_NUMBER_INTEGER
   "${VERSION_NUMBER_MAJOR}*100 + ${VERSION_NUMBER_MINOR}")
-# 3.0 broke backcompat so it's now the oldest compat
-set(OLDEST_COMPATIBLE_VERSION "300")
+# 3.0 broke backcompat and 3.1 was first release so it's now the oldest compat
+set(OLDEST_COMPATIBLE_VERSION "301")
 
 # This does a copy-if-different, so it won't trigger recompilation of
 # every single source file if no changes
@@ -1245,6 +1257,11 @@ if (BUILD_TOOLS OR WIN32)
     PATTERN "run_in_bg.debug" EXCLUDE # since not installing tool
     )
 endif (BUILD_TOOLS OR WIN32)
+
+if (DO_DR_INSTALL AND BUILD_DOCS)
+  # cannot use DR_install because it breaks at ; 
+  install(CODE "file(WRITE \"\${CMAKE_INSTALL_PREFIX}/docs/DynamoRIO.html\" \"<html>\n<head>\n<meta http-equiv=\\\"refresh\\\" content=\\\"0; URL=./html/index.html\\\">\n</head><body></body>\")")
+endif (DO_DR_INSTALL AND BUILD_DOCS)
 
 # create empty logs dir for release package
 # be sure to escape ",$ since evaluated at install time not configure time

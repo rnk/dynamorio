@@ -53,12 +53,22 @@
 
 #define VERBOSE 0
 
-#define ASSERT(x) \
+#ifdef STANDALONE_DECODER
+# define ASSERT(x) \
+    ((void)((!(x)) ? \
+        (fprintf(stderr, "ASSERT FAILURE: %s:%d: %s\n", __FILE__,  __LINE__, #x),\
+         abort(), 0) : 0))
+#else
+# define ASSERT(x) \
     ((void)((!(x)) ? \
         (dr_fprintf(STDERR, "ASSERT FAILURE: %s:%d: %s\n", __FILE__,  __LINE__, #x),\
          dr_abort(), 0) : 0))
+#endif
 
 #define BOOLS_MATCH(b1, b2) (((b1) && (b2)) || (!(b1) && !(b2)))
+
+#define BUFFER_SIZE_BYTES(buf)      sizeof(buf)
+#define BUFFER_SIZE_ELEMENTS(buf)   (BUFFER_SIZE_BYTES(buf) / sizeof(buf[0]))
 
 static byte buf[8192];
 
@@ -108,6 +118,11 @@ test_all_opcodes(void *dc)
 #   include "ir_0args.h"
 #   undef OPCODE
 
+#ifndef STANDALONE_DECODER
+    /* vs2005 cl takes many minute to compile w/ static drdecode lib
+     * so we disable part of this test since for static we just want a
+     * sanity check
+     */
 #   define OPCODE(name, opc, icnm, flags, arg1) do { \
     if ((flags & IF_X64_ELSE(X86_ONLY, X64_ONLY)) == 0) { \
         instrlist_append(ilist, INSTR_CREATE_##icnm(dc, arg1)); \
@@ -139,6 +154,7 @@ test_all_opcodes(void *dc)
     } } while (0);
 #   include "ir_4args.h"
 #   undef OPCODE
+#endif /* STANDALONE_DECODER */
 
     end = instrlist_encode(dc, ilist, buf, false);
 
@@ -155,10 +171,12 @@ test_all_opcodes(void *dc)
         pc = next_pc; \
     } } while (0);
 #   include "ir_0args.h"
+#ifndef STANDALONE_DECODER /* see above */
 #   include "ir_1args.h"
 #   include "ir_2args.h"
 #   include "ir_3args.h"
 #   include "ir_4args.h"
+#endif /* STANDALONE_DECODER */
 #   undef OPCODE
 
 #if VERBOSE
@@ -659,10 +677,50 @@ test_nop_xchg(void *dc)
 #endif
 }
 
+#ifdef X64
+static void
+test_x86_mode(void *dc)
+{
+    byte *pc, *end;
+    instr_t *instr;
+
+    /* create instr that looks different in x86 vs x64 */
+    instr = INSTR_CREATE_add(dc, opnd_create_reg(REG_RAX), OPND_CREATE_INT32(42));
+    end = instr_encode(dc, instr, buf);
+    ASSERT(end - buf < BUFFER_SIZE_ELEMENTS(buf));
+
+    /* read back in */
+    set_x86_mode(dc, false/*64-bit*/);
+    instr_reset(dc, instr);
+    pc = decode(dc, buf, instr);
+    ASSERT(pc != NULL);
+    ASSERT(instr_get_opcode(instr) == OP_add);
+
+    /* now interpret as 32-bit where rex will be an inc */
+    set_x86_mode(dc, true/*32-bit*/);
+    instr_reset(dc, instr);
+    pc = decode(dc, buf, instr);
+    ASSERT(pc != NULL);
+    ASSERT(instr_get_opcode(instr) == OP_dec);
+
+    instr_free(dc, instr);
+}
+#endif
+
 int
 main(int argc, char *argv[])
 {
+#ifdef STANDALONE_DECODER
+    void *dcontext = GLOBAL_DCONTEXT;
+#else
     void *dcontext = dr_standalone_init();
+
+    /* simple test of deadlock_avoidance, etc. being disabled in standalone */
+    void *x = dr_mutex_create();
+    dr_mutex_lock(x);
+    dr_mutex_unlock(x);
+    dr_mutex_destroy(x);
+#endif
 
     test_all_opcodes(dcontext);
 
@@ -679,6 +737,10 @@ main(int argc, char *argv[])
     test_size_changes(dcontext);
 
     test_nop_xchg(dcontext);
+
+#ifdef X64
+    test_x86_mode(dcontext);
+#endif
 
     print("all done\n");
     return 0;
