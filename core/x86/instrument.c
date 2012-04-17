@@ -4448,8 +4448,8 @@ dr_restore_arith_flags_from_xax(void *drcontext, instrlist_t *ilist,
     /* do an add such that OF will be set only if seto set
      * the MSB of saveto to 1
      */
-    MINSERT(ilist, where, INSTR_CREATE_add
-            (dcontext, opnd_create_reg(REG_AL), OPND_CREATE_INT8(0x7f)));
+    MINSERT(ilist, where,
+            INSTR_CREATE_add(dcontext, opnd_create_reg(REG_AL), OPND_CREATE_INT8(0x7f)));
     MINSERT(ilist, where, INSTR_CREATE_sahf(dcontext));
 }
 

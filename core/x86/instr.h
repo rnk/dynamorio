@@ -1182,6 +1182,8 @@ DR_API
  * the 64-bit version of \p reg.
  * Returns \p DR_REG_NULL when trying to get the 8-bit subregister of \p
  * DR_REG_ESI, \p DR_REG_EDI, \p DR_REG_EBP, or \p DR_REG_ESP in 32-bit mode.
+ *
+ * \deprecated Prefer reg_resize_to_opsz() which is more general.
  */
 reg_id_t
 reg_32_to_opsz(reg_id_t reg, opnd_size_t sz);
@@ -1197,7 +1199,7 @@ DR_API
  * version of \p reg.
  */
 reg_id_t
-reg_to_opsz(reg_id_t reg, opnd_size_t sz);
+reg_resize_to_opsz(reg_id_t reg, opnd_size_t sz);
 
 DR_API
 /**  
