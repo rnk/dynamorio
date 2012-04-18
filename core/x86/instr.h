@@ -1192,7 +1192,7 @@ DR_API
 /**
  * Given a general-purpose register of any size, returns a register in the same
  * class of the given size.  For example, given \p DR_REG_AX or \p DR_REG_RAX
- * and \p OPSZ_8, this routine will return \p DR_REG_AL.
+ * and \p OPSZ_1, this routine will return \p DR_REG_AL.
  * Returns \p DR_REG_NULL when trying to get the 8-bit subregister of \p
  * DR_REG_ESI, \p DR_REG_EDI, \p DR_REG_EBP, or \p DR_REG_ESP in 32-bit mode.
  * For 64-bit versions of this library, if \p sz == OPSZ_8, returns the 64-bit

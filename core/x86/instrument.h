@@ -2185,8 +2185,8 @@ DR_API
  * Looks up the module containing \p pc.  If a module containing \p pc is found
  * returns a module_data_t describing that module.  Returns NULL if \p pc is
  * outside all known modules, which is the case for most dynamically generated
- * code.  Can be used to obtain a module_handle_t for
- * dr_lookup_module_section().
+ * code.  Can be used to obtain a module_handle_t for dr_lookup_module_section()
+ * or dr_get_proc_address() via the \p handle field inside module_data_t.
  *
  * \note Returned module_data_t must be freed with dr_free_module_data().
  */
@@ -3330,7 +3330,7 @@ DR_API
  * routine unless it is first saved (and later restored prior to
  * using dr_restore_arith_flags()).
  *
- * \deprecated This routine is equivalent to dr_save_reg() and
+ * \deprecated This routine is equivalent to dr_save_reg() followed by
  * dr_save_arith_flags_to_xax().
  */
 void 
@@ -3344,7 +3344,7 @@ DR_API
  * slot \p slot and that xax holds the same value it did after the save.
  *
  * \deprecated This routine is equivalent to dr_restore_arith_flags_from_xax()
- * and dr_restore_reg().
+ * followed by dr_restore_reg().
  */
 void 
 dr_restore_arith_flags(void *drcontext, instrlist_t *ilist, instr_t *where,
@@ -3361,7 +3361,7 @@ DR_API
  * this routine, they must use separate spill slots, or they will overwrite the
  * original xax value in memory.
  *
- * \warning Clobbers xax, the caller must ensure xax is dead or saved at
+ * \warning Clobbers xax; the caller must ensure xax is dead or saved at
  * \p where.
  */
 void 
