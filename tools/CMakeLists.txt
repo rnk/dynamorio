@@ -39,6 +39,10 @@ if (UNIX)
     ${PROJECT_SOURCE_DIR}/core/lib
     )
 
+  # New drrun variant that uses experimental ptrace injection on Linux.
+  add_executable(drrun_inject drrun_inject.c)
+  target_link_libraries(drrun_inject dynamorio)
+
   # we generate 3 different scripts from drdeploy.in
   if (X64)
     set(archdefault 64)

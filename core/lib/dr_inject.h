@@ -33,11 +33,8 @@
 #ifndef _DR_INJECT_H_
 #define _DR_INJECT_H_ 1
 
-#ifdef WINDOWS
-
 /* DR_API EXPORT TOFILE dr_inject.h */
 /* DR_API EXPORT BEGIN */
-#ifdef WINDOWS
 /****************************************************************************
  * Injection API
  */
@@ -99,6 +96,14 @@ dr_inject_process_inject(void *data, bool force_injection,
 bool
 dr_inject_process_run(void *data);
 
+#ifdef LINUX
+/**
+ * NOCHECKIN: docs
+ */
+int
+dr_inject_process_wait(void *data);
+#endif
+
 /**
  * Frees resources used by dr_inject_process_create().
  *
@@ -124,6 +129,7 @@ dr_inject_process_exit(void *data, bool terminate);
 char *
 dr_inject_get_image_name(void *data);
 
+#ifdef WINDOWS
 /**
  * Returns a handle to a process created by dr_inject_process_create().
  *
@@ -134,6 +140,7 @@ dr_inject_get_image_name(void *data);
  */
 HANDLE
 dr_inject_get_process_handle(void *data);
+#endif /* WINDOWS */
 
 /**
  * Returns the pid of a process created by dr_inject_process_create().
@@ -164,10 +171,6 @@ dr_inject_using_debug_key(void *data);
 void
 dr_inject_print_stats(void *data, int elapsed_secs, bool showstats, bool showmem);
 
-#endif /* WINDOWS */
-
 /* DR_API EXPORT END */
-
-#endif /* WINDOWS */
 
 #endif /* _DR_INJECT_H_ */

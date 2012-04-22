@@ -166,6 +166,10 @@ if (UNIX)
     linux/stackdump.c
     linux/diagnost.c
     linux/loader.c
+    # NOCHECKIN: We could break this out into a separate injection lib like on
+    # Windows, but why not just link it into DR and initialize DR as a
+    # standalone lib?  Easier.
+    linux/injector.c
     )
   if (VMKERNEL)
     set(VMKUW_DIR ${PROJECT_SOURCE_DIR}/../internal/core/linux)
