@@ -3011,9 +3011,32 @@ int
 get_num_processors()
 {
     static uint num_cpu = 0;         /* cached value */
-    asm ("int3");
     if (!num_cpu) {
-        num_cpu = get_nprocs_conf();
+        /* We used to use get_nprocs_conf, but that's in libc, so now we just
+         * look at the /sys filesystem ourselves, which is what glibc does.
+         * They actually list the directory and count the number of cpuN
+         * directories, but we parse this "online" text file since we don't have
+         * directory listing facilities.
+         */
+        char online_buf[10];
+        file_t f = os_open("/sys/devices/system/cpu/online", OS_OPEN_READ);
+        ssize_t n, sofar = 0;
+        int cpu_start, cpu_end;
+        char *cpu_end_str;
+        ASSERT(f != INVALID_FILE);
+        do {
+            n = os_read(f, online_buf + sofar, sizeof(online_buf));
+            sofar += n;
+        } while (n > 0 && sofar < sizeof(online_buf));
+        online_buf[sofar] = '\0';
+        dr_printf(online_buf);
+        cpu_end_str = strchr(online_buf, '-');
+        ASSERT(cpu_end_str != NULL);
+        cpu_end_str++;
+        cpu_start = atoi(online_buf);
+        cpu_end = atoi(cpu_end_str);
+        /* These indices are inclusive, so add 1. */
+        num_cpu = cpu_end - cpu_start + 1;
         ASSERT(num_cpu);
     }
     return num_cpu;

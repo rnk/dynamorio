@@ -480,7 +480,7 @@ _dr_start(inject_cxt_t *cxt)
                    cxt->dynamorio_library_path);
 
     acquire_recursive_lock(&privload_lock);
-    os_loader_finish_injection();
+    dynamorio_app_init();
     release_recursive_lock(&privload_lock);
 
     dr_printf("called os_loader_finish_injection\n");
