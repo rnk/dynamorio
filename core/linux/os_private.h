@@ -114,6 +114,8 @@ typedef struct _os_thread_data_t {
 /* in os.c */
 uint memprot_to_osprot(uint prot);
 
+void os_inject_init(app_pc dll_start, app_pc dll_end, const char *dll_path);
+
 /* in signal.c */
 struct _kernel_sigaction_t;
 typedef struct _kernel_sigaction_t kernel_sigaction_t;

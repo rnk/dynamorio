@@ -682,6 +682,16 @@ get_uname(void)
         kernel_64bit = true;
 }
 
+/* Initialization code during injection.
+ */
+void
+os_inject_init(app_pc dll_start, app_pc dll_end, const char *dll_path)
+{
+    dynamo_dll_start = dll_start;
+    dynamo_dll_end = dll_end;
+    strncpy(dynamorio_library_path, dll_path, sizeof(dynamorio_library_path));
+}
+
 /* os-specific initializations */
 void
 os_init(void)

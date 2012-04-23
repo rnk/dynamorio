@@ -69,7 +69,7 @@ injector_error(char *file, int line, char *expr)
     dr_abort();
 }
 
-static bool op_exec_gdb = true;
+static bool op_exec_gdb = false;
 static bool verbose = false;
 
 /* Opaque type to users, holds our state */
@@ -432,14 +432,29 @@ get_file_size(const char *path)
 }
 #endif
 
-extern char **stack_env_vars;
-
-/* FIXME: These are on the stack, not in register parameters...  Could insert 6
- * params ifdef X64 or do something more elegant, ala x86.asm or intrinsics
- * with frame pointer.
+/* Struct containing info passed from the injector to _dr_start in the injectee.
  */
+typedef struct _inject_cxt_t {
+    /* FIXME: We can easily translate to priv_mcontext_t in the injector, making
+     * our code more portable.
+     */
+    struct user_regs_struct regs;
+
+    /* We know these values at injection time, so we pass them in and initialize
+     * them rather than attempting to parse /proc/self/maps, which requires
+     * sscanf from libc.
+     */
+    app_pc dynamorio_dll_start;
+    app_pc dynamorio_dll_end;
+    char dynamorio_library_path[MAXIMUM_PATH];
+} inject_cxt_t;
+
+/* NOCHECKIN: Put in os_private.h? */
+extern char **stack_env_vars;
+void os_loader_finish_injection(void);
+
 ptr_int_t
-_dr_start(void)
+_dr_start(inject_cxt_t *cxt)
 {
     /* Wait for debugger.  Ideally we'd use PTRACE_TRACEME, but that confuses
      * gdb since it uses PTRACE_ATTACH, which will fail if we're already being
@@ -451,20 +466,30 @@ _dr_start(void)
 
     dr_printf("hello, dr_printf, %d %x\n", 0xdead, 0xdead);
 
-    /* FIXME: This fp business is hacky, we should have a proper x86.asm
-     * entry routine that also handles x86_32.
-     */
-    void **fp = __builtin_frame_address(0);
-    fp++;  /* Skip XBP push. */
-    int argc = (long)fp[0];
-    char **argv = (char**)&fp[1];
-    char **envp = (char**)&fp[2];
+    void **orig_sp = (void**)cxt->regs.rsp;
+    int argc = (long)orig_sp[0];
+    char **argv = (char**)&orig_sp[1];
+    char **envp = (char**)&orig_sp[2];
     for (i = 0; i < argc; i++) {
         dr_printf("argv[%d]: %s\n", i, argv[i]);
     }
 
     dr_early_injected = true;
     stack_env_vars = envp;
+    os_inject_init(cxt->dynamorio_dll_start, cxt->dynamorio_dll_end,
+                   cxt->dynamorio_library_path);
+
+    acquire_recursive_lock(&privload_lock);
+    os_loader_finish_injection();
+    release_recursive_lock(&privload_lock);
+
+    dr_printf("called os_loader_finish_injection\n");
+
+    dr_printf("attempting to use libc\n");
+    int hex, dec;
+    asm ("int3");
+    int r = sscanf("0xdead 1234", "0x%x %d", &hex, &dec);
+    ASSERT(hex == 0xdead && dec == 1234);
 
     int init = dynamorio_app_init();
     dr_fprintf(STDERR, "init: %d\n", init);
@@ -474,7 +499,7 @@ _dr_start(void)
      */
     asm ("int3");
     /* Better to exit than crash. */
-    dynamorio_syscall(SYS_exit, 0);
+    //dynamorio_syscall(SYS_exit, 0);
     /* Not reachable. */
     return 0xdead;
 }
@@ -576,37 +601,16 @@ dr_inject_process_inject(void *data, bool force_injection,
     /* Call our private loader, but perform the mmaps in the child process
      * instead of the parent.
      */
-    size_t size;
+    size_t loaded_size;
     app_pc injected_base;
     /* XXX: Have to use globals to communicate to injectee_map_file. =/ */
     injected_dr_fd = dr_fd;
     injected_info = info;
     acquire_recursive_lock(&privload_lock);
-    injected_base = linux_map_and_relocate(library_path, &size,
+    injected_base = linux_map_and_relocate(library_path, &loaded_size,
                                            injectee_map_file, injectee_unmap,
                                            injectee_prot);
-    //privmod_t *privmod;
-    //privmod = privload_insert(NULL, injected_base, size,
-                              //get_shared_lib_name(injected_base), library_path);
-    //privload_process_imports(privmod);
     release_recursive_lock(&privload_lock);
-
-
-
-    /* Map all of libdynamorio.so as RWX.  This is not what a real loader would
-     * do.  We rely on DR's private loader to adjust protections and apply
-     * relocations once we're executing inside the injectee.
-     */
-    //size = get_file_size(library_path);
-    //ASSERT(size > 0);
-    //int prot = PROT_EXEC|PROT_READ|PROT_WRITE;
-    //void *injected_base = injectee_mmap(info, PREFERRED_BASE, size, prot,
-                                        //MAP_PRIVATE, dr_fd, 0[>offset<]);
-    //if (injected_base != PREFERRED_BASE) {
-        //dr_fprintf(STDERR, "unable to map libdynamorio.so into injectee. "
-                   //"mmap return value: %p\n", injected_base);
-        //return false;
-    //}
 
     struct user_regs_struct regs;
     os_ptrace(PTRACE_GETREGS, info->pid, NULL, &regs);
@@ -630,10 +634,24 @@ dr_inject_process_inject(void *data, bool force_injection,
         dr_printf("regs.rsp: 0x%lx\n", regs.rsp);
     }
 
+    /* Create an injection context and "push" it onto the stack of the injectee.
+     * If you need to pass more info to the injected child process, this is a
+     * good place to put it.
+     */
+    inject_cxt_t cxt = {0};
+    memcpy(&cxt.regs, &regs, sizeof(regs));
+    cxt.dynamorio_dll_start = injected_base;
+    cxt.dynamorio_dll_end = injected_base + loaded_size;
+    strncpy(cxt.dynamorio_library_path, library_path, MAXIMUM_PATH);
+    regs.rsp -= sizeof(cxt); /* Allocate space for cxt. */
+    regs.rsp = ALIGN_BACKWARD(regs.rsp, 16);  /* Align stack. */
+    regs.rdi = regs.rsp;  /* Pass the address of cxt as parameter 1. */
+    ptrace_write_memory(info->pid, (void*)regs.rsp, &cxt, sizeof(cxt));
     void *injected_dr_start = translate_dr_dll(injected_base, &_dr_start);
-    os_ptrace(PTRACE_POKEUSER, info->pid,
-              (void*)offsetof(struct user_regs_struct, rip), injected_dr_start);
+    regs.rip = (reg_t)injected_dr_start;
+    os_ptrace(PTRACE_SETREGS, info->pid, NULL, &regs);
 
+    op_exec_gdb = true;
     if (op_exec_gdb) {
         /* Initializing in the child will be tough, and we can't attach gdb to a
          * process under ptrace, so for now we re-exec ourselves as gdb and the
@@ -648,8 +666,8 @@ dr_inject_process_inject(void *data, bool force_injection,
         argv[num_args++] = "--quiet";
         argv[num_args++] = "--pid";
         argv[num_args++] = pid_str;
-        argv[num_args++] = "-x";
-        argv[num_args++] = "drinject_add_syms";
+        argv[num_args++] = "-ex";
+        argv[num_args++] = "python execfile(\"drinject_add_syms\")";
         argv[num_args++] = NULL;
         execv("/usr/bin/gdb", argv);
         ASSERT(false && "failed to exec gdb?");
@@ -668,9 +686,13 @@ dr_inject_process_inject(void *data, bool force_injection,
         return false;
     }
 
-
     //int init = injectee_call_dr_fn(info, injected_dr_start);
     //dr_printf("_dr_start: 0x%x\n", init);
+
+    /* Reset back to initial state (for now, eventually adjust state to start in
+     * DR).
+     */
+    os_ptrace(PTRACE_SETREGS, info->pid, NULL, &cxt.regs);
 
     return true;
 }

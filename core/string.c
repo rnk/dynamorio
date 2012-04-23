@@ -38,6 +38,29 @@
 
 #include <string.h>
 
+/* FIXME: Do the typical word-at-a-time unrolling. */
+void *
+memset(void *dst, int c, size_t n)
+{
+    byte *dst_bytes = dst;
+    byte *dst_end = dst_bytes + n;
+    while (dst_bytes != dst_end)
+        *dst_bytes++ = c;
+}
+
+/* FIXME: Do the typical word-at-a-time unrolling. */
+void *
+memcpy(void *dst, const void *src, size_t n)
+{
+    byte *dst_bytes = dst;
+    const byte *src_bytes = src;
+    ssize_t i;
+    for (i = 0; i < n; i++) {
+        dst_bytes[i] = src_bytes[i];
+    }
+    return dst;
+}
+
 char *
 strncpy(char *dst, const char *src, size_t n)
 {
@@ -100,6 +123,42 @@ strncmp(const char *a, const char *b, size_t n)
     int c = 0;
     for (i = 0; i < n; i++) {
         c = a[i] - b[i];
+        if (c != 0 || (a[i] == '\0' && b[i] == '\0'))
+            break;
+    }
+    return c;
+}
+
+int
+strcmp(const char *a, const char *b)
+{
+    size_t i;
+    int c = 0;
+    for (i = 0; a[i] != '\0' && b[i] != '\0'; i++) {
+        c = a[i] - b[i];
+        if (c != 0)
+            break;
+    }
+    return c;
+}
+
+static inline int
+tolower(int c)
+{
+    return ((c >= 'A' && c <= 'Z') ? c - 'A' : c);
+}
+
+int
+strcasecmp(const char *a, const char *b)
+{
+    size_t i;
+    int c = 0;
+    int al;
+    int bl;
+    for (i = 0; a[i] != '\0' && b[i] != '\0'; i++) {
+        al = tolower(a[i]);
+        bl = tolower(b[i]);
+        c = al - bl;
         if (c != 0)
             break;
     }
