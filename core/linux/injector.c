@@ -36,12 +36,13 @@
 #include "../globals.h"
 #include "../utils.h"
 #include "../os_shared.h"
-#include "syscall.h"
+#include "include/syscall.h"            /* our own local copy */
 #include "instrument.h"
 #include "instr.h"
 #include "instr_create.h"
 #include "decode.h"
 #include "disassemble.h"
+#include "os_private.h"
 
 #include <string.h>
 #include <sys/ptrace.h>
@@ -49,7 +50,26 @@
 #include <unistd.h>
 #include <errno.h>
 #include <sys/user.h>
+#include <sys/mman.h>
+#include <fcntl.h>
 
+/* FIXME: Avoid duplicating preferred base here. */
+#define PREFERRED_BASE ((void*)IF_X64_ELSE(0x71000000, 0x15000000))
+
+/* Shadow DR's internal_error so assertions work in standalone mode.  DR tries
+ * to use safe_read to take a stack trace, but none of its signal handlers are
+ * installed, so it will segfault before it prints our error.
+ */
+#define internal_error injector_error
+static void
+injector_error(char *file, int line, char *expr)
+{
+    dr_fprintf(STDERR, "ASSERT failed: %s:%d (%s)\n", file, line, expr);
+    dr_flush_file(STDERR);
+    dr_abort();
+}
+
+static bool op_exec_gdb = true;
 static bool verbose = false;
 
 /* Opaque type to users, holds our state */
@@ -91,32 +111,69 @@ static const enum_name_pair_t pt_req_map[] = {
     {0}
 };
 
-/* Ptrace syscall wrapper, for logging and avoiding libc deps. */
+/* Ptrace syscall wrapper, for logging.
+ * XXX: We could call libc's ptrace instead of using dynamorio_syscall.
+ * Initially I used the raw syscall to avoid adding a libc import, but calling
+ * libc from the injector process should always work.
+ */
 static long
 os_ptrace(enum __ptrace_request request, pid_t pid, void *addr, void *data)
 {
     long r = dynamorio_syscall(SYS_ptrace, 4, request, pid, addr, data);
-    //long r = ptrace(request, pid, addr, data);
-    /* TODO: Proper logging. */
-    const enum_name_pair_t *pair = NULL;
-    int i;
-    for (i = 0; pt_req_map[i].enum_name != NULL; i++) {
-         if (pt_req_map[i].enum_val == request) {
-             pair = &pt_req_map[i];
-             break;
-         }
-    }
-    ASSERT(pair != NULL);
-    if (verbose) {
-        dr_printf("ptrace(%s, %d, %p, %p) -> %d\n",
-                  pair->enum_name, pid, addr, data, r);
+    if (r < 0 || verbose) {
+        const enum_name_pair_t *pair = NULL;
+        int i;
+        for (i = 0; pt_req_map[i].enum_name != NULL; i++) {
+             if (pt_req_map[i].enum_val == request) {
+                 pair = &pt_req_map[i];
+                 break;
+             }
+        }
+        ASSERT(pair != NULL);
+        dr_fprintf(STDERR, "ptrace failed: ptrace(%s, %d, %p, %p) -> %d %s\n",
+                   pair->enum_name, pid, addr, data, r, strerror(-r));
     }
     return r;
 }
 #define ptrace use_os_ptrace
 
-/* Returns 0 on success.
- * On failure, returns a Windows API error code.
+/* Copies memory from traced process into parent.
+ */
+static bool
+ptrace_read_memory(pid_t pid, void *dst, void *src, size_t len)
+{
+    uint i;
+    reg_t *dst_reg = dst;
+    reg_t *src_reg = src;
+    ASSERT(len % sizeof(reg_t) == 0);  /* FIXME handle */
+    for (i = 0; i < len / sizeof(reg_t); i++) {
+        long r = os_ptrace(PTRACE_PEEKDATA, pid, &src_reg[i], &dst_reg[i]);
+        if (r < 0)
+            return false;
+    }
+    return true;
+}
+
+/* Copies memory from parent into traced process.
+ * FIXME: Should return success.
+ */
+static bool
+ptrace_write_memory(pid_t pid, void *dst, void *src, size_t len)
+{
+    uint i;
+    reg_t *dst_reg = dst;
+    reg_t *src_reg = src;
+    ASSERT(len % sizeof(reg_t) == 0);  /* FIXME handle */
+    for (i = 0; i < len / sizeof(reg_t); i++) {
+        long r = os_ptrace(PTRACE_POKEDATA, pid, &dst_reg[i], (void*)src_reg[i]);
+        if (r < 0)
+            return false;
+    }
+    return true;
+}
+
+/* Returns 0 on success.  On failure, returns the status code retreived from
+ * waitpid.
  */
 DYNAMORIO_EXPORT
 int
@@ -126,7 +183,6 @@ dr_inject_process_create(const char *app_name, const char *app_cmdline,
     dr_inject_info_t *inject_data;
     pid_t pid;
     int status;
-    bool success;
 
     pid = fork();
     if (pid == 0) {
@@ -149,79 +205,357 @@ dr_inject_process_create(const char *app_name, const char *app_cmdline,
             BUFFER_SIZE_ELEMENTS(inject_data->image_name));
     *data = inject_data;
 
-    /* We don't need PTRACE_ATTACH because the child will do PTRACE_TRACEME. */
-    waitpid(inject_data->pid, &status, 0);
-    /* We succeed if the child is stopped, ie it didn't exit or crash.  We
-     * return to the user and let them inject DR into the child before
-     * continuing.
+    /* We don't need PTRACE_ATTACH because the child will do PTRACE_TRACEME.
+     * The child will stop at the next syscall, which for us is execve.
      */
-    success = WIFSTOPPED(status);
+    waitpid(inject_data->pid, &status, 0);
 
-    return success;
+    /* To match Windows behavior, return 0 if the child stopped, and the whole
+     * status otherwise.
+     */
+    return WIFSTOPPED(status) ? 0 : status;
 }
 
 #define APP  instrlist_meta_append
 
+/* Push a pointer to a string to the stack.  We create a fake instruction with
+ * raw bytes equal to the string we want to put in the injectee.  The call will
+ * pass these invalid instruction bytes, and the return address on the stack
+ * will point to the string.
+ */
 static void
-gen_print(void *dc, instrlist_t *ilist, const char *msg)
+gen_push_string(void *dc, instrlist_t *ilist, const char *msg)
 {
-    opnd_t xax = opnd_create_reg(DR_REG_XAX);
-    opnd_t rdi = opnd_create_reg(DR_REG_RDI);
-    opnd_t rsi = opnd_create_reg(DR_REG_RSI);
-    opnd_t rdx = opnd_create_reg(DR_REG_RDX);
-    instr_t *next_label = INSTR_CREATE_label(dc);
     instr_t *after_msg = INSTR_CREATE_label(dc);
-    instr_t *msg_instr = instr_build_bits(dc, OP_UNDECODED, strlen(msg));
-    instr_set_raw_bytes(msg_instr, (byte*)msg, strlen(msg));
+    instr_t *msg_instr = instr_build_bits(dc, OP_UNDECODED, strlen(msg) + 1);
+    APP(ilist, INSTR_CREATE_call(dc, opnd_create_instr(after_msg)));
+    instr_set_raw_bytes(msg_instr, (byte*)msg, strlen(msg) + 1);
     instr_set_raw_bits_valid(msg_instr, true);
-    APP(ilist, INSTR_CREATE_call(dc, opnd_create_instr(next_label)));
-    APP(ilist, next_label);
-    APP(ilist, INSTR_CREATE_jmp_short(dc, opnd_create_instr(after_msg)));
     APP(ilist, msg_instr);
     APP(ilist, after_msg);
-    APP(ilist, INSTR_CREATE_pop(dc, rsi));
-    APP(ilist, INSTR_CREATE_add(dc, rsi, OPND_CREATE_INT32(2)));
+}
 
-    APP(ilist, INSTR_CREATE_mov_imm(dc, xax, OPND_CREATE_INTPTR(SYS_write)));
-    APP(ilist, INSTR_CREATE_mov_imm(dc, rdi, OPND_CREATE_INTPTR(2)));
-    /* rsi is set */
-    APP(ilist, INSTR_CREATE_mov_imm(dc, rdx, OPND_CREATE_INTPTR(strlen(msg))));
+static const reg_id_t syscall_parms[] = {
+#ifdef X64
+    DR_REG_RDI,
+    DR_REG_RSI,
+    DR_REG_RDX,
+    DR_REG_R10,  /* RCX goes here in normal x64 CC. */
+    DR_REG_R8,
+    DR_REG_R9,
+#else
+    DR_REG_EBX,
+    DR_REG_ECX,
+    DR_REG_EDX,
+    DR_REG_ESI,
+    DR_REG_EDI,
+    DR_REG_EBP,
+#endif
+    DR_REG_NULL
+};
+
+static void
+gen_syscall(void *dc, instrlist_t *ilist, int sysnum, uint num_opnds,
+            opnd_t *args)
+{
+    uint i;
+
+    APP(ilist, INSTR_CREATE_mov_imm
+        (dc, opnd_create_reg(DR_REG_XAX), OPND_CREATE_INTPTR(sysnum)));
+    for (i = 0; i < num_opnds; i++) {
+        if (opnd_is_immed_int(args[i]) || opnd_is_instr(args[i])) {
+            APP(ilist, INSTR_CREATE_mov_imm
+                (dc, opnd_create_reg(syscall_parms[i]), args[i]));
+        } else if (opnd_is_base_disp(args[i])) {
+            APP(ilist, INSTR_CREATE_mov_ld
+                (dc, opnd_create_reg(syscall_parms[i]), args[i]));
+        }
+    }
     APP(ilist, INSTR_CREATE_syscall(dc));
 }
 
+/* Useful for debugging gen_syscall and gen_push_string. */
+#if 0
+static void
+gen_print(void *dc, instrlist_t *ilist, const char *msg)
+{
+    opnd_t args[3];
+    args[0] = OPND_CREATE_INTPTR(2);
+    args[1] = OPND_CREATE_MEMPTR(DR_REG_XSP, 0);  /* msg is on TOS. */
+    args[2] = OPND_CREATE_INTPTR(strlen(msg));
+    gen_push_string(dc, ilist, msg);
+    gen_syscall(dc, ilist, SYS_write, BUFFER_SIZE_ELEMENTS(args), args);
+}
+#endif
+
 #define MAX_SHELL_CODE 4096
 
-static app_pc
-generate_shellcode(app_pc shellcode, size_t *code_size)
+/* Injects the code in ilist into the injectee and runs it, returning the value
+ * left in xax at the end of ilist execution.  Frees ilist.
+ */
+static ptr_int_t
+injectee_run_get_xax(dr_inject_info_t *info, void *dc, instrlist_t *ilist)
+{
+    struct user_regs_struct regs;
+    byte shellcode[MAX_SHELL_CODE];
+    reg_t orig_code[MAX_SHELL_CODE / sizeof(reg_t)];
+    app_pc end_pc;
+    size_t code_size;
+    ptr_int_t xax;
+    int status;
+
+    /* Append an int3 so we can catch the break. */
+    APP(ilist, INSTR_CREATE_int3(dc));
+    if (verbose) {
+        dr_fprintf(STDERR, "injecting code:\n");
+        instrlist_disassemble(dc, (void*)regs.rip, ilist, STDERR);
+    }
+
+    /* Get register state before executing the shellcode. */
+    os_ptrace(PTRACE_GETREGS, info->pid, NULL, &regs);
+
+    /* Encode ilist into shellcode. */
+    end_pc = instrlist_encode_to_copy(dc, ilist, shellcode, (app_pc)regs.rip,
+                                      &shellcode[MAX_SHELL_CODE], true/*jmp*/);
+    code_size = end_pc - &shellcode[0];
+    code_size = ALIGN_FORWARD(code_size, sizeof(reg_t));
+    instrlist_clear_and_destroy(dc, ilist);
+
+    /* Copy shell code into injectee at the current PC.
+     * XXX: We could inspect /proc/pid/maps to find some executable memory, but
+     * this is easier.
+     */
+    ptrace_read_memory(info->pid, orig_code, (void*)regs.rip, code_size);
+    ptrace_write_memory(info->pid, (void*)regs.rip, shellcode, code_size);
+
+    /* Continue until breakpoint. */
+    os_ptrace(PTRACE_CONT, info->pid, NULL, NULL);
+    waitpid(info->pid, &status, 0);
+    if (!WIFSTOPPED(status) || WSTOPSIG(status) != SIGTRAP) {
+        ptr_int_t pc;
+        os_ptrace(PTRACE_PEEKUSER, info->pid,
+                  (void*)offsetof(struct user_regs_struct, rip), &pc);
+        dr_fprintf(STDERR, "Unexpected trace event, expected SIGTRAP, got:\n"
+                   "status: 0x%x, stopped by signal: %d, at pc: %p\n",
+                   status, WIFSTOPPED(status), WSTOPSIG(status), pc);
+        return -EUNATCH;  /* Some unique errno value. */
+    }
+
+    /* Get xax. */
+    xax = -EUNATCH;
+    os_ptrace(PTRACE_PEEKUSER, info->pid,
+              (void*)offsetof(struct user_regs_struct, rax), &xax);
+
+    /* Put back original code and registers. */
+    ptrace_write_memory(info->pid, (void*)regs.rip, orig_code, code_size);
+    os_ptrace(PTRACE_SETREGS, info->pid, NULL, &regs);
+
+    return xax;
+}
+
+/* Call sys_open in the child. */
+static ptr_int_t
+injectee_open(dr_inject_info_t *info, const char *path, int flags, mode_t mode)
 {
     void *dc = GLOBAL_DCONTEXT;
     instrlist_t *ilist = instrlist_create(dc);
-    //opnd_t xax = opnd_create_reg(DR_REG_XAX);
-    //opnd_t rdi = opnd_create_reg(DR_REG_RDI);
-    //opnd_t rsi = opnd_create_reg(DR_REG_RSI);
-    //opnd_t rdx = opnd_create_reg(DR_REG_RDX);
-    //opnd_t rcx = opnd_create_reg(DR_REG_RCX);
-    //opnd_t r8  = opnd_create_reg(DR_REG_R8);
-    //opnd_t r9  = opnd_create_reg(DR_REG_R9);
-    //opnd_t r10 = opnd_create_reg(DR_REG_R10);
+    opnd_t args[3];
+    int num_args;
 
-    /* Shift down the stack. */
-    gen_print(dc, ilist, "starting syscalls\n");
-    //[> open(library_path+"lib64/debug/libdynamorio.so", 0); <]
-    //APP(ilist, INSTR_CREATE_mov_imm(dc, xax, OPND_CREATE_INTPTR(SYS_open)));
-    //[> mmap(0x71000000, dr_sz, RWX, 0[>flags<], dr_fd, 0); <]
-    //APP(ilist, INSTR_CREATE_mov_imm(dc, xax, OPND_CREATE_INTPTR(SYS_mmap)));
-    //APP(ilist, INSTR_CREATE_mov_imm(dc, rdi, OPND_CREATE_INTPTR(0x71000000)));
-    //APP(ilist, INSTR_CREATE_mov_imm(dc, rsi, OPND_CREATE_INTPTR(PROT_READ|PROT_EXEC|PROT_WRITE)));
-    //APP(ilist, INSTR_CREATE_mov_imm(dc, rdx, OPND_CREATE_INTPTR(0x71000000)));
-    //shell_syscall(dc, ilist, SYS_mmap, 0x71000000, PROT_READ|PROT_EXEC|PROT_WRITE, 0,
-                  //dynamorio_fd, 0);
-    APP(ilist, INSTR_CREATE_int3(dc));
+    gen_push_string(dc, ilist, path);
+    num_args = 0;
+    args[num_args++] = OPND_CREATE_MEMPTR(DR_REG_XSP, 0);
+    args[num_args++] = OPND_CREATE_INTPTR(flags);
+    args[num_args++] = OPND_CREATE_INTPTR(mode);
+    gen_syscall(dc, ilist, SYS_open, num_args, args);
 
-    instrlist_encode_to_copy(dc, ilist, shellcode, shellcode, NULL/*max?*/,
-                             true/*jmp*/);
-    *code_size = MAX_SHELL_CODE;
-    instrlist_clear_and_destroy(dc, ilist);
+    return injectee_run_get_xax(info, dc, ilist);
+}
+
+static void *
+injectee_mmap(dr_inject_info_t *info, void *addr, size_t sz, int prot,
+              int flags, int fd, off_t offset)
+{
+    void *dc = GLOBAL_DCONTEXT;
+    instrlist_t *ilist = instrlist_create(dc);
+    opnd_t args[6];
+    int num_args;
+
+    num_args = 0;
+    args[num_args++] = OPND_CREATE_INTPTR(addr);
+    args[num_args++] = OPND_CREATE_INTPTR(sz);
+    args[num_args++] = OPND_CREATE_INTPTR(prot);
+    args[num_args++] = OPND_CREATE_INTPTR(flags); /* flags */
+    args[num_args++] = OPND_CREATE_INTPTR(fd); /* fd from open */
+    args[num_args++] = OPND_CREATE_INTPTR(offset); /* offset */
+    gen_syscall(dc, ilist, SYS_mmap, num_args, args);
+
+    return (void*)injectee_run_get_xax(info, dc, ilist);
+}
+
+#if 0
+typedef ptr_int_t (*non_void_fn_t)();
+
+/* Call a DR function in the injectee.
+ */
+static ptr_int_t
+injectee_call_dr_fn(dr_inject_info_t *info, non_void_fn_t dr_fn)
+{
+    void *dc = GLOBAL_DCONTEXT;
+    instrlist_t *ilist = instrlist_create(dc);
+    /* FIXME: Assumes that DR has the same load base in this process as well as
+     * injectee.  Should subtract current base and add injectee base.
+     */
+    APP(ilist, INSTR_CREATE_mov_imm
+        (dc, opnd_create_reg(DR_REG_XAX), OPND_CREATE_INTPTR(dr_fn)));
+    APP(ilist, INSTR_CREATE_call_ind(dc, opnd_create_reg(DR_REG_XAX)));
+    return injectee_run_get_xax(info, dc, ilist);
+}
+#endif
+
+#if 0
+static ssize_t
+get_file_size(const char *path)
+{
+    file_t f;
+    uint64_t size;
+    bool success;
+
+    f = dr_open_file(path, OS_OPEN_READ);
+    if (f == INVALID_FILE)
+        return -1;
+    success = dr_file_size(f, &size);
+    if (!success)
+        return -1;
+    dr_close_file(f);
+    return size;
+}
+#endif
+
+extern char **stack_env_vars;
+
+/* FIXME: These are on the stack, not in register parameters...  Could insert 6
+ * params ifdef X64 or do something more elegant, ala x86.asm or intrinsics
+ * with frame pointer.
+ */
+ptr_int_t
+_dr_start(void)
+{
+    /* Wait for debugger.  Ideally we'd use PTRACE_TRACEME, but that confuses
+     * gdb since it uses PTRACE_ATTACH, which will fail if we're already being
+     * traced.
+     */
+    int i;
+    for (i = 0; i < 100000000; i++) {
+    }
+
+    dr_printf("hello, dr_printf, %d %x\n", 0xdead, 0xdead);
+
+    /* FIXME: This fp business is hacky, we should have a proper x86.asm
+     * entry routine that also handles x86_32.
+     */
+    void **fp = __builtin_frame_address(0);
+    fp++;  /* Skip XBP push. */
+    int argc = (long)fp[0];
+    char **argv = (char**)&fp[1];
+    char **envp = (char**)&fp[2];
+    for (i = 0; i < argc; i++) {
+        dr_printf("argv[%d]: %s\n", i, argv[i]);
+    }
+
+    dr_early_injected = true;
+    stack_env_vars = envp;
+
+    int init = dynamorio_app_init();
+    dr_fprintf(STDERR, "init: %d\n", init);
+
+    /* Should send control back to the injector, unless we use gdb to continue
+     * past it.
+     */
+    asm ("int3");
+    /* Better to exit than crash. */
+    dynamorio_syscall(SYS_exit, 0);
+    /* Not reachable. */
+    return 0xdead;
+}
+
+static void *
+translate_dr_dll(void *injected_base, void *dr_addr)
+{
+    app_pc dr_base = get_dynamorio_dll_start();
+    return ((app_pc)dr_addr - dr_base) + injected_base;
+}
+
+static int injected_dr_fd;
+static dr_inject_info_t *injected_info;
+
+static byte *
+injectee_map_file(file_t f, size_t *size INOUT, uint64 offs, app_pc addr,
+                  uint prot, bool copy_on_write, bool image, bool fixed)
+{
+    int fd;
+    int flags = 0;
+    ptr_int_t r;
+    if (copy_on_write)
+        flags |= MAP_PRIVATE;
+    if (fixed)
+        flags |= MAP_FIXED;
+    /* Assumes that f is for libdynamorio.so. */
+    if (f == -1) {
+        fd = -1;
+        flags |= MAP_ANONYMOUS;
+    } else {
+        fd = injected_dr_fd;
+    }
+    /* image is a nop on Linux. */
+    r = (ptr_int_t)injectee_mmap(injected_info, addr, *size,
+                                 memprot_to_osprot(prot), flags, fd, offs);
+    if (r < 0) {
+        dr_printf("injectee_mmap(%p, %p) -> %p\n", addr, *size, r);
+        return NULL;
+    }
+    return (byte*)r;
+}
+
+/* Do an munmap syscall in the injectee. */
+static bool
+injectee_unmap(byte *addr, size_t size)
+{
+    void *dc = GLOBAL_DCONTEXT;
+    instrlist_t *ilist = instrlist_create(dc);
+    opnd_t args[2];
+    ptr_int_t r;
+    int num_args = 0;
+    args[num_args++] = OPND_CREATE_INTPTR(addr);
+    args[num_args++] = OPND_CREATE_INTPTR(size);
+    gen_syscall(dc, ilist, SYS_munmap, num_args, args);
+    r = injectee_run_get_xax(injected_info, dc, ilist) == 0;
+    if (r < 0) {
+        dr_printf("injectee_munmap(%p, %p) -> %p\n", addr, size, r);
+        return false;
+    }
+    return true;
+}
+
+/* Do an mprotect syscall in the injectee. */
+static bool
+injectee_prot(byte *addr, size_t size, uint prot/*MEMPROT_*/)
+{
+    void *dc = GLOBAL_DCONTEXT;
+    instrlist_t *ilist = instrlist_create(dc);
+    opnd_t args[3];
+    ptr_int_t r;
+    int num_args = 0;
+    args[num_args++] = OPND_CREATE_INTPTR(addr);
+    args[num_args++] = OPND_CREATE_INTPTR(size);
+    args[num_args++] = OPND_CREATE_INTPTR(memprot_to_osprot(prot));
+    gen_syscall(dc, ilist, SYS_mprotect, num_args, args);
+    r = injectee_run_get_xax(injected_info, dc, ilist) == 0;
+    if (r < 0) {
+        dr_printf("injectee_prot(%p, %p, %x) -> %d\n", addr, size, prot, r);
+        return false;
+    }
+    return true;
 }
 
 DYNAMORIO_EXPORT
@@ -230,49 +564,115 @@ dr_inject_process_inject(void *data, bool force_injection,
                          const char *library_path)
 {
     dr_inject_info_t *info = (dr_inject_info_t *) data;
-    int status;
-    app_pc shellcode;
-    size_t code_size;
-    struct user_regs_struct regs;
 
-    /* Walk the process forwards until we hit the exec syscall.  */
-    os_ptrace(PTRACE_SETOPTIONS, info->pid, NULL, (void*)PTRACE_O_TRACEEXEC);
-    os_ptrace(PTRACE_SYSCALL, info->pid, NULL, NULL);
-    waitpid(info->pid, &status, 0);
-
-    if (!WIFSTOPPED(status))
+    /* Open libdynamorio.so as readonly in the child. */
+    int dr_fd = injectee_open(info, library_path, O_RDONLY, 0);
+    if (dr_fd < 0) {
+        dr_fprintf(STDERR, "unable to open libdynamorio.so in injectee. "
+                   "errno %d msg %s\n", -dr_fd, strerror(-dr_fd));
         return false;
+    }
 
-    /* Single-step across the exec. */
-    os_ptrace(PTRACE_SYSCALL, info->pid, NULL, NULL);
-    waitpid(info->pid, &status, 0);
+    /* Call our private loader, but perform the mmaps in the child process
+     * instead of the parent.
+     */
+    size_t size;
+    app_pc injected_base;
+    /* XXX: Have to use globals to communicate to injectee_map_file. =/ */
+    injected_dr_fd = dr_fd;
+    injected_info = info;
+    acquire_recursive_lock(&privload_lock);
+    injected_base = linux_map_and_relocate(library_path, &size,
+                                           injectee_map_file, injectee_unmap,
+                                           injectee_prot);
+    //privmod_t *privmod;
+    //privmod = privload_insert(NULL, injected_base, size,
+                              //get_shared_lib_name(injected_base), library_path);
+    //privload_process_imports(privmod);
+    release_recursive_lock(&privload_lock);
 
-    /* TODO: inject! */
-    shellcode = dr_nonheap_alloc(MAX_SHELL_CODE, MEMPROT_WRITE|MEMPROT_EXEC|MEMPROT_READ);
-    generate_shellcode(shellcode, &code_size);
-    /* call it? */
-    //((void(*)(void))code)();
 
+
+    /* Map all of libdynamorio.so as RWX.  This is not what a real loader would
+     * do.  We rely on DR's private loader to adjust protections and apply
+     * relocations once we're executing inside the injectee.
+     */
+    //size = get_file_size(library_path);
+    //ASSERT(size > 0);
+    //int prot = PROT_EXEC|PROT_READ|PROT_WRITE;
+    //void *injected_base = injectee_mmap(info, PREFERRED_BASE, size, prot,
+                                        //MAP_PRIVATE, dr_fd, 0[>offset<]);
+    //if (injected_base != PREFERRED_BASE) {
+        //dr_fprintf(STDERR, "unable to map libdynamorio.so into injectee. "
+                   //"mmap return value: %p\n", injected_base);
+        //return false;
+    //}
+
+    struct user_regs_struct regs;
     os_ptrace(PTRACE_GETREGS, info->pid, NULL, &regs);
-    uint i;
-    long orig_data[MAX_SHELL_CODE];
-    memset(orig_data, 0, sizeof(orig_data));
-    for (i = 0; i < code_size / sizeof(long); i++) {
-        os_ptrace(PTRACE_PEEKDATA, info->pid, (void*)(regs.rip + i * 8), &orig_data[i]);
-        os_ptrace(PTRACE_POKEDATA, info->pid, (void*)(regs.rip + i * 8), (void*)((long*)shellcode)[i]);
+
+    if (verbose) {
+        dr_printf("regs.r15: 0x%lx\n", regs.r15);
+        dr_printf("regs.r14: 0x%lx\n", regs.r14);
+        dr_printf("regs.r13: 0x%lx\n", regs.r13);
+        dr_printf("regs.r12: 0x%lx\n", regs.r12);
+        dr_printf("regs.rbp: 0x%lx\n", regs.rbp);
+        dr_printf("regs.rbx: 0x%lx\n", regs.rbx);
+        dr_printf("regs.r11: 0x%lx\n", regs.r11);
+        dr_printf("regs.r10: 0x%lx\n", regs.r10);
+        dr_printf("regs.r9 : 0x%lx\n", regs.r9);
+        dr_printf("regs.r8 : 0x%lx\n", regs.r8);
+        dr_printf("regs.rax: 0x%lx\n", regs.rax);
+        dr_printf("regs.rcx: 0x%lx\n", regs.rcx);
+        dr_printf("regs.rdx: 0x%lx\n", regs.rdx);
+        dr_printf("regs.rsi: 0x%lx\n", regs.rsi);
+        dr_printf("regs.rdi: 0x%lx\n", regs.rdi);
+        dr_printf("regs.rsp: 0x%lx\n", regs.rsp);
     }
 
-    /* Continue until breakpoint. */
+    void *injected_dr_start = translate_dr_dll(injected_base, &_dr_start);
+    os_ptrace(PTRACE_POKEUSER, info->pid,
+              (void*)offsetof(struct user_regs_struct, rip), injected_dr_start);
+
+    if (op_exec_gdb) {
+        /* Initializing in the child will be tough, and we can't attach gdb to a
+         * process under ptrace, so for now we re-exec ourselves as gdb and the
+         * child does another PTRACE_TRACEME.
+         */
+        char pid_str[10];
+        char *argv[10];
+        int num_args = 0;
+        os_ptrace(PTRACE_DETACH, info->pid, NULL, NULL);
+        dr_snprintf(pid_str, sizeof(pid_str), "%d", info->pid);
+        argv[num_args++] = "/usr/bin/gdb";
+        argv[num_args++] = "--quiet";
+        argv[num_args++] = "--pid";
+        argv[num_args++] = pid_str;
+        argv[num_args++] = "-x";
+        argv[num_args++] = "drinject_add_syms";
+        argv[num_args++] = NULL;
+        execv("/usr/bin/gdb", argv);
+        ASSERT(false && "failed to exec gdb?");
+    }
+
     os_ptrace(PTRACE_CONT, info->pid, NULL, NULL);
+    int status;
     waitpid(info->pid, &status, 0);
-
-    /* Put back original stuff. */
-    for (i = 0; i < code_size / sizeof(long); i++) {
-        os_ptrace(PTRACE_POKEDATA, info->pid, (void*)(regs.rip + i * 8), (void*)orig_data[i]);
+    if (!WIFSTOPPED(status) || WSTOPSIG(status) != SIGTRAP) {
+        ptr_int_t pc;
+        os_ptrace(PTRACE_PEEKUSER, info->pid,
+                  (void*)offsetof(struct user_regs_struct, rip), &pc);
+        dr_fprintf(STDERR, "Unexpected trace event, expected SIGTRAP, got:\n"
+                   "status: 0x%x, stopped: %d, by signal: %d, at pc: %p\n",
+                   status, WIFSTOPPED(status), WSTOPSIG(status), pc);
+        return false;
     }
-    os_ptrace(PTRACE_SETREGS, info->pid, NULL, &regs);
 
-    return WIFSTOPPED(status);
+
+    //int init = injectee_call_dr_fn(info, injected_dr_start);
+    //dr_printf("_dr_start: 0x%x\n", init);
+
+    return true;
 }
 
 DYNAMORIO_EXPORT

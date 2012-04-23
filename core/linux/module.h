@@ -294,6 +294,19 @@ extern struct _IO_FILE  **privmod_stderr;
 extern struct _IO_FILE  **privmod_stdin;
 
 /* loader.c */
+typedef byte *(*map_func_t)(file_t f, size_t *size INOUT, uint64 offs,
+                           app_pc addr, uint prot, bool copy_on_write,
+                           bool image, bool fixed);
+typedef bool (*unmap_func_t)(byte *, size_t);
+typedef bool (*prot_func_t)(byte *pc, size_t length, uint prot);
+
+
 bool  privload_redirect_sym(ELF_ADDR *r_addr, const char *name);
+
+app_pc
+linux_map_and_relocate(const char *filename, size_t *size OUT,
+                       map_func_t map_image_fn,
+                       unmap_func_t unmap_image_fn,
+                       prot_func_t prot_image_fn);
 
 #endif /* MODULE_H */

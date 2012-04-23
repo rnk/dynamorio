@@ -297,11 +297,16 @@ dr_gdb_add_symbol_file(const char *filename, ELF_ADDR textaddr)
      */
 }
 
+/* XXX: How about a little vtable object here for mmap, munmap, and mprotect?
+ */
 app_pc
-privload_map_and_relocate(const char *filename, size_t *size OUT)
+linux_map_and_relocate(const char *filename, size_t *size OUT,
+                       map_func_t map_image_fn,
+                       unmap_func_t unmap_image_fn,
+                       prot_func_t prot_image_fn)
 {
     file_t fd;
-    byte *(*map_func)  (file_t, size_t *, uint64, app_pc, uint, bool, bool, bool);
+    map_func_t map_func;
     bool  (*unmap_func)(byte *, size_t);
     bool  (*prot_func) (byte *pc, size_t length, uint prot);
     app_pc file_map, lib_base, lib_end, last_end;
@@ -336,6 +341,14 @@ privload_map_and_relocate(const char *filename, size_t *size OUT)
         unmap_func = os_unmap_file;
         prot_func  = os_set_protection;
     }
+    /* Function pointer used by the injector to mmap into the injectee instead
+     * of the current process.
+     */
+    if (map_image_fn == NULL) {
+        map_image_fn = map_func;
+        unmap_image_fn = unmap_func;
+        prot_image_fn = prot_func;
+    }
 
     /* get file size */
     if (!os_get_file_size_by_handle(fd, &file_size)) {
@@ -346,6 +359,11 @@ privload_map_and_relocate(const char *filename, size_t *size OUT)
     }
 
     /* map the library file into memory for parsing */
+    /* FIXME: We only need the phdrs, and this disturbs our address space and
+     * could overlap the desired load base.  glibc reads the first 512 or 832
+     * bytes to try and get the phdrs and falls back to seeking if they aren't
+     * present.
+     */
     *size = (size_t)file_size;
     file_map = (*map_func)(fd, size, 0/*offs*/, NULL/*base*/,
                            MEMPROT_READ /* for parsing only */,
@@ -381,11 +399,11 @@ privload_map_and_relocate(const char *filename, size_t *size OUT)
     map_size = map_end - map_base;
 
     /* reserve the memory from os for library */
-    lib_base = (*map_func)(-1, &map_size, 0, map_base,
-                           MEMPROT_WRITE | MEMPROT_READ /* prot */,
-                           true  /* copy-on-write */,
-                           true  /* image, make it reachable */,
-                           false /*!fixed*/);
+    lib_base = (*map_image_fn)(-1, &map_size, 0, map_base,
+                               MEMPROT_WRITE | MEMPROT_READ /* prot */,
+                               true  /* copy-on-write */,
+                               true  /* image, make it reachable */,
+                               false /*!fixed*/);
     ASSERT(lib_base != NULL);
     lib_end = lib_base + map_size;
 
@@ -417,7 +435,7 @@ privload_map_and_relocate(const char *filename, size_t *size OUT)
             if (seg_base != last_end) {
                 /* XXX: a hole, I reserve this space instead of unmap it */
                 size_t hole_size = seg_base - last_end;
-                (*prot_func)(last_end, hole_size, MEMPROT_NONE);
+                (*prot_image_fn)(last_end, hole_size, MEMPROT_NONE);
             }
             seg_prot = module_segment_prot_to_osprot(prog_hdr);
             pg_offs  = ALIGN_BACKWARD(prog_hdr->p_offset, PAGE_SIZE);
@@ -431,23 +449,26 @@ privload_map_and_relocate(const char *filename, size_t *size OUT)
              * another thread requests memory via mmap takes the memory here,
              * a racy condition.
              */
-            (*unmap_func)(seg_base, seg_size);
-            map = (*map_func)(fd, &seg_size, pg_offs,
-                              seg_base /* base */,
-                              seg_prot | MEMPROT_WRITE /* prot */,
-                              true /* writes should not change file */,
-                              true /* image */,
-                              true /* fixed */);
+            (*unmap_image_fn)(seg_base, seg_size);
+            map = (*map_image_fn)(fd, &seg_size, pg_offs,
+                                  seg_base /* base */,
+                                  seg_prot | MEMPROT_WRITE /* prot */,
+                                  true /* writes should not change file */,
+                                  true /* image */,
+                                  true /* fixed */);
             ASSERT(map != NULL);
             /* fill zeros at extend size */
             file_end = (app_pc)prog_hdr->p_vaddr + prog_hdr->p_filesz;
-            if (seg_end > file_end + delta)
+            /* FIXME: Do we need to zero?  Fresh maps are always
+             * zero-initialized.
+             */
+            if (seg_end > file_end + delta && map_image_fn == NULL)
                 memset(file_end + delta, 0, seg_end - (file_end + delta));
             seg_end  = (app_pc)ALIGN_FORWARD(prog_hdr->p_vaddr + 
                                              prog_hdr->p_memsz,
                                              PAGE_SIZE) + delta;
             seg_size = seg_end - seg_base;
-            (*prot_func)(seg_base, seg_size, seg_prot);
+            (*prot_image_fn)(seg_base, seg_size, seg_prot);
             last_end = seg_end;
         } 
     }
@@ -455,7 +476,9 @@ privload_map_and_relocate(const char *filename, size_t *size OUT)
 
     ELF_ADDR text_addr =
         delta + module_get_text_section(file_map, file_size);
-    if (IF_CLIENT_INTERFACE_ELSE(INTERNAL_OPTION(privload_register_gdb), false)) {
+    if (IF_CLIENT_INTERFACE_ELSE(!standalone_library &&
+                                 INTERNAL_OPTION(privload_register_gdb),
+                                 false)) {
         dr_gdb_add_symbol_file(filename, text_addr);
     } else {
         /* Add debugging comment about how to get symbol information in gdb. */
@@ -472,6 +495,12 @@ privload_map_and_relocate(const char *filename, size_t *size OUT)
     fd = INVALID_FILE;
     *size = (reg_t)lib_end - (reg_t)lib_base;
     return lib_base;
+}
+
+app_pc
+privload_map_and_relocate(const char *filename, size_t *size OUT)
+{
+    return linux_map_and_relocate(filename, size, NULL, NULL, NULL);
 }
 
 bool

@@ -100,6 +100,7 @@ set(CORE_SRCS
   dispatch.c
   emit.c
   utils.c
+  string.c
   config.c
   stats.c
   heap.c

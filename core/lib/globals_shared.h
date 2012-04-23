@@ -88,6 +88,7 @@
 #else
 #  include <stdio.h>
 #  include <stdlib.h>
+#  include <unistd.h> /* for STD*_FILENO */
 #endif
 #include <stdarg.h> /* for varargs */
 #endif
@@ -96,6 +97,7 @@
 #ifdef LINUX
 #  include <sys/types.h>        /* Fix for case 5341. */
 #  include <signal.h>
+#  include <unistd.h> /* for STD*_FILENO */
 #endif
 /* DR_API EXPORT BEGIN */
 #ifdef WINDOWS
@@ -281,11 +283,11 @@ extern file_t our_stderr;
 /** Allow use of stdin after the application closes it. */
 extern file_t our_stdin;
 /** The file_t value for standard output. */
-#  define STDOUT (our_stdout == INVALID_FILE ? stdout->_fileno : our_stdout)
+#  define STDOUT (our_stdout == INVALID_FILE ? STDOUT_FILENO : our_stdout)
 /** The file_t value for standard error. */
-#  define STDERR (our_stderr == INVALID_FILE ? stderr->_fileno : our_stderr)
+#  define STDERR (our_stderr == INVALID_FILE ? STDERR_FILENO : our_stderr)
 /** The file_t value for standard error. */
-#  define STDIN  (our_stdin == INVALID_FILE ? stdin->_fileno : our_stdin)
+#  define STDIN  (our_stdin == INVALID_FILE ? STDIN_FILENO : our_stdin)
 #endif
 
 #ifdef AVOID_API_EXPORT

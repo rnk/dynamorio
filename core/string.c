@@ -34,4 +34,87 @@
  * extra dependence on libc.
  */
 
+#include "globals.h"
+
+#include <string.h>
+
+char *
+strncpy(char *dst, const char *src, size_t n)
+{
+    ssize_t i;
+    for (i = 0; i < n && src[i] != '\0'; i++) {
+        dst[i] = src[i];
+    }
+    for (; i < n; i++) {
+        dst[i] = '\0';
+    }
+    return dst;
+}
+
+char *
+strchr(const char *s, int c)
+{
+    ssize_t i;
+    for (i = 0; true; i++) {
+        if (s[i] == c)
+            return (char*)&s[i];
+        if (s[i] == '\0')
+            return NULL;
+    }
+}
+
+char *
+index(const char *s, int c)
+{
+    return strchr(s, c);
+}
+
+char *
+strrchr(const char *s, int c)
+{
+    ssize_t i;
+    char *last_c = NULL;
+    for (i = 0; s[i] != '\0'; i++) {
+        if (s[i] == c)
+            last_c = (char*)&s[i];
+    }
+    return last_c;
+}
+
+char *
+rindex(const char *s, int c)
+{
+    return strrchr(s, c);
+}
+
+size_t
+strlen(const char *s)
+{
+    return (size_t)(strchr(s, '\0') - s);
+}
+
+int
+strncmp(const char *a, const char *b, size_t n)
+{
+    size_t i;
+    int c = 0;
+    for (i = 0; i < n; i++) {
+        c = a[i] - b[i];
+        if (c != 0)
+            break;
+    }
+    return c;
+}
+
+char *
+strstr(const char *haystack, const char *needle)
+{
+    size_t len = strlen(needle);
+    char *cur = (char*)haystack;
+    while (*cur != '\0' && strncmp(cur, needle, len) != 0)
+        cur++;
+    if (*cur == '\0')
+        return NULL;
+    return cur;
+}
 

@@ -123,6 +123,10 @@ int our_sscanf(const char *str, const char *format, ...);
 int get_libc_errno(void);
 void set_libc_errno(int val);
 
+/* Use our own getenv for libc independence. */
+#define getenv our_getenv
+char *our_getenv(const char *name);
+
 /* to avoid unsetenv problems we have our own unsetenv */
 #define unsetenv our_unsetenv
 int our_unsetenv(const char *name);

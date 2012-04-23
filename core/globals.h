@@ -467,8 +467,8 @@ bool is_on_initstack(byte *esp);
 bool is_on_dstack(dcontext_t *dcontext, byte *esp);
 bool is_currently_on_dstack(dcontext_t *dcontext);
 
-#ifdef WINDOWS
 extern bool    dr_early_injected;
+#ifdef WINDOWS
 extern int     dr_early_injected_location;
 extern bool    dr_earliest_injected;
 extern bool    dr_injected_primary_thread;

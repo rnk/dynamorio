@@ -550,6 +550,31 @@ set_libc_errno(int val)
  * errno.
  */
 
+char **stack_env_vars;
+
+/* For libc independence when using early injection.
+ */
+char *
+our_getenv(const char *name)
+{
+    size_t len;
+    char **ep;
+    if (stack_env_vars != NULL) {
+        ep = stack_env_vars;
+    } else {
+        ep = __environ;
+    }
+
+    len = strlen (name);
+
+    while (*ep != NULL) {
+        if (strncmp(*ep, name, len) == 0 && (*ep)[len] == '=') {
+            return (*ep) + len + 1;
+        }
+        ++ep;
+    }
+    return NULL;
+}
 
 /* The environment vars exhibit totally messed up behavior when someone
  * does an execve of /bin/sh -- not sure what's going on, but using our
@@ -577,7 +602,11 @@ our_unsetenv(const char *name)
      * LOCK;
      */
     
-    ep = __environ;
+    if (stack_env_vars != NULL) {
+        ep = stack_env_vars;
+    } else {
+        ep = __environ;
+    }
     while (*ep != NULL)
         if (!strncmp (*ep, name, len) && (*ep)[len] == '=') {
             /* Found it.  Remove this pointer by moving later ones back.  */
@@ -2323,7 +2352,7 @@ permstr_to_memprot(const char * const perm)
 }
 
 /* translate platform independent protection bits to native flags */
-static inline uint
+uint
 memprot_to_osprot(uint prot)
 {
     uint mmap_prot = 0;
@@ -2972,6 +3001,7 @@ int
 get_num_processors()
 {
     static uint num_cpu = 0;         /* cached value */
+    asm ("int3");
     if (!num_cpu) {
         num_cpu = get_nprocs_conf();
         ASSERT(num_cpu);

@@ -111,6 +111,9 @@ typedef struct _os_thread_data_t {
     void *app_thread_areas; /* data structure for app's thread area info */
 } os_thread_data_t;
 
+/* in os.c */
+uint memprot_to_osprot(uint prot);
+
 /* in signal.c */
 struct _kernel_sigaction_t;
 typedef struct _kernel_sigaction_t kernel_sigaction_t;
