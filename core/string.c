@@ -142,7 +142,7 @@ strcmp(const char *a, const char *b)
     return c;
 }
 
-static inline int
+int
 tolower(int c)
 {
     return ((c >= 'A' && c <= 'Z') ? c - 'A' : c);
@@ -177,3 +177,22 @@ strstr(const char *haystack, const char *needle)
     return cur;
 }
 
+int
+atoi(const char *s)
+{
+    int c = 0;
+    ssize_t i;
+    bool neg;
+    if (*s == '-') {
+        neg = true;
+        s++;
+    } else {
+        neg = false;
+    }
+    while (*s >= '0' && *s <= '9') {
+        c *= 10;
+        c += *s - '0';
+        s++;
+    }
+    return c;
+}
