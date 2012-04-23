@@ -82,7 +82,14 @@ static const char *system_lib_paths[] = {
   (sizeof(system_lib_paths) / sizeof(system_lib_paths[0]))
 
 
-static os_privmod_data_t *libdr_opd;
+/* As of writing, DR depends on libc, libm, and libdl. */
+#define MAX_PRIVLOAD_SEGS 10
+#define MAX_DR_LIBS 5
+static os_privmod_data_t libdr_opd[MAX_DR_LIBS];
+static module_segment_t libdr_segments[MAX_DR_LIBS][MAX_PRIVLOAD_SEGS];
+static int libdr_static_idx;
+bool loading_dr_deps;
+
 static bool privmod_initialized = false;
 static size_t max_client_tls_size = PAGE_SIZE;
 
@@ -116,7 +123,7 @@ privload_call_lib_func(fp_t func);
 static void
 privload_relocate_mod(privmod_t *mod);
 
-static void
+static os_privmod_data_t *
 privload_create_os_privmod_data(privmod_t *privmod);
 
 static void
@@ -126,6 +133,35 @@ static void
 privload_mod_tls_init(privmod_t *mod);
 
 /***************************************************************************/
+
+/* Finish loading DR after mapping it in from the injector. */
+void
+os_loader_finish_injection(void)
+{
+    privmod_t *mod;
+
+    ASSERT_OWN_RECURSIVE_LOCK(true, &privload_lock);
+
+    privload_init_search_paths();
+    /* insert libdynamorio.so */
+    mod = privload_insert(NULL,
+                          get_dynamorio_dll_start(),
+                          get_dynamorio_dll_end() - get_dynamorio_dll_start(),
+                          get_shared_lib_name(get_dynamorio_dll_start()),
+                          get_dynamorio_library_path());
+    ASSERT(mod != NULL);
+    /* Avoids heap allocation and uses the space we've statically allocated. */
+    loading_dr_deps = true;
+    /* NOCHECKIN: This is "externally_loaded" trick a hack to convince
+     * privload_process_imports to relocate us but not to free us, since we're
+     * statically allocated.
+     */
+    mod->externally_loaded = false;
+    privload_create_os_privmod_data(mod);
+    privload_process_imports(mod);
+    mod->externally_loaded = true;
+    loading_dr_deps = false;
+}
 
 /* os specific loader initialization prologue before finalizing the load. */
 void
@@ -143,11 +179,10 @@ os_loader_init_prologue(void)
                           get_shared_lib_name(get_dynamorio_dll_start()),
                           get_dynamorio_library_path());
     privload_create_os_privmod_data(mod);
-    libdr_opd = mod->os_privmod_data;
     mod->externally_loaded = true;
     ASSERT(mod != NULL);
 }
- 
+
 /* os specific loader initialization epilogue after client finalizeing the load,
  * also release the privload_lock for loader_init.
  */
@@ -159,6 +194,7 @@ os_loader_init_epilogue(void)
 void
 os_loader_exit(void)
 {
+#if 0
     HEAP_ARRAY_FREE(GLOBAL_DCONTEXT, 
                     libdr_opd->os_data.segments, 
                     module_segment_t,
@@ -166,6 +202,7 @@ os_loader_exit(void)
                     ACCT_OTHER, PROTECTED);
     HEAP_TYPE_FREE(GLOBAL_DCONTEXT, libdr_opd,
                    os_privmod_data_t, ACCT_OTHER, PROTECTED);
+#endif
 }
 
 void
@@ -211,7 +248,9 @@ privload_add_areas(privmod_t *privmod)
      * loader_shared.c, which affects windows too.
       */
     privload_create_os_privmod_data(privmod);
-    opd = privmod->os_privmod_data;
+    if (loading_dr_deps)
+        return;
+
     for (i = 0; i < opd->os_data.num_segments; i++) {
         vmvector_add(modlist_areas, 
                      opd->os_data.segments[i].start,
@@ -489,6 +528,9 @@ linux_map_and_relocate(const char *filename, size_t *size OUT,
     LOG(GLOBAL, LOG_LOADER, 1,
         "for debugger: add-symbol-file %s %p\n",
         filename, text_addr);
+    void dr_printf(const char *fmt, ...);
+    dr_printf("for debugger: add-symbol-file %s %p\n",
+              filename, text_addr);
     /* unmap the file_map */
     (*unmap_func)(file_map, file_size);
     os_close(fd); /* no longer needed */
@@ -841,22 +883,33 @@ privload_relocate_mod(privmod_t *mod)
     }
 }
 
-static void
+static os_privmod_data_t *
 privload_create_os_privmod_data(privmod_t *privmod)
 {
     os_privmod_data_t *opd;
     app_pc out_base, out_end;
 
-    opd = HEAP_TYPE_ALLOC(GLOBAL_DCONTEXT, os_privmod_data_t,
-                          ACCT_OTHER, PROTECTED);
+    if (loading_dr_deps) {
+        ASSERT(libdr_static_idx < MAX_DR_LIBS);
+        opd = &libdr_opd[libdr_static_idx];
+        opd->os_data.alloc_segments = MAX_PRIVLOAD_SEGS;
+        opd->os_data.segments = libdr_segments[libdr_static_idx];
+        libdr_static_idx++;
+    } else {
+        opd = HEAP_TYPE_ALLOC(GLOBAL_DCONTEXT, os_privmod_data_t,
+                              ACCT_OTHER, PROTECTED);
+        memset(opd, 0, sizeof(*opd));
+    }
+
     privmod->os_privmod_data = opd;
-    memset(opd, 0, sizeof(*opd));
 
     /* walk the module's program header to get privmod information */
     module_walk_program_headers(privmod->base, privmod->size, false,
                                 &out_base, &out_end, &opd->soname,
                                 &opd->os_data);
     module_get_os_privmod_data(privmod->base, privmod->size, opd);
+
+    return opd;
 }
 
 static void

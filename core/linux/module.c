@@ -230,12 +230,20 @@ module_add_segment_data(OUT os_module_data_t *out_data,
      * walk done in dl_iterate_get_areas_cb().
      */
     if (out_data->num_segments == 0) {
-        /* over-allocate to avoid 2 passes to count PT_LOAD */
-        out_data->alloc_segments = elf_hdr->e_phnum;
-        out_data->segments = (module_segment_t *)
-            HEAP_ARRAY_ALLOC(GLOBAL_DCONTEXT, module_segment_t,
-                             out_data->alloc_segments, ACCT_OTHER, PROTECTED);
-        out_data->contiguous = true;
+        /* NOCHECKIN: DR's segments are pre-allocated, check no invalid free. */
+        if (out_data->alloc_segments == 0) {
+            /* over-allocate to avoid 2 passes to count PT_LOAD */
+            out_data->alloc_segments = elf_hdr->e_phnum;
+            out_data->segments = (module_segment_t *)
+                HEAP_ARRAY_ALLOC(GLOBAL_DCONTEXT, module_segment_t,
+                                 out_data->alloc_segments, ACCT_OTHER, PROTECTED);
+            out_data->contiguous = true;
+        } else {
+            void dr_printf(const char *fmt, ...);
+            dr_printf("dr phnum: %d\n", elf_hdr->e_phnum);
+            ASSERT(out_data->alloc_segments >= elf_hdr->e_phnum &&
+                   "Allocate more segments for DR!");
+        }
     }
     /* Keep array sorted in addr order.  I'm assuming segments are disjoint! */
     for (i = 0; i < out_data->num_segments; i++) {
@@ -860,6 +868,7 @@ get_proc_address_from_os_data(os_module_data_t *os_data,
                               const char *name,
                               OUT bool *is_indirect_code)
 {
+    void dr_printf(const char *fmt, ...);
     if (os_data->hashtab != NULL) {
         Elf_Symndx *buckets = (Elf_Symndx *) os_data->buckets;
         Elf_Symndx *chain = (Elf_Symndx *) os_data->chain;
@@ -1542,6 +1551,9 @@ module_relocate_symbol(app_pc modbase,
     sym   = &((ELF_SYM_TYPE *)pd->os_data.dynsym)[r_sym];
     name  = (char *)pd->os_data.dynstr + sym->st_name;
 
+    void dr_printf(const char *fmt, ...);
+    dr_printf("relocating name: %s\n", name);
+
 #ifdef CLIENT_INTERFACE
     if (INTERNAL_OPTION(private_loader) && privload_redirect_sym(r_addr, name))
         return;
@@ -1586,10 +1598,12 @@ module_relocate_symbol(app_pc modbase,
     default:
         resolved = false;
     }
+    dr_printf("resolved: %d\n", resolved);
     if (resolved)
         return;
 
     res = module_lookup_symbol(sym, pd);
+    dr_printf("module_lookup_symbol(%p, %s) -> %p\n", pd->os_data.base_address, name, res);
     LOG(GLOBAL, LOG_LOADER, 3, "symbol lookup for %s %p\n", name, res);
     switch (r_type) {
     case ELF_R_GLOB_DAT:

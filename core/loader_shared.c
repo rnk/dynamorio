@@ -327,6 +327,11 @@ privload_insert(privmod_t *after, app_pc base, size_t size, const char *name,
             return NULL;
         }
         mod = &privmod_static[privmod_static_idx];
+        /* NOCHECKIN: Hack so we can iterate loaded modules before putting them
+         * on modlist.
+         */
+        if (privmod_static_idx > 0)
+            mod->next = &privmod_static[privmod_static_idx - 1];
         ++privmod_static_idx;
         ++search_paths_idx;
     }
@@ -411,6 +416,16 @@ privload_load(const char *filename, privmod_t *dependent)
     /* Add after its dependent to preserve forward-can-unload order */
     privmod = privload_insert(dependent, map, size, get_shared_lib_name(map),
                               filename);
+
+    /* NOCHECKIN */
+    extern bool loading_dr_deps;
+    if (loading_dr_deps) {
+        void dr_printf(const char *fmt, ...);
+        dr_printf("finalizing DR's dep\n");
+        /* We're processing DynamoRIO imports before heap init. */
+        if (!privload_load_finalize(privmod))
+            return NULL;
+    }
 
     /* If no heap yet, we'll call finalize later in loader_init() */
     if (privmod != NULL && privload_modlist_initialized()) {
@@ -555,5 +570,9 @@ privmod_t *
 privload_first_module(void)
 {
     ASSERT_OWN_RECURSIVE_LOCK(true, &privload_lock);
-    return modlist;
+    if (privload_modlist_initialized())
+        return modlist;
+    else
+        return &privmod_static[privmod_static_idx - 1];
+
 }
