@@ -480,7 +480,7 @@ _dr_start(inject_cxt_t *cxt)
                    cxt->dynamorio_library_path);
 
     acquire_recursive_lock(&privload_lock);
-    dynamorio_app_init();
+    //os_loader_finish_injection();
     release_recursive_lock(&privload_lock);
 
     dr_printf("called os_loader_finish_injection\n");
@@ -488,7 +488,9 @@ _dr_start(inject_cxt_t *cxt)
     dr_printf("attempting to use libc\n");
     int hex, dec;
     asm ("int3");
-    int r = sscanf("0xdead 1234", "0x%x %d", &hex, &dec);
+
+    int my_sscanf(const char *str, char const *fmt0, ...);
+    int r = my_sscanf("0xdead 1234", "0x%x %d", &hex, &dec);
     ASSERT(hex == 0xdead && dec == 1234);
 
     int init = dynamorio_app_init();

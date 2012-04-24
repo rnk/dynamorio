@@ -518,7 +518,7 @@ linux_map_and_relocate(const char *filename, size_t *size OUT,
     if (IF_CLIENT_INTERFACE_ELSE(!standalone_library &&
                                  INTERNAL_OPTION(privload_register_gdb),
                                  false)) {
-        dr_gdb_add_symbol_file(filename, text_addr);
+        //dr_gdb_add_symbol_file(filename, text_addr);
     } else {
         /* Add debugging comment about how to get symbol information in gdb. */
         SYSLOG_INTERNAL_INFO("In GDB, use add-symbol-file %s %p"
@@ -579,7 +579,7 @@ bool
 privload_call_entry(privmod_t *privmod, uint reason)
 {
     os_privmod_data_t *opd = privmod->os_privmod_data;
-    if (os_get_dr_seg_base(NULL, LIB_SEG_TLS) == NULL) {
+    if (!loading_dr_deps && os_get_dr_seg_base(NULL, LIB_SEG_TLS) == NULL) {
         /* HACK: i#338
          * The privload_call_entry is called in privload_finalize_load
          * from loader_init.
@@ -593,6 +593,8 @@ privload_call_entry(privmod_t *privmod, uint reason)
          */
         return true;
     }
+    void dr_printf(const char *fmt, ...);
+    dr_printf("calling init/fini for privmod: %s\n", privmod->name);
     if (reason == DLL_PROCESS_INIT) {
         /* calls init and init array */
         if (opd->init != NULL) {
@@ -605,6 +607,16 @@ privload_call_entry(privmod_t *privmod, uint reason)
                  i++) {
                 privload_call_lib_func(opd->init_array[i]);
             }
+        }
+        if (strstr(privmod->name, "ld-linux")) {
+            int (*_dl_tls_setup)(void) =
+                (int (*)(void))get_proc_address_from_os_data(&privmod->os_privmod_data->os_data,
+                                                             privmod->os_privmod_data->load_delta,
+                                                             "_dl_tls_setup",
+                                                             NULL);
+            asm("int3");
+            int r = _dl_tls_setup();
+            dr_printf("_dl_tls_setup: %d\n", r);
         }
         return true;
     } else if (reason == DLL_PROCESS_EXIT) {
@@ -797,6 +809,7 @@ privload_call_modules_entry(privmod_t *mod, uint reason)
     }
 }
 
+extern char **stack_env_vars;
 
 static void
 privload_call_lib_func(fp_t func)
@@ -812,7 +825,7 @@ privload_call_lib_func(fp_t func)
      * not ideal to add another dependence on DR using libc.
      */
     dummy_argv[0] = "dummy";
-    func(1, dummy_argv, __environ);
+    func(1, dummy_argv, (stack_env_vars != NULL ? stack_env_vars : __environ));
 }
 
 bool

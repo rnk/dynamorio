@@ -101,6 +101,7 @@ set(CORE_SRCS
   emit.c
   utils.c
   string.c
+  sscanf.c
   config.c
   stats.c
   heap.c
