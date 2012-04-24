@@ -42,8 +42,8 @@
  */
 
 #define START_DYNAMO 1          /* start dynamo on preload */
-#define VERBOSE_INIT_FINI 0     /* notification for _init and _fini  */
-#define VERBOSE 0
+#define VERBOSE_INIT_FINI 1     /* notification for _init and _fini  */
+#define VERBOSE 1
 #define INIT_BEFORE_LIBC 0
 
 #include "configure.h"
@@ -185,7 +185,10 @@ _init ()
      */
     init = dynamorio_app_init();
     pf("dynamorio_app_init() returned %d\n", init);
-    dynamorio_app_take_over();
+    /* FIXME: We need to have probes. */
+    if (getenv("DYNAMORIO_DELAY_TAKEOVER") == NULL) {
+        dynamorio_app_take_over();
+    }
     pf("dynamo started\n");
 #endif /* START_DYNAMO */
 

@@ -59,6 +59,7 @@ while ($#ARGV >= 0) {
         $header = 1;
         shift;
         if ($#ARGV != 1) {
+	  print $ARGV[0];
             print "$usage";
             exit 0;
         }
@@ -89,6 +90,7 @@ while ($#ARGV >= 0) {
     } elsif ($ARGV[0] eq '-debug') {
         $debug = 1;
     } else {
+        print $ARGV[0];
         print "$usage";
         exit 0;
     }

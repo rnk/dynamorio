@@ -73,4 +73,13 @@
 /* check if a single bit is set in var */
 #define TEST TESTANY
 
+/* Function attributes. */
+#ifdef WINDOWS
+# define EXPORT __declspec(dllexport)
+# define NOINLINE __declspec(noinline)
+#else /* LINUX */
+# define EXPORT __attribute__((visibility("default")))
+# define NOINLINE __attribute__((noinline))
+#endif
+
 #endif /* DR_CLIENT_TOOLS_H */

@@ -33,7 +33,6 @@
 /**
 ***************************************************************************
 ***************************************************************************
-\if vmsafe
 \page API_probe Probe API
 
 The Probe API provides an interface that enables a \client to insert
@@ -94,7 +93,6 @@ At process exit all probes are removed automatically.  Probes are removed
 automatically at a few other scenarios too (see dr_register_probes()) for
 details.
 
-\endif
 ****************************************************************************
 ****************************************************************************
 */

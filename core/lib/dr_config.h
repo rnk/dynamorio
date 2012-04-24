@@ -49,10 +49,16 @@
  * at a time.  This limitation will be addressed in future releases.
  */
 
+#ifdef AVOID_API_EXPORT
+/* This is all Windows-only, but genapi.pl doesn't support keeping the outer
+ * ifdef but stripping inner ifdefs (ie HOT_PATCHING_INTERFACE), so we expose
+ * this header on Linux.  No one can use it, they will get link errors at
+ * runtime.
+ */
+#endif
+
 /** Maximum length of a registered process's options string */
 #define DR_MAX_OPTIONS_LENGTH 2048
-
-#ifdef WINDOWS
 
 /** Specifies DynamoRIO's operation mode. */
 typedef enum {
@@ -870,8 +876,6 @@ dr_nudge_all(client_id_t client_id,
              uint64 arg,
              uint timeout_ms,
              int *nudge_count /*OUT */);
-
-#endif /* WINDOWS */
 
 /* DR_API EXPORT END */
 

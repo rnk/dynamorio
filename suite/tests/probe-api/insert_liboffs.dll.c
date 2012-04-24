@@ -39,15 +39,21 @@
 #include "dr_api.h"
 #include "dr_probe.h"
 #include "dr_tools.h"
+#include "dr_defines.h"
+
+#include <string.h>
+
+#include "client_tools.h"
 
 #define NUM_PROBES 1
 dr_probe_desc_t probes[NUM_PROBES];
 
+static client_id_t client_id;
+
 /*----------------------------------------------------------------------------*/
-#include "dr_defines.h"
 
 /* This probe increments the argument to insert_liboffs.c:doubler() */
-__declspec(dllexport)
+EXPORT
 void doubler_probe(dr_mcontext_t *cxt)
 {
     volatile reg_t *arg_p = (reg_t *)(cxt->xsp + sizeof(reg_t));
@@ -119,7 +125,7 @@ unsigned int get_symbol_offset(const char *map_file, const char *symbol)
     unsigned long offset = 0xdeadc0de, client_path_len;
     char *client_path = NULL, *map_path, *ptr;
 
-    client_path = (char *) dr_get_client_path();
+    client_path = (char *) dr_get_client_path(client_id);
     if (client_path != NULL) {
         client_path_len = strlen(client_path);
         map_path = dr_global_alloc(client_path_len * 2);        /* be safe */
@@ -155,9 +161,11 @@ static void probe_def_init(void)
 }
 
 DR_EXPORT
-void dr_init()
+void dr_init(client_id_t id)
 {
     dr_probe_status_t stat;
+
+    client_id = id;
 
     probe_def_init();
     dr_register_probes(&probes[0], NUM_PROBES);
