@@ -2536,6 +2536,17 @@ dynamo_thread_not_under_dynamo(dcontext_t *dcontext)
 #endif /* LINUX */
 }
 
+__attribute__((visibility("default")))
+void
+dynamorio_app_start_code_cache(void)
+{
+    dynamo_options.hotp_only = false;
+    dynamo_options.thin_client = false;
+    dr_printf("code cache: %d\n", RUNNING_WITHOUT_CODE_CACHE());
+    void dynamorio_app_take_over(void);
+    dynamorio_app_take_over();
+}
+
 /* Called by dynamorio_app_take_over in arch-specific assembly file */
 void
 dynamorio_app_take_over_helper(priv_mcontext_t *mc)
