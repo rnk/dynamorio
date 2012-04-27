@@ -96,4 +96,9 @@ DR_APP_API void dr_app_stop(void);
  */
 DR_APP_API void dr_app_take_over(void);
 
+/**
+ * Calls dr_app_setup() and, if it succeeds, calls dr_app_start().
+ */
+DR_APP_API int dr_app_setup_and_start(void);
+
 #endif /* _DR_APP_H_ */

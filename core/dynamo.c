@@ -1167,18 +1167,16 @@ dynamo_process_exit_cleanup(void)
             mutex_unlock(&thread_initexit_lock);
         }
 
-        /* we don't check control_all_threads b/c we're just killing
+        /* if ExitProcess called before all threads terminated, they won't
+         * all have gone through dynamo_thread_exit, so clean them up now
+         * so we can get stats about them
+         * 
+         * we don't check control_all_threads b/c we're just killing
          * the threads we know about here
          */
-        if (automatic_startup) {
-            /* if ExitProcess called before all threads terminated, they won't
-             * all have gone through dynamo_thread_exit, so clean them up now
-             * so we can get stats about them
-             */
-            synch_with_threads_at_exit(IF_WINDOWS_ELSE
-                                       (THREAD_SYNCH_SUSPENDED_AND_CLEANED,
-                                        THREAD_SYNCH_TERMINATED_AND_CLEANED));
-        }
+        synch_with_threads_at_exit(IF_WINDOWS_ELSE
+                                   (THREAD_SYNCH_SUSPENDED_AND_CLEANED,
+                                    THREAD_SYNCH_TERMINATED_AND_CLEANED));
         /* now that APC interception point is unpatched and 
          * dynamorio_exited is set and we've killed all the theads we know
          * about, assumption is that no other threads will be running in 
@@ -2520,6 +2518,15 @@ DR_APP_API void
 dr_app_stop(void)
 {
     /* the application regains control in here */
+}
+
+DR_APP_API int
+dr_app_setup_and_start(void)
+{
+    int r = dr_app_setup();
+    if (r == SUCCESS)
+        dr_app_start();
+    return r;
 }
 #endif
 
