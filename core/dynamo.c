@@ -2594,6 +2594,9 @@ dynamo_take_over_threads(dcontext_t *dcontext)
     uint attempts = 0;
 
     do {
+        /* FIXME: To be truly resiliant we should suspend threads we take over
+         * until after we're sure we've gotten all of them.
+         */
         found_threads = os_take_over_threads(dcontext);
         attempts++;
     } while (found_threads && attempts < MAX_TAKE_OVER_ATTEMPTS);
