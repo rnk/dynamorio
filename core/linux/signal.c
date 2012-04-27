@@ -1406,6 +1406,26 @@ signal_thread_inherit(dcontext_t *dcontext, void *clone_record)
     return res;
 }
 
+/* When taking over existing app threads, we assume they're using pthreads and
+ * expect to share signal handlers, memory, thread group id, etc.
+ */
+void
+share_siginfo_after_take_over(dcontext_t *dcontext, dcontext_t *takeover_dc)
+{
+    clone_record_t crec;
+    thread_sig_info_t *parent_siginfo =
+        (thread_sig_info_t*)takeover_dc->signal_field;
+    /* Create a fake clone record with the given siginfo.  We assume we're
+     * sharing signal handlers across all threads in the standard pthreads way.
+     */
+    crec.caller_id = takeover_dc->owning_thread;
+    crec.clone_sysnum = SYS_clone;
+    crec.clone_flags = PTHREAD_CLONE_FLAGS;
+    crec.parent_info = parent_siginfo;
+    crec.info = *parent_siginfo;
+    signal_thread_inherit(dcontext, &crec);
+}
+
 /* This is split from os_fork_init() so the new logfiles are available
  * (xref i#189/PR 452168).  It had to be after dynamo_other_thread_exit()
  * called in dynamorio_fork_init() after os_fork_init() else we clean
@@ -3680,6 +3700,19 @@ sig_should_swap_stack(struct clone_and_swap_args *args, kernel_ucontext_t *ucxt)
 }
 #endif
 
+/* Helper that takes over the current thread signalled via SUSPEND_SIGNAL.  Kept
+ * separate mostly to keep the priv_mcontext_t allocation out of
+ * master_signal_handler_C.
+ */
+static void
+sig_take_over(struct sigcontext *sc)
+{
+    priv_mcontext_t mc;
+    sigcontext_to_mcontext(&mc, sc);
+    os_thread_take_over(&mc);
+    ASSERT_NOT_REACHED();
+}
+
 /* the master signal handler
  * WARNING: behavior varies with different versions of the kernel!
  * sigaction support was only added with 2.2
@@ -3738,6 +3771,13 @@ master_signal_handler(int sig, siginfo_t *siginfo, kernel_ucontext_t *ucxt)
             /* assuming an alarm during thread exit (xref PR 596127):
              * suppressing is fine
              */
+        } else if (sig == SUSPEND_SIGNAL ||
+                   thread_lookup(get_thread_id()) == NULL) {
+            /* We're trying to suspend a thread we don't control yet, which
+             * means we want to take over.
+             */
+            struct sigcontext *sc = (struct sigcontext *) &(ucxt->uc_mcontext);
+            sig_take_over(sc);  /* no return */
         } else {
             /* Using global dcontext because dcontext is NULL here. */
             DOLOG(1, LOG_ASYNCH, { dump_sigcontext(GLOBAL_DCONTEXT, sc); });
@@ -5255,7 +5295,11 @@ handle_alarm(dcontext_t *dcontext, int sig, kernel_ucontext_t *ucxt)
         release_recursive_lock(info->shared_itimer_lock);
     return pass_to_app;
 }
-   
+
+/* Starts itimer if stopped, or increases refcount of existing itimer if already
+ * started.  It is *not* safe to call this more than once for the same thread,
+ * since it will inflate the refcount and prevent cleanup.
+ */
 void
 start_itimer(dcontext_t *dcontext)
 {
@@ -5290,6 +5334,10 @@ start_itimer(dcontext_t *dcontext)
         release_recursive_lock(info->shared_itimer_lock);
 }
 
+/* Decrements the itimer refcount, and turns off the itimer once there are no
+ * more threads listening for it.  It is not safe to call this more than once on
+ * the same thread.
+ */
 void
 stop_itimer(dcontext_t *dcontext)
 {

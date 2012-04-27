@@ -39,9 +39,10 @@
 #include "dr_api.h"
 #endif
 #include "tools.h"
-#include "threads.h"
 #ifdef WINDOWS
 # include <windows.h>
+#else
+# include <pthread.h>
 #endif
 
 #define ITERS 150000
@@ -49,27 +50,48 @@
 /* We have event bb look for this to make sure we're instrumenting the sideline
  * thread.  
  */
-NOINLINE void sideline_func(void) { }
+NOINLINE void sideline_func_0(void) { }
+NOINLINE void sideline_func_1(void) { }
+NOINLINE void sideline_func_2(void) { }
+NOINLINE void sideline_func_3(void) { }
+NOINLINE void sideline_func_4(void) { }
+NOINLINE void sideline_func_5(void) { }
+NOINLINE void sideline_func_6(void) { }
+NOINLINE void sideline_func_7(void) { }
+NOINLINE void sideline_func_8(void) { }
+NOINLINE void sideline_func_9(void) { }
 
-static bool took_over_sideline = false;
+static bool took_over_thread[10];
 
+#ifdef USE_DYNAMO
 static dr_emit_flags_t
 event_bb(void *drcontext, void *tag, instrlist_t *bb, bool for_trace,
          bool translating)
 {
-    if (instr_get_app_pc(instrlist_first(bb)) == (app_pc)&sideline_func)
-        took_over_sideline = true;
+    app_pc pc = instr_get_app_pc(instrlist_first(bb));
+    if (pc == (app_pc)&sideline_func_0) took_over_thread[0] = true;
+    if (pc == (app_pc)&sideline_func_1) took_over_thread[1] = true;
+    if (pc == (app_pc)&sideline_func_2) took_over_thread[2] = true;
+    if (pc == (app_pc)&sideline_func_3) took_over_thread[3] = true;
+    if (pc == (app_pc)&sideline_func_4) took_over_thread[4] = true;
+    if (pc == (app_pc)&sideline_func_5) took_over_thread[5] = true;
+    if (pc == (app_pc)&sideline_func_6) took_over_thread[6] = true;
+    if (pc == (app_pc)&sideline_func_7) took_over_thread[7] = true;
+    if (pc == (app_pc)&sideline_func_8) took_over_thread[8] = true;
+    if (pc == (app_pc)&sideline_func_9) took_over_thread[9] = true;
     return DR_EMIT_DEFAULT;
 }
+#endif
 
 /* This is a thread that spins and calls sideline_func.  It will call
  * sideline_func at least once before returning and joining the parent.
  */
 static volatile bool should_spin = true;
 
-int
-sideline_spinner(void *unused_arg)
+void *
+sideline_spinner(void *arg)
 {
+    void (*sideline_func)(void) = (void (*)(void))arg;
     do {
         sideline_func();
 #ifdef WINDOWS
@@ -78,7 +100,7 @@ sideline_spinner(void *unused_arg)
         sleep(0);
 #endif
     } while (should_spin);
-    return 0;
+    return NULL;
 }
 
 void foo(void)
@@ -90,23 +112,42 @@ int main(void)
     double res = 0.;
     int i,j;
     void *stack = NULL;
-    thread_t thread;
     ptr_uint_t tid;
+    void *dc;
+#ifdef LINUX
+    pthread_t pt[10];  /* On Linux, the tid. */
+#else
+    HANDLE thread[10];
+#endif
+
+    /* Create spinning sideline threads. */
+#ifdef LINUX
+    pthread_create(&pt[0], NULL, sideline_spinner, (void*)sideline_func_0);
+    pthread_create(&pt[1], NULL, sideline_spinner, (void*)sideline_func_1);
+    pthread_create(&pt[2], NULL, sideline_spinner, (void*)sideline_func_2);
+    pthread_create(&pt[3], NULL, sideline_spinner, (void*)sideline_func_3);
+    pthread_create(&pt[4], NULL, sideline_spinner, (void*)sideline_func_4);
+    pthread_create(&pt[5], NULL, sideline_spinner, (void*)sideline_func_5);
+    pthread_create(&pt[6], NULL, sideline_spinner, (void*)sideline_func_6);
+    pthread_create(&pt[7], NULL, sideline_spinner, (void*)sideline_func_7);
+    pthread_create(&pt[8], NULL, sideline_spinner, (void*)sideline_func_8);
+    pthread_create(&pt[9], NULL, sideline_spinner, (void*)sideline_func_9);
+#else
+    thread[0] = _beginthreadex(NULL, 0, sideline_spinner, (void*)sideline_func_0, 0, &tid);
+    thread[1] = _beginthreadex(NULL, 0, sideline_spinner, (void*)sideline_func_1, 0, &tid);
+    thread[2] = _beginthreadex(NULL, 0, sideline_spinner, (void*)sideline_func_2, 0, &tid);
+    thread[3] = _beginthreadex(NULL, 0, sideline_spinner, (void*)sideline_func_3, 0, &tid);
+    thread[4] = _beginthreadex(NULL, 0, sideline_spinner, (void*)sideline_func_4, 0, &tid);
+    thread[5] = _beginthreadex(NULL, 0, sideline_spinner, (void*)sideline_func_5, 0, &tid);
+    thread[6] = _beginthreadex(NULL, 0, sideline_spinner, (void*)sideline_func_6, 0, &tid);
+    thread[7] = _beginthreadex(NULL, 0, sideline_spinner, (void*)sideline_func_7, 0, &tid);
+    thread[8] = _beginthreadex(NULL, 0, sideline_spinner, (void*)sideline_func_8, 0, &tid);
+    thread[9] = _beginthreadex(NULL, 0, sideline_spinner, (void*)sideline_func_9, 0, &tid);
+#endif
 
 #ifdef USE_DYNAMO
     dr_app_setup();
-#endif
-
     dr_register_bb_event(event_bb);
-
-    /* Create a spinning sideline thread. */
-    thread = thread_create(sideline_spinner, NULL, &stack);
-#ifdef USE_DYNAMO
-# ifdef WINDOWS
-    tid = GetThreadId(thread);
-# else /* LINUX */
-    tid = thread;
-# endif /* LINUX */
 #endif
 
     for (j=0; j<10; j++) {
@@ -122,6 +163,9 @@ int main(void)
 	}
 	foo();
 #ifdef USE_DYNAMO
+        /* FIXME i#95: dr_app_stop only makes the current thread run native.
+         * We should revisit this while implementing full detach.
+         */
 	dr_app_stop();
 #endif
     }
@@ -129,11 +173,16 @@ int main(void)
      * so we no longer print out res */
     print("all done: %d iters\n", i);
 
-    if (!took_over_sideline)
-        print("failed to take over sideline thread!\n");
-
-    should_spin = false;  /* Break it's loop. */
-    delete_thread(thread, stack);
+    should_spin = false;  /* Break the loops. */
+    for (i = 0; i < 10; i++) {
+#ifdef LINUX
+        pthread_join(pt[i], NULL);
+#else
+        WaitForSingleObject(thread[i], INFINITE);
+#endif
+        if (!took_over_thread[i])
+            print("failed to take over thread %d!\n", i);
+    }
 
 #ifdef USE_DYNAMO
     dr_app_cleanup();

@@ -746,6 +746,18 @@ restore_peb_pointer_for_thread(dcontext_t *dcontext)
 #endif /* CLIENT_INTERFACE */
 
 void
+os_switch_to_context(dcontext_t *dcontext, cxt_kind_t to_cxt)
+{
+#ifdef CLIENT_INTERFACE
+    /* i#249: swap PEB pointers */
+    if (INTERNAL_OPTION(private_peb) && should_swap_peb_pointer()) {
+        bool to_priv = (to_cxt == DR_CONTEXT);
+        swap_peb_pointer(dcontext, to_priv);
+    }
+#endif
+}
+
+void
 privload_add_areas(privmod_t *privmod)
 {
     vmvector_add(modlist_areas, privmod->base, privmod->base + privmod->size,

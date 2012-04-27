@@ -59,8 +59,7 @@
 
 /**
  * Application-wide initialization. Must be called before any other
- * API function, and before the application creates any threads. Returns
- * zero on success.
+ * API function. Returns zero on success.
  */
 DR_APP_API int dr_app_setup(void);
 
@@ -70,15 +69,23 @@ DR_APP_API int dr_app_setup(void);
 DR_APP_API int dr_app_cleanup(void);
 
 /**
- * Causes application to run under DR control upon return 
- * from this call.
+ * Causes application to run under DR control upon return from this call.  On
+ * Linux, attempts to take over any existing threads in the application.
+ *
+ * \warning DR detects threads by listing thread ids in the current process's
+ * thread group.  DR also assumes the threads all share signal handlers, as is
+ * the case for pthreads.  Violating these assumptions will lead to
+ * unpredictable behavior.
  */
 DR_APP_API void dr_app_start(void);
 
 /**
- * Causes application to run directly on the machine upon return 
- * from this call; no effect if application is not currently
- * running under DR control.
+ * Causes the application's current thread to run directly on the machine upon
+ * return from this call; no effect if application is not currently running
+ * under DR control.
+ *
+ * \note This only affects the current thread.  Other threads will still be
+ * under DR's control.
  */
 DR_APP_API void dr_app_stop(void);
 

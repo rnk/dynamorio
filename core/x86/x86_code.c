@@ -59,20 +59,6 @@ get_xmm_vals(priv_mcontext_t *mc)
     }
 }
 
-/* initializes dcontext and performs other initialization
- * intended to be done each time a thread comes under dynamo control
- */
-static void
-thread_starting(dcontext_t *dcontext)
-{
-    initialize_dynamo_context(dcontext);
-    dynamo_thread_under_dynamo(dcontext);
-#ifdef WINDOWS
-    LOG(THREAD, LOG_INTERP, 2, "thread_starting: interpreting thread %d\n",
-        get_thread_id());
-#endif
-}
-
 /* Initializes a dcontext with the supplied state and calls dispatch */
 void
 dynamo_start(priv_mcontext_t *mc)
@@ -81,6 +67,9 @@ dynamo_start(priv_mcontext_t *mc)
     dcontext_t *dcontext = get_thread_private_dcontext();
     ASSERT(dcontext != NULL);
     thread_starting(dcontext);
+
+    /* Signal other threads for take over. */
+    dynamo_take_over_threads(dcontext);
 
     /* Set return address */
     dcontext->next_tag = mc->pc;

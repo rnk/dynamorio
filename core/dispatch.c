@@ -600,6 +600,7 @@ dispatch_enter_native(dcontext_t *dcontext)
     } 
     else {
 #if defined(DR_APP_EXPORTS) || defined(LINUX)
+        set_last_exit(dcontext, (linkstub_t *) get_native_exec_linkstub());
         dispatch_at_stopping_point(dcontext);
         enter_nolinking(dcontext, NULL, false);
 #else
@@ -674,9 +675,10 @@ dispatch_enter_dynamorio(dcontext_t *dcontext)
      */
 
     if (wherewasi == WHERE_APP) { /* first entrance */
-        ASSERT(dcontext->last_exit == get_starting_linkstub()
+        ASSERT(dcontext->last_exit == get_starting_linkstub() ||
+               dcontext->last_exit == get_native_exec_linkstub() ||
                /* new thread */
-               || IF_WINDOWS_ELSE_0(dcontext->last_exit == get_asynch_linkstub()));
+               IF_WINDOWS_ELSE_0(dcontext->last_exit == get_asynch_linkstub()));
     } else {
         ASSERT(dcontext->last_exit != NULL); /* MUST be set, if only to a fake linkstub_t */
         /* cache last_exit's fragment */

@@ -1992,6 +1992,20 @@ remove_thread(IF_WINDOWS_(HANDLE hthread) thread_id_t tid)
 /* this bool is protected by reset_pending_lock */
 DECLARE_FREQPROT_VAR(static bool reset_at_nth_thread_triggered, false);
 
+/* initializes dcontext and performs other initialization
+ * intended to be done each time a thread comes under dynamo control
+ */
+void
+thread_starting(dcontext_t *dcontext)
+{
+    //initialize_dynamo_context(dcontext);
+    dynamo_thread_under_dynamo(dcontext);
+#ifdef WINDOWS
+    LOG(THREAD, LOG_INTERP, 2, "thread_starting: interpreting thread %d\n",
+        get_thread_id());
+#endif
+}
+
 /* thread-specific initialization 
  * if dstack_in is NULL, then a dstack is allocated; else dstack_in is used 
  * as the thread's dstack
@@ -2459,6 +2473,17 @@ dr_app_setup(void)
 DR_APP_API int
 dr_app_cleanup(void)
 {
+    thread_record_t *tr;
+
+    /* Need to mark this thread as being under control of DR again, since that's
+     * what dynamorio_app_exit expects.  This assumes that the app has
+     * previously called dr_app_stop, which will mark the thread as being not
+     * under DR.
+     */
+    tr = thread_lookup(get_thread_id());
+    if (tr != NULL && tr->dcontext != NULL)
+        dynamo_thread_under_dynamo(tr->dcontext);
+
     SELF_UNPROTECT_DATASEC(DATASEC_RARELY_PROT);
     dr_api_exit = true;
     SELF_PROTECT_DATASEC(DATASEC_RARELY_PROT); /* to keep properly nested */
@@ -2469,7 +2494,19 @@ dr_app_cleanup(void)
 void
 dr_app_start_helper(priv_mcontext_t *mc)
 {
+    thread_record_t *tr;
+    dcontext_t *dcontext;
     apicheck(dynamo_initialized, PRODUCT_NAME" not initialized");
+
+    /* Get dcontext without using TLS.  On Linux, we swap back to app's TLS when
+     * leaving control of DR, ie returning from dr_app_setup.
+     */
+    tr = thread_lookup(IF_LINUX_ELSE(get_sys_thread_id(), get_thread_id()));
+    dcontext = (tr == NULL ? NULL : tr->dcontext);
+    apicheck(dcontext != NULL,
+             "dr_app_start() must be called on same thread as dr_app_setup");
+    dcontext->whereami = WHERE_APP;
+
     if (!INTERNAL_OPTION(nullcalls)) {
         dynamo_start(mc);
         /* the interpreter takes over from here */
@@ -2534,6 +2571,31 @@ dynamo_thread_not_under_dynamo(dcontext_t *dcontext)
     os_flush(dcontext->logfile);
 # endif
 #endif /* LINUX */
+}
+
+#define MAX_TAKE_OVER_ATTEMPTS 4
+
+/* Take over other threads in the current process.
+ */
+void
+dynamo_take_over_threads(dcontext_t *dcontext)
+{
+    /* We repeatedly check if there are other threads in the process, since
+     * while we're checking one may be spawning additional threads.
+     */
+    bool found_threads;
+    uint attempts = 0;
+
+    do {
+        found_threads = os_take_over_threads(dcontext);
+        attempts++;
+    } while (found_threads && attempts < MAX_TAKE_OVER_ATTEMPTS);
+
+    if (found_threads) {
+        SYSLOG(SYSLOG_WARNING, INTERNAL_SYSLOG_WARNING, 
+               3, get_application_name(), get_application_pid(),
+               "Failed to take over all threads after multiple attempts");
+    }
 }
 
 /* Called by dynamorio_app_take_over in arch-specific assembly file */
