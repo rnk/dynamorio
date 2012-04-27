@@ -1318,7 +1318,7 @@ os_tls_offset(ushort tls_offs)
     return (TLS_LOCAL_STATE_OFFSET + tls_offs);
 }
 
-/* FIXME: This looks like stateless routine, but the truth is that it will
+/* XXX: This looks like a relatively safe routine, but the truth is that it will
  * return NULL between os_tls_init and os_thread_init, which is when we copy
  * dr_fs_base and dr_gs_base from the os_local_state_t in SEG_TLS to the
  * os_thread_data_t in dcontext->os_field.
@@ -1375,9 +1375,10 @@ os_get_app_seg_base(dcontext_t *dcontext, reg_id_t seg)
     if (dcontext == NULL)
         dcontext = get_thread_private_dcontext();
     if (dcontext == NULL) {
-        /* No dcontext means we haven't mangled the app's segment yet, so the
-         * app's TLS base should still be installed.  Expensive, but it should
-         * be rare.  Re-examine if it pops up in a profile.
+        /* No dcontext means we haven't mangled the app's segment yet, but the
+         * app's TLS base should already be installed.  get_segment_base is
+         * expensive, but this should be rare.  Re-examine if it pops up in a
+         * profile.
          */
         return get_segment_base(seg);
     }
@@ -2155,12 +2156,7 @@ void
 os_thread_not_under_dynamo(dcontext_t *dcontext)
 {
     stop_itimer(dcontext);
-    /* FIXME: We should really put back app segments for threads not under our
-     * control, but we crash when dispatch_enter_native calls go_native, because
-     * the gencode uses SEG_TLS.
-     */
-    if (0)
-        os_switch_to_context(dcontext, APP_CONTEXT);
+    os_switch_to_context(dcontext, APP_CONTEXT);
 }
 
 static pid_t
@@ -4794,7 +4790,6 @@ os_switch_seg_to_context(dcontext_t *dcontext, reg_id_t seg, cxt_kind_t to_cxt)
         our_modify_ldt_t desc;
         uint index;
         uint selector;
-        /* NOCHECKIN: Test me in 32-bit. */
         index = SELECTOR_INDEX(seg == SEG_FS ? os_tls->app_fs : os_tls->app_gs);
         if (to_cxt == APP_CONTEXT) {
             our_modify_ldt_t *areas = 

@@ -1990,20 +1990,6 @@ remove_thread(IF_WINDOWS_(HANDLE hthread) thread_id_t tid)
 /* this bool is protected by reset_pending_lock */
 DECLARE_FREQPROT_VAR(static bool reset_at_nth_thread_triggered, false);
 
-/* initializes dcontext and performs other initialization
- * intended to be done each time a thread comes under dynamo control
- */
-void
-thread_starting(dcontext_t *dcontext)
-{
-    //initialize_dynamo_context(dcontext);
-    dynamo_thread_under_dynamo(dcontext);
-#ifdef WINDOWS
-    LOG(THREAD, LOG_INTERP, 2, "thread_starting: interpreting thread %d\n",
-        get_thread_id());
-#endif
-}
-
 /* thread-specific initialization 
  * if dstack_in is NULL, then a dstack is allocated; else dstack_in is used 
  * as the thread's dstack
@@ -2492,19 +2478,7 @@ dr_app_cleanup(void)
 void
 dr_app_start_helper(priv_mcontext_t *mc)
 {
-    thread_record_t *tr;
-    dcontext_t *dcontext;
     apicheck(dynamo_initialized, PRODUCT_NAME" not initialized");
-
-    /* Get dcontext without using TLS.  On Linux, we swap back to app's TLS when
-     * leaving control of DR, ie returning from dr_app_setup.
-     */
-    tr = thread_lookup(IF_LINUX_ELSE(get_sys_thread_id(), get_thread_id()));
-    dcontext = (tr == NULL ? NULL : tr->dcontext);
-    apicheck(dcontext != NULL,
-             "dr_app_start() must be called on same thread as dr_app_setup");
-    dcontext->whereami = WHERE_APP;
-
     if (!INTERNAL_OPTION(nullcalls)) {
         dynamo_start(mc);
         /* the interpreter takes over from here */

@@ -88,7 +88,7 @@ stack_free(void *p, int size)
  * Returns the tid of the new thread.
  */
 thread_t
-thread_create(int (*run_func)(void *), void *arg, void **stack)
+create_thread(int (*run_func)(void *), void *arg, void **stack)
 {
     thread_t newpid; 
     int flags;
@@ -149,7 +149,7 @@ typedef HANDLE thread_t;
  * Returns the tid of the new thread.
  */
 thread_t
-thread_create(int (WINAPI *run_func)(void *), void *arg, void **stack)
+create_thread(int (WINAPI *run_func)(void *), void *arg, void **stack)
 {
     int tid;
     return (thread_t) _beginthreadex(NULL, 0, run_func, NULL, 0, &tid);

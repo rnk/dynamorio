@@ -59,6 +59,19 @@ get_xmm_vals(priv_mcontext_t *mc)
     }
 }
 
+/* Just calls dynamo_thread_under_dynamo.  We used to initialize dcontext here,
+ * but that would end up initializing it twice.
+ */
+void
+thread_starting(dcontext_t *dcontext)
+{
+    dynamo_thread_under_dynamo(dcontext);
+#ifdef WINDOWS
+    LOG(THREAD, LOG_INTERP, 2, "thread_starting: interpreting thread %d\n",
+        get_thread_id());
+#endif
+}
+
 /* Initializes a dcontext with the supplied state and calls dispatch */
 void
 dynamo_start(priv_mcontext_t *mc)
