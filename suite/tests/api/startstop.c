@@ -173,6 +173,12 @@ int main(void)
      * so we no longer print out res */
     print("all done: %d iters\n", i);
 
+#ifdef USE_DYNAMO
+    /* On x64 Linux it's OK if we call pthread_join natively, but x86-32 has
+     * problems.  We start and stop to bracket it.
+     */
+    dr_app_start();
+#endif
     should_spin = false;  /* Break the loops. */
     for (i = 0; i < 10; i++) {
 #ifdef LINUX
@@ -183,6 +189,9 @@ int main(void)
         if (!took_over_thread[i])
             print("failed to take over thread %d!\n", i);
     }
+#ifdef USE_DYNAMO
+    dr_app_stop();
+#endif
 
 #ifdef USE_DYNAMO
     dr_app_cleanup();
