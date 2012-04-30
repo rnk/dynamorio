@@ -120,7 +120,7 @@ int main(void)
     double res = 0.;
     int i,j;
     void *stack = NULL;
-    ptr_uint_t tid;
+    uint tid;
 #ifdef LINUX
     pthread_t pt[10];  /* On Linux, the tid. */
 #else
