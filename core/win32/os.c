@@ -1456,10 +1456,7 @@ os_thread_not_under_dynamo(dcontext_t *dcontext)
 bool
 os_take_over_threads(dcontext_t *dcontext)
 {
-    /* On Windows, we don't actively search out other running threads and try to
-     * take them over.  Instead, we rely on our syscall hooks to catch native
-     * threads.
-     */
+    /* FIXME NYI i#725: Part of Windows attach. */
     return true;
 }
 

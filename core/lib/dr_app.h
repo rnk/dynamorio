@@ -69,13 +69,15 @@ DR_APP_API int dr_app_setup(void);
 DR_APP_API int dr_app_cleanup(void);
 
 /**
- * Causes application to run under DR control upon return from this call.  On
- * Linux, attempts to take over any existing threads in the application.
+ * Causes application to run under DR control upon return from this call.
+ * Attempts to take over any existing threads in the application.
  *
- * \warning DR detects threads by listing thread ids in the current process's
- * thread group.  DR also assumes the threads all share signal handlers, as is
- * the case for pthreads.  Violating these assumptions will lead to
- * unpredictable behavior.
+ * \warning On Linux, DR detects threads by listing thread ids in the current
+ * process's thread group.  DR also assumes the threads all share signal
+ * handlers, as is the case for pthreads.  Violating these assumptions will lead
+ * to unpredictable behavior.
+ *
+ * \warning Windows does not yet attempt to take over existing threads.
  */
 DR_APP_API void dr_app_start(void);
 
@@ -85,7 +87,7 @@ DR_APP_API void dr_app_start(void);
  * under DR control.
  *
  * \note This only affects the current thread.  Other threads will still be
- * under DR's control.
+ * under DR's control.  This behavior may change in the future.
  */
 DR_APP_API void dr_app_stop(void);
 
@@ -97,7 +99,8 @@ DR_APP_API void dr_app_stop(void);
 DR_APP_API void dr_app_take_over(void);
 
 /**
- * Calls dr_app_setup() and, if it succeeds, calls dr_app_start().
+ * Calls dr_app_setup() and, if it succeeds, calls dr_app_start().  Returns the
+ * result of dr_app_setup(), which returns zero on success.
  */
 DR_APP_API int dr_app_setup_and_start(void);
 
