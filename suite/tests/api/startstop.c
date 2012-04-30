@@ -88,7 +88,11 @@ event_bb(void *drcontext, void *tag, instrlist_t *bb, bool for_trace,
  */
 static volatile bool should_spin = true;
 
+#ifdef WINDOWS
+int __stdcall
+#else
 void *
+#endif
 sideline_spinner(void *arg)
 {
     void (*sideline_func)(void) = (void (*)(void))arg;
@@ -100,7 +104,11 @@ sideline_spinner(void *arg)
         sleep(0);
 #endif
     } while (should_spin);
+#ifdef WINDOWS
+    return 0;
+#else
     return NULL;
+#endif
 }
 
 void foo(void)
@@ -113,11 +121,10 @@ int main(void)
     int i,j;
     void *stack = NULL;
     ptr_uint_t tid;
-    void *dc;
 #ifdef LINUX
     pthread_t pt[10];  /* On Linux, the tid. */
 #else
-    HANDLE thread[10];
+    uintptr_t thread[10];  /* _beginthreadex doesn't return HANDLE? */
 #endif
 
     /* Create spinning sideline threads. */
@@ -183,11 +190,14 @@ int main(void)
     for (i = 0; i < 10; i++) {
 #ifdef LINUX
         pthread_join(pt[i], NULL);
-#else
-        WaitForSingleObject(thread[i], INFINITE);
-#endif
+        /* FIXME i#725: Windows needs attach in order to take over these
+         * threads.
+         */
         if (!took_over_thread[i])
             print("failed to take over thread %d!\n", i);
+#else
+        WaitForSingleObject((HANDLE)thread[i], INFINITE);
+#endif
     }
 #ifdef USE_DYNAMO
     dr_app_stop();
