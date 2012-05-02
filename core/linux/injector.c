@@ -491,6 +491,7 @@ _dr_start(inject_cxt_t *cxt)
 
     int my_sscanf(const char *str, char const *fmt0, ...);
     int r = my_sscanf("0xdead 1234", "0x%x %d", &hex, &dec);
+    ASSERT(r == 2);
     ASSERT(hex == 0xdead && dec == 1234);
 
     int init = dynamorio_app_init();
@@ -640,7 +641,8 @@ dr_inject_process_inject(void *data, bool force_injection,
      * If you need to pass more info to the injected child process, this is a
      * good place to put it.
      */
-    inject_cxt_t cxt = {0};
+    inject_cxt_t cxt;
+    memset(&cxt, 0, sizeof(cxt));
     memcpy(&cxt.regs, &regs, sizeof(regs));
     cxt.dynamorio_dll_start = injected_base;
     cxt.dynamorio_dll_end = injected_base + loaded_size;

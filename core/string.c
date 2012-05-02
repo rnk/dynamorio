@@ -46,6 +46,7 @@ memset(void *dst, int c, size_t n)
     byte *dst_end = dst_bytes + n;
     while (dst_bytes != dst_end)
         *dst_bytes++ = c;
+    return dst;
 }
 
 /* FIXME: Do the typical word-at-a-time unrolling. */
@@ -181,7 +182,6 @@ int
 atoi(const char *s)
 {
     int c = 0;
-    ssize_t i;
     bool neg;
     if (*s == '-') {
         neg = true;

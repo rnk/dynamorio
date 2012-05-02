@@ -247,7 +247,7 @@ privload_add_areas(privmod_t *privmod)
      * We prefer here because it avoids changing the code in
      * loader_shared.c, which affects windows too.
       */
-    privload_create_os_privmod_data(privmod);
+    opd = privload_create_os_privmod_data(privmod);
     if (loading_dr_deps)
         return;
 
