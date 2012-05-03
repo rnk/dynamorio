@@ -61,7 +61,7 @@ void os_thread_init(dcontext_t *dcontext);
 void os_thread_exit(dcontext_t *dcontext);
 void os_thread_under_dynamo(dcontext_t *dcontext);
 void os_thread_not_under_dynamo(dcontext_t *dcontext);
-bool os_take_over_threads(dcontext_t *dcontext);
+bool os_take_over_all_unknown_threads(dcontext_t *dcontext);
 
 void os_heap_init(void);
 void os_heap_exit(void);
@@ -169,8 +169,10 @@ bool
 os_tls_cfree(uint offset, uint num_slots);
 #endif
 
+bool
+os_using_app_state(dcontext_t *dcontext);
 void
-os_switch_to_context(dcontext_t *dcontext, cxt_kind_t to_cxt);
+os_swap_to_context(dcontext_t *dcontext, bool to_app);
 
 bool pre_system_call(dcontext_t *dcontext);
 void post_system_call(dcontext_t *dcontext);

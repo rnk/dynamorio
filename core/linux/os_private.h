@@ -111,7 +111,10 @@ typedef struct _os_thread_data_t {
     /* PR 450670: for re-entrant suspend signals */
     int processing_signal;
 
-    /* i#107: mangle segment register usage conflicts between app and dr. */
+    /* i#107: If -mangle_app_seg is on, these hold the bases for both SEG_TLS
+     * and LIB_SEG_TLS.  If -mangle_app_seg is off, the base for LIB_SEG_TLS
+     * will be NULL, but the base for SEG_TLS will still be present.
+     */
     void *dr_fs_base;
     void *dr_gs_base;
     void *app_thread_areas; /* data structure for app's thread area info */

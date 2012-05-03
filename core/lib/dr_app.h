@@ -73,9 +73,10 @@ DR_APP_API int dr_app_cleanup(void);
  * Attempts to take over any existing threads in the application.
  *
  * \warning On Linux, DR detects threads by listing thread ids in the current
- * process's thread group.  DR also assumes the threads all share signal
- * handlers, as is the case for pthreads.  Violating these assumptions will lead
- * to unpredictable behavior.
+ * process's thread group.  This, and other queries about the current process
+ * may fail if the main thread has quit.  DR also assumes the threads all share
+ * signal handlers, as is the case for pthreads.  Violating these assumptions
+ * will lead to unpredictable behavior.
  *
  * \warning Windows does not yet attempt to take over existing threads.
  */

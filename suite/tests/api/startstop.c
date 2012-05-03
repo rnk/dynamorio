@@ -50,16 +50,16 @@
 /* We have event bb look for this to make sure we're instrumenting the sideline
  * thread.  
  */
-NOINLINE void sideline_func_0(void) { }
-NOINLINE void sideline_func_1(void) { }
-NOINLINE void sideline_func_2(void) { }
-NOINLINE void sideline_func_3(void) { }
-NOINLINE void sideline_func_4(void) { }
-NOINLINE void sideline_func_5(void) { }
-NOINLINE void sideline_func_6(void) { }
-NOINLINE void sideline_func_7(void) { }
-NOINLINE void sideline_func_8(void) { }
-NOINLINE void sideline_func_9(void) { }
+NOINLINE void func_0(void) { }
+NOINLINE void func_1(void) { }
+NOINLINE void func_2(void) { }
+NOINLINE void func_3(void) { }
+NOINLINE void func_4(void) { }
+NOINLINE void func_5(void) { }
+NOINLINE void func_6(void) { }
+NOINLINE void func_7(void) { }
+NOINLINE void func_8(void) { }
+NOINLINE void func_9(void) { }
 
 static bool took_over_thread[10];
 
@@ -69,16 +69,16 @@ event_bb(void *drcontext, void *tag, instrlist_t *bb, bool for_trace,
          bool translating)
 {
     app_pc pc = instr_get_app_pc(instrlist_first(bb));
-    if (pc == (app_pc)&sideline_func_0) took_over_thread[0] = true;
-    if (pc == (app_pc)&sideline_func_1) took_over_thread[1] = true;
-    if (pc == (app_pc)&sideline_func_2) took_over_thread[2] = true;
-    if (pc == (app_pc)&sideline_func_3) took_over_thread[3] = true;
-    if (pc == (app_pc)&sideline_func_4) took_over_thread[4] = true;
-    if (pc == (app_pc)&sideline_func_5) took_over_thread[5] = true;
-    if (pc == (app_pc)&sideline_func_6) took_over_thread[6] = true;
-    if (pc == (app_pc)&sideline_func_7) took_over_thread[7] = true;
-    if (pc == (app_pc)&sideline_func_8) took_over_thread[8] = true;
-    if (pc == (app_pc)&sideline_func_9) took_over_thread[9] = true;
+    if (pc == (app_pc)&func_0) took_over_thread[0] = true;
+    if (pc == (app_pc)&func_1) took_over_thread[1] = true;
+    if (pc == (app_pc)&func_2) took_over_thread[2] = true;
+    if (pc == (app_pc)&func_3) took_over_thread[3] = true;
+    if (pc == (app_pc)&func_4) took_over_thread[4] = true;
+    if (pc == (app_pc)&func_5) took_over_thread[5] = true;
+    if (pc == (app_pc)&func_6) took_over_thread[6] = true;
+    if (pc == (app_pc)&func_7) took_over_thread[7] = true;
+    if (pc == (app_pc)&func_8) took_over_thread[8] = true;
+    if (pc == (app_pc)&func_9) took_over_thread[9] = true;
     return DR_EMIT_DEFAULT;
 }
 #endif
@@ -129,31 +129,34 @@ int main(void)
 
     /* Create spinning sideline threads. */
 #ifdef LINUX
-    pthread_create(&pt[0], NULL, sideline_spinner, (void*)sideline_func_0);
-    pthread_create(&pt[1], NULL, sideline_spinner, (void*)sideline_func_1);
-    pthread_create(&pt[2], NULL, sideline_spinner, (void*)sideline_func_2);
-    pthread_create(&pt[3], NULL, sideline_spinner, (void*)sideline_func_3);
-    pthread_create(&pt[4], NULL, sideline_spinner, (void*)sideline_func_4);
-    pthread_create(&pt[5], NULL, sideline_spinner, (void*)sideline_func_5);
-    pthread_create(&pt[6], NULL, sideline_spinner, (void*)sideline_func_6);
-    pthread_create(&pt[7], NULL, sideline_spinner, (void*)sideline_func_7);
-    pthread_create(&pt[8], NULL, sideline_spinner, (void*)sideline_func_8);
-    pthread_create(&pt[9], NULL, sideline_spinner, (void*)sideline_func_9);
+    pthread_create(&pt[0], NULL, sideline_spinner, (void*)func_0);
+    pthread_create(&pt[1], NULL, sideline_spinner, (void*)func_1);
+    pthread_create(&pt[2], NULL, sideline_spinner, (void*)func_2);
+    pthread_create(&pt[3], NULL, sideline_spinner, (void*)func_3);
+    pthread_create(&pt[4], NULL, sideline_spinner, (void*)func_4);
+    pthread_create(&pt[5], NULL, sideline_spinner, (void*)func_5);
+    pthread_create(&pt[6], NULL, sideline_spinner, (void*)func_6);
+    pthread_create(&pt[7], NULL, sideline_spinner, (void*)func_7);
+    pthread_create(&pt[8], NULL, sideline_spinner, (void*)func_8);
+    pthread_create(&pt[9], NULL, sideline_spinner, (void*)func_9);
 #else
-    thread[0] = _beginthreadex(NULL, 0, sideline_spinner, (void*)sideline_func_0, 0, &tid);
-    thread[1] = _beginthreadex(NULL, 0, sideline_spinner, (void*)sideline_func_1, 0, &tid);
-    thread[2] = _beginthreadex(NULL, 0, sideline_spinner, (void*)sideline_func_2, 0, &tid);
-    thread[3] = _beginthreadex(NULL, 0, sideline_spinner, (void*)sideline_func_3, 0, &tid);
-    thread[4] = _beginthreadex(NULL, 0, sideline_spinner, (void*)sideline_func_4, 0, &tid);
-    thread[5] = _beginthreadex(NULL, 0, sideline_spinner, (void*)sideline_func_5, 0, &tid);
-    thread[6] = _beginthreadex(NULL, 0, sideline_spinner, (void*)sideline_func_6, 0, &tid);
-    thread[7] = _beginthreadex(NULL, 0, sideline_spinner, (void*)sideline_func_7, 0, &tid);
-    thread[8] = _beginthreadex(NULL, 0, sideline_spinner, (void*)sideline_func_8, 0, &tid);
-    thread[9] = _beginthreadex(NULL, 0, sideline_spinner, (void*)sideline_func_9, 0, &tid);
+    thread[0] = _beginthreadex(NULL, 0, sideline_spinner, (void*)func_0, 0, &tid);
+    thread[1] = _beginthreadex(NULL, 0, sideline_spinner, (void*)func_1, 0, &tid);
+    thread[2] = _beginthreadex(NULL, 0, sideline_spinner, (void*)func_2, 0, &tid);
+    thread[3] = _beginthreadex(NULL, 0, sideline_spinner, (void*)func_3, 0, &tid);
+    thread[4] = _beginthreadex(NULL, 0, sideline_spinner, (void*)func_4, 0, &tid);
+    thread[5] = _beginthreadex(NULL, 0, sideline_spinner, (void*)func_5, 0, &tid);
+    thread[6] = _beginthreadex(NULL, 0, sideline_spinner, (void*)func_6, 0, &tid);
+    thread[7] = _beginthreadex(NULL, 0, sideline_spinner, (void*)func_7, 0, &tid);
+    thread[8] = _beginthreadex(NULL, 0, sideline_spinner, (void*)func_8, 0, &tid);
+    thread[9] = _beginthreadex(NULL, 0, sideline_spinner, (void*)func_9, 0, &tid);
 #endif
 
 #ifdef USE_DYNAMO
     dr_app_setup();
+    /* XXX: Calling the client interface from the app is not supported, we're
+     * just using it for testing.
+     */
     dr_register_bb_event(event_bb);
 #endif
 
@@ -170,8 +173,9 @@ int main(void)
 	}
 	foo();
 #ifdef USE_DYNAMO
-        /* FIXME i#95: dr_app_stop only makes the current thread run native.
-         * We should revisit this while implementing full detach.
+        /* FIXME i#95: On Linux dr_app_stop only makes the current thread run
+         * native.  We should revisit this while implementing full detach for
+         * Linux.
          */
 	dr_app_stop();
 #endif

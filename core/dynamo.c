@@ -2559,7 +2559,7 @@ dynamo_thread_not_under_dynamo(dcontext_t *dcontext)
 /* Take over other threads in the current process.
  */
 void
-dynamo_take_over_threads(dcontext_t *dcontext)
+dynamorio_take_over_threads(dcontext_t *dcontext)
 {
     /* We repeatedly check if there are other threads in the process, since
      * while we're checking one may be spawning additional threads.
@@ -2568,10 +2568,7 @@ dynamo_take_over_threads(dcontext_t *dcontext)
     uint attempts = 0;
 
     do {
-        /* FIXME: To be truly resiliant we should suspend threads we take over
-         * until after we're sure we've gotten all of them.
-         */
-        found_threads = os_take_over_threads(dcontext);
+        found_threads = os_take_over_all_unknown_threads(dcontext);
         attempts++;
     } while (found_threads && attempts < MAX_TAKE_OVER_ATTEMPTS);
 
@@ -2579,6 +2576,7 @@ dynamo_take_over_threads(dcontext_t *dcontext)
         SYSLOG(SYSLOG_WARNING, INTERNAL_SYSLOG_WARNING, 
                3, get_application_name(), get_application_pid(),
                "Failed to take over all threads after multiple attempts");
+        ASSERT_NOT_REACHED();
     }
 }
 

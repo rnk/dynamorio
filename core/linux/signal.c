@@ -1068,7 +1068,8 @@ signal_thread_init(dcontext_t *dcontext)
     ASSIGN_INIT_LOCK_FREE(info->child_lock, child_lock);
     
     /* someone must call signal_thread_inherit() to finish initialization:
-     * for first thread, called from initial setup; else, from new_thread_setup.
+     * for first thread, called from initial setup; else, from new_thread_setup
+     * or share_siginfo_after_take_over.
      */
 }
 
@@ -1415,8 +1416,11 @@ share_siginfo_after_take_over(dcontext_t *dcontext, dcontext_t *takeover_dc)
     clone_record_t crec;
     thread_sig_info_t *parent_siginfo =
         (thread_sig_info_t*)takeover_dc->signal_field;
-    /* Create a fake clone record with the given siginfo.  We assume we're
-     * sharing signal handlers across all threads in the standard pthreads way.
+    /* Create a fake clone record with the given siginfo.  All threads in the
+     * same thread group must share signal handlers since Linux 2.5.35, but we
+     * have to guess at the other flags.
+     * FIXME i#764: If we take over non-pthreads threads, we'll need some way to
+     * tell if they're sharing signal handlers or not.
      */
     crec.caller_id = takeover_dc->owning_thread;
     crec.clone_sysnum = SYS_clone;
@@ -3700,7 +3704,7 @@ sig_should_swap_stack(struct clone_and_swap_args *args, kernel_ucontext_t *ucxt)
 }
 #endif
 
-/* Helper that takes over the current thread signalled via SUSPEND_SIGNAL.  Kept
+/* Helper that takes over the current thread signaled via SUSPEND_SIGNAL.  Kept
  * separate mostly to keep the priv_mcontext_t allocation out of
  * master_signal_handler_C.
  */
@@ -3778,6 +3782,7 @@ master_signal_handler(int sig, siginfo_t *siginfo, kernel_ucontext_t *ucxt)
              */
             struct sigcontext *sc = (struct sigcontext *) &(ucxt->uc_mcontext);
             sig_take_over(sc);  /* no return */
+            ASSERT_NOT_REACHED();
         } else {
             /* Using global dcontext because dcontext is NULL here. */
             DOLOG(1, LOG_ASYNCH, { dump_sigcontext(GLOBAL_DCONTEXT, sc); });

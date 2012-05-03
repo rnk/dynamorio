@@ -291,13 +291,6 @@ typedef enum {
 } rct_type_t;
 #endif
 
-/* Enum differentiating app context from DR context.
- */
-typedef enum _cxt_kint_t {
-    DR_CONTEXT,
-    APP_CONTEXT
-} cxt_kind_t;
-
 typedef struct _thread_record_t {
     thread_id_t id;   /* thread id */
 #ifdef WINDOWS
@@ -537,8 +530,7 @@ int dynamo_process_exit(void);
 #ifdef LINUX
 void dynamorio_fork_init(dcontext_t *dcontext);
 #endif
-void dynamo_take_over_threads(dcontext_t *dcontext);
-void thread_starting(dcontext_t *dcontext);
+void dynamorio_take_over_threads(dcontext_t *dcontext);
 dr_statistics_t * get_dr_stats(void);
 
 /* functions needed by detach */

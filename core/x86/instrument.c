@@ -5448,12 +5448,8 @@ DR_API
 bool
 dr_using_app_state(void *drcontext)
 {
-#if defined(WINDOWS) && defined(CLIENT_INTERFACE)
     dcontext_t *dcontext = (dcontext_t *) drcontext;
-    if (INTERNAL_OPTION(private_peb) && should_swap_peb_pointer())
-        return is_using_app_peb(dcontext);
-#endif
-    return true;
+    return os_using_app_state(dcontext);
 }
 
 DR_API
@@ -5461,7 +5457,7 @@ void
 dr_switch_to_app_state(void *drcontext)
 {
     dcontext_t *dcontext = (dcontext_t *) drcontext;
-    os_switch_to_context(dcontext, APP_CONTEXT);
+    os_swap_to_context(dcontext, true/*to app*/);
 }
 
 DR_API
@@ -5469,7 +5465,7 @@ void
 dr_switch_to_dr_state(void *drcontext)
 {
     dcontext_t *dcontext = (dcontext_t *) drcontext;
-    os_switch_to_context(dcontext, DR_CONTEXT);
+    os_swap_to_context(dcontext, false/*to dr*/);
 }
 
 /***************************************************************************

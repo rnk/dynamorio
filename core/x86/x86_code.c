@@ -62,9 +62,10 @@ get_xmm_vals(priv_mcontext_t *mc)
 /* Just calls dynamo_thread_under_dynamo.  We used to initialize dcontext here,
  * but that would end up initializing it twice.
  */
-void
+static void
 thread_starting(dcontext_t *dcontext)
 {
+    ASSERT(dcontext->initialized);
     dynamo_thread_under_dynamo(dcontext);
 #ifdef WINDOWS
     LOG(THREAD, LOG_INTERP, 2, "thread_starting: interpreting thread %d\n",
@@ -82,7 +83,7 @@ dynamo_start(priv_mcontext_t *mc)
     thread_starting(dcontext);
 
     /* Signal other threads for take over. */
-    dynamo_take_over_threads(dcontext);
+    dynamorio_take_over_threads(dcontext);
 
     /* Set return address */
     dcontext->next_tag = mc->pc;
