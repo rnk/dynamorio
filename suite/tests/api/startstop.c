@@ -154,7 +154,7 @@ int main(void)
 
 #ifdef USE_DYNAMO
     dr_app_setup();
-    /* XXX: Calling the client interface from the app is not supported, we're
+    /* XXX: Calling the client interface from the app is not supported.  We're
      * just using it for testing.
      */
     dr_register_bb_event(event_bb);

@@ -348,39 +348,6 @@ static int
 get_library_bounds(const char *name, app_pc *start/*IN/OUT*/, app_pc *end/*OUT*/,
                    char *fullpath/*OPTIONAL OUT*/, size_t path_size);
 
-/* Libc independent directory iterator, similar to readdir.  If we ever need
- * this on Windows we should generalize it and export it to clients.
- */
-typedef struct _dir_iterator_t {
-    file_t fd;
-    int off;
-    int end;
-    const char *name;            /* Name of the current entry. */
-    char buf[4 * MAXIMUM_PATH];  /* Expect stack alloc, so not too big. */
-} dir_iterator_t;
-
-static void os_dir_iterator_start(dir_iterator_t *iter, file_t fd);
-static bool os_dir_iterator_next(dir_iterator_t *iter);
-/* XXX: If we generalize to Windows, will we need os_dir_iterator_stop()? */
-
-/* These structs are written to the buf that we pass to getdents.  We can
- * iterate them by adding d_reclen to the current buffer offset and interpreting
- * that as the next entry.
- */
-struct linux_dirent {
-    long           d_ino;       /* Inode number. */
-    off_t          d_off;       /* Offset to next linux_dirent. */
-    unsigned short d_reclen;    /* Length of this linux_dirent. */
-    char           d_name[];    /* File name, null-terminated. */
-#if 0  /* Has to be #if 0 because it's after the flexible array. */
-    char           d_pad;       /* Always zero? */
-    char           d_type;      /* File type, since Linux 2.6.4. */
-#endif
-};
-
-#define CURRENT_DIRENT(iter) \
-        ((struct linux_dirent *)(&iter->buf[iter->off]))
-
 /* vsyscall page.  hardcoded at 0xffffe000 in earlier kernels, but
  * randomly placed since fedora2.
  * marked rx then: FIXME: should disallow this guy when that's the case!
@@ -400,29 +367,6 @@ app_pc vsyscall_sysenter_return_pc = NULL;
  */
 # define VSYSCALL_REGION_MAPS_NAME "[vsyscall]"
 #endif
-
-/* Record used to synchronize thread takeover. */
-typedef struct _takeover_record_t {
-    thread_id_t tid;
-    event_t event;
-} takeover_record_t;
-
-/* When attempting thread takeover, we store an array of thread id and event
- * pairs here.  Each thread we signal is supposed to enter DR control and signal
- * this event after it has added itself to all_threads.
- *
- * XXX: What we really want is to be able to use SYS_rt_tgsigqueueinfo (Linux >=
- * 2.6.31) to pass the event_t to each thread directly, rather than using this
- * side data structure.
- */
-static takeover_record_t *thread_takeover_records;
-static uint num_thread_takeover_records;
-
-/* This is the dcontext of the thread that initiated the takeover.  We read the
- * owning_thread and signal_field threads from it in the signaled threads to
- * set up siginfo sharing.
- */
-static dcontext_t *takeover_dcontext;
 
 /* The pthreads library keeps errno in its pthread_descr data structure,
  * which it looks up by dispatching on the stack pointer.  This doesn't work
@@ -1730,6 +1674,10 @@ os_tls_init(void)
     os_tls->self = os_tls;
     os_tls->tid = get_thread_id();
     os_tls->tls_type = TLS_TYPE_NONE;
+    /* We save DR's TLS segment base here so that os_get_dr_seg_base() will work
+     * even when -no_mangle_app_seg is set.  If -mangle_app_seg is set, this
+     * will be overwritten in os_tls_app_seg_init().
+     */
     os_tls->os_seg_info.IF_X64_ELSE(dr_gs_base, dr_fs_base) = segment;
     ASSERT(proc_is_cache_aligned(os_tls->self + TLS_LOCAL_STATE_OFFSET));
     /* Verify that local_state_extended_t should indeed be used. */
@@ -2191,9 +2139,10 @@ os_using_app_state(dcontext_t *dcontext)
     /* FIXME: This could be optimized to avoid the syscall by keeping state in
      * the dcontext.
      */
-    if (INTERNAL_OPTION(mangle_app_seg))
+    if (INTERNAL_OPTION(mangle_app_seg)) {
         return (get_segment_base(LIB_SEG_TLS) ==
                 os_get_dr_seg_base(dcontext, LIB_SEG_TLS));
+    }
     /* We're always in the app state if we're not mangling. */
     return true;
 }
@@ -2205,7 +2154,7 @@ os_using_app_state(dcontext_t *dcontext)
  * installed.
  */
 void
-os_swap_to_context(dcontext_t *dcontext, bool to_app)
+os_swap_context(dcontext_t *dcontext, bool to_app)
 {
     if (INTERNAL_OPTION(mangle_app_seg))
         os_switch_seg_to_context(dcontext, LIB_SEG_TLS, to_app);
@@ -2214,7 +2163,7 @@ os_swap_to_context(dcontext_t *dcontext, bool to_app)
 void
 os_thread_under_dynamo(dcontext_t *dcontext)
 {
-    os_swap_to_context(dcontext, false/*to dr*/);
+    os_swap_context(dcontext, false/*to dr*/);
     start_itimer(dcontext);
 }
 
@@ -2222,7 +2171,7 @@ void
 os_thread_not_under_dynamo(dcontext_t *dcontext)
 {
     stop_itimer(dcontext);
-    os_swap_to_context(dcontext, true/*to app*/);
+    os_swap_context(dcontext, true/*to app*/);
 }
 
 static pid_t
@@ -8307,7 +8256,43 @@ wait_for_event(event_t e)
     }
 }
 
-/* Maybe Windows will require fini too. */
+/***************************************************************************
+ * DIRECTORY ITERATOR
+ */
+
+/* Libc independent directory iterator, similar to readdir.  If we ever need
+ * this on Windows we should generalize it and export it to clients.
+ */
+typedef struct _dir_iterator_t {
+    file_t fd;
+    int off;
+    int end;
+    const char *name;            /* Name of the current entry. */
+    char buf[4 * MAXIMUM_PATH];  /* Expect stack alloc, so not too big. */
+} dir_iterator_t;
+
+static void os_dir_iterator_start(dir_iterator_t *iter, file_t fd);
+static bool os_dir_iterator_next(dir_iterator_t *iter);
+/* XXX: If we generalize to Windows, will we need os_dir_iterator_stop()? */
+
+/* These structs are written to the buf that we pass to getdents.  We can
+ * iterate them by adding d_reclen to the current buffer offset and interpreting
+ * that as the next entry.
+ */
+struct linux_dirent {
+    long           d_ino;       /* Inode number. */
+    off_t          d_off;       /* Offset to next linux_dirent. */
+    unsigned short d_reclen;    /* Length of this linux_dirent. */
+    char           d_name[];    /* File name, null-terminated. */
+#if 0  /* Has to be #if 0 because it's after the flexible array. */
+    char           d_pad;       /* Always zero? */
+    char           d_type;      /* File type, since Linux 2.6.4. */
+#endif
+};
+
+#define CURRENT_DIRENT(iter) \
+        ((struct linux_dirent *)(&iter->buf[iter->off]))
+
 static void
 os_dir_iterator_start(dir_iterator_t *iter, file_t fd)
 {
@@ -8325,7 +8310,11 @@ os_dir_iterator_next(dir_iterator_t *iter)
         ASSERT(iter->off <= iter->end);
     }
     if (iter->off == iter->end) {
-        /* Do a getdents syscall. */
+        /* Do a getdents syscall.  Unlike when reading a file, the kernel will
+         * not read a partial linux_dirent struct, so we don't need to shift the
+         * left over bytes to the buffer start.  See the getdents manpage for
+         * the example code that this is based on.
+         */
         iter->off = 0;
         iter->end = dynamorio_syscall(SYS_getdents, 3, iter->fd, iter->buf,
                                       sizeof(iter->buf));
@@ -8342,6 +8331,33 @@ os_dir_iterator_next(dir_iterator_t *iter)
     iter->name = CURRENT_DIRENT(iter)->d_name;
     return true;
 }
+
+/***************************************************************************
+ * THREAD TAKEOVER
+ */
+
+/* Record used to synchronize thread takeover. */
+typedef struct _takeover_record_t {
+    thread_id_t tid;
+    event_t event;
+} takeover_record_t;
+
+/* When attempting thread takeover, we store an array of thread id and event
+ * pairs here.  Each thread we signal is supposed to enter DR control and signal
+ * this event after it has added itself to all_threads.
+ *
+ * XXX: What we really want is to be able to use SYS_rt_tgsigqueueinfo (Linux >=
+ * 2.6.31) to pass the event_t to each thread directly, rather than using this
+ * side data structure.
+ */
+static takeover_record_t *thread_takeover_records;
+static uint num_thread_takeover_records;
+
+/* This is the dcontext of the thread that initiated the takeover.  We read the
+ * owning_thread and signal_field threads from it in the signaled threads to
+ * set up siginfo sharing.
+ */
+static dcontext_t *takeover_dcontext;
 
 /* Lists active threads in the process.
  * XXX: The /proc man page says /proc/pid/task is only available if the main
@@ -8369,7 +8385,8 @@ os_list_threads(dcontext_t *dcontext, uint *num_threads_out)
         if (strcmp(iter.name, ".") == 0 ||
             strcmp(iter.name, "..") == 0)
             continue;
-        IF_DEBUG(r =) sscanf(iter.name, "%u", &tid);
+        IF_DEBUG(r =)
+            sscanf(iter.name, "%u", &tid);
         ASSERT_MESSAGE(CHKLVL_ASSERTS, "failed to parse /proc/pid/task entry",
                        r == 1);
         if (tid <= 0)
@@ -8524,6 +8541,8 @@ os_thread_take_over(priv_mcontext_t *mc)
                       false/*not on initstack*/, false/*shouldn't return*/);
     ASSERT_NOT_REACHED();
 }
+
+/***************************************************************************/
 
 uint
 os_random_seed(void)

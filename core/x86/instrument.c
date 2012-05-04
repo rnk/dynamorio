@@ -5457,7 +5457,7 @@ void
 dr_switch_to_app_state(void *drcontext)
 {
     dcontext_t *dcontext = (dcontext_t *) drcontext;
-    os_swap_to_context(dcontext, true/*to app*/);
+    os_swap_context(dcontext, true/*to app*/);
 }
 
 DR_API
@@ -5465,7 +5465,7 @@ void
 dr_switch_to_dr_state(void *drcontext)
 {
     dcontext_t *dcontext = (dcontext_t *) drcontext;
-    os_swap_to_context(dcontext, false/*to dr*/);
+    os_swap_context(dcontext, false/*to dr*/);
 }
 
 /***************************************************************************

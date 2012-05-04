@@ -101,7 +101,9 @@ DR_APP_API void dr_app_take_over(void);
 
 /**
  * Calls dr_app_setup() and, if it succeeds, calls dr_app_start().  Returns the
- * result of dr_app_setup(), which returns zero on success.
+ * result of dr_app_setup(), which returns zero on success.  This routine is
+ * intended as a convenient single point of entry for callers who are using
+ * dlsym() or GetProcAddress() to access the app API.
  */
 DR_APP_API int dr_app_setup_and_start(void);
 

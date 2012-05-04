@@ -2459,10 +2459,15 @@ dr_app_cleanup(void)
 {
     thread_record_t *tr;
 
-    /* Need to mark this thread as being under control of DR again, since that's
-     * what dynamorio_app_exit expects.  This assumes that the app has
-     * previously called dr_app_stop, which will mark the thread as being not
-     * under DR.
+    /* XXX: The dynamo_thread_[not_]under_dynamo() routines are not idempotent,
+     * and must be balanced!  On Linux, they track the shared itimer refcount,
+     * so a mismatch will lead to a refleak or negative refcount.
+     * dynamorio_app_exit() will call dynamo_thread_not_under_dynamo(), so we
+     * must ensure that we are under DR before calling it.  Therefore, we
+     * require that the caller call dr_app_stop() before calling
+     * dr_app_cleanup().  However, we cannot make a usage assertion to that
+     * effect without addressing the FIXME comments in
+     * dynamo_thread_not_under_dynamo() about updating tr->under_dynamo_control.
      */
     tr = thread_lookup(get_thread_id());
     if (tr != NULL && tr->dcontext != NULL)

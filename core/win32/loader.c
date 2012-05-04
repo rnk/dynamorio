@@ -748,7 +748,7 @@ restore_peb_pointer_for_thread(dcontext_t *dcontext)
 bool
 os_using_app_state(dcontext_t *dcontext)
 {
-#if defined(WINDOWS) && defined(CLIENT_INTERFACE)
+#ifdef CLIENT_INTERFACE
     if (INTERNAL_OPTION(private_peb) && should_swap_peb_pointer())
         return is_using_app_peb(dcontext);
 #endif
@@ -756,7 +756,7 @@ os_using_app_state(dcontext_t *dcontext)
 }
 
 void
-os_swap_to_context(dcontext_t *dcontext, cxt_kind_t to_cxt)
+os_swap_context(dcontext_t *dcontext, cxt_kind_t to_cxt)
 {
 #ifdef CLIENT_INTERFACE
     /* i#249: swap PEB pointers */
