@@ -675,9 +675,8 @@ dispatch_enter_dynamorio(dcontext_t *dcontext)
 
     if (wherewasi == WHERE_APP) { /* first entrance */
         ASSERT(dcontext->last_exit == get_starting_linkstub() ||
-#ifdef DR_APP_EXPORTS  /* The start/stop API will set this linkstub. */
-               dcontext->last_exit == get_native_exec_linkstub() ||
-#endif
+               /* The start/stop API will set this linkstub. */
+               IF_APP_EXPORTS(dcontext->last_exit == get_native_exec_linkstub() ||)
                /* new thread */
                IF_WINDOWS_ELSE_0(dcontext->last_exit == get_asynch_linkstub()));
     } else {

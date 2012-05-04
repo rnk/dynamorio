@@ -756,13 +756,12 @@ os_using_app_state(dcontext_t *dcontext)
 }
 
 void
-os_swap_context(dcontext_t *dcontext, cxt_kind_t to_cxt)
+os_swap_context(dcontext_t *dcontext, bool to_app)
 {
 #ifdef CLIENT_INTERFACE
     /* i#249: swap PEB pointers */
     if (INTERNAL_OPTION(private_peb) && should_swap_peb_pointer()) {
-        bool to_priv = (to_cxt == DR_CONTEXT);
-        swap_peb_pointer(dcontext, to_priv);
+        swap_peb_pointer(dcontext, !to_app/*to priv*/);
     }
 #endif
 }

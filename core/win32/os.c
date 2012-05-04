@@ -1454,7 +1454,7 @@ os_thread_not_under_dynamo(dcontext_t *dcontext)
 }
 
 bool
-os_take_over_threads(dcontext_t *dcontext)
+os_take_over_all_unknown_threads(dcontext_t *dcontext)
 {
     /* FIXME NYI i#725: Part of Windows attach. */
     return true;
