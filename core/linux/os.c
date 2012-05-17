@@ -6713,9 +6713,6 @@ maps_iterator_next(maps_iter_t *iter)
             line = iter->buf;
         }
     }
-    LOG(GLOBAL, LOG_VMAREAS, 6, 
-        "\nget_memory_info_from_os: newline=[%s]\n",
-        iter->newline ? iter->newline : "(null)");
 
     /* buffer is big enough to hold at least one line */
     ASSERT(iter->newline != NULL);

@@ -62,6 +62,17 @@
 # define CHKLVL_MEMFILL CHKLVL_DEFAULT
 #endif
 
+#define HEAP_LEAKSTACKS
+
+#ifdef HEAP_LEAKSTACKS
+# if !defined(LINUX) || !defined(DEBUG_MEMORY)
+#  error "HEAP_LEAKSTACKS is Linux only and requires DEBUG_MEMORY"
+# endif
+/* Max frames to unwind.  We don't need many for our use case. */
+# define MAX_LEAKSTACK 12
+# define LEAKSTACK_SIZE (MAX_LEAKSTACK * sizeof(void*))
+#endif
+
 extern bool vm_areas_exited;
 
 /***************************************************************************
@@ -2672,7 +2683,7 @@ static void
 heap_free_unit(heap_unit_t *unit, dcontext_t *dcontext)
 {
     heap_unit_t *u, *prev_u;
-#ifdef DEBUG_MEMORY
+#if defined(DEBUG_MEMORY) && !defined(STANDALONE_DECODER)
     /* Unit should already be set to all HEAP_UNALLOCATED by the individual 
      * frees and the free list cleanup, verify. */
     /* NOTE - this assert fires if any memory in the unit wasn't freed. This
@@ -2684,19 +2695,34 @@ heap_free_unit(heap_unit_t *unit, dcontext_t *dcontext)
      * not on the unit itself - FIXME: case 10434.  Maybe we should embed the
      * special heap unit header in the first special heap unit itself. */
     /* The hotp_only leak relaxation below is for case 9588 & 9593.  */
-    DOCHECK(CHKLVL_MEMFILL, {
-        CLIENT_ASSERT(IF_HOTP(hotp_only_contains_leaked_trampoline
-                              (unit->start_pc, unit->end_pc - unit->start_pc) ||)
-                      /* i#157: private loader => system lib allocs come here =>
-                       * they don't always clean up.  we have to relax here, but our
-                       * threadunits_exit checks should find all leaks anyway.
-                       */
-                      heapmgt->global_units.acct.cur_usage[ACCT_LIBDUP] > 0 ||
-                      is_region_memset_to_char(unit->start_pc, 
-                                               unit->end_pc - unit->start_pc,
-                                               HEAP_UNALLOCATED_BYTE),
-                      "memory leak detected");
-    });
+    if (DEBUG_CHECKS(CHKLVL_MEMFILL)) {
+        if (!(IF_HOTP(hotp_only_contains_leaked_trampoline
+                      (unit->start_pc, unit->end_pc - unit->start_pc) ||)
+              /* i#157: private loader => system lib allocs come here =>
+               * they don't always clean up.  we have to relax here, but our
+               * threadunits_exit checks should find all leaks anyway.
+               */
+              heapmgt->global_units.acct.cur_usage[ACCT_LIBDUP] > 0 ||
+              is_region_memset_to_char(unit->start_pc, 
+                                       unit->end_pc - unit->start_pc,
+                                       HEAP_UNALLOCATED_BYTE))) {
+# ifdef HEAP_LEAKSTACKS
+            /* Scan for non HEAP_UNALLOCATED_BYTE words and log them for use
+             * with addr2line.  We assume start and end are pointer aligned.
+             */
+            ptr_uint_t *start = (ptr_uint_t*)unit->start_pc;
+            ptr_uint_t *end = (ptr_uint_t*)unit->end_pc;
+            ptr_uint_t *cur;
+            void dr_fprintf(file_t, const char *fmt, ...);
+            for (cur = start; cur < end; cur++) {
+                if (*cur != HEAP_UNALLOCATED_PTR_UINT) {
+                    dr_fprintf(STDERR, "%p: %p\n", cur, *cur);
+                }
+            }
+# endif
+            CLIENT_ASSERT(false, "memory leak detected");
+        }
+    }
 #endif
     /* modifying heap list and DR areas must be atomic, and must grab
      * DR area lock before heap_unit_lock
@@ -3151,6 +3177,11 @@ common_heap_alloc(thread_units_t *tu, size_t size HEAPACCT(which_heap_t which))
     /* NOTE - all of our buckets are sized to preserve alignment, so this can't change
      * which bucket is used. */
     aligned_size = ALIGN_FORWARD(size, HEAP_ALIGNMENT);
+#ifdef HEAP_LEAKSTACKS
+    /* Add space for stack frames, which go at the end. */
+    //aligned_size += LEAKSTACK_SIZE;
+    //ASSERT(ALIGNED(aligned_size, HEAP_ALIGNMENT));
+#endif
     while (aligned_size > BLOCK_SIZES[bucket])
         bucket++;
     if (bucket == BLOCK_TYPES-1)
@@ -3417,6 +3448,19 @@ common_heap_alloc(thread_units_t *tu, size_t size HEAPACCT(which_heap_t which))
     LOG(THREAD, LOG_HEAP, 6, "\t%s\n", whichheap_name[which]);
 # endif
 #endif
+
+#ifdef HEAP_LEAKSTACKS
+    if (dynamo_initialized) {
+        //void **stack_buf = (void**)(p + alloc_size - LEAKSTACK_SIZE);
+        void *stack_buf[MAX_LEAKSTACK];
+        ssize_t frames = our_backtrace(stack_buf, MAX_LEAKSTACK);
+        ssize_t i;
+        for (i = 0; i < frames; i++) {
+            LOG(THREAD, LOG_HEAP, 6, "stack_buf[%d]: %p\n", i, stack_buf[i]);
+        }
+    }
+#endif
+
     return (void*)p;
 }
 
@@ -3446,7 +3490,7 @@ common_heap_free(thread_units_t *tu, void *p_void, size_t size HEAPACCT(which_he
 #if defined(DEBUG_MEMORY) || defined(HEAP_ACCOUNTING)
     DEBUG_DECLARE(dcontext_t *dcontext = tu->dcontext;)
 #endif
-    size_t alloc_size, aligned_size = ALIGN_FORWARD(size, HEAP_ALIGNMENT);
+    size_t alloc_size, aligned_size;
     ASSERT(size > 0); /* we don't want to pay check cost in release */
     ASSERT(p != NULL);
 #ifdef DEBUG_MEMORY
@@ -3479,6 +3523,12 @@ common_heap_free(thread_units_t *tu, void *p_void, size_t size HEAPACCT(which_he
     });
 #endif
 
+    aligned_size = ALIGN_FORWARD(size, HEAP_ALIGNMENT);
+#ifdef HEAP_LEAKSTACKS
+    /* Account for the stack frames stored at the end. */
+    //aligned_size += LEAKSTACK_SIZE;
+    //ASSERT(ALIGNED(aligned_size, HEAP_ALIGNMENT));
+#endif
     while (aligned_size > BLOCK_SIZES[bucket])
         bucket++;
     if (bucket == BLOCK_TYPES-1)
@@ -3539,9 +3589,11 @@ common_heap_free(thread_units_t *tu, void *p_void, size_t size HEAPACCT(which_he
         LOG(THREAD, LOG_HEAP, 6,
             "\nfree var "PFX"-"PFX" %d bytes, asked "PFX"-"PFX" %d bytes\n",
             p-HEADER_SIZE, p-HEADER_SIZE+alloc_size, alloc_size, p, p+size, size);
+#  ifndef HEAP_LEAKSTACKS  /* Leak stacks are stored in the padding. */
         ASSERT_MESSAGE(CHKLVL_MEMFILL, "heap overflow",
                        is_region_memset_to_char(p+size, (alloc_size-HEADER_SIZE)-size,
                                                 HEAP_PAD_BYTE));
+#  endif
         /* ensure we are freeing memory in a proper unit */
         ASSERT(find_heap_unit(tu, p, alloc_size - HEADER_SIZE) != NULL);
         /* set used and padding memory back to unallocated */
@@ -3554,8 +3606,10 @@ common_heap_free(thread_units_t *tu, void *p_void, size_t size HEAPACCT(which_he
         LOG(THREAD, LOG_HEAP, 6,
             "\nfree fix "PFX"-"PFX" %d bytes, asked "PFX"-"PFX" %d bytes\n",
             p, p+alloc_size, alloc_size, p, p+size, size);
+#  ifndef HEAP_LEAKSTACKS  /* Leak stacks are stored in the padding. */
         ASSERT_MESSAGE(CHKLVL_MEMFILL, "heap overflow",
                        is_region_memset_to_char(p+size, alloc_size-size, HEAP_PAD_BYTE));
+#  endif
         /* ensure we are freeing memory in a proper unit */
         ASSERT(find_heap_unit(tu, p, alloc_size) != NULL);
         /* set used and padding memory back to unallocated */

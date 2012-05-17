@@ -2136,4 +2136,7 @@ array_merge(dcontext_t *dcontext, bool intersect /* else union */,
             /*OUT*/ void ***dst, /*OUT*/ uint *dst_num
             HEAPACCT(which_heap_t which));
 
+ssize_t
+our_backtrace(void **buf, size_t max_frames);
+
 #endif /* _UTILS_H_ */

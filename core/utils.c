@@ -2240,8 +2240,11 @@ is_region_memset_to_char(byte *addr, size_t size, byte val)
      * (for x86 repe scasd w/proper alignment handling) */
     size_t i;
     for (i = 0; i < size; i++) {
-        if (*addr++ != val)
+        if (*addr++ != val) {
+            void dr_printf(const char *fmt, ...);
+            dr_printf("didn't match 0x%x: %p, 0x%x\n", val, addr, *(addr - 1));
             return false;
+        }
     }
     return true;
 }
@@ -4262,3 +4265,37 @@ array_merge(dcontext_t *dcontext, bool intersect /* else union */,
     *dst_num = num;
 }
 
+/***************************************************************************/
+
+/* Assuming prologue has "push xbp, mov xsp -> xbp", this struct is at the base
+ * of every frame.
+ */
+typedef struct _frame_base_t {
+    struct _frame_base_t *parent;
+    app_pc ret_addr;
+} frame_base_t;
+
+/* We normally use libc backtrace in assertions, but it sometimes it crashes
+ * when we call it from strange places.  We do a simple frame pointer stack
+ * trace here which should work in most debug builds on Linux at least.  This is
+ * not likely to work on Win64.
+ * FIXME: A third(!) stack walker!?  Merge with mutex_collect_callstack a
+ */
+ssize_t
+our_backtrace(void **buf, size_t max_frames)
+{
+    /* Can't use TRY_EXCEPT directly, dcontext could be NULL. */
+    dcontext_t *dcontext = get_thread_private_dcontext();
+    frame_base_t frame;
+    ssize_t frames_read = 0;
+    frame.ret_addr = NULL;
+    GET_FRAME_PTR(frame.parent);
+    while (dcontext != NULL && frame.parent != NULL &&
+           frames_read < max_frames &&
+           is_on_dstack(dcontext, (byte*)frame.parent) &&
+           safe_read(frame.parent, sizeof(frame), &frame)) {
+        buf[frames_read] = frame.ret_addr;
+        frames_read++;
+    }
+    return frames_read;
+}
