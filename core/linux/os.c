@@ -54,7 +54,7 @@
 /* for open */
 #include <sys/stat.h>
 #include <fcntl.h>
-#include <sched.h>              /* for CLONE_* */
+#include <linux/sched.h>              /* for CLONE_* */
 #include "../globals.h"
 #include "../hashtable.h"
 #include <string.h>
