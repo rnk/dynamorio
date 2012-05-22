@@ -99,7 +99,11 @@ double2int(double d)
 #define IOX_WIDE_CHAR
 #include "iox.h"
 
-#ifdef LINUX
+#if defined(LINUX)
+/*****************************************************************************
+ * Stand alone sscanf implementation.
+ */
+
 typedef enum _specifier_t {
     SPEC_INT,
     SPEC_CHAR,
@@ -263,7 +267,6 @@ spec_done:
             sp = end_ptr;
             strtoull_errno = get_libc_errno();
             if (strtoull_errno != 0) {
-                dr_printf("returned with errno %d\n", strtoull_errno);
                 return num_parsed;  /* Most likely errno was ERANGE. */
             }
 
@@ -307,19 +310,20 @@ our_sscanf(const char *str, const char *fmt, ...)
     return res;
 }
 
-#endif
+#endif /* LINUX */
 
 #ifdef IO_UNIT_TEST
-#include <errno.h>
+# ifdef LINUX
+#  include <errno.h>
 
 /* Copied from core/linux/os.c and modified so that they work when run
  * cross-arch.  We need %ll to parse 64-bit ints on 32-bit and drop the %l to
  * parse 32-bit ints on x64.
  */
-#define UI64 UINT64_FORMAT_CODE
-#define HEX64 INT64_FORMAT"x"
-#define MAPS_LINE_FORMAT4         "%08x-%08x %s %08x %*s %"UI64" %4096s"
-#define MAPS_LINE_FORMAT8         "%016"HEX64"-%016"HEX64" %s %016"HEX64" %*s %"UI64" %4096s"
+#  define UI64 UINT64_FORMAT_CODE
+#  define HEX64 INT64_FORMAT"x"
+#  define MAPS_LINE_FORMAT4         "%08x-%08x %s %08x %*s %"UI64" %4096s"
+#  define MAPS_LINE_FORMAT8         "%016"HEX64"-%016"HEX64" %s %016"HEX64" %*s %"UI64" %4096s"
 
 static void
 test_sscanf_maps_x68(void)
@@ -422,6 +426,7 @@ test_sscanf_all_specs(void)
      * error handling.
      */
 }
+# endif /* LINUX */
 
 int
 main(void)
@@ -475,10 +480,12 @@ main(void)
     wbuf[6] = L'\0';
     EXPECT(wcscmp(wbuf, L"narrow"), 0);
 
+#ifdef LINUX
     /* sscanf tests */
     test_sscanf_maps_x68();
     test_sscanf_maps_x64();
     test_sscanf_all_specs();
+#endif /* LINUX */
 
     /* XXX: add more tests */
 
