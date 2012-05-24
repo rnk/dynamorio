@@ -260,6 +260,12 @@ static bool kernel_64bit;
 
 pid_t pid_cached;
 
+/* Thread synchronization across a fork.  Data is guarded by
+ * thread_initexit_lock, which synch_with_all_threads acquires.
+ */
+static thread_record_t **fork_threads;
+static int fork_num_threads;
+
 #ifdef PROFILE_RDTSC
 uint kilo_hertz; /* cpu clock speed */
 #endif
@@ -2114,13 +2120,80 @@ os_thread_exit(dcontext_t *dcontext)
     });
 }
 
-/* this one is called before child's new logfiles are set up */
+/* Happens in the parent prior to fork. */
+static void
+os_fork_pre(dcontext_t *dcontext)
+{
+    /* Otherwise a thread might wait for us. */
+    ASSERT_OWN_NO_LOCKS();
+
+    /* i#239: Synch with all other threads to ensure that they are holding no
+     * locks across the fork.
+     */
+    LOG(GLOBAL, 2, LOG_SYSCALLS|LOG_THREADS,
+        "fork: synching with other threads to prevent deadlock in child\n");
+    /* NOCHECKIN: To reviewer, double check these states please. */
+    if (!synch_with_all_threads(THREAD_SYNCH_SUSPENDED_VALID_MCONTEXT_OR_NO_XFER,
+                                &fork_threads, &fork_num_threads,
+                                THREAD_SYNCH_NO_LOCKS_NO_XFER,
+                                /* If we fail to suspend a thread, there is a
+                                 * risk of deadlock in the child, so its worth
+                                 * retrying on failure.
+                                 */
+                                THREAD_SYNCH_SUSPEND_FAILURE_RETRY)) {
+        /* If we failed to synch with all threads, we live with the possiblity
+         * of deadlock and continue as normal.
+         */
+        LOG(GLOBAL, 1, LOG_SYSCALLS|LOG_THREADS,
+            "fork: synch failed, possible deadlock in child\n");
+        ASSERT_CURIOSITY(false);
+    }
+    ASSERT_OWN_MUTEX(true, &thread_initexit_lock);  /* Guards fork_threads. */
+    ASSERT(fork_threads != NULL && fork_num_threads > 0);
+
+    /* We go back to the code cache to execute the syscall, so we can't hold
+     * locks.  Therefore we release all_threads_synch_lock and
+     * thread_initexit_lock.
+     * NOCHECKIN: Is that the right thing to do?  Everyone else should be
+     * suspended (unless synch failed).
+     */
+    mutex_unlock(&thread_initexit_lock);
+    mutex_unlock(&all_threads_synch_lock);
+}
+
+/* Happens in after the fork in both the parent and child. */
+static void
+os_fork_post(dcontext_t *dcontext, bool parent)
+{
+    thread_record_t **threads;
+    int num_threads;
+    /* end_synch_with_all_threads assumes these locks will be held. */
+    mutex_lock(&all_threads_synch_lock);
+    mutex_lock(&thread_initexit_lock);
+    ASSERT(fork_threads != NULL && fork_num_threads > 0);
+    threads = fork_threads;
+    num_threads = fork_num_threads;
+    /* Need to reset globals before resuming other threads. */
+    fork_threads = NULL;
+    fork_num_threads = 0;
+    /* Resume the other threads that we suspended. */
+    if (parent) {
+        LOG(GLOBAL, 2, LOG_SYSCALLS|LOG_THREADS,
+            "fork: resuming other threads after fork\n");
+    }
+    end_synch_with_all_threads(threads, num_threads,
+                               parent/*resume in parent, not in child*/);
+}
+
+/* Called before child's new logfiles are set up */
 void
 os_fork_init(dcontext_t *dcontext)
 {
     int iter;
     file_t fd;
     ptr_uint_t flags;
+
+    os_fork_post(dcontext, false/*!parent*/);
 
     /* re-populate cached data that contains pid */
     pid_cached = get_process_id();
@@ -5189,6 +5262,8 @@ pre_system_call(dcontext_t *dcontext)
          */
         if (is_clone_thread_syscall(dcontext))
             create_clone_record(dcontext, sys_param_addr(dcontext, 1) /*newsp*/);
+        else  /* This is really a fork. */
+            os_fork_pre(dcontext);
         /* We switch the lib tls segment back to app's segment.
          * Please refer to comment on os_switch_lib_tls.
          */
@@ -5246,6 +5321,7 @@ pre_system_call(dcontext_t *dcontext)
 
     case SYS_fork: {
         LOG(THREAD, LOG_SYSCALLS, 2, "syscall: fork\n");
+        os_fork_pre(dcontext);
         break;
     }
 
@@ -6126,6 +6202,7 @@ post_system_call(dcontext_t *dcontext)
                 "after fork-like syscall: parent is %d, child is %d\n", parent, child);
         } else {
             /* we're the parent */
+            os_fork_post(dcontext, true/*parent*/);
         }
     }
 

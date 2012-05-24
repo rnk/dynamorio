@@ -1460,12 +1460,17 @@ signal_fork_init(dcontext_t *dcontext)
         }
         if (info->shared_refcount != NULL)
             global_heap_free(info->shared_refcount, sizeof(int) HEAPACCT(ACCT_OTHER));
+        info->shared_lock = NULL;
         info->shared_refcount = NULL;
     }
     if (info->shared_itimer) {
         /* itimers are not inherited across fork */
         info->shared_itimer = false;
-        memset(info->itimer, 0, sizeof(*info->itimer));
+        if (os_itimers_thread_shared())
+            global_heap_free(info->itimer, sizeof(*info->itimer) HEAPACCT(ACCT_OTHER));
+        else
+            heap_free(dcontext, info->itimer, sizeof(*info->itimer) HEAPACCT(ACCT_OTHER));
+        info->itimer = NULL;  /* reset by init_itimer */
         ASSERT(info->shared_itimer_lock != NULL);
         DELETE_RECURSIVE_LOCK(*info->shared_itimer_lock);
         global_heap_free(info->shared_itimer_lock, sizeof(*info->shared_itimer_lock)
@@ -3769,9 +3774,6 @@ master_signal_handler(int sig, siginfo_t *siginfo, kernel_ucontext_t *ucxt)
 #endif
     bool local;
     dcontext_t *dcontext = get_thread_private_dcontext();
-    char keypress;
-    print_file(STDERR, "<signal %d>\n", sig);
-    os_read(STDIN, &keypress, sizeof(keypress));
     if (dynamo_exited && get_num_threads() > 1 && sig == SIGSEGV) {
         /* PR 470957: this is almost certainly a race so just squelch it.
          * We live w/ the risk that it was holding a lock our release-build
