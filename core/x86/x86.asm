@@ -746,12 +746,13 @@ GLOBAL_LABEL(global_do_syscall_sygate_sysenter:)
 GLOBAL_LABEL(global_do_syscall_syscall:)
         mov      r10, REG_XCX
         syscall
-#   ifdef DEBUG
-        jmp      debug_infinite_loop
-#   endif
-#   ifdef LINUX
+#   if defined(LINUX)
         /* we do come here for SYS_kill which can fail: try again via exit_group */
         jmp      dynamorio_sys_exit_group
+#   elif defined(DEBUG)
+        jmp      debug_infinite_loop
+#   else
+	hlt
 #   endif
         END_FUNC(global_do_syscall_syscall)
 #endif
@@ -1203,9 +1204,14 @@ GLOBAL_LABEL(dynamorio_nonrt_sigreturn:)
         mov      eax, HEX(77)
         /* PR 254280: we assume int$80 is ok even for LOL64 */
         int      HEX(80)
-        /* should not return.  if we somehow do,infinite loop is intentional.
-         * FIXME: do better in release build! FIXME - why not an int3? */
+	/* Should not return.  If we somehow do, we infinite loop in a debug
+	 * build and hlt in a release.
+         */
+# ifdef DEBUG
         jmp      unexpected_return
+# else
+	hlt
+# endif
         END_FUNC(dynamorio_sigreturn)
 #endif
         
