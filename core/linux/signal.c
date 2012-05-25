@@ -3769,6 +3769,9 @@ master_signal_handler(int sig, siginfo_t *siginfo, kernel_ucontext_t *ucxt)
 #endif
     bool local;
     dcontext_t *dcontext = get_thread_private_dcontext();
+    char keypress;
+    print_file(STDERR, "<signal %d>\n", sig);
+    os_read(STDIN, &keypress, sizeof(keypress));
     if (dynamo_exited && get_num_threads() > 1 && sig == SIGSEGV) {
         /* PR 470957: this is almost certainly a race so just squelch it.
          * We live w/ the risk that it was holding a lock our release-build
