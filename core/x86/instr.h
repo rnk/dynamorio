@@ -1864,7 +1864,7 @@ instr_set_target(instr_t *cti_instr, opnd_t target);
 
 DR_API
 /** Returns true iff \p instr's operands are up to date. */
-bool 
+FOO bool 
 instr_operands_valid(instr_t *instr);
 
 DR_API
@@ -1945,12 +1945,12 @@ instr_set_raw_bits_valid(instr_t *instr, bool valid);
 
 DR_API
 /** Returns true iff \p instr's raw bits are a valid encoding of instr. */
-bool 
+FOO bool 
 instr_raw_bits_valid(instr_t *instr);
 
 DR_API
 /** Returns true iff \p instr has its own allocated memory for raw bits. */
-bool 
+FOO bool 
 instr_has_allocated_bits(instr_t *instr);
 
 DR_API

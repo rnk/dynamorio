@@ -2361,24 +2361,6 @@ instr_set_raw_bits_valid(instr_t *instr, bool valid)
     }
 }
 
-bool
-instr_operands_valid(instr_t *instr)
-{
-    return ((instr->flags & INSTR_OPERANDS_VALID) != 0);
-}
-
-bool
-instr_raw_bits_valid(instr_t *instr)
-{
-    return ((instr->flags & INSTR_RAW_BITS_VALID) != 0);
-}
-
-bool
-instr_has_allocated_bits(instr_t *instr)
-{
-    return ((instr->flags & INSTR_RAW_BITS_ALLOCATED) != 0);
-}
-
 void
 instr_free_raw_bits(dcontext_t *dcontext, instr_t *instr)
 {
@@ -4836,12 +4818,6 @@ instr_t *
 instr_create_restore_dynamo_stack(dcontext_t *dcontext)
 {
     return instr_create_restore_from_dcontext(dcontext, REG_ESP, DSTACK_OFFSET);
-}
-
-void
-instr_decode_with_dcontext(instr_t *instr)
-{
-    instr_decode(get_thread_private_dcontext(), instr);
 }
 
 #ifdef RETURN_STACK

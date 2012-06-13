@@ -247,10 +247,28 @@ instr_is_cti_loop(instr_t *instr)
     return (opc >= OP_loopne && opc <= OP_jecxz);
 }
 
+FOO bool
+instr_operands_valid(instr_t *instr)
+{
+    return ((instr->flags & INSTR_OPERANDS_VALID) != 0);
+}
+
+FOO bool
+instr_raw_bits_valid(instr_t *instr)
+{
+    return ((instr->flags & INSTR_RAW_BITS_VALID) != 0);
+}
+
+FOO bool
+instr_has_allocated_bits(instr_t *instr)
+{
+    return ((instr->flags & INSTR_RAW_BITS_ALLOCATED) != 0);
+}
+
 FOO void
 instr_decode_if_needed(instr_t *instr)
 {
-    if ((instr->flags & INSTR_OPERANDS_VALID) == 0)
+    if (!instr_operands_valid(instr))
         instr_decode(get_thread_private_dcontext(), instr);
 }
 
