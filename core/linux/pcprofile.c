@@ -96,7 +96,8 @@ typedef struct _thread_pc_info_t {
     int where[WHERE_LAST];
 } thread_pc_info_t;
 
-#define ALARM_FREQUENCY 10 /* milliseconds */
+//#define ALARM_FREQUENCY 10 [> milliseconds <]
+#define ALARM_FREQUENCY 1 /* milliseconds */
 
 /* forward declarations for static functions */
 static pc_profile_entry_t *pcprofile_add_entry(thread_pc_info_t *info, void *pc, int whereami);

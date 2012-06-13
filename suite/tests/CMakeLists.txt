@@ -1366,8 +1366,8 @@ if (CLIENT_INTERFACE)
   tobuild_api(api.ir api/ir.c "" "" OFF)
   tobuild_api(api.startstop api/startstop.c "" "" OFF)
   # test static decoder library
-  tobuild_api(api.ir-static api/ir.c "" "" ON)
-  tobuild_api(api.static api/static.c "" "" ON)
+  #tobuild_api(api.ir-static api/ir.c "" "" ON)
+  #tobuild_api(api.static api/static.c "" "" ON)
 
   if (NOT X64)
     # i#696: Use -thread_private and small fcache units to trigger shifts.  x64

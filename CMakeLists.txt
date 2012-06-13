@@ -734,60 +734,60 @@ if (UNIX)
   if (NOT DEFINED CMAKE_OBJCOPY)
     find_package(BinUtils)
   endif (NOT DEFINED CMAKE_OBJCOPY)
-  if (EXISTS ${CMAKE_OBJCOPY} AND EXISTS ${CMAKE_STRIP})
-    # Check for --only-keep-debug support: added ~2.15
-    execute_process(COMMAND
-      ${CMAKE_OBJCOPY} --help
-      RESULT_VARIABLE objcopy_result
-      ERROR_QUIET
-      OUTPUT_VARIABLE objcopy_out)
-    if (objcopy_result)
-      message(FATAL_ERROR "*** ${CMAKE_OBJCOPY} failed to run ***\n")
-    endif (objcopy_result)
-    string(REGEX MATCH "only-keep-debug" flag_present "${objcopy_out}")
-    if (NOT flag_present)
-      message("${CMAKE_OBJCOPY} missing flag --only-keep-debug: leaving debug info in .so files")
-    else (NOT flag_present)
-      set(CMAKE_C_CREATE_SHARED_LIBRARY
-        # standard rule
-        "<CMAKE_C_COMPILER> <CMAKE_SHARED_LIBRARY_C_FLAGS> <LANGUAGE_COMPILE_FLAGS> <LINK_FLAGS> <CMAKE_SHARED_LIBRARY_CREATE_C_FLAGS> <CMAKE_SHARED_LIBRARY_SONAME_C_FLAG><TARGET_SONAME> -o <TARGET> <OBJECTS> <LINK_LIBRARIES>"
-        # now create a .debug copy
-        "${CMAKE_OBJCOPY} --only-keep-debug <TARGET> <TARGET>.debug"
-        # link original to point at .debug copy
-        # directory components are removed, so "../lib/" is fine
-        "${CMAKE_OBJCOPY} --add-gnu-debuglink=<TARGET>.debug <TARGET>"
-        # We can't strip everything since a client's _USES_DR_VERSION_ will be
-        # removed, so we only strip debug (-g) and local (-x):
-        # i#572: We used to pass -p here, but that floors the mtime.
-        "${CMAKE_STRIP} -g -x <TARGET>"
-        )
-      SET(CMAKE_C_LINK_EXECUTABLE
-        "<CMAKE_C_COMPILER> <FLAGS> <CMAKE_C_LINK_FLAGS> <LINK_FLAGS> <OBJECTS>  -o <TARGET> <LINK_LIBRARIES>"
-        "${CMAKE_OBJCOPY} --only-keep-debug <TARGET> <TARGET>.debug"
-        "${CMAKE_OBJCOPY} --add-gnu-debuglink=<TARGET>.debug <TARGET>"
-        "${CMAKE_STRIP} -g -x <TARGET>"
-        )
-      set(CMAKE_CXX_CREATE_SHARED_LIBRARY
-        # standard rule
-        "<CMAKE_CXX_COMPILER> <CMAKE_SHARED_LIBRARY_CXX_FLAGS> <LANGUAGE_COMPILE_FLAGS> <LINK_FLAGS> <CMAKE_SHARED_LIBRARY_CREATE_CXX_FLAGS> <CMAKE_SHARED_LIBRARY_SONAME_CXX_FLAG><TARGET_SONAME> -o <TARGET> <OBJECTS> <LINK_LIBRARIES>"
-        # now create a .debug copy
-        "${CMAKE_OBJCOPY} --only-keep-debug <TARGET> <TARGET>.debug"
-        # link original to point at .debug copy
-        # directory components are removed, so "../lib/" is fine
-        "${CMAKE_OBJCOPY} --add-gnu-debuglink=<TARGET>.debug <TARGET>"
-        # We can't strip everything since a client's _USES_DR_VERSION_ will be
-        # removed, so we only strip debug (-g) and local (-x):
-        # i#572: We used to pass -p here, but that floors the mtime.
-        "${CMAKE_STRIP} -g -x <TARGET>"
-        )
-      SET(CMAKE_CXX_LINK_EXECUTABLE
-        "<CMAKE_CXX_COMPILER> <FLAGS> <CMAKE_CXX_LINK_FLAGS> <LINK_FLAGS> <OBJECTS>  -o <TARGET> <LINK_LIBRARIES>"
-        "${CMAKE_OBJCOPY} --only-keep-debug <TARGET> <TARGET>.debug"
-        "${CMAKE_OBJCOPY} --add-gnu-debuglink=<TARGET>.debug <TARGET>"
-        "${CMAKE_STRIP} -g -x <TARGET>"
-        )
-    endif (NOT flag_present)
-  endif (EXISTS ${CMAKE_OBJCOPY} AND EXISTS ${CMAKE_STRIP})
+  #if (EXISTS ${CMAKE_OBJCOPY} AND EXISTS ${CMAKE_STRIP})
+  #  # Check for --only-keep-debug support: added ~2.15
+  #  execute_process(COMMAND
+  #    ${CMAKE_OBJCOPY} --help
+  #    RESULT_VARIABLE objcopy_result
+  #    ERROR_QUIET
+  #    OUTPUT_VARIABLE objcopy_out)
+  #  if (objcopy_result)
+  #    message(FATAL_ERROR "*** ${CMAKE_OBJCOPY} failed to run ***\n")
+  #  endif (objcopy_result)
+  #  string(REGEX MATCH "only-keep-debug" flag_present "${objcopy_out}")
+  #  if (NOT flag_present)
+  #    message("${CMAKE_OBJCOPY} missing flag --only-keep-debug: leaving debug info in .so files")
+  #  else (NOT flag_present)
+  #    set(CMAKE_C_CREATE_SHARED_LIBRARY
+  #      # standard rule
+  #      "<CMAKE_C_COMPILER> <CMAKE_SHARED_LIBRARY_C_FLAGS> <LANGUAGE_COMPILE_FLAGS> <LINK_FLAGS> <CMAKE_SHARED_LIBRARY_CREATE_C_FLAGS> <CMAKE_SHARED_LIBRARY_SONAME_C_FLAG><TARGET_SONAME> -o <TARGET> <OBJECTS> <LINK_LIBRARIES>"
+  #      # now create a .debug copy
+  #      "${CMAKE_OBJCOPY} --only-keep-debug <TARGET> <TARGET>.debug"
+  #      # link original to point at .debug copy
+  #      # directory components are removed, so "../lib/" is fine
+  #      "${CMAKE_OBJCOPY} --add-gnu-debuglink=<TARGET>.debug <TARGET>"
+  #      # We can't strip everything since a client's _USES_DR_VERSION_ will be
+  #      # removed, so we only strip debug (-g) and local (-x):
+  #      # i#572: We used to pass -p here, but that floors the mtime.
+  #      #"${CMAKE_STRIP} -g -x <TARGET>"
+  #      )
+  #    SET(CMAKE_C_LINK_EXECUTABLE
+  #      "<CMAKE_C_COMPILER> <FLAGS> <CMAKE_C_LINK_FLAGS> <LINK_FLAGS> <OBJECTS>  -o <TARGET> <LINK_LIBRARIES>"
+  #      "${CMAKE_OBJCOPY} --only-keep-debug <TARGET> <TARGET>.debug"
+  #      "${CMAKE_OBJCOPY} --add-gnu-debuglink=<TARGET>.debug <TARGET>"
+  #      #"${CMAKE_STRIP} -g -x <TARGET>"
+  #      )
+  #    set(CMAKE_CXX_CREATE_SHARED_LIBRARY
+  #      # standard rule
+  #      "<CMAKE_CXX_COMPILER> <CMAKE_SHARED_LIBRARY_CXX_FLAGS> <LANGUAGE_COMPILE_FLAGS> <LINK_FLAGS> <CMAKE_SHARED_LIBRARY_CREATE_CXX_FLAGS> <CMAKE_SHARED_LIBRARY_SONAME_CXX_FLAG><TARGET_SONAME> -o <TARGET> <OBJECTS> <LINK_LIBRARIES>"
+  #      # now create a .debug copy
+  #      "${CMAKE_OBJCOPY} --only-keep-debug <TARGET> <TARGET>.debug"
+  #      # link original to point at .debug copy
+  #      # directory components are removed, so "../lib/" is fine
+  #      "${CMAKE_OBJCOPY} --add-gnu-debuglink=<TARGET>.debug <TARGET>"
+  #      # We can't strip everything since a client's _USES_DR_VERSION_ will be
+  #      # removed, so we only strip debug (-g) and local (-x):
+  #      # i#572: We used to pass -p here, but that floors the mtime.
+  #      #"${CMAKE_STRIP} -g -x <TARGET>"
+  #      )
+  #    SET(CMAKE_CXX_LINK_EXECUTABLE
+  #      "<CMAKE_CXX_COMPILER> <FLAGS> <CMAKE_CXX_LINK_FLAGS> <LINK_FLAGS> <OBJECTS>  -o <TARGET> <LINK_LIBRARIES>"
+  #      "${CMAKE_OBJCOPY} --only-keep-debug <TARGET> <TARGET>.debug"
+  #      "${CMAKE_OBJCOPY} --add-gnu-debuglink=<TARGET>.debug <TARGET>"
+  #      #"${CMAKE_STRIP} -g -x <TARGET>"
+  #      )
+  #  endif (NOT flag_present)
+  #endif (EXISTS ${CMAKE_OBJCOPY} AND EXISTS ${CMAKE_STRIP})
 
 endif (UNIX)
 

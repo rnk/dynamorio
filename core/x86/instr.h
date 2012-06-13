@@ -40,6 +40,8 @@
 #ifndef _INSTR_H_
 #define _INSTR_H_ 1
 
+#include <string.h>
+
 #ifdef WINDOWS
 /* disabled warning for
  *   "nonstandard extension used : bit field types other than int"
@@ -557,12 +559,12 @@ enum {
 
 DR_API
 /** Returns an empty operand. */
-opnd_t 
+FOO opnd_t 
 opnd_create_null(void);
 
 DR_API
 /** Returns a register operand (\p r must be a DR_REG_ constant). */
-opnd_t 
+FOO opnd_t 
 opnd_create_reg(reg_id_t r);
 
 DR_API
@@ -791,67 +793,67 @@ opnd_create_far_rel_addr(reg_id_t seg, void *addr, opnd_size_t data_size);
 /* predicate functions */
 
 /* Check if the operand kind and size fields are valid */
-bool
+FOO bool
 opnd_is_valid(opnd_t opnd);
 
 DR_API
 /** Returns true iff \p opnd is an empty operand. */
-bool 
+FOO bool 
 opnd_is_null(opnd_t opnd);
 
 DR_API
 /** Returns true iff \p opnd is a register operand. */
-bool 
+FOO bool 
 opnd_is_reg(opnd_t opnd);
 
 DR_API
 /** Returns true iff \p opnd is an immediate (integer or float) operand. */
-bool 
+FOO bool 
 opnd_is_immed(opnd_t opnd);
 
 DR_API
 /** Returns true iff \p opnd is an immediate integer operand. */
-bool 
+FOO bool 
 opnd_is_immed_int(opnd_t opnd);
 
 DR_API
 /** Returns true iff \p opnd is an immediate float operand. */
-bool 
+FOO bool 
 opnd_is_immed_float(opnd_t opnd);
 
 DR_API
 /** Returns true iff \p opnd is a (near or far) program address operand. */
-bool 
+FOO bool 
 opnd_is_pc(opnd_t opnd);
 
 DR_API
 /** Returns true iff \p opnd is a near (i.e., default segment) program address operand. */
-bool 
+FOO bool 
 opnd_is_near_pc(opnd_t opnd);
 
 DR_API
 /** Returns true iff \p opnd is a far program address operand. */
-bool 
+FOO bool 
 opnd_is_far_pc(opnd_t opnd);
 
 DR_API
 /** Returns true iff \p opnd is a (near or far) instr_t pointer address operand. */
-bool 
+FOO bool 
 opnd_is_instr(opnd_t opnd);
 
 DR_API
 /** Returns true iff \p opnd is a near instr_t pointer address operand. */
-bool 
+FOO bool 
 opnd_is_near_instr(opnd_t opnd);
 
 DR_API
 /** Returns true iff \p opnd is a far instr_t pointer address operand. */
-bool 
+FOO bool 
 opnd_is_far_instr(opnd_t opnd);
 
 DR_API
 /** Returns true iff \p opnd is a (near or far) base+disp memory reference operand. */
-bool 
+FOO bool 
 opnd_is_base_disp(opnd_t opnd);
 
 DR_API
@@ -873,7 +875,7 @@ DR_API
  * Returns true for both base-disp operands with no base or index and
  * 64-bit non-base-disp absolute address operands. 
  */
-bool 
+FOO bool 
 opnd_is_abs_addr(opnd_t opnd);
 
 DR_API
@@ -882,7 +884,7 @@ DR_API
  * Returns true for both base-disp operands with no base or index and
  * 64-bit non-base-disp absolute address operands. 
  */
-bool 
+FOO bool 
 opnd_is_near_abs_addr(opnd_t opnd);
 
 DR_API
@@ -891,7 +893,7 @@ DR_API
  * Returns true for both base-disp operands with no base or index and
  * 64-bit non-base-disp absolute address operands. 
  */
-bool 
+FOO bool 
 opnd_is_far_abs_addr(opnd_t opnd);
 
 /* DR_API EXPORT BEGIN */
@@ -980,7 +982,7 @@ DR_API
  * Assumes \p opnd is a register operand.
  * Returns the register it refers to (a DR_REG_ constant).
  */
-reg_id_t  
+FOO reg_id_t  
 opnd_get_reg(opnd_t opnd);
 
 DR_API
@@ -1020,7 +1022,7 @@ DR_API
  * Assumes \p opnd is a (near or far) base+disp memory reference.  Returns the base
  * register (a DR_REG_ constant).
  */
-reg_id_t
+FOO reg_id_t
 opnd_get_base(opnd_t opnd);
 
 DR_API
@@ -1028,7 +1030,7 @@ DR_API
  * Assumes \p opnd is a (near or far) base+disp memory reference.
  * Returns the displacement. 
  */
-int 
+FOO int 
 opnd_get_disp(opnd_t opnd);
 
 DR_API
@@ -1769,7 +1771,7 @@ instr_get_app_pc(instr_t *instr);
 
 DR_API
 /** Returns \p instr's opcode (an OP_ constant). */
-int 
+FOO int 
 instr_get_opcode(instr_t *instr);
 
 DR_API
@@ -1791,14 +1793,14 @@ DR_API
  * (i.e., base, index, or segment registers) are not separately listed
  * as source operands.
  */
-int 
+FOO int 
 instr_num_srcs(instr_t *instr);
 
 DR_API
 /**
  * Returns the number of destination operands of \p instr.
  */
-int 
+FOO int 
 instr_num_dsts(instr_t *instr);
 
 DR_API
@@ -1814,14 +1816,14 @@ DR_API
 /**
  * Returns \p instr's source operand at position \p pos (0-based).
  */
-opnd_t 
+FOO opnd_t 
 instr_get_src(instr_t *instr, uint pos);
 
 DR_API
 /**
  * Returns \p instr's destination operand at position \p pos (0-based).
  */
-opnd_t 
+FOO opnd_t 
 instr_get_dst(instr_t *instr, uint pos);
 
 DR_API
@@ -1953,7 +1955,7 @@ instr_has_allocated_bits(instr_t *instr);
 
 DR_API
 /** Returns true iff \p instr's raw bits are not a valid encoding of \p instr. */
-bool 
+FOO bool 
 instr_needs_encoding(instr_t *instr);
 
 DR_API
@@ -2578,12 +2580,12 @@ DR_API
  * Returns true iff \p instr's opcode is OP_call, OP_call_far, OP_call_ind,
  * or OP_call_far_ind.
  */
-bool 
+FOO bool 
 instr_is_call(instr_t *instr);
 
 DR_API
 /** Returns true iff \p instr's opcode is OP_call or OP_call_far. */
-bool 
+FOO bool 
 instr_is_call_direct(instr_t *instr);
 
 DR_API
@@ -2593,12 +2595,12 @@ instr_is_near_call_direct(instr_t *instr);
 
 DR_API
 /** Returns true iff \p instr's opcode is OP_call_ind or OP_call_far_ind. */
-bool 
+FOO bool 
 instr_is_call_indirect(instr_t *instr);
 
 DR_API
 /** Returns true iff \p instr's opcode is OP_ret, OP_ret_far, or OP_iret. */
-bool 
+FOO bool 
 instr_is_return(instr_t *instr);
 
 DR_API
@@ -2625,7 +2627,7 @@ instr_is_cti_short(instr_t *instr);
 
 DR_API
 /** Returns true iff \p instr is one of OP_loop* or OP_jecxz. */
-bool 
+FOO bool 
 instr_is_cti_loop(instr_t *instr);
 
 DR_API
@@ -2655,7 +2657,7 @@ DR_API
  * Returns true iff \p instr is a conditional branch: OP_jcc, OP_jcc_short,
  * OP_loop*, or OP_jecxz.
  */
-bool 
+FOO bool 
 instr_is_cbr(instr_t *instr);
 
 DR_API
@@ -2664,7 +2666,7 @@ DR_API
  * OP_call_ind, OP_ret, OP_jmp_far_ind, OP_call_far_ind, OP_ret_far, or
  * OP_iret.
  */
-bool 
+FOO bool 
 instr_is_mbr(instr_t *instr);
 
 DR_API
@@ -2672,7 +2674,7 @@ DR_API
  * Returns true iff \p instr is an unconditional direct branch: OP_jmp,
  * OP_jmp_short, or OP_jmp_far.
  */
-bool 
+FOO bool 
 instr_is_ubr(instr_t *instr);
 
 DR_API
@@ -2688,12 +2690,12 @@ DR_API
  * Returns true iff \p instr is a far control transfer instruction: OP_jmp_far,
  * OP_call_far, OP_jmp_far_ind, OP_call_far_ind, OP_ret_far, or OP_iret.
  */
-bool 
+FOO bool 
 instr_is_far_cti(instr_t *instr);
 
 DR_API
 /** Returns true if \p instr is an absolute call or jmp that is far. */
-bool 
+FOO bool 
 instr_is_far_abs_cti(instr_t *instr);
 
 DR_API
@@ -4503,6 +4505,8 @@ enum {
 /* undocumented opcodes */
 #define OP_icebp OP_int1
 #define OP_setalc OP_salc
+
+#include "instr-inline.h"
 
 /****************************************************************************/
 /* DR_API EXPORT END */

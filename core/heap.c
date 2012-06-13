@@ -3961,8 +3961,8 @@ special_heap_init_internal(uint block_size, bool use_lock, bool executable,
                            byte *heap_region, size_t heap_size, bool unit_full)
 {
     special_units_t *su;
-    size_t unit_size = (block_size * 16 > HEAP_UNIT_MIN_SIZE) ?
-        (block_size * 16) : HEAP_UNIT_MIN_SIZE;
+    size_t unit_size = (block_size * 2048 > HEAP_UNIT_MIN_SIZE) ?
+        (block_size * 2048) : HEAP_UNIT_MIN_SIZE;
     /* Whether using 16K or 64K vmm blocks, HEAP_UNIT_MIN_SIZE of 32K wastes
      * space, and our main uses (stubs, whether global or coarse, and signal
      * pending queue) don't need a lot of space, so shrinking.

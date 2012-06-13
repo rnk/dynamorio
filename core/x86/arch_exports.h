@@ -1380,19 +1380,21 @@ get_x86_mode(dcontext_t *dcontext);
 
 /* DR_API EXPORT END */
 
+#define FOO inline
+
 DR_API
 /**
  * Returns an initialized instr_t allocated on the thread-local heap. 
  * Sets the x86/x64 mode of the returned instr_t to the mode of dcontext.
  */
-instr_t*
+FOO instr_t*
 instr_create(dcontext_t *dcontext);
 
 DR_API
 /** Initializes \p instr.
  * Sets the x86/x64 mode of \p instr to the mode of dcontext.
  */
-void 
+FOO void 
 instr_init(dcontext_t *dcontext, instr_t *instr);
 
 DR_API
@@ -1410,7 +1412,7 @@ DR_API
  * Performs both instr_free() and instr_init().
  * \p instr must have been initialized.
  */
-void 
+FOO void 
 instr_reset(dcontext_t *dcontext, instr_t *instr);
 
 DR_API
@@ -1429,7 +1431,7 @@ DR_API
  * Performs instr_free() and then deallocates the thread-local heap
  * storage for \p instr.
  */
-void 
+FOO void 
 instr_destroy(dcontext_t *dcontext, instr_t *instr);
 
 DR_API
@@ -1440,22 +1442,22 @@ DR_API
  * two different InstrLists (but removing the need for an extra data
  * structure for each element of the instrlist_t).
  */
-instr_t*
+FOO instr_t*
 instr_get_next(instr_t *instr);
 
 DR_API
 /** Returns the previous instr_t in the instrlist_t that contains \p instr. */
-instr_t*
+FOO instr_t*
 instr_get_prev(instr_t *instr);
 
 DR_API
 /** Sets the next field of \p instr to point to \p next. */
-void 
+FOO void 
 instr_set_next(instr_t *instr, instr_t *next);
 
 DR_API
 /** Sets the prev field of \p instr to point to \p prev. */
-void 
+FOO void 
 instr_set_prev(instr_t *instr, instr_t *prev);
 
 DR_API
@@ -1466,12 +1468,12 @@ DR_API
  * or instrlist_encode_to_copy() with \p has_instr_jmp_targets set to true.
  * \note The note field is copied (shallowly) by instr_clone().
  */
-void *
+FOO void *
 instr_get_note(instr_t *instr);
 
 DR_API
 /** Sets the user-controlled note field in \p instr to \p value. */
-void 
+FOO void 
 instr_set_note(instr_t *instr, void *value);
 
 DR_API
@@ -1643,7 +1645,7 @@ DR_API
  * instr_allocate_raw_bits(), after which instr is marked as having
  * valid raw bits.
  */
-int 
+FOO int 
 instr_length(dcontext_t *dcontext, instr_t *instr);
 
 /* also in instr.c, but not exported */
@@ -1925,5 +1927,7 @@ void *memset(void *dst, int val, size_t n);
 /* only takes integer literals */
 # define APP_PARAM(mc, offs) (*(((reg_t *)((mc)->xsp)) + (offs) + 1))
 #endif
+
+#include "arch_exports-inline.h"
 
 #endif /* _ARCH_EXPORTS_H_ */

@@ -72,45 +72,6 @@
  ***       opnd_t        ***
  *************************/
 
-/* predicates */
-bool opnd_is_valid(opnd_t opnd)
-{
-    return opnd.kind < LAST_kind;
-}
-bool opnd_is_null(opnd_t opnd) { return opnd.kind == NULL_kind; }
-bool opnd_is_reg(opnd_t opnd) { return opnd.kind == REG_kind; }
-bool opnd_is_immed(opnd_t opnd) { return opnd.kind == IMMED_INTEGER_kind ||
-                               opnd.kind == IMMED_FLOAT_kind; }
-bool opnd_is_immed_int(opnd_t opnd) { return opnd.kind == IMMED_INTEGER_kind; }
-bool opnd_is_immed_float(opnd_t opnd) { return opnd.kind == IMMED_FLOAT_kind; }
-bool opnd_is_pc(opnd_t opnd) {
-    return opnd.kind == PC_kind || opnd.kind == FAR_PC_kind; 
-}
-bool opnd_is_near_pc(opnd_t opnd) { return opnd.kind == PC_kind; }
-bool opnd_is_far_pc(opnd_t opnd) { return opnd.kind == FAR_PC_kind; }
-bool opnd_is_instr(opnd_t opnd) {
-    return opnd.kind == INSTR_kind || opnd.kind == FAR_INSTR_kind;
-}
-bool opnd_is_near_instr(opnd_t opnd) { return opnd.kind == INSTR_kind; }
-bool opnd_is_far_instr(opnd_t opnd) { return opnd.kind == FAR_INSTR_kind; }
-
-/* Though we have "protected" visibility, gcc still does not inline
- * these exported routines.  We can get noticeably better performance by
- * forcing an inline (PR 622253).  I also found that using macros
- * produces better code than having gcc inline these functions: with
- * inlining there are extra local var slots and memory traffic to them.
- *
- * XXX: figure out how to get as-fast code with inlining for better
- * debuggability!  For now going with macros as the speed difference
- * is noticeable; these macros uses are confined to this file as well.
- * I'm including some sanity type checks in the macros.
- */
-#define inlined_opnd_is_base_disp(opnd) \
-    (IF_DEBUG_(CLIENT_ASSERT(sizeof(opnd) == sizeof(opnd_t), "invalid type")) \
-     (opnd).kind == BASE_DISP_kind)
-bool opnd_is_base_disp(opnd_t opnd) { return inlined_opnd_is_base_disp(opnd); }
-/* in rest of file, directly de-reference for performance (PR 622253) */
-#define opnd_is_base_disp inlined_opnd_is_base_disp
 
 bool opnd_is_near_base_disp(opnd_t opnd) {
     return opnd.kind == BASE_DISP_kind && opnd.seg.segment == REG_NULL; 
@@ -128,22 +89,6 @@ bool opnd_is_far_rel_addr(opnd_t opnd) {
     return opnd.kind == REL_ADDR_kind && opnd.seg.segment != REG_NULL; 
 }
 #endif
-
-/* We allow overlap between ABS_ADDR_kind and BASE_DISP_kind w/ no base or index */
-static bool
-opnd_is_abs_base_disp(opnd_t opnd) {
-    return (opnd_is_base_disp(opnd) && opnd_get_base(opnd) == REG_NULL &&
-            opnd_get_index(opnd) == REG_NULL);
-}
-bool opnd_is_abs_addr(opnd_t opnd) {
-    return IF_X64(opnd.kind == ABS_ADDR_kind ||) opnd_is_abs_base_disp(opnd);
-}
-bool opnd_is_near_abs_addr(opnd_t opnd) {
-    return opnd_is_abs_addr(opnd) && opnd.seg.segment == REG_NULL; 
-}
-bool opnd_is_far_abs_addr(opnd_t opnd) {
-    return opnd_is_abs_addr(opnd) && opnd.seg.segment != REG_NULL; 
-}
 
 bool
 opnd_is_reg_32bit(opnd_t opnd)
@@ -191,36 +136,7 @@ reg_is_pointer_sized(reg_id_t reg)
 #endif
 }
 
-/* null operands */
-
-opnd_t
-opnd_create_null(void)
-{
-    opnd_t opnd;
-    opnd.kind = NULL_kind;
-    return opnd;
-}
-
-/* register operands */
-
-opnd_t
-opnd_create_reg(reg_id_t r)
-{
-    opnd_t opnd IF_DEBUG(= {0});  /* FIXME: Needed until i#417 is fixed. */
-    CLIENT_ASSERT(r <= REG_LAST_ENUM && r != REG_INVALID,
-                  "opnd_create_reg: invalid register");
-    opnd.kind = REG_kind;
-    opnd.value.reg = r;
-    return opnd;
-}
-
-reg_id_t
-opnd_get_reg(opnd_t opnd)
-{
-    CLIENT_ASSERT(opnd_is_reg(opnd), "opnd_get_reg called on non-reg opnd");
-    return opnd.value.reg;
-}
-
+/* immediate operands */
 
 opnd_size_t
 opnd_get_size(opnd_t opnd)
@@ -262,8 +178,6 @@ opnd_set_size(opnd_t *opnd, opnd_size_t newsize)
         CLIENT_ASSERT(false, "opnd_set_size: unknown opnd type");
     }
 }
-
-/* immediate operands */
 
 opnd_t
 opnd_create_immed_int(ptr_int_t i, opnd_size_t size)
@@ -466,28 +380,6 @@ opnd_create_far_base_disp(reg_id_t seg, reg_id_t base_reg, reg_id_t index_reg, i
 {
     return opnd_create_far_base_disp_ex(seg, base_reg, index_reg, scale, disp, size,
                                         false, false, false);
-}
-
-reg_id_t
-opnd_get_base(opnd_t opnd)
-{
-    if (opnd_is_base_disp(opnd))
-        return opnd.value.base_disp.base_reg;
-#ifdef X64
-    if (opnd_is_abs_addr(opnd))
-        return REG_NULL;
-#endif
-    CLIENT_ASSERT(false, "opnd_get_base called on invalid opnd type");
-    return REG_INVALID;
-}
-
-int
-opnd_get_disp(opnd_t opnd)
-{
-    if (opnd_is_base_disp(opnd))
-        return opnd.value.base_disp.disp;
-    CLIENT_ASSERT(false, "opnd_get_disp called on invalid opnd type");
-    return REG_INVALID;
 }
 
 bool
@@ -1652,28 +1544,6 @@ reg_get_size(reg_id_t reg)
  ***       instr_t       ***
  *************************/
 
-/* returns an empty instr_t object */
-instr_t*
-instr_create(dcontext_t *dcontext)
-{
-    instr_t *instr = (instr_t*) heap_alloc(dcontext, sizeof(instr_t) HEAPACCT(ACCT_IR));
-    /* everything initializes to 0, even flags, to indicate
-     * an uninitialized instruction */
-    memset((void *)instr, 0, sizeof(instr_t));
-    IF_X64(instr_set_x86_mode(instr, get_x86_mode(dcontext)));
-    return instr;
-}
-
-/* deletes the instr_t object with handle "inst" and frees its storage */
-void
-instr_destroy(dcontext_t *dcontext, instr_t *instr)
-{
-    instr_free(dcontext, instr);
-
-    /* CAUTION: assumes that instr is not part of any instrlist */
-    heap_free(dcontext, instr, sizeof(instr_t) HEAPACCT(ACCT_IR));
-}
-
 /* returns a clone of orig, but with next and prev fields set to NULL */
 instr_t *
 instr_clone(dcontext_t *dcontext, instr_t *orig)
@@ -1722,16 +1592,6 @@ instr_clone(dcontext_t *dcontext, instr_t *orig)
     if (instr_is_label(orig))
         memcpy(&instr->label_data, &orig->label_data, sizeof(instr->label_data));
     return instr;
-}
-
-/* zeroes out the fields of instr */
-void
-instr_init(dcontext_t *dcontext, instr_t *instr)
-{
-    /* everything initializes to 0, even flags, to indicate
-     * an uninitialized instruction */
-    memset((void *)instr, 0, sizeof(instr_t));
-    IF_X64(instr_set_x86_mode(instr, get_x86_mode(dcontext)));
 }
 
 /* Frees all dynamically allocated storage that was allocated by instr */
@@ -1794,18 +1654,6 @@ instr_mem_usage(instr_t *instr)
     }
     usage += sizeof(instr_t);
     return usage;
-}
-
-
-/* Frees all dynamically allocated storage that was allocated by instr
- * Also zeroes out instr's fields
- * This instr must have been initialized before!
- */
-void 
-instr_reset(dcontext_t *dcontext, instr_t *instr)
-{
-    instr_free(dcontext, instr);
-    instr_init(dcontext, instr);
 }
 
 /* Frees all dynamically allocated storage that was allocated by instr,
@@ -1954,18 +1802,8 @@ private_instr_encode(dcontext_t *dcontext, instr_t *instr, bool always_cache)
     return len;
 }
 
-#define inlined_instr_get_opcode(instr) \
-    (IF_DEBUG_(CLIENT_ASSERT(sizeof(*instr) == sizeof(instr_t), "invalid type")) \
-     (((instr)->opcode == OP_UNDECODED) ? \
-      (instr_decode_opcode(get_thread_private_dcontext(), instr), (instr)->opcode) : \
-      (instr)->opcode))
-int
-instr_get_opcode(instr_t *instr)
-{
-    return inlined_instr_get_opcode(instr);
-}
 /* in rest of file, directly de-reference for performance (PR 622253) */
-#define instr_get_opcode inlined_instr_get_opcode
+//#define instr_get_opcode inlined_instr_get_opcode
 
 static inline void
 instr_being_modified(instr_t *instr, bool raw_bits_valid)
@@ -2036,50 +1874,6 @@ get_instr_info(int opcode)
 {
     return op_instr[opcode];
 }
-
-int
-instr_num_srcs(instr_t *instr)
-{
-    if ((instr->flags & INSTR_OPERANDS_VALID) == 0)
-        instr_decode(get_thread_private_dcontext(), instr);
-    return instr->num_srcs;
-}
-
-int
-instr_num_dsts(instr_t *instr)
-{
-    if ((instr->flags & INSTR_OPERANDS_VALID) == 0)
-        instr_decode(get_thread_private_dcontext(), instr);
-    return instr->num_dsts;
-}
-
-/* Returns the pos-th source operand of instr.
- * If instr's operands are not decoded, goes ahead and decodes them.
- * Assumes that instr is a single instr (i.e., NOT Level 0).
- */
-opnd_t
-instr_get_src(instr_t *instr, uint pos)
-{
-    if ((instr->flags & INSTR_OPERANDS_VALID) == 0)
-        instr_decode(get_thread_private_dcontext(), instr);
-    CLIENT_ASSERT(pos >= 0 && pos < instr->num_srcs, "instr_get_src: ordinal invalid");
-    /* remember that src0 is static, rest are dynamic */
-    if (pos == 0)
-        return instr->src0;
-    else
-        return instr->srcs[pos-1];
-}
-
-/* returns the dst opnd at position pos in instr */
-opnd_t
-instr_get_dst(instr_t *instr, uint pos)
-{
-    if ((instr->flags & INSTR_OPERANDS_VALID) == 0)
-        instr_decode(get_thread_private_dcontext(), instr);
-    CLIENT_ASSERT(pos >= 0 && pos < instr->num_dsts, "instr_get_dst: ordinal invalid");
-    return instr->dsts[pos];
-}
-
 /* allocates storage for instr_num_srcs src operands and instr_num_dsts dst operands
  * assumes that instr is currently all zeroed out!
  */
@@ -2585,12 +2379,6 @@ instr_has_allocated_bits(instr_t *instr)
     return ((instr->flags & INSTR_RAW_BITS_ALLOCATED) != 0);
 }
 
-bool
-instr_needs_encoding(instr_t *instr)
-{
-    return ((instr->flags & INSTR_RAW_BITS_VALID) == 0);
-}
-
 void
 instr_free_raw_bits(dcontext_t *dcontext, instr_t *instr)
 {
@@ -2759,54 +2547,9 @@ instr_set_raw_word(instr_t *instr, uint pos, uint word)
 #endif
 }
 
-/* set the note field of instr to value */
-void 
-instr_set_note(instr_t *instr, void *value)
-{
-    instr->note = value;
-}
-
-/* return the note field of instr */
-void *
-instr_get_note(instr_t *instr)
-{
-    return instr->note;
-}
-
-/* return instr->next */
-instr_t*
-instr_get_next(instr_t *instr)
-{
-    return instr->next;
-}
-
-/* return instr->prev */
-instr_t*
-instr_get_prev(instr_t *instr)
-{
-    return instr->prev;
-}
-
-/* set instr->next to next */
-void
-instr_set_next(instr_t *instr, instr_t *next)
-{
-    instr->next = next;
-}
-
-/* set instr->prev to prev */
-void
-instr_set_prev(instr_t *instr, instr_t *prev)
-{
-    instr->prev = prev;
-}
-
 int
-instr_length(dcontext_t *dcontext, instr_t *instr)
+instr_length_outofline(dcontext_t *dcontext, instr_t *instr)
 {
-    if (!instr_needs_encoding(instr))
-        return instr->length;
-
     /* hardcode length for cti */
     switch (instr_get_opcode(instr)) {
     case OP_jmp:
@@ -3844,122 +3587,6 @@ instr_is_exit_cti(instr_t *instr)
             opnd_is_pc(instr_get_src(instr, 0)));
 }
 
-bool 
-instr_is_mov(instr_t *instr)
-{
-    int opc = instr_get_opcode(instr);
-    return (opc == OP_mov_st ||
-            opc == OP_mov_ld ||
-            opc == OP_mov_imm ||
-            opc == OP_mov_seg ||
-            opc == OP_mov_priv);
-}
-
-bool 
-instr_is_call(instr_t *instr)
-{
-    int opc = instr_get_opcode(instr);
-    return (opc == OP_call ||
-            opc == OP_call_far ||
-            opc == OP_call_ind ||
-            opc == OP_call_far_ind);
-}
-
-bool 
-instr_is_call_direct(instr_t *instr)
-{
-    int opc = instr_get_opcode(instr);
-    return (opc == OP_call || opc == OP_call_far);
-}
-
-bool 
-instr_is_near_call_direct(instr_t *instr)
-{
-    int opc = instr_get_opcode(instr);
-    return (opc == OP_call);
-}
-
-bool 
-instr_is_call_indirect(instr_t *instr)
-{
-    int opc = instr_get_opcode(instr);
-    return (opc == OP_call_ind || opc == OP_call_far_ind);
-}
-
-bool
-instr_is_return(instr_t *instr)
-{
-    int opc = instr_get_opcode(instr);
-    return (opc == OP_ret || opc == OP_ret_far || opc == OP_iret);
-}
-
-/*** WARNING!  The following rely on ordering of opcodes! ***/
-
-bool
-instr_is_cbr(instr_t *instr)      /* conditional branch */
-{
-    int opc = instr_get_opcode(instr);
-    return ((opc >= OP_jo && opc <= OP_jnle) ||
-            (opc >= OP_jo_short && opc <= OP_jnle_short) ||
-            (opc >= OP_loopne && opc <= OP_jecxz));
-}
-
-bool
-instr_is_mbr(instr_t *instr)      /* multi-way branch */
-{
-    int opc = instr_get_opcode(instr);
-    return (opc == OP_jmp_ind ||
-            opc == OP_call_ind ||
-            opc == OP_ret ||
-            opc == OP_jmp_far_ind ||
-            opc == OP_call_far_ind ||
-            opc == OP_ret_far ||
-            opc == OP_iret);
-}
-
-bool
-instr_is_far_cti(instr_t *instr) /* target address has a segment and offset */
-{
-    int opc = instr_get_opcode(instr);
-    return (opc == OP_jmp_far ||
-            opc == OP_call_far ||
-            opc == OP_jmp_far_ind ||
-            opc == OP_call_far_ind ||
-            opc == OP_ret_far ||
-            opc == OP_iret);
-}
-
-bool
-instr_is_far_abs_cti(instr_t *instr)
-{
-    int opc = instr_get_opcode(instr);
-    return (opc == OP_jmp_far || opc == OP_call_far);
-}
-
-bool
-instr_is_ubr(instr_t *instr)      /* unconditional branch */
-{
-    int opc = instr_get_opcode(instr);
-    return (opc == OP_jmp ||
-            opc == OP_jmp_short ||
-            opc == OP_jmp_far);
-}
-
-bool
-instr_is_near_ubr(instr_t *instr)      /* unconditional branch */
-{
-    int opc = instr_get_opcode(instr);
-    return (opc == OP_jmp ||
-            opc == OP_jmp_short);
-}
-
-bool 
-instr_is_cti(instr_t *instr)      /* any control-transfer instruction */
-{
-    return (instr_is_cbr(instr) || instr_is_mbr(instr) || instr_is_ubr(instr) ||
-            instr_is_call(instr));
-}
-
 /* This routine does NOT decode the cti of instr if the raw bits are valid,
  * since all short ctis have single-byte opcodes and so just grabbing the first
  * byte can tell if instr is a cti short
@@ -3988,13 +3615,7 @@ instr_is_cti_short(instr_t *instr)
             (opc >= OP_loopne && opc <= OP_jecxz));
 }
 
-bool 
-instr_is_cti_loop(instr_t *instr)
-{
-    int opc = instr_get_opcode(instr);
-    /* only looking for loop* and jecxz */
-    return (opc >= OP_loopne && opc <= OP_jecxz);
-}
+/*** WARNING!  The following rely on ordering of opcodes! ***/
 
 /* Checks whether instr is a jecxz/loop* that was originally an app instruction.
  * All such app instructions are mangled into a jecxz/loop*,jmp_short,jmp sequence.
@@ -5215,6 +4836,12 @@ instr_t *
 instr_create_restore_dynamo_stack(dcontext_t *dcontext)
 {
     return instr_create_restore_from_dcontext(dcontext, REG_ESP, DSTACK_OFFSET);
+}
+
+void
+instr_decode_with_dcontext(instr_t *instr)
+{
+    instr_decode(get_thread_private_dcontext(), instr);
 }
 
 #ifdef RETURN_STACK

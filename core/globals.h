@@ -131,6 +131,7 @@
 #endif
 
 #define INLINE_ONCE inline
+#define FOO inline
 
 #include <stdlib.h>
 #include <stdio.h>
