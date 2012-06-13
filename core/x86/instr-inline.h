@@ -247,20 +247,11 @@ instr_is_cti_loop(instr_t *instr)
     return (opc >= OP_loopne && opc <= OP_jecxz);
 }
 
-FOO bool
-instr_needs_encoding(instr_t *instr)
-{
-    return ((instr->flags & INSTR_RAW_BITS_VALID) == 0);
-}
-
-void
-instr_decode_with_dcontext(instr_t *instr);
-
 FOO void
 instr_decode_if_needed(instr_t *instr)
 {
-    if (UNLIKELY((instr->flags & INSTR_OPERANDS_VALID) == 0))
-        instr_decode_with_dcontext(instr);
+    if ((instr->flags & INSTR_OPERANDS_VALID) == 0)
+        instr_decode(get_thread_private_dcontext(), instr);
 }
 
 FOO int
@@ -300,4 +291,10 @@ instr_get_dst(instr_t *instr, uint pos)
     instr_decode_if_needed(instr);
     CLIENT_ASSERT(pos >= 0 && pos < instr->num_dsts, "instr_get_dst: ordinal invalid");
     return instr->dsts[pos];
+}
+
+FOO bool
+instr_needs_encoding(instr_t *instr)
+{
+    return ((instr->flags & INSTR_RAW_BITS_VALID) == 0);
 }
