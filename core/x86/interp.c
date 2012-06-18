@@ -4160,12 +4160,7 @@ init_interp_build_bb(dcontext_t *dcontext, build_bb_t *bb, app_pc start,
      * a hook when we're ready to call one by storing whether there is a
      * hook at translation/decode decision time: now.
      */
-    /* PR 299808: even if no bb hook, for a trace hook we need to
-     * record translation and do full decode.  It's racy to check
-     * dr_trace_hook_exists() here so we rely on trace building having
-     * set unmangled_ilist.
-     */
-    if (dr_bb_hook_exists() || unmangled_ilist != NULL) {
+    if (dr_bb_hook_exists() && instrument_filter_bb(dcontext, bb->start_pc)) {
         bb->pass_to_client = true;
         /* case 10009/214444: For client interface builds, store the translation.
          * by default.  This ensures clients can get the correct app address
@@ -4177,7 +4172,8 @@ init_interp_build_bb(dcontext_t *dcontext, build_bb_t *bb, app_pc start,
          * instructions are fully decoded for client interface builds.
          */
         bb->record_translation = true;
-        /* PR 200409: If a bb hook exists, we always do a full decode.
+        /* PR 200409: If a bb hook exists and the client does not filter the
+         * block, we always do a full decode.
          * Note that we currently do this anyway to get
          * translation fields, but once we fix case 10070 it
          * won't be that way.
@@ -4189,6 +4185,15 @@ init_interp_build_bb(dcontext_t *dcontext, build_bb_t *bb, app_pc start,
         bb->full_decode = true;
         /* PR 299808: we give client chance to re-add instrumentation */
         bb->for_trace = for_trace;
+    }
+    /* PR 299808: even if no bb hook, for a trace hook we need to
+     * record translation and do full decode.  It's racy to check
+     * dr_trace_hook_exists() here so we rely on trace building having
+     * set unmangled_ilist.
+     */
+    if (unmangled_ilist != NULL) {
+        bb->record_translation = true;
+        bb->full_decode = true;
     }
     /* we need to clone the ilist pre-mangling */
     bb->unmangled_ilist = unmangled_ilist;
@@ -4346,7 +4351,8 @@ recreate_bb_ilist(dcontext_t *dcontext, byte *pc, uint flags, uint *res_flags,
      * DR_EMIT_STORE_TRANSLATIONS, in which case we shouldn't come here,
      * except for traces (see below):
      */
-    bb.pass_to_client = DYNAMO_OPTION(code_api) && call_client;
+    bb.pass_to_client = (DYNAMO_OPTION(code_api) && call_client &&
+                         instrument_filter_bb(dcontext, pc));
     /* PR 299808: we call bb hook again when translating a trace that
      * didn't have DR_EMIT_STORE_TRANSLATIONS on itself (or on any
      * for_trace bb if there was no trace hook).

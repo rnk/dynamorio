@@ -193,6 +193,7 @@ static callback_list_t thread_exit_callbacks = {0,};
 #ifdef LINUX
 static callback_list_t fork_init_callbacks = {0,};
 #endif
+static callback_list_t filter_bb_callbacks = {0,};
 static callback_list_t bb_callbacks = {0,};
 static callback_list_t trace_callbacks = {0,};
 #ifdef CUSTOM_TRACES
@@ -607,6 +608,7 @@ void free_all_callback_lists()
 #ifdef LINUX
     free_callback_list(&fork_init_callbacks);
 #endif
+    free_callback_list(&filter_bb_callbacks);
     free_callback_list(&bb_callbacks);
     free_callback_list(&trace_callbacks);
 #ifdef CUSTOM_TRACES
@@ -741,6 +743,18 @@ bool
 dr_unregister_exit_event(void (*func)(void))
 {
     return remove_callback(&exit_callbacks, (void (*)(void))func, true);
+}
+
+void
+dr_register_filter_bb_event(bool (*func)(void *drcontext, app_pc start_pc))
+{
+    add_callback(&filter_bb_callbacks, (void (*)(void))func, true);
+}
+
+bool
+dr_unregister_filter_bb_event(bool (*func)(void *drcontext, app_pc start_pc))
+{
+    return remove_callback(&filter_bb_callbacks, (void (*)(void))func, true);
 }
 
 void
@@ -1313,6 +1327,24 @@ check_ilist_translations(instrlist_t *ilist)
     }
 }
 #endif
+
+/* Returns whether any client wants to instrument the current bb. */
+bool
+instrument_filter_bb(dcontext_t *dcontext, app_pc pc)
+{
+    bool ret = false;
+    /* If there are more bb event callbacks than filter callbacks, we assume at
+     * least one of them wants to instrument the block and we call all the bb
+     * events.  This also handles the common case of a client with no filter
+     * that wants to instrument all blocks.
+     */
+    if (filter_bb_callbacks.num < bb_callbacks.num)
+        return true;
+    /* If any client wants to instrument, we'll call all bb hooks. */
+    call_all_ret(ret, =, || ret, filter_bb_callbacks,
+                 bool (*)(void *, app_pc), dcontext, pc);
+    return ret;
+}
 
 /* Returns true if the bb hook is called */
 bool

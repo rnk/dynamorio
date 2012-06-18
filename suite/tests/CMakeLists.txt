@@ -1316,6 +1316,7 @@ if (CLIENT_INTERFACE)
   tobuild_ci(client.truncate client-interface/truncate.c "" "" "")
   tobuild_ci(client.unregister client-interface/unregister.c "" "" "")
   tobuild_ci(client.inline client-interface/inline.c "" "-opt_cleancall 3" "")
+  tobuild_ci(client.filter_bbs client-interface/filter_bbs.c "" "" "")
 
   # Test passing a really long (600 chars) client option string.
   tobuild_ci(client.large_options client-interface/large_options.c

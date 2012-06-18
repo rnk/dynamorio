@@ -346,6 +346,27 @@ dr_unregister_bb_event(dr_emit_flags_t (*func)
 
 DR_API
 /**
+ * Registers a callback function for the filter basic block event.  If any
+ * registered filter callback returns true, all basic block
+ * (dr_register_bb_event()) events will be invoked.  If there are more basic
+ * block events than filter basic block events registered, then all basic block
+ * events will be invoked.  If no client needs to instrument the current basic
+ * block, DR uses some internal optimizations to speed up fragment creation.
+ */
+void
+dr_register_filter_bb_event(bool (*func)(void *drcontext, app_pc start_pc));
+
+DR_API
+/**
+ * Unregister a callback function for the filter basic block event.
+ * \return true if unregistration is successful and false if it is not
+ * (e.g., \p func was not registered).
+ */
+bool
+dr_unregister_filter_bb_event(bool (*func)(void *drcontext, app_pc start_pc));
+
+DR_API
+/**
  * Registers a callback function for the trace event.  DR calls \p func
  * before inserting a new trace into the code cache.  DR may call \p func
  * again if it needs to translate from code cache addresses back to
@@ -1426,6 +1447,7 @@ void instrument_thread_exit(dcontext_t *dcontext);
 #ifdef LINUX
 void instrument_fork_init(dcontext_t *dcontext);
 #endif
+bool instrument_filter_bb(dcontext_t *dcontext, app_pc pc);
 bool instrument_basic_block(dcontext_t *dcontext, app_pc tag, instrlist_t *bb,
                             bool for_trace, bool translating,
                             dr_emit_flags_t *emitflags);
