@@ -2753,7 +2753,9 @@ print_statistics(int *data, int size)
         stddev += diff*diff;
     }
     stddev /= (double)size;
+#ifndef NOLIBC
     stddev = sqrt(stddev);
+#endif
 
     LOG(GLOBAL, LOG_ALL, 0, "\t#      = %9d\n", size);
     LOG(GLOBAL, LOG_ALL, 0, "\tmin    = %9d\n", min);

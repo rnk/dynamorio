@@ -7251,7 +7251,9 @@ get_dynamo_library_bounds(void)
                              BUFFER_SIZE_ELEMENTS(dynamorio_library_path));
     LOG(GLOBAL, LOG_VMAREAS, 1, PRODUCT_NAME" library path: %s\n",
         dynamorio_library_path);
-    ASSERT(check_start == dynamo_dll_start && check_end == dynamo_dll_end);
+    //ASSERT(check_start == dynamo_dll_start && check_end == dynamo_dll_end);
+    dynamo_dll_start = check_start;
+    dynamo_dll_end = check_end;
     LOG(GLOBAL, LOG_VMAREAS, 1, "DR library bounds: "PFX" to "PFX"\n",
         dynamo_dll_start, dynamo_dll_end);
 #ifdef STATIC_LIBRARY

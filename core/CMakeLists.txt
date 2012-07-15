@@ -351,6 +351,11 @@ if (UNIX)
   set(dynamorio_link_flags
     "-nostartfiles -Xlinker -z -Xlinker now -Xlinker -Bsymbolic")
 
+  set(dynamorio_link_flags "${dynamorio_link_flags} -static -nostdlib")
+
+  # i#47: Set the ELF header entry point to _start for early injection.
+  set(dynamorio_link_flags "${dynamorio_link_flags} -Wl,--entry,_start")
+
   if (KEEP_SYMBOLS_FOR_LIBC_BACKTRACE)
     set(dynamorio_link_flags 
       "${dynamorio_link_flags} -Xlinker --export-dynamic")
@@ -377,7 +382,6 @@ if (UNIX)
 
   set_target_properties(dynamorio PROPERTIES
     LINK_FLAGS "${dynamorio_link_flags}")
-  target_link_libraries(dynamorio c dl m)
 
   # We use .so versioning via symlinks.
   # We do not version the preload lib as it does not expose an API,

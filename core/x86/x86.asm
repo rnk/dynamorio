@@ -225,6 +225,7 @@ DECL_EXTERN(fixup_rtframe_pointers)
 #endif
 #ifdef LINUX
 DECL_EXTERN(dr_setjmp_sigmask)
+DECL_EXTERN(dynamorio_takeover_at_start)
 #endif
 #ifdef WINDOWS
 DECL_EXTERN(dynamorio_earliest_init_takeover_C)
@@ -439,7 +440,7 @@ GLOBAL_LABEL(dr_app_start:)
  */
         DECLARE_EXPORTED_FUNC(dr_app_take_over)
 GLOBAL_LABEL(dr_app_take_over:  )
-        jmp      dynamorio_app_take_over 
+        jmp      __dynamorio_app_take_over 
         END_FUNC(dr_app_take_over)
 #endif
                 
@@ -449,6 +450,7 @@ GLOBAL_LABEL(dr_app_take_over:  )
  */
         DECLARE_EXPORTED_FUNC(dynamorio_app_take_over)
 GLOBAL_LABEL(dynamorio_app_take_over:)
+GLOBAL_LABEL(__dynamorio_app_take_over:)
 
         /* grab exec state and pass as param in a priv_mcontext_t struct */
         PUSH_PRIV_MCXT([REG_XSP - PUSH_PRIV_MCXT_PRE_PC_SHIFT]) /* return address as pc */
@@ -1099,6 +1101,19 @@ GLOBAL_LABEL(client_int_syscall:)
 #endif /* LINUX */
 #ifndef NOT_DYNAMORIO_CORE_PROPER
 #ifdef LINUX
+
+#ifndef STANDALONE_UNIT_TEST
+/* i#47: Early injection _start routine.  The kernel sets all registers to zero
+ * except the SP and PC.  The stack has argc, argv[], envp[], and the auxiliary
+ * vector laid on it.
+ */
+        DECLARE_FUNC(_start)
+GLOBAL_LABEL(_start:)
+        xor     REG_XBP, REG_XBP  /* Terminate stack traces at NULL. */
+        CALLC1(dynamorio_takeover_at_start, REG_XSP)
+        jmp     unexpected_return
+        END_FUNC(_start)
+#endif
 
 /* while with pre-2.6.9 kernels we were able to rely on the kernel's
  * default sigreturn code sequence and be more platform independent,

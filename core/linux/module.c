@@ -231,12 +231,20 @@ module_add_segment_data(OUT os_module_data_t *out_data,
      * walk done in dl_iterate_get_areas_cb().
      */
     if (out_data->num_segments == 0) {
-        /* over-allocate to avoid 2 passes to count PT_LOAD */
-        out_data->alloc_segments = elf_hdr->e_phnum;
-        out_data->segments = (module_segment_t *)
-            HEAP_ARRAY_ALLOC(GLOBAL_DCONTEXT, module_segment_t,
-                             out_data->alloc_segments, ACCT_OTHER, PROTECTED);
+        ASSERT(out_data->segments == NULL);
+        out_data->alloc_segments =
+            BUFFER_SIZE_ELEMENTS(out_data->static_segments);
+        out_data->segments = out_data->static_segments;
         out_data->contiguous = true;
+        /* Handle a library that has lots of segments with the heap. */
+        if (elf_hdr->e_phnum > out_data->alloc_segments) {
+            /* over-allocate to avoid 2 passes to count PT_LOAD */
+            out_data->alloc_segments = elf_hdr->e_phnum;
+            out_data->segments = (module_segment_t *)
+                    HEAP_ARRAY_ALLOC(GLOBAL_DCONTEXT, module_segment_t,
+                                     out_data->alloc_segments, ACCT_OTHER,
+                                     PROTECTED);
+        }
     }
     /* Keep array sorted in addr order.  I'm assuming segments are disjoint! */
     for (i = 0; i < out_data->num_segments; i++) {
@@ -715,8 +723,9 @@ os_module_area_reset(module_area_t *ma HEAPACCT(which_heap_t which))
         }
         module_list_remove_mapping(ma, seg_base, ma->os_data.segments[i - 1].end);
     }
-    HEAP_ARRAY_FREE(GLOBAL_DCONTEXT, ma->os_data.segments, module_segment_t,
-                    ma->os_data.alloc_segments, ACCT_OTHER, PROTECTED);
+    if (ma->os_data.segments != ma->os_data.static_segments)
+        HEAP_ARRAY_FREE(GLOBAL_DCONTEXT, ma->os_data.segments, module_segment_t,
+                        ma->os_data.alloc_segments, ACCT_OTHER, PROTECTED);
     if (ma->full_path != NULL)
         dr_strfree(ma->full_path HEAPACCT(which));
 }

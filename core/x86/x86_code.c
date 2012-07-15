@@ -262,6 +262,20 @@ new_thread_setup(priv_mcontext_t *mc)
     ASSERT_NOT_REACHED();
 }
 
+void
+dynamorio_takeover_at_start(void **sp)
+{
+    int argc = (long)sp[0];
+    char **envp = (char **) sp + 1 + argc + 1;
+    dynamorio_set_envp(envp);
+    print_file(STDERR, "Linux early injection not yet implemented\n");
+    /* Put us through the paces of initialization.  We'll crash and assert
+     * about things, but that's OK since this isn't suported yet anyway.
+     */
+    dynamorio_app_init();
+    dynamo_process_exit();
+}
+
 #endif /* LINUX */
 
 #ifdef WINDOWS

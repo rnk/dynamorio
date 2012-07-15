@@ -144,6 +144,12 @@ typedef struct _module_segment_t {
     uint prot;
 } module_segment_t;
 
+/* Number of segments inlined in the os_module_data_t struct.  This number has
+ * to be higher than the number of segments that DR has so we can boot-strap
+ * load DR without doing any heap allocation.
+ */
+enum { MAX_INLINE_SEGMENTS = 10 };
+
 typedef struct _os_module_data_t {
     /* To compute the base address, one determines the memory address associated with
      * the lowest p_vaddr value for a PT_LOAD segment. One then obtains the base
@@ -182,6 +188,7 @@ typedef struct _os_module_data_t {
     uint num_segments;   /* number of valid entries in segments array */
     uint alloc_segments; /* capacity of segments array */
     module_segment_t *segments;
+    module_segment_t static_segments[MAX_INLINE_SEGMENTS];
 } os_module_data_t;
 
 typedef void (*fp_t)(int argc, char **argv, char **env);

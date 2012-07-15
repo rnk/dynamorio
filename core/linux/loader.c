@@ -304,10 +304,11 @@ privload_unmap_file(privmod_t *privmod)
                    opd->os_data.segments[i].start);
     }
     /* free segments */
-    HEAP_ARRAY_FREE(GLOBAL_DCONTEXT, opd->os_data.segments,
-                    module_segment_t,
-                    opd->os_data.alloc_segments,
-                    ACCT_OTHER, PROTECTED);
+    if (opd->os_data.segments != opd->os_data.static_segments)
+        HEAP_ARRAY_FREE(GLOBAL_DCONTEXT, opd->os_data.segments,
+                        module_segment_t,
+                        opd->os_data.alloc_segments,
+                        ACCT_OTHER, PROTECTED);
     /* delete os_privmod_data */
     privload_delete_os_privmod_data(privmod);
 }
@@ -715,7 +716,12 @@ get_private_library_address(app_pc modbase, const char *name)
     if (mod == NULL || mod->externally_loaded) {
         release_recursive_lock(&privload_lock);
         /* externally loaded, use dlsym instead */
+#ifndef NOLIBC
         return dlsym(modbase, name);
+#else
+        ASSERT_NOT_IMPLEMENTED(false);
+        return NULL;
+#endif
     }
     /* Before the heap is initialized, we store the text address in opd, so we
      * can't check if opd != NULL to know whether it's valid.
@@ -889,6 +895,42 @@ privload_delete_os_privmod_data(privmod_t *privmod)
                    os_privmod_data_t,
                    ACCT_OTHER, PROTECTED);
     privmod->os_privmod_data = NULL;
+}
+
+/****************************************************************************
+ *                         Bootstrapping Loader Code                        *
+ ****************************************************************************/
+
+void
+relocate_dynamorio(void)
+{
+    privmod_t privmod;
+    os_privmod_data_t opd;
+    app_pc base = get_dynamorio_dll_start();
+    app_pc end = get_dynamorio_dll_end();
+    size_t size = end - base;
+    app_pc out_base, out_end;
+
+    memset(&opd, 0, sizeof(opd));
+
+    /* Walk DR's phdrs and create our data structures for dealing with ELF
+     * files.
+     */
+    /* "at map" here means the initial map, not the final loaded image map. */
+    module_walk_program_headers(base, size, false/*at map*/,
+                                &out_base, &out_end, &opd.soname,
+                                &opd.os_data);
+    module_get_os_privmod_data(base, size, &opd);
+
+    /* Relocate it using our private loader. */
+    memset(&privmod, 0, sizeof(privmod));
+    privmod.base = base;
+    privmod.size = size;
+    privmod.name = "";
+    privmod.os_privmod_data = &opd;
+    acquire_recursive_lock(&privload_lock);
+    privload_relocate_mod(&privmod);
+    release_recursive_lock(&privload_lock);
 }
 
 
