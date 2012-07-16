@@ -3824,6 +3824,9 @@ master_signal_handler(int sig, siginfo_t *siginfo, kernel_ucontext_t *ucxt)
     bool local;
     dcontext_t *dcontext = get_thread_private_dcontext();
 
+    print_file(STDERR, "master_signal_handler\n");
+    ASSERT(false);
+
     /* i#350: To support safe_read without a dcontext, use the global dcontext
      * when handling safe_read faults.  This lets us pass the check for a
      * dcontext below and causes us to use the global log.
