@@ -3569,6 +3569,14 @@ instr_is_exit_cti(instr_t *instr)
             opnd_is_pc(instr_get_src(instr, 0)));
 }
 
+bool
+instr_is_cti(instr_t *instr)
+{
+    return (instr_is_cbr(instr) || instr_is_mbr(instr) || instr_is_ubr(instr) ||
+            instr_is_call(instr));
+
+}
+
 /* This routine does NOT decode the cti of instr if the raw bits are valid,
  * since all short ctis have single-byte opcodes and so just grabbing the first
  * byte can tell if instr is a cti short
@@ -3851,6 +3859,14 @@ instr_is_mmx(instr_t *instr)
         return true;
     }
     return false;
+}
+
+bool
+instr_is_near_ubr(instr_t *instr)      /* unconditional branch */
+{
+    int opc = instr_get_opcode(instr);
+    return (opc == OP_jmp ||
+            opc == OP_jmp_short);
 }
 
 bool 

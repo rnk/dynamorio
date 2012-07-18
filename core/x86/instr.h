@@ -40,8 +40,6 @@
 #ifndef _INSTR_H_
 #define _INSTR_H_ 1
 
-#include <string.h>
-
 #ifdef WINDOWS
 /* disabled warning for
  *   "nonstandard extension used : bit field types other than int"
@@ -2572,7 +2570,7 @@ DR_API
  * Returns true iff \p instr is an IA-32 "mov" instruction: either OP_mov_st,
  * OP_mov_ld, OP_mov_imm, OP_mov_seg, or OP_mov_priv.
  */
-bool 
+FOO bool 
 instr_is_mov(instr_t *instr);
 
 DR_API
@@ -4506,9 +4504,9 @@ enum {
 #define OP_icebp OP_int1
 #define OP_setalc OP_salc
 
-#include "instr-inline.h"
-
 /****************************************************************************/
 /* DR_API EXPORT END */
+
+#include "instr-inline.h"
 
 #endif /* _INSTR_H_ */

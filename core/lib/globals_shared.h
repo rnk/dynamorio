@@ -1639,6 +1639,12 @@ typedef struct _dr_mcontext_t {
     dr_mcontext_flags_t flags;
 #include "mcxtx.h"
 } dr_mcontext_t;
+
+/* NOCHECKIN: Used for inline internally. */
+#ifdef API_EXPORT_ONLY
+# define FOO
+#endif
+
 /* DR_API EXPORT END */
 
 /* Internal machine context structure */
