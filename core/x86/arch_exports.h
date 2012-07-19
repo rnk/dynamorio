@@ -1437,6 +1437,7 @@ void
 instr_destroy(dcontext_t *dcontext, instr_t *instr);
 
 DR_API
+INSTR_INLINE
 /** 
  * Returns the next instr_t in the instrlist_t that contains \p instr.
  * \note The next pointer for an instr_t is inside the instr_t data
@@ -1448,21 +1449,25 @@ instr_t*
 instr_get_next(instr_t *instr);
 
 DR_API
+INSTR_INLINE
 /** Returns the previous instr_t in the instrlist_t that contains \p instr. */
 instr_t*
 instr_get_prev(instr_t *instr);
 
 DR_API
+INSTR_INLINE
 /** Sets the next field of \p instr to point to \p next. */
 void 
 instr_set_next(instr_t *instr, instr_t *next);
 
 DR_API
+INSTR_INLINE
 /** Sets the prev field of \p instr to point to \p prev. */
 void 
 instr_set_prev(instr_t *instr, instr_t *prev);
 
 DR_API
+INSTR_INLINE
 /** 
  * Gets the value of the user-controlled note field in \p instr.
  * \note Important: is also used when emitting for targets that are other
@@ -1474,6 +1479,7 @@ void *
 instr_get_note(instr_t *instr);
 
 DR_API
+INSTR_INLINE
 /** Sets the user-controlled note field in \p instr to \p value. */
 void 
 instr_set_note(instr_t *instr, void *value);
@@ -1929,5 +1935,11 @@ void *memset(void *dst, int val, size_t n);
 /* only takes integer literals */
 # define APP_PARAM(mc, offs) (*(((reg_t *)((mc)->xsp)) + (offs) + 1))
 #endif
+
+/* We need to pull in instr_inline.h to pull in inline function definitions
+ * after they've been declared inline above.
+ * XXX: This is ugly, maybe just move instr_get_next() etc to instr.h?
+ */
+#include "instr.h"
 
 #endif /* _ARCH_EXPORTS_H_ */

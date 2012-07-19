@@ -52,6 +52,17 @@
 #  endif
 #endif
 
+/* to avoid duplicating code we use our own exported macros */
+#define DR_FAST_IR 1
+
+/* drpreinject.dll doesn't link in instr.c so we can't include our inline
+ * functions.  We want to use our inline functions for the standalone decoder
+ * and everything else, so we single out drpreinject.
+ */
+#ifdef RC_IS_PRELOAD
+# undef DR_FAST_IR
+#endif
+
 /* DR_API EXPORT TOFILE dr_defines.h */
 /* DR_API EXPORT BEGIN */
 /****************************************************************************
@@ -307,6 +318,23 @@ extern file_t our_stdin;
  * client registration and passed to the client in dr_init().
  */
 typedef uint client_id_t;
+
+/* Inlining macro controls. */
+#ifdef DR_FAST_IR
+# define MAYBE_INLINE inline
+#else
+# define MAYBE_INLINE
+#endif
+
+/* If we get this macro, that means we've been included by instr.c and it wants
+ * us to emit definitions.  Otherwise, we just use MAYBE_INLINE defined above.
+ */
+#ifdef EMIT_INSTR_H_DEFS
+/* FIXME: Use extern inline from C99? */
+#define INSTR_INLINE extern inline
+#else
+#define INSTR_INLINE MAYBE_INLINE
+#endif
 
 #ifdef API_EXPORT_ONLY
 #ifndef DR_FAST_IR
