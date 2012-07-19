@@ -2875,7 +2875,6 @@ build_bb_ilist(dcontext_t *dcontext, build_bb_t *bb)
                 /* we up-decode the instr when !full_decode to make sure it will
                  * pass the instr_opcode_valid check in mangle and be mangled.
                  */
-                instr_get_opcode(bb->instr);
                 break;
             }
 #endif
@@ -2884,6 +2883,13 @@ build_bb_ilist(dcontext_t *dcontext, build_bb_t *bb)
              */
         } while (!instr_opcode_valid(bb->instr) &&
                  total_instrs <= DYNAMO_OPTION(max_bb_instrs));
+
+        /* If we broke out of the above loop, this instr must be interesting,
+         * and we'll need it's opcode down below.  Force upgrad to level 2, now
+         * that we don't auto-upgrade instrucions.
+         */
+        if (bb->instr->opcode == OP_UNDECODED)
+            instr_decode_opcode(dcontext, bb->instr);
 
         if (bb->cur_pc == NULL) {
             /* invalid instr: reset bb->cur_pc, will end bb after updating stats */
@@ -2896,7 +2902,7 @@ build_bb_ilist(dcontext_t *dcontext, build_bb_t *bb)
          * through the above loop only once for cti's, so it's safe
          * to set the translation here.
          */
-        if (instr_opcode_valid(bb->instr) && instr_is_cti(bb->instr))
+        if (instr_is_cti(bb->instr))
             instr_set_translation(bb->instr, bb->instr_start);
 
 #ifdef HOT_PATCHING_INTERFACE
@@ -7072,6 +7078,8 @@ shift_ctis_in_fragment(dcontext_t *dcontext, fragment_t *f, ssize_t shift,
         prev_pc = pc;
         instr_reset(dcontext, &instr);
         pc = (cache_pc) decode_cti(dcontext, (byte*)pc, &instr);
+        if (!instr_opcode_valid(&instr))
+            continue;  /* Not cti, no handling needed. */
 #ifdef WINDOWS
         /* Perform fixups for sysenter instrs when ignorable syscalls is used on
          * XP & 2003. These are not cache-external fixups, but it's convenient &
@@ -7080,7 +7088,6 @@ shift_ctis_in_fragment(dcontext_t *dcontext, fragment_t *f, ssize_t shift,
          * decoding.
          */
         if (possible_ignorable_sysenter
-            && instr_opcode_valid(&instr)
             && instr_is_syscall(&instr)) {
 
             cache_pc next_pc;

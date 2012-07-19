@@ -1956,9 +1956,8 @@ private_instr_encode(dcontext_t *dcontext, instr_t *instr, bool always_cache)
 
 #define inlined_instr_get_opcode(instr) \
     (IF_DEBUG_(CLIENT_ASSERT(sizeof(*instr) == sizeof(instr_t), "invalid type")) \
-     (((instr)->opcode == OP_UNDECODED) ? \
-      (instr_decode_opcode(get_thread_private_dcontext(), instr), (instr)->opcode) : \
-      (instr)->opcode))
+     IF_DEBUG_(CLIENT_ASSERT((instr)->opcode != OP_UNDECODED, "undecoded")) \
+     (instr)->opcode)
 int
 instr_get_opcode(instr_t *instr)
 {
@@ -2849,7 +2848,7 @@ instr_length(dcontext_t *dcontext, instr_t *instr)
 /* decoding routines */
 
 /* If instr is at Level 0 (i.e., a bundled group of instrs as raw bits),
- * expands instr into a sequence of Level 1 instrs using decode_raw() which
+ * expands instr into a sequence of Level 2 instrs using decode_raw() which
  * are added in place to ilist.
  * Returns the replacement of instr, if any expansion is performed
  * (in which case the old instr is destroyed); otherwise returns
@@ -2887,16 +2886,12 @@ instr_expand(dcontext_t *dcontext, instrlist_t *ilist, instr_t *instr)
     CLIENT_ASSERT(!instr_operands_valid(instr), "instr_expand: opnds are already valid");
     CLIENT_ASSERT(instr_raw_bits_valid(instr), "instr_expand: raw bits are invalid");
     curbytes = instr->bytes;
-    if ((uint)decode_sizeof(dcontext, curbytes, NULL _IF_X64(NULL)) == instr->length) {
-        IF_X64(set_x86_mode(dcontext, old_mode));
-        return instr; /* Level 1 */
-    }
-    
+
     remaining_bytes = instr->length;
     while (remaining_bytes > 0) {
         /* insert every separated instr into list */
         newinstr = instr_create(dcontext);
-        newbytes = decode_raw(dcontext, curbytes, newinstr);
+        newbytes = decode_opcode(dcontext, curbytes, newinstr);
         if (newbytes == NULL) {
             /* invalid instr -- stop expanding, point instr at remaining bytes */
             instr_set_raw_bits(instr, curbytes, remaining_bytes);
@@ -2908,10 +2903,6 @@ instr_expand(dcontext_t *dcontext, instrlist_t *ilist, instr_t *instr)
             return firstinstr;
         }
         DOLOG(5, LOG_ALL, { loginst(dcontext, 4, newinstr, "\tjust expanded into"); });
-
-        /* CAREFUL of what you call here -- don't call anything that
-         * auto-upgrades instr to Level 2, it will fail on Level 0 bundles!
-         */
 
         if (instr_has_allocated_bits(instr) &&
             !instr_is_cti_short_rewrite(newinstr, curbytes)) {
