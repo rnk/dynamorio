@@ -1954,17 +1954,13 @@ private_instr_encode(dcontext_t *dcontext, instr_t *instr, bool always_cache)
     return len;
 }
 
-#define inlined_instr_get_opcode(instr) \
-    (IF_DEBUG_(CLIENT_ASSERT(sizeof(*instr) == sizeof(instr_t), "invalid type")) \
-     IF_DEBUG_(CLIENT_ASSERT((instr)->opcode != OP_UNDECODED, "undecoded")) \
-     (instr)->opcode)
 int
+#undef instr_get_opcode
 instr_get_opcode(instr_t *instr)
 {
-    return inlined_instr_get_opcode(instr);
+    return INSTR_GET_OPCODE(instr);
 }
-/* in rest of file, directly de-reference for performance (PR 622253) */
-#define instr_get_opcode inlined_instr_get_opcode
+#define instr_get_opcode INSTR_GET_OPCODE
 
 static inline void
 instr_being_modified(instr_t *instr, bool raw_bits_valid)

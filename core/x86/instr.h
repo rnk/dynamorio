@@ -4504,6 +4504,14 @@ enum {
 #define OP_icebp OP_int1
 #define OP_setalc OP_salc
 
+#ifdef AVOID_API_EXPORT
+/* Internally, we want instr.h to provide the fast macros.  Externally, clients
+ * should use dr_api.h which will bring in dr_ir_macros.h, which has the fast
+ * accessors, if DR_FAST_IR is defined.
+ */
+# include "instr_macros.h"
+#endif
+
 /****************************************************************************/
 /* DR_API EXPORT END */
 
