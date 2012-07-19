@@ -3956,8 +3956,15 @@ instr_is_near_ubr(instr_t *instr)      /* unconditional branch */
 bool 
 instr_is_cti(instr_t *instr)      /* any control-transfer instruction */
 {
-    return (instr_is_cbr(instr) || instr_is_mbr(instr) || instr_is_ubr(instr) ||
-            instr_is_call(instr));
+    int opc = instr_get_opcode(instr);
+    return (/* instr_is_cbr */
+            (opc >= OP_jo && opc <= OP_jnle) ||
+            (opc >= OP_jo_short && opc <= OP_jnle_short) ||
+            (opc >= OP_loopne && opc <= OP_jecxz) ||
+            /* instr_is_mbr, call, ubr */
+            (opc >= OP_call && opc <= OP_jmp_far_ind) ||
+            /* instr_is_mbr */
+            opc == OP_ret || opc == OP_ret_far || opc == OP_iret);
 }
 
 /* This routine does NOT decode the cti of instr if the raw bits are valid,
