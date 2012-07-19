@@ -2037,49 +2037,6 @@ get_instr_info(int opcode)
     return op_instr[opcode];
 }
 
-int
-instr_num_srcs(instr_t *instr)
-{
-    if ((instr->flags & INSTR_OPERANDS_VALID) == 0)
-        instr_decode(get_thread_private_dcontext(), instr);
-    return instr->num_srcs;
-}
-
-int
-instr_num_dsts(instr_t *instr)
-{
-    if ((instr->flags & INSTR_OPERANDS_VALID) == 0)
-        instr_decode(get_thread_private_dcontext(), instr);
-    return instr->num_dsts;
-}
-
-/* Returns the pos-th source operand of instr.
- * If instr's operands are not decoded, goes ahead and decodes them.
- * Assumes that instr is a single instr (i.e., NOT Level 0).
- */
-opnd_t
-instr_get_src(instr_t *instr, uint pos)
-{
-    if ((instr->flags & INSTR_OPERANDS_VALID) == 0)
-        instr_decode(get_thread_private_dcontext(), instr);
-    CLIENT_ASSERT(pos >= 0 && pos < instr->num_srcs, "instr_get_src: ordinal invalid");
-    /* remember that src0 is static, rest are dynamic */
-    if (pos == 0)
-        return instr->src0;
-    else
-        return instr->srcs[pos-1];
-}
-
-/* returns the dst opnd at position pos in instr */
-opnd_t
-instr_get_dst(instr_t *instr, uint pos)
-{
-    if ((instr->flags & INSTR_OPERANDS_VALID) == 0)
-        instr_decode(get_thread_private_dcontext(), instr);
-    CLIENT_ASSERT(pos >= 0 && pos < instr->num_dsts, "instr_get_dst: ordinal invalid");
-    return instr->dsts[pos];
-}
-
 /* allocates storage for instr_num_srcs src operands and instr_num_dsts dst operands
  * assumes that instr is currently all zeroed out!
  */
@@ -2139,18 +2096,6 @@ instr_set_dst(instr_t *instr, uint pos, opnd_t opnd)
     instr_being_modified(instr, false/*raw bits invalid*/);
     /* assume all operands are valid */
     instr_set_operands_valid(instr, true);
-}
-
-/* These next two functions assume that, if an instr_t has a target
-   field, the target is kept in the 0th src location. */
-opnd_t
-instr_get_target(instr_t *instr)
-{
-    if ((instr->flags & INSTR_OPERANDS_VALID) == 0)
-        instr_decode(get_thread_private_dcontext(), instr);
-    CLIENT_ASSERT(instr_is_cti(instr), "instr_get_target called on non-cti");
-    CLIENT_ASSERT(instr->num_srcs >= 1, "instr_get_target: instr has no sources");
-    return instr->src0;
 }
 
 void
@@ -2759,48 +2704,6 @@ instr_set_raw_word(instr_t *instr, uint pos, uint word)
 #endif
 }
 
-/* set the note field of instr to value */
-void 
-instr_set_note(instr_t *instr, void *value)
-{
-    instr->note = value;
-}
-
-/* return the note field of instr */
-void *
-instr_get_note(instr_t *instr)
-{
-    return instr->note;
-}
-
-/* return instr->next */
-instr_t*
-instr_get_next(instr_t *instr)
-{
-    return instr->next;
-}
-
-/* return instr->prev */
-instr_t*
-instr_get_prev(instr_t *instr)
-{
-    return instr->prev;
-}
-
-/* set instr->next to next */
-void
-instr_set_next(instr_t *instr, instr_t *next)
-{
-    instr->next = next;
-}
-
-/* set instr->prev to prev */
-void
-instr_set_prev(instr_t *instr, instr_t *prev)
-{
-    instr->prev = prev;
-}
-
 int
 instr_length(dcontext_t *dcontext, instr_t *instr)
 {
@@ -3127,6 +3030,15 @@ instr_decode(dcontext_t *dcontext, instr_t *instr)
         CLIENT_ASSERT(next_pc == NULL || (next_pc - instr->bytes == old_len),
                       "instr_decode requires a Level 1 or higher instruction");
     }
+}
+
+/* Calls instr_decode() with the current dcontext.  Mostly useful as the slow
+ * path for IR routines that get inlined.
+ */
+void
+instr_decode_with_current_dcontext(instr_t *instr)
+{
+    instr_decode(get_thread_private_dcontext(), instr);
 }
 
 /* Brings all instrs in ilist up to the decode_cti level, and

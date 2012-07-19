@@ -51,9 +51,6 @@
 /* to avoid changing all our internal REG_ constants we define this for DR itself */
 #define DR_REG_ENUM_COMPATIBILITY 1
 
-/* to avoid duplicating code we use our own exported macros */
-#define DR_FAST_IR 1
-
 /* can't include decode.h, it includes us, just declare struct */
 struct instr_info_t;
 
@@ -441,9 +438,6 @@ extern const reg_id_t dr_reg_fixer[];
 #endif /* DR_REG_ENUM_COMPATIBILITY */
 /* DR_API EXPORT END */
 
-#define REG_SPECIFIER_BITS 8
-#define SCALE_SPECIFIER_BITS 4
-
 #ifndef INT8_MIN
 # define INT8_MIN   SCHAR_MIN
 # define INT8_MAX   SCHAR_MAX
@@ -460,6 +454,10 @@ extern const reg_id_t dr_reg_fixer[];
 /* DR_API EXPORT BEGIN */
 
 #ifdef DR_FAST_IR
+
+#define REG_SPECIFIER_BITS 8
+#define SCALE_SPECIFIER_BITS 4
+
 /**
  * opnd_t type exposed for optional "fast IR" access.  Note that DynamoRIO
  * reserves the right to change this structure across releases and does
@@ -1784,6 +1782,7 @@ const struct instr_info_t *
 get_instr_info(int opcode);
 
 DR_API
+INSTR_INLINE
 /**
  * Returns the number of source operands of \p instr.
  *
@@ -1795,6 +1794,7 @@ int
 instr_num_srcs(instr_t *instr);
 
 DR_API
+INSTR_INLINE
 /**
  * Returns the number of destination operands of \p instr.
  */
@@ -1811,6 +1811,7 @@ void
 instr_set_num_opnds(dcontext_t *dcontext, instr_t *instr, int num_dsts, int num_srcs);
 
 DR_API
+INSTR_INLINE
 /**
  * Returns \p instr's source operand at position \p pos (0-based).
  */
@@ -1818,6 +1819,7 @@ opnd_t
 instr_get_src(instr_t *instr, uint pos);
 
 DR_API
+INSTR_INLINE
 /**
  * Returns \p instr's destination operand at position \p pos (0-based).
  */
@@ -1843,6 +1845,7 @@ void
 instr_set_dst(instr_t *instr, uint pos, opnd_t opnd);
 
 DR_API
+INSTR_INLINE
 /**
  * Assumes that \p cti_instr is a control transfer instruction
  * Returns the first source operand of \p cti_instr (its target).
@@ -2223,6 +2226,13 @@ DR_UNS_API
  */
 void
 instr_decode(dcontext_t *dcontext, instr_t *instr);
+
+/**
+ * Calls instr_decode() with the current dcontext.  Mostly useful as the slow
+ * path for IR routines that get inlined.
+ */
+void
+instr_decode_with_current_dcontext(instr_t *instr);
 
 /* DR_API EXPORT TOFILE dr_ir_instrlist.h */
 DR_UNS_API
@@ -4506,5 +4516,7 @@ enum {
 
 /****************************************************************************/
 /* DR_API EXPORT END */
+
+#include "instr_inline.h"
 
 #endif /* _INSTR_H_ */
