@@ -39,23 +39,21 @@
 #ifdef DR_FAST_IR
 
 #ifdef AVOID_API_EXPORT
-/* Internally DR has multiple levels or IR, but once it gets to a client, we
- * assume it's already level 3 or higher, and we don't need to do any checks.
- * Furthermore, instr_decode() and get_thread_private_dcontext() are not
- * exported.
- * FIXME: If this is getting inlined everywhere, we should drop the
- * get_thread_private_dcontext() at the call site to make the cold path smaller.
- */
-# define CHECK_OPNDS_VALID(instr) \
-    if ((instr->flags & INSTR_OPERANDS_VALID) == 0) \
+# define MAKE_OPNDS_VALID(instr) \
+    if (TEST(INSTR_OPERANDS_VALID, (instr)->flags) == 0) \
         instr_decode_with_current_dcontext(instr)
 #endif
 
+#ifdef API_EXPORT_ONLY
+/* Internally DR has multiple levels of IR, but once it gets to a client, we
+ * assume it's already level 3 or higher, and we don't need to do any checks.
+ * Furthermore, instr_decode() and get_thread_private_dcontext() are not
+ * exported.
+ */
+#define MAKE_OPNDS_VALID(instr)
 /* Turn off checks if a client includes us with DR_FAST_IR.  We can't call the
  * internal routines we'd use for these checks anyway.
  */
-#ifdef API_EXPORT_ONLY
-#define CHECK_OPNDS_VALID(instr)
 #define CLIENT_ASSERT(cond, msg)
 #endif
 
@@ -63,7 +61,7 @@ INSTR_INLINE
 int
 instr_num_srcs(instr_t *instr)
 {
-    CHECK_OPNDS_VALID(instr);
+    MAKE_OPNDS_VALID(instr);
     return instr->num_srcs;
 }
 
@@ -71,7 +69,7 @@ INSTR_INLINE
 int
 instr_num_dsts(instr_t *instr)
 {
-    CHECK_OPNDS_VALID(instr);
+    MAKE_OPNDS_VALID(instr);
     return instr->num_dsts;
 }
 
@@ -79,7 +77,7 @@ INSTR_INLINE
 opnd_t
 instr_get_src(instr_t *instr, uint pos)
 {
-    CHECK_OPNDS_VALID(instr);
+    MAKE_OPNDS_VALID(instr);
     CLIENT_ASSERT(pos >= 0 && pos < instr->num_srcs,
                   "instr_get_src: ordinal invalid");
     if (pos == 0)
@@ -92,7 +90,7 @@ INSTR_INLINE
 opnd_t
 instr_get_dst(instr_t *instr, uint pos)
 {
-    CHECK_OPNDS_VALID(instr);
+    MAKE_OPNDS_VALID(instr);
     CLIENT_ASSERT(pos >= 0 && pos < instr->num_dsts,
                   "instr_get_dst: ordinal invalid");
     return instr->dsts[pos];
@@ -102,7 +100,7 @@ INSTR_INLINE
 opnd_t
 instr_get_target(instr_t *cti_instr)
 {
-    CHECK_OPNDS_VALID(cti_instr);
+    MAKE_OPNDS_VALID(cti_instr);
     CLIENT_ASSERT(instr_is_cti(cti_instr),
                   "instr_get_target called on non-cti");
     CLIENT_ASSERT(cti_instr->num_srcs >= 1,
@@ -111,7 +109,6 @@ instr_get_target(instr_t *cti_instr)
 }
 
 INSTR_INLINE
-/* set the note field of instr to value */
 void 
 instr_set_note(instr_t *instr, void *value)
 {
@@ -119,7 +116,6 @@ instr_set_note(instr_t *instr, void *value)
 }
 
 INSTR_INLINE
-/* return the note field of instr */
 void *
 instr_get_note(instr_t *instr)
 {
@@ -127,7 +123,6 @@ instr_get_note(instr_t *instr)
 }
 
 INSTR_INLINE
-/* return instr->next */
 instr_t*
 instr_get_next(instr_t *instr)
 {
@@ -135,7 +130,6 @@ instr_get_next(instr_t *instr)
 }
 
 INSTR_INLINE
-/* return instr->prev */
 instr_t*
 instr_get_prev(instr_t *instr)
 {
@@ -143,7 +137,6 @@ instr_get_prev(instr_t *instr)
 }
 
 INSTR_INLINE
-/* set instr->next to next */
 void
 instr_set_next(instr_t *instr, instr_t *next)
 {
@@ -151,7 +144,6 @@ instr_set_next(instr_t *instr, instr_t *next)
 }
 
 INSTR_INLINE
-/* set instr->prev to prev */
 void
 instr_set_prev(instr_t *instr, instr_t *prev)
 {
