@@ -30,9 +30,9 @@
  * DAMAGE.
  */
 
-/* To allow clients to turn of DR_FAST_IR and to support compilers opting not to
- * inline some functions, we need at least one translation unit that provdes a
- * strong definition for our inline routines.  We could use instr.c, but then
+/* To allow clients to turn off DR_FAST_IR and to support compilers opting not
+ * to inline some functions, we need at least one translation unit that provdes
+ * a strong definition for our inline routines.  We could use instr.c, but then
  * our inline routines would not have the inline hint within instr.c.
  * Therefore, we create this separate translation unit specifically for inlined
  * functions.  They typically don't call each other, so the fact that the inline
