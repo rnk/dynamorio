@@ -52,15 +52,6 @@
 #  endif
 #endif
 
-/* Define AVOID_API_EXPORT here rather than in configure.h.
- * This way it will just be used for compling dr code and not for
- * genapi.pl which generates client header files.  In otherwords, this allows
- * having code that isn't visible in the client headers but is visible for dr
- * builds.  This helps sharing types and code between dr and client, but with
- * some hidden extras for dr builds.
- */
-#define AVOID_API_EXPORT 1
-
 /* DR_API EXPORT TOFILE dr_defines.h */
 /* DR_API EXPORT BEGIN */
 /****************************************************************************
@@ -1266,6 +1257,15 @@ typedef struct {
  */
 # define NUDGESIG_SIGNUM         SIGILL
 #endif
+
+/* Define AVOID_API_EXPORT here rather than in configure.h.
+ * This way it will just be used for compling dr code and not for
+ * genapi.pl which generates client header files.  In otherwords, this allows
+ * having code that isn't visible in the client headers but is visible for dr
+ * builds.  This helps sharing types and code between dr and client, but with
+ * some hidden extras for dr builds.
+ */
+#define AVOID_API_EXPORT 1
 
 #ifdef HOT_PATCHING_INTERFACE
 /* These type definitions define the hot patch interface between the core &

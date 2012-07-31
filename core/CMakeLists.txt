@@ -104,7 +104,6 @@ set(ARCH_SRCS
   x86/encode.c
   x86/emit_utils.c
   x86/instr.c
-  x86/instr_inline.c
   x86/interp.c
   x86/proc.c
   x86/mangle.c
@@ -340,7 +339,6 @@ add_library(drdecode
   x86/decode_table.c
   x86/encode.c
   x86/instr.c
-  x86/instr_inline.c
   x86/disassemble.c
   x86/decode_fast.c
   x86/mangle.c

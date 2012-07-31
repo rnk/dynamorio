@@ -38,6 +38,20 @@
 /* file "instr.c" -- x86-specific IR utilities
  */
 
+/* We need to provide at least one out-of-line definition for our inline
+ * functions in instr_inline.h in case they are all inlined away within DR.
+ *
+ * For gcc, we use -std=gnu99, which uses the C99 inlining model.  Using "extern
+ * inline" will provide a definition, but we can only do this in one C file.
+ * Elsewhere we use plain "inline", which will not emit an out of line
+ * definition if inlining fails.
+ *
+ * MSVC always emits link_once definitions for dllexported inline functions, so
+ * this macro magic is unnecessary.
+ * http://msdn.microsoft.com/en-us/library/xa0d9ste.aspx
+ */
+#define INSTR_INLINE extern inline
+
 #include "../globals.h"
 #include "instr.h"
 #include "arch.h"
@@ -2098,6 +2112,9 @@ instr_set_dst(instr_t *instr, uint pos, opnd_t opnd)
     instr_set_operands_valid(instr, true);
 }
 
+/* Assumes that if an instr has a jump target, it's stored in the 0th src
+ * location.
+ */
 void
 instr_set_target(instr_t *instr, opnd_t target)
 {
