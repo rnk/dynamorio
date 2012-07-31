@@ -73,6 +73,10 @@ instr_num_dsts(instr_t *instr)
     return instr->num_dsts;
 }
 
+/* Returns the pos-th source operand of instr.	
+ * If instr's operands are not decoded, goes ahead and decodes them.	
+ * Assumes that instr is a single instr (i.e., NOT Level 0).	
+ */
 INSTR_INLINE
 opnd_t
 instr_get_src(instr_t *instr, uint pos)
@@ -96,6 +100,9 @@ instr_get_dst(instr_t *instr, uint pos)
     return instr->dsts[pos];
 }
 
+/* Assumes that if an instr has a jump target, it's stored in the 0th src
+ * location.
+ */
 INSTR_INLINE
 opnd_t
 instr_get_target(instr_t *cti_instr)

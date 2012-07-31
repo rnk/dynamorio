@@ -1637,34 +1637,19 @@ enum {
 
 /* DR_API EXPORT TOFILE dr_ir_instr.h */
 
-/* FIXME: could shrink prefixes, eflags, opcode, and flags fields
- * this struct isn't a memory bottleneck though b/c it isn't persistent
+/* If INSTR_INLINE is already defined, that means we've been included by
+ * instr.c, which wants to use C99 extern inline.  Otherwise, DR_FAST_IR
+ * determines whether our instr routines are inlined.
  */
 /* DR_API EXPORT BEGIN */
-
 /* Inlining macro controls. */
-#ifdef DR_FAST_IR
-# define MAYBE_INLINE inline
-#else
-# define MAYBE_INLINE
+#ifndef INSTR_INLINE
+# ifdef DR_FAST_IR
+#  define INSTR_INLINE inline
+# else
+#  define INSTR_INLINE
+# endif
 #endif
-
-#ifdef API_EXPORT_ONLY
-#define INSTR_INLINE MAYBE_INLINE
-#endif
-
-/* DR_API EXPORT END */
-/* If we get this macro, that means we've been included by instr.c and it wants
- * us to emit definitions.  Otherwise, we just use MAYBE_INLINE defined above.
- * XXX: This isn't consistent with my understanding of extern inline...  WTF is
- * really going on?
- */
-#ifdef EMIT_INSTR_H_DEFS
-# define INSTR_INLINE extern inline
-#else
-# define INSTR_INLINE MAYBE_INLINE
-#endif
-/* DR_API EXPORT BEGIN */
 
 /**
  * Data slots available in a label (instr_create_label()) instruction
@@ -1676,6 +1661,12 @@ typedef struct _dr_instr_label_data_t {
 } dr_instr_label_data_t;
 
 #ifdef DR_FAST_IR
+/* DR_API EXPORT END */
+/* FIXME: could shrink prefixes, eflags, opcode, and flags fields
+ * this struct isn't a memory bottleneck though b/c it isn't persistent
+ */
+/* DR_API EXPORT BEGIN */
+
 /**
  * instr_t type exposed for optional "fast IR" access.  Note that DynamoRIO
  * reserves the right to change this structure across releases and does
@@ -2545,8 +2536,8 @@ DR_UNS_API
 void
 instr_decode(dcontext_t *dcontext, instr_t *instr);
 
-/* Calls instr_decode() with the current dcontext.  Mostly useful as the slow
- * path for IR routines that get inlined.
+/* Calls instr_decode() with the current dcontext.  *Not* exported.  Mostly
+ * useful as the slow path for IR routines that get inlined.
  */
 void
 instr_decode_with_current_dcontext(instr_t *instr);
