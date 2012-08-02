@@ -2051,6 +2051,22 @@ get_instr_info(int opcode)
     return op_instr[opcode];
 }
 
+#undef instr_get_src
+opnd_t
+instr_get_src(instr_t *instr, uint pos)
+{
+    return INSTR_GET_SRC(instr, pos);
+}
+#define instr_get_src INSTR_GET_SRC
+
+#undef instr_get_dst
+opnd_t
+instr_get_dst(instr_t *instr, uint pos)
+{
+    return INSTR_GET_DST(instr, pos);
+}
+#define instr_get_dst INSTR_GET_DST
+
 /* allocates storage for instr_num_srcs src operands and instr_num_dsts dst operands
  * assumes that instr is currently all zeroed out!
  */
@@ -2111,6 +2127,14 @@ instr_set_dst(instr_t *instr, uint pos, opnd_t opnd)
     /* assume all operands are valid */
     instr_set_operands_valid(instr, true);
 }
+
+#undef instr_get_target
+opnd_t
+instr_get_target(instr_t *instr)
+{
+    return INSTR_GET_TARGET(instr);
+}
+#define instr_get_target INSTR_GET_TARGET
 
 /* Assumes that if an instr has a jump target, it's stored in the 0th src
  * location.
@@ -3052,10 +3076,11 @@ instr_decode(dcontext_t *dcontext, instr_t *instr)
 /* Calls instr_decode() with the current dcontext.  Mostly useful as the slow
  * path for IR routines that get inlined.
  */
-void
+instr_t *
 instr_decode_with_current_dcontext(instr_t *instr)
 {
     instr_decode(get_thread_private_dcontext(), instr);
+    return instr;
 }
 
 /* Brings all instrs in ilist up to the decode_cti level, and

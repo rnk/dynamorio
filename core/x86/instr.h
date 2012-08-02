@@ -2120,7 +2120,6 @@ void
 instr_set_num_opnds(dcontext_t *dcontext, instr_t *instr, int num_dsts, int num_srcs);
 
 DR_API
-INSTR_INLINE
 /**
  * Returns \p instr's source operand at position \p pos (0-based).
  */
@@ -2128,7 +2127,6 @@ opnd_t
 instr_get_src(instr_t *instr, uint pos);
 
 DR_API
-INSTR_INLINE
 /**
  * Returns \p instr's destination operand at position \p pos (0-based).
  */
@@ -2154,7 +2152,6 @@ void
 instr_set_dst(instr_t *instr, uint pos, opnd_t opnd);
 
 DR_API
-INSTR_INLINE
 /**
  * Assumes that \p cti_instr is a control transfer instruction
  * Returns the first source operand of \p cti_instr (its target).
@@ -2539,7 +2536,7 @@ instr_decode(dcontext_t *dcontext, instr_t *instr);
 /* Calls instr_decode() with the current dcontext.  *Not* exported.  Mostly
  * useful as the slow path for IR routines that get inlined.
  */
-void
+instr_t *
 instr_decode_with_current_dcontext(instr_t *instr);
 
 /* DR_API EXPORT TOFILE dr_ir_instrlist.h */
