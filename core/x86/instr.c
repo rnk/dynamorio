@@ -2051,6 +2051,57 @@ get_instr_info(int opcode)
     return op_instr[opcode];
 }
 
+static void
+make_opnds_valid(instr_t *instr)
+{
+    if (!instr_operands_valid(instr))
+        instr_decode(get_thread_private_dcontext(), instr);
+}
+
+#undef instr_num_srcs
+int
+instr_num_srcs(instr_t *instr)
+{
+    make_opnds_valid(instr);
+    return instr->num_srcs;
+}
+#define instr_num_srcs INSTR_NUM_SRCS
+
+#undef instr_num_srcs
+int
+instr_num_dsts(instr_t *instr)
+{
+    make_opnds_valid(instr);
+    return instr->num_dsts;
+}
+#define instr_num_dsts INSTR_NUM_DSTS
+
+#undef instr_get_src
+/* Returns the pos-th source operand of instr.
+ * If instr's operands are not decoded, goes ahead and decodes them.
+ * Assumes that instr is a single instr (i.e., NOT Level 0).
+ */
+opnd_t
+instr_get_src(instr_t *instr, uint pos)
+{
+    make_opnds_valid(instr);
+    CLIENT_ASSERT(pos >= 0 && pos < instr->num_srcs,
+                  "instr_get_src: ordinal invalid");
+    return INSTR_GET_SRC(instr, pos);
+}
+#define instr_get_src INSTR_GET_SRC
+
+#undef instr_get_dst
+opnd_t
+instr_get_dst(instr_t *instr, uint pos)
+{
+    make_opnds_valid(instr);
+    CLIENT_ASSERT(pos >= 0 && pos < instr->num_dsts,
+                  "instr_get_dst: ordinal invalid");
+    return instr->dsts[pos];
+}
+#define instr_get_dst INSTR_GET_DST
+
 /* allocates storage for instr_num_srcs src operands and instr_num_dsts dst operands
  * assumes that instr is currently all zeroed out!
  */
@@ -2115,6 +2166,17 @@ instr_set_dst(instr_t *instr, uint pos, opnd_t opnd)
 /* Assumes that if an instr has a jump target, it's stored in the 0th src
  * location.
  */
+opnd_t
+instr_get_target(instr_t *cti_instr)
+{
+    make_opnds_valid(cti_instr);
+    CLIENT_ASSERT(instr_is_cti(cti_instr),
+                  "instr_get_target called on non-cti");
+    CLIENT_ASSERT(cti_instr->num_srcs >= 1,
+                  "instr_get_target: instr has no sources");
+    return cti_instr->src0;
+}
+
 void
 instr_set_target(instr_t *instr, opnd_t target)
 {
@@ -3052,10 +3114,11 @@ instr_decode(dcontext_t *dcontext, instr_t *instr)
 /* Calls instr_decode() with the current dcontext.  Mostly useful as the slow
  * path for IR routines that get inlined.
  */
-void
+instr_t *
 instr_decode_with_current_dcontext(instr_t *instr)
 {
     instr_decode(get_thread_private_dcontext(), instr);
+    return instr;
 }
 
 /* Brings all instrs in ilist up to the decode_cti level, and

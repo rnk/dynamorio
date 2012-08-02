@@ -2539,7 +2539,7 @@ instr_decode(dcontext_t *dcontext, instr_t *instr);
 /* Calls instr_decode() with the current dcontext.  *Not* exported.  Mostly
  * useful as the slow path for IR routines that get inlined.
  */
-void
+instr_t *
 instr_decode_with_current_dcontext(instr_t *instr);
 
 /* DR_API EXPORT TOFILE dr_ir_instrlist.h */

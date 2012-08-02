@@ -38,85 +38,31 @@
 
 #ifdef DR_FAST_IR
 
-#ifdef AVOID_API_EXPORT
-# define MAKE_OPNDS_VALID(instr) \
-    if (TEST(INSTR_OPERANDS_VALID, (instr)->flags) == 0) \
-        instr_decode_with_current_dcontext(instr)
+/* These macros have no checks.  If the client wants assertions, they can use a
+ * debug build and turn of DR_FAST_IR.
+ */
+
+#define INSTR_NUM_SRCS(instr) (instr)->num_srcs
+#define INSTR_NUM_DSTS(instr) (instr)->num_dsts
+#define INSTR_GET_DST(instr, pos) (instr)->dsts[pos]
+/* src0 is static, rest are dynamic. */
+/* FIXME: Double evaluation. */
+#define INSTR_GET_SRC(instr, pos) \
+     ((pos) == 0 ? (instr)->src0 : (instr)->srcs[(pos) - 1])
+#define INSTR_GET_TARGET(instr) (instr)->src0
+
+/* API EXPORT END */
+#ifndef DEBUG
+/* API EXPORT BEGIN */
+#define instr_num_srcs INSTR_NUM_SRCS
+#define instr_num_dsts INSTR_NUM_DSTS
+#define instr_get_src INSTR_GET_SRC
+#define instr_get_dst INSTR_GET_DST
+#define instr_get_target INSTR_GET_TARGET
 #endif
 
-#ifdef API_EXPORT_ONLY
-/* Internally DR has multiple levels of IR, but once it gets to a client, we
- * assume it's already level 3 or higher, and we don't need to do any checks.
- * Furthermore, instr_decode() and get_thread_private_dcontext() are not
- * exported.
- */
-#define MAKE_OPNDS_VALID(instr)
-/* Turn off checks if a client includes us with DR_FAST_IR.  We can't call the
- * internal routines we'd use for these checks anyway.
- */
-#define CLIENT_ASSERT(cond, msg)
-#endif
-
 INSTR_INLINE
-int
-instr_num_srcs(instr_t *instr)
-{
-    MAKE_OPNDS_VALID(instr);
-    return instr->num_srcs;
-}
-
-INSTR_INLINE
-int
-instr_num_dsts(instr_t *instr)
-{
-    MAKE_OPNDS_VALID(instr);
-    return instr->num_dsts;
-}
-
-/* Returns the pos-th source operand of instr.	
- * If instr's operands are not decoded, goes ahead and decodes them.	
- * Assumes that instr is a single instr (i.e., NOT Level 0).	
- */
-INSTR_INLINE
-opnd_t
-instr_get_src(instr_t *instr, uint pos)
-{
-    MAKE_OPNDS_VALID(instr);
-    CLIENT_ASSERT(pos >= 0 && pos < instr->num_srcs,
-                  "instr_get_src: ordinal invalid");
-    if (pos == 0)
-        return instr->src0;
-    else
-        return instr->srcs[pos-1];
-}
-
-INSTR_INLINE
-opnd_t
-instr_get_dst(instr_t *instr, uint pos)
-{
-    MAKE_OPNDS_VALID(instr);
-    CLIENT_ASSERT(pos >= 0 && pos < instr->num_dsts,
-                  "instr_get_dst: ordinal invalid");
-    return instr->dsts[pos];
-}
-
-/* Assumes that if an instr has a jump target, it's stored in the 0th src
- * location.
- */
-INSTR_INLINE
-opnd_t
-instr_get_target(instr_t *cti_instr)
-{
-    MAKE_OPNDS_VALID(cti_instr);
-    CLIENT_ASSERT(instr_is_cti(cti_instr),
-                  "instr_get_target called on non-cti");
-    CLIENT_ASSERT(cti_instr->num_srcs >= 1,
-                  "instr_get_target: instr has no sources");
-    return cti_instr->src0;
-}
-
-INSTR_INLINE
-void 
+void
 instr_set_note(instr_t *instr, void *value)
 {
     instr->note = value;

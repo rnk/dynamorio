@@ -48,6 +48,8 @@
  * memory references.
  */
 
+#define DR_FAST_IR 1
+
 #include <string.h> /* for memset */
 #include <stddef.h> /* for offsetof */
 #include "dr_api.h"
@@ -307,6 +309,14 @@ event_bb_insert(void *drcontext, void *tag, instrlist_t *bb,
         }
     }
     return DR_EMIT_DEFAULT;
+}
+
+bool test_get_dst_inline(instr_t *instr) {
+    return opnd_is_memory_reference(instr_get_dst(instr, 0));
+}
+
+bool test_get_dst_normal(instr_t *instr) {
+    return opnd_is_memory_reference(instr->dsts[0]);
 }
 
 static void

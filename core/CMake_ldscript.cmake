@@ -42,6 +42,7 @@ execute_process(COMMAND
 if (ld_result OR ld_error)
   message(FATAL_ERROR "*** ${CMAKE_LINKER} failed: ***\n${ld_error}")
 endif (ld_result OR ld_error)
+file(WRITE ${outfile}.orig "${string}")
 
 # strip out just the SECTIONS{} portion
 string(REGEX REPLACE

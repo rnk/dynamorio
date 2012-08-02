@@ -1256,7 +1256,9 @@ privload_setup_app_stack(void)
         memmove(argv[i], argv[i+1], strlen(argv[i+1]) + 1); /* could overlap */
         argv[i+1] = argv[i] + strlen(argv[i]) + 1;
     }
-    memset(argv[i], 0, sizeof(argv[i]));
+    *argv[i] = '\0';
+    argv[i] = NULL;
+    //memset(argv[i], 0, sizeof(argv[i]));
 
     /* we need the argv count to match argc so that libc startup
      * code will find auxv (i#857) so we clear the final (unneeded)
