@@ -50,7 +50,7 @@
  * Furthermore, instr_decode() and get_thread_private_dcontext() are not
  * exported.
  */
-#define MAKE_OPNDS_VALID(instr)
+#define MAKE_OPNDS_VALID(instr) ((void)0)
 /* Turn off checks if a client includes us with DR_FAST_IR.  We can't call the
  * internal routines we'd use for these checks anyway.
  */
