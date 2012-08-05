@@ -61,12 +61,20 @@
 #ifndef _DETERMINA_CONFIG_H_
 #define _DETERMINA_CONFIG_H_
 
+#include "lib/globals_shared.h"
+#include "our_tchar.h"
+
 #ifdef __cplusplus
 extern "C"{
 #endif 
 
 /* we have circular dep issues if we include share.h */
-typedef UINT_PTR process_id_t;
+/* XXX: Do we really? */
+//typedef ptr_uint_t process_id_t;
+
+#ifndef WINDOWS
+# define BOOL bool
+#endif
 
 #define MAX_PARAM_LEN 1024
 #define CONFIG_PATH_SEPARATOR L':'
@@ -85,8 +93,8 @@ typedef UINT_PTR process_id_t;
 
 typedef struct NameValuePairNode_ {
     struct NameValuePairNode_ *next;
-    WCHAR *name;
-    WCHAR *value;
+    TCHAR *name;
+    TCHAR *value;
 } NameValuePairNode;
 
 typedef struct ConfigGroup_ {
@@ -96,29 +104,31 @@ typedef struct ConfigGroup_ {
     struct ConfigGroup_ *lastchild;
     NameValuePairNode *params;
     BOOL should_clear;
-    WCHAR *name;
+    TCHAR *name;
 } ConfigGroup;
 
 
 /* group config management */
 
-DWORD
-get_key_handle(HKEY *key, HKEY parent, const WCHAR *path, 
-               BOOL absolute, DWORD flags);
+#ifdef WINDOWS
+int
+get_key_handle(HKEY *key, HKEY parent, const TCHAR *path, 
+               BOOL absolute, int flags);
 
-DWORD
-recursive_delete_key(HKEY parent, const WCHAR *keyname, ConfigGroup *filter);
+int
+recursive_delete_key(HKEY parent, const TCHAR *keyname, ConfigGroup *filter);
+#endif
 
 ConfigGroup *
-new_config_group(const WCHAR *name);
+new_config_group(const TCHAR *name);
 
 ConfigGroup *
 copy_config_group(ConfigGroup *config, BOOL deep);
 
 /* name is the subkey name from the system registry root (e.g., 
  *  HKLM/Software/Determina). */
-DWORD
-read_config_group(ConfigGroup **configptr, const WCHAR *name, 
+int
+read_config_group(ConfigGroup **configptr, const TCHAR *name, 
                   BOOL read_children_recursively);
 
 void
@@ -128,25 +138,25 @@ void
 remove_children(ConfigGroup *config);
 
 void
-remove_child(const WCHAR *child, ConfigGroup *config);
+remove_child(const TCHAR *child, ConfigGroup *config);
 
-WCHAR *
-get_config_group_parameter(ConfigGroup *config, const WCHAR *name);
+TCHAR *
+get_config_group_parameter(ConfigGroup *config, const TCHAR *name);
 
 void
 set_config_group_parameter(ConfigGroup *config, 
-                           const WCHAR *name, const WCHAR *value);
+                           const TCHAR *name, const TCHAR *value);
 
 void
-remove_config_group_parameter(ConfigGroup *config, const WCHAR *name);
+remove_config_group_parameter(ConfigGroup *config, const TCHAR *name);
 
 void
 add_config_group(ConfigGroup *parent, ConfigGroup *new_child);
 
 ConfigGroup *
-get_child(const WCHAR *name, ConfigGroup *c);
+get_child(const TCHAR *name, ConfigGroup *c);
 
-DWORD
+int
 write_config_group(ConfigGroup *config);
 
 void
@@ -159,48 +169,50 @@ void
 dump_config_group(char *prefix, char *incr, ConfigGroup *c, BOOL traverse);
 
 BOOL
-get_config_group_parameter_bool(ConfigGroup *config, const WCHAR *name);
+get_config_group_parameter_bool(ConfigGroup *config, const TCHAR *name);
 
 int
-get_config_group_parameter_int(ConfigGroup *config, const WCHAR *name);
+get_config_group_parameter_int(ConfigGroup *config, const TCHAR *name);
 
 void
-get_config_group_parameter_scrambled(ConfigGroup *config, const WCHAR *name,
-                                     WCHAR *buffer, UINT maxchars);
+get_config_group_parameter_scrambled(ConfigGroup *config, const TCHAR *name,
+                                     TCHAR *buffer, uint maxchars);
 
 void
-set_config_group_parameter_bool(ConfigGroup *config, const WCHAR *name,
+set_config_group_parameter_bool(ConfigGroup *config, const TCHAR *name,
                                 BOOL value);
 
 void
-set_config_group_parameter_int(ConfigGroup *config, const WCHAR *name,
+set_config_group_parameter_int(ConfigGroup *config, const TCHAR *name,
                                int value);
 
 void
-set_config_group_parameter_ascii(ConfigGroup *config, const WCHAR *name,
+set_config_group_parameter_ascii(ConfigGroup *config, const TCHAR *name,
                                  char *value);
 
 void
-set_config_group_parameter_scrambled(ConfigGroup *config, const WCHAR *name,
-                                     const WCHAR *value);
+set_config_group_parameter_scrambled(ConfigGroup *config, const TCHAR *name,
+                                     const TCHAR *value);
 
 
 /* single parameter config functions */
 
-DWORD
-set_config_parameter(const WCHAR *path, BOOL absolute, 
-                     const WCHAR *name, const WCHAR *value);
+int
+set_config_parameter(const TCHAR *path, BOOL absolute, 
+                     const TCHAR *name, const TCHAR *value);
 
-DWORD
-get_config_parameter(const WCHAR *path, BOOL absolute, 
-                     const WCHAR *name, WCHAR *value, int maxlen);
+int
+get_config_parameter(const TCHAR *path, BOOL absolute, 
+                     const TCHAR *name, TCHAR *value, int maxlen);
 
-DWORD
-read_reg_string(HKEY subkey, const WCHAR *keyname, WCHAR *value, int valchars);
+#ifdef WINDOWS
+int
+read_reg_string(HKEY subkey, const TCHAR *keyname, TCHAR *value, int valchars);
 
 /* if value is NULL, the value will be deleted */
-DWORD 
-write_reg_string(HKEY subkey, const WCHAR *keyname, const WCHAR *value);
+int 
+write_reg_string(HKEY subkey, const TCHAR *keyname, const TCHAR *value);
+#endif
 
 /* identifies processes relative to a ConfigGroup */
 ConfigGroup *
@@ -212,18 +224,18 @@ is_parent_of_qualified_config_group(ConfigGroup *config);
 /* tries both with and without no_strip */
 ConfigGroup *
 get_qualified_config_group(ConfigGroup *config, 
-                           const WCHAR *exename, const WCHAR *cmdline);
+                           const TCHAR *exename, const TCHAR *cmdline);
 
 /* some list management and utility routines */
 /* all lists are ;-separated */
 /* comparisons are case insensitive */
 /* filename comparisons are independent of path */
 
-WCHAR *
-new_file_list(SIZE_T initial_chars);
+TCHAR *
+new_file_list(size_t initial_chars);
 
 void
-free_file_list(WCHAR *list);
+free_file_list(TCHAR *list);
 
 /* 
  * given a ;-separated list and a filename, return a pointer to 
@@ -232,67 +244,67 @@ free_file_list(WCHAR *list);
  *     get_entry_location("c:\\foo\\bar.dll;blah;...", "D:\\Bar.DLL")
  *  would return a pointer to the beginning of the list.
  */
-WCHAR *
-get_entry_location(const WCHAR *list, const WCHAR *filename, WCHAR separator);
+TCHAR *
+get_entry_location(const TCHAR *list, const TCHAR *filename, TCHAR separator);
 
 BOOL
-is_in_file_list(const WCHAR *list, const WCHAR *filename, WCHAR separator);
+is_in_file_list(const TCHAR *list, const TCHAR *filename, TCHAR separator);
 
 /* frees the old list and returns a newly alloc'ed one */
-WCHAR *
-add_to_file_list(WCHAR *list, const WCHAR *filename, 
+TCHAR *
+add_to_file_list(TCHAR *list, const TCHAR *filename, 
                  BOOL check_for_duplicates, BOOL add_to_front, 
-                 BOOL overwrite_existing, WCHAR separator);
+                 BOOL overwrite_existing, TCHAR separator);
 
 void
-remove_from_file_list(WCHAR *list, const WCHAR *filename, WCHAR separator);
+remove_from_file_list(TCHAR *list, const TCHAR *filename, TCHAR separator);
 
 BOOL
-blacklist_filter(WCHAR *list, const WCHAR *blacklist, 
-                 BOOL check_only, WCHAR separator);
+blacklist_filter(TCHAR *list, const TCHAR *blacklist, 
+                 BOOL check_only, TCHAR separator);
 
 BOOL
-whitelist_filter(WCHAR *list, const WCHAR *whitelist, 
-                 BOOL check_only, WCHAR separator);
+whitelist_filter(TCHAR *list, const TCHAR *whitelist, 
+                 BOOL check_only, TCHAR separator);
 
-DWORD
-set_autoinjection_ex(BOOL inject, DWORD flags, 
-                     const WCHAR *blacklist, 
-                     const WCHAR *whitelist, DWORD *list_error, 
-                     const WCHAR *custom_preinject_name, 
-                     WCHAR *current_list, SIZE_T maxchars);
+int
+set_autoinjection_ex(BOOL inject, int flags, 
+                     const TCHAR *blacklist, 
+                     const TCHAR *whitelist, int *list_error, 
+                     const TCHAR *custom_preinject_name, 
+                     TCHAR *current_list, size_t maxchars);
 
-DWORD
-set_custom_autoinjection(const WCHAR *preinject, DWORD flags);
+int
+set_custom_autoinjection(const TCHAR *preinject, int flags);
 
-DWORD
+int
 set_autoinjection();
 
-DWORD
-unset_custom_autoinjection(const WCHAR *preinject, DWORD flags);
+int
+unset_custom_autoinjection(const TCHAR *preinject, int flags);
 
-DWORD
+int
 unset_autoinjection();
 
 BOOL
 is_autoinjection_set();
 
 BOOL
-is_custom_autoinjection_set(const WCHAR *preinject);
+is_custom_autoinjection_set(const TCHAR *preinject);
 
-DWORD
+int
 set_loadappinit();
 
-DWORD
+int
 unset_loadappinit();
 
 BOOL
 is_loadappinit_set();
 
-DWORD
-create_eventlog(const WCHAR *dll_path);
+int
+create_eventlog(const TCHAR *dll_path);
 
-DWORD
+int
 destroy_eventlog(void);
 
 BOOL
@@ -301,11 +313,11 @@ is_vista(void);
 BOOL
 is_win7(void);
 
-DWORD
-copy_earlyhelper_dlls(const WCHAR *dir);
+int
+copy_earlyhelper_dlls(const TCHAR *dir);
 
 #ifdef __cplusplus
 }
 #endif
 
-#endif _DETERMINA_CONFIG_H_
+#endif /* _DETERMINA_CONFIG_H_ */

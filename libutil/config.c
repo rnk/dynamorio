@@ -1003,7 +1003,7 @@ get_process_config_group(ConfigGroup *config, process_id_t pid)
     if (res != ERROR_SUCCESS)
         return NULL;
     
-    wcstolower(buf);
+    tcstolower(buf);
     c = get_child(buf, config);
 
     if (c == NULL || is_parent_of_qualified_config_group(c)) {
@@ -1036,8 +1036,8 @@ get_entry_location(const WCHAR *list, const WCHAR *filename, WCHAR separator)
 {
     WCHAR *lowerlist, *lowername, *entry;
 
-    wcstolower(lowerlist = wcsdup(list));
-    wcstolower(lowername = wcsdup(get_exename_from_path(filename)));
+    tcstolower(lowerlist = wcsdup(list));
+    tcstolower(lowername = wcsdup(get_exename_from_path(filename)));
 
     entry = wcsstr(lowerlist, lowername);
 

@@ -32,34 +32,19 @@
  */
 
 
-#ifndef _DETERMINA_SHAREUTILS_H_
+#ifndef _DETERMINA_SHARETILS_H_
 #define _DETERMINA_SHAREUTILS_H_
 
 #include "config.h"
 
-#ifndef __cplusplus
-# ifndef bool
-typedef char bool;
-# endif /* !bool */
-#endif /* __cplusplus */
-
-#ifndef WINDOWS
-/* must define WINDOWS for dr_config.h */
-# define WINDOWS
-# define _HAD_TO_DEFINE_WINDOWS
-#endif
 #include "lib/globals_shared.h"
 #include "lib/dr_config.h"
-#ifdef _HAD_TO_DEFINE_WINDOWS
-# undef WINDOWS
-# undef _HAD_TO_DEFINE_WINDOWS
-#endif
 
 #ifdef DEBUG
 # include <stdio.h>
 #endif
 
-#ifdef _DEBUG
+#if defined(WINDOWS) && defined(_DEBUG)
 # include <crtdbg.h>
 #endif
 
@@ -68,25 +53,40 @@ extern "C"{
 #endif 
 
 void
-wcstolower(WCHAR *str);
+tcstolower(TCHAR *str);
 
-WCHAR *
-get_exename_from_path(const WCHAR *path);
+const TCHAR *
+get_dynamorio_home();
+
+const TCHAR *
+get_dynamorio_logdir();
 
 BOOL
-get_commandline_qualifier(const WCHAR* command_line,
-                          WCHAR* derived_name, 
-                          UINT max_derived_length /* in elements */,
+file_exists(const TCHAR *fn);
+
+void
+set_dr_platform(dr_platform_t platform);
+
+/* return DR_PLATFORM_32BIT or DR_PLATFORM_64BIT */
+dr_platform_t 
+get_dr_platform();
+
+/* XXX: Rest are unported. */
+#ifdef WINDOWS
+TCHAR *
+get_exename_from_path(const TCHAR *path);
+
+BOOL
+get_commandline_qualifier(const TCHAR* command_line,
+                          TCHAR* derived_name, 
+                          uint max_derived_length /* in elements */,
                           BOOL no_strip);
 
-DWORD
+int
 acquire_shutdown_privilege();
 
-DWORD
+int
 reboot_system();
-
-BOOL
-file_exists(const WCHAR *fn);
 
 /* grokked from the core. 
  * FIXME: shareme!
@@ -96,122 +96,109 @@ file_exists(const WCHAR *fn);
  *  opened, eg, do a create/delete on the filename to be returned.
  */
 BOOL
-get_unique_filename(const WCHAR* directory,
-                    const WCHAR* filename_base,
-                    const WCHAR* file_type,
-                    WCHAR* filename_buffer, 
-                    UINT maxlen);
+get_unique_filename(const TCHAR* directory,
+                    const TCHAR* filename_base,
+                    const TCHAR* file_type,
+                    TCHAR* filename_buffer, 
+                    uint maxlen);
 
-DWORD
-delete_file_rename_in_use(WCHAR *filename);
+int
+delete_file_rename_in_use(TCHAR *filename);
 
-DWORD
-delete_file_on_boot(WCHAR *filename);
+int
+delete_file_on_boot(TCHAR *filename);
 
-DWORD
-delete_tree(const WCHAR *path);
+int
+delete_tree(const TCHAR *path);
 
-DWORD
-copy_file_permissions(WCHAR *filedst, WCHAR *filesrc);
+int
+copy_file_permissions(TCHAR *filedst, TCHAR *filesrc);
 
-DWORD
-get_platform(DWORD *platform);
+int
+get_platform(int *platform);
 
 BOOL
 is_wow64(HANDLE hProcess);
 
 BOOL
-using_system32_for_preinject(const WCHAR *preinject);
+using_system32_for_preinject(const TCHAR *preinject);
 
-DWORD
-get_preinject_path(WCHAR *buf, int nchars, BOOL force_local_path, BOOL short_path);
+int
+get_preinject_path(TCHAR *buf, int nchars, BOOL force_local_path, BOOL short_path);
 
-DWORD
-get_preinject_name(WCHAR *buf, int nchars);
-
-void
-set_dr_platform(dr_platform_t platform);
-
-/* return DR_PLATFORM_32BIT or DR_PLATFORM_64BIT */
-dr_platform_t 
-get_dr_platform();
+int
+get_preinject_name(TCHAR *buf, int nchars);
 
 /* PR 244206: these flags should be used for all Reg{Create,Open,Delete}KeyEx calls
  * for HKLM\Software keys
  */
-DWORD
+int
 platform_key_flags();
 
 /* PR 244206: use this instead of RegDeleteKey for HKLM\Software keys */
-DWORD
+int
 delete_product_key(HKEY hkey, LPCWSTR subkey);
 
-DWORD
+int
 create_root_key();
 
-DWORD
+int
 destroy_root_key();
 
 /* note that this checks the opstring against the
  *  version of core that matches this build, NOT the version
  *  of the core that's actually installed! */
 BOOL
-check_opstring(const WCHAR *opstring);
+check_opstring(const TCHAR *opstring);
 
 /* acquires the privileges necessary to perform tasks like detach, 
  *  nudge, etc. */
-DWORD
+int
 acquire_privileges();
 
 /* said privileges should always be released after usage */
-DWORD
+int
 release_privileges();
 
 void
-ensure_directory_exists_for_file(WCHAR *filename);
+ensure_directory_exists_for_file(TCHAR *filename);
 
 void
-mkdir_with_parents(const WCHAR *dirname);
+mkdir_with_parents(const TCHAR *dirname);
 
-DWORD
-write_file_contents(WCHAR *path, char *contents, BOOL overwrite);
+int
+write_file_contents(TCHAR *path, char *contents, BOOL overwrite);
 
-DWORD
-write_file_contents_if_different(WCHAR *path, char *contents, BOOL *changed);
+int
+write_file_contents_if_different(TCHAR *path, char *contents, BOOL *changed);
 
-DWORD
-read_file_contents(WCHAR *path, char *contents, 
-                   SIZE_T maxchars, SIZE_T *needed);
+int
+read_file_contents(TCHAR *path, char *contents, 
+                   size_t maxchars, size_t *needed);
 
-const WCHAR *
-get_dynamorio_home();
+int
+setup_installation(const TCHAR *path, BOOL overwrite);
 
-const WCHAR *
-get_dynamorio_logdir();
-
-DWORD
-setup_installation(const WCHAR *path, BOOL overwrite);
-
-DWORD
-setup_cache_shared_directories(const WCHAR *cache_root);
-DWORD
-setup_cache_shared_registry(const WCHAR *cache_root, 
+int
+setup_cache_shared_directories(const TCHAR *cache_root);
+int
+setup_cache_shared_registry(const TCHAR *cache_root, 
                             ConfigGroup *policy);
 
-DWORD
-set_registry_permissions_for_user(WCHAR *hklm_keyname, WCHAR *user);
+int
+set_registry_permissions_for_user(TCHAR *hklm_keyname, TCHAR *user);
 
 /* used by get_violation_info() */
 typedef struct _VIOLATION_INFO {
-    DWORD         flags; /* IN, NYI */
-    const WCHAR  *report; /* OUT, Filename of generated report file. NULL if error.*/
-    WCHAR         buf[MAX_PATH]; /* space for filename */
+    int         flags; /* IN, NYI */
+    const TCHAR  *report; /* OUT, Filename of generated report file. NULL if error.*/
+    TCHAR         buf[MAXIMUM_PATH]; /* space for filename */
 } VIOLATION_INFO;
-  
+
 /* Takes in a MSG_SEC_FORENSICS event log record pevlr and generates a report file
  * (info->report) as specified by the flags field in info.  On success returns
  * ERROR_SUCCESS, else returns a failure code. */
-DWORD
+int
 get_violation_info(EVENTLOGRECORD *pevlr, /* INOUT */ VIOLATION_INFO *info);
 
 /* The final canary code is (FAIL_CODE << 16) | (TEST_TYPE && 0xffff) */
@@ -248,19 +235,19 @@ get_violation_info(EVENTLOGRECORD *pevlr, /* INOUT */ VIOLATION_INFO *info);
 #define CANARY_URL_SIZE 20 /* NYI so arbitrary */
 #define CANARY_MESSAGE_SIZE 1024 /* NYI so arbitrary */
 typedef struct _CANARY_INFO {
-    DWORD         run_flags; /* tests to run */
-    DWORD         info_flags; /* info to gather, NYI */
+    int         run_flags; /* tests to run */
+    int         info_flags; /* info to gather, NYI */
     int           canary_code; /* canary return code, like an NTSTATUS */ 
-    const WCHAR  *report; /* OUT, filename of generated report file */
-    const WCHAR  *url; /* OUT, url string to use for querying determina */
-    const WCHAR  *msg; /* OUT, msg to display to user */
-    WCHAR         buf_report[MAX_PATH]; /* space for report filename */
-    WCHAR         buf_url[CANARY_URL_SIZE]; /* space for url */
-    WCHAR         buf_message[CANARY_MESSAGE_SIZE]; /* space for use message */
+    const TCHAR  *report; /* OUT, filename of generated report file */
+    const TCHAR  *url; /* OUT, url string to use for querying determina */
+    const TCHAR  *msg; /* OUT, msg to display to user */
+    TCHAR         buf_report[MAXIMUM_PATH]; /* space for report filename */
+    TCHAR         buf_url[CANARY_URL_SIZE]; /* space for url */
+    TCHAR         buf_message[CANARY_MESSAGE_SIZE]; /* space for use message */
     /* Used by DRcontrol to inject faults, FIXME get rid of these and the flags and
      * go to a more data driven model. Other users should set fault_run to 0. */
-    DWORD         fault_run;
-    WCHAR        *canary_fault_args;
+    int         fault_run;
+    TCHAR        *canary_fault_args;
 } CANARY_INFO;
 /* NOTE - arbitrary value, but shouldn't be -1 (core kill_proc value) or overlapping
  * an NTSTATUS (such as ACCESS_DENIED etc.). */
@@ -272,13 +259,15 @@ typedef struct _CANARY_INFO {
  * information to gather, other fields are used to return additional information
  * to the caller. */
 BOOL
-run_canary_test(/* INOUT */ CANARY_INFO *info, WCHAR *version_msg);
+run_canary_test(/* INOUT */ CANARY_INFO *info, TCHAR *version_msg);
 
 /* Like run_canary_test(), except takes in as args what run_canary_test() implicitly
  * finds via the registry for greater customization. */
 BOOL
 run_canary_test_ex(FILE *file, /* INOUT */ CANARY_INFO *info,
-                   const WCHAR *scratch_folder, const WCHAR *canary_process);
+                   const TCHAR *scratch_folder, const TCHAR *canary_process);
+
+#endif /* WINDOWS */
 
 # ifdef DEBUG
 
@@ -301,10 +290,12 @@ set_abortlevel(int level);
 #  define DL_VERB     8
 #  define DL_FINEST   10
 
-#  pragma warning(disable : 4127)
+#  ifdef WINDOWS
+#   pragma warning(disable : 4127)
+#  endif
 
 #  ifndef EXIT_ON_ASSERT
-#    define EXIT_ON_ASSERT TRUE
+#    define EXIT_ON_ASSERT true
 #  endif
 
 #  ifndef ASSERTION_EXPRESSION
@@ -317,14 +308,14 @@ set_abortlevel(int level);
 
 #  define DO_ASSERT_EXPR(msg, expr, handle, handler)  {         \
     if ( ! (expr) ) {                                           \
-        WCHAR ___buf[MAX_PATH];                                 \
-        _snwprintf(___buf, MAX_PATH, L"%S:%d [%S]",             \
+        char ___buf[MAXIMUM_PATH];                              \
+        _snprintf(___buf, MAXIMUM_PATH, "%s:%d [%s]",           \
                    __FILE__, __LINE__, msg);                    \
         if (handle) {                                           \
             handler                                             \
         }                                                       \
         else if (EXIT_ON_ASSERT) {                              \
-            fprintf(stderr, "ASSERT: %S\n", ___buf);            \
+            fprintf(stderr, "ASSERT: %s\n", ___buf);            \
             exit(-1);                                           \
         }                                                       \
         else {                                                  \
@@ -361,7 +352,7 @@ set_abortlevel(int level);
     if (s1 != NULL && s2 != NULL) { DO_ASSERT(0 == strcmp(s1, s2)); }
 
 #  define CHECKED_OPERATION(expr) {             \
-    DWORD res = expr;                           \
+    int res = expr;                           \
     if (res != ERROR_SUCCESS)                   \
         printf("res=%d\n", res);                \
     DO_ASSERT(res == ERROR_SUCCESS);            \
@@ -370,8 +361,8 @@ set_abortlevel(int level);
 #define LAUNCH_APP_WAIT_HANDLE(relpath, pidvar, wait, handle) { \
     STARTUPINFO si = { 0 };                                     \
     PROCESS_INFORMATION pi = { 0 };                             \
-    WCHAR cmdl[MAX_PATH];                                       \
-    _snwprintf(cmdl, MAX_PATH, L"%s", relpath);                 \
+    TCHAR cmdl[MAXIMUM_PATH];                                       \
+    _snwprintf(cmdl, MAXIMUM_PATH, L"%s", relpath);                 \
     DO_ASSERT(CreateProcess(NULL,                               \
                             cmdl,                               \
                             NULL, NULL, FALSE,                  \
@@ -384,7 +375,7 @@ set_abortlevel(int level);
              printf("Launched %d=%S\n", *pidvar, cmdl);         \
              );                                                 \
     if (wait) {                                                 \
-        DWORD waitres = WaitForSingleObject(pi.hProcess, 5000); \
+        int waitres = WaitForSingleObject(pi.hProcess, 5000); \
         DO_ASSERT(waitres == WAIT_OBJECT_0);                    \
     }                                                           \
     else {                                                      \
@@ -423,21 +414,23 @@ set_abortlevel(int level);
 }
 
 
-DWORD
+#  ifdef WINDOWS
+int
 load_test_config(const char *snippet, BOOL use_hotpatch_defs);
 
 void
-get_testdir(WCHAR *buf, UINT maxchars);
+get_testdir(TCHAR *buf, uint maxchars);
 
 /* quick helpers for unit tests */
 BOOL
-check_for_event(DWORD type, WCHAR *exename, ULONG pid, 
-                WCHAR *s3, WCHAR *s4, UINT maxchars);
+check_for_event(int type, TCHAR *exename, ULONG pid, 
+                TCHAR *s3, TCHAR *s4, uint maxchars);
 void
 reset_last_event();
 
 void
 show_all_events();
+#  endif
 
 # else //#ifdef DEBUG
 
@@ -445,7 +438,7 @@ show_all_events();
 #  define DO_ASSERT(x)
 
 #  define CHECKED_OPERATION(expr) {             \
-    DWORD res = expr;                           \
+    int res = expr;                           \
     if (res != ERROR_SUCCESS)                   \
         return res;                             \
 }

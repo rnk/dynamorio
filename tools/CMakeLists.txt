@@ -37,6 +37,7 @@ if (UNIX)
   add_executable(drloader drloader.c)
 
   include_directories(
+   ${PROJECT_SOURCE_DIR}/core
    ${PROJECT_SOURCE_DIR}/core/lib
   )
 
@@ -96,6 +97,15 @@ if (UNIX)
     WORKING_DIRECTORY "${CMAKE_LIBRARY_OUTPUT_DIRECTORY}"
     OUTPUT_QUIET)
   configure_file(gdbinit ${CMAKE_BINARY_DIR}/.gdbinit)
+
+  # Add a native version of drconfig.
+  #add_executable(drconfig_exe drdeploy.c)
+  #target_link_libraries(drconfig_exe drconfiglib)
+  #set_target_properties(drconfig_exe PROPERTIES COMPILE_FLAGS "-DDRCONFIG")
+  # Add a native version of drrun.
+  add_executable(drrun_exe drdeploy.c linux_inject.c)
+  target_link_libraries(drrun_exe drconfiglib)
+  set_target_properties(drrun_exe PROPERTIES COMPILE_FLAGS "-DDRRUN")
 
   DR_install(TARGETS nudgeunix DESTINATION ${INSTALL_BIN})
 else (UNIX)

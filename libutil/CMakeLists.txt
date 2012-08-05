@@ -29,9 +29,9 @@
 # OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH
 # DAMAGE.
 
-if (UNIX)
-  message(FATAL_ERROR "libutil is Windows-only")
-endif (UNIX)
+#if (UNIX)
+  #message(FATAL_ERROR "libutil is Windows-only")
+#endif (UNIX)
 
 # These custom commands are per-subdir so can't just place at top level
 include(../make/CMake_events.cmake)
@@ -45,105 +45,120 @@ endif ()
 # FIXME i#60: add rules from old Makefile for building unit tests
 # the tests had been broken for a while
 
-set(CORE_SRCS
-  ${PROJECT_SOURCE_DIR}/core/options.c
-  ${PROJECT_SOURCE_DIR}/core/win32/inject_shared.c
-  ${PROJECT_SOURCE_DIR}/core/win32/module_shared.c
-  ${PROJECT_SOURCE_DIR}/core/win32/drmarker.c
-  ${EVENTS_SRCS}
-  ${SYSLOG_SRCS}
-  )
-set(RESOURCES ${PROJECT_SOURCE_DIR}/core/win32/resources.rc)
-set(BASE_SRCS
-  services.c
-  config.c
-  elm.c
-  processes.c
-  utils.c
-  policy.c
-  parser.c
-  )
-set(ROOT_SRCS
-  detach.c
-  mfapi.c
-  )
-
-include_directories(BEFORE 
+include_directories(BEFORE
   ${PROJECT_SOURCE_DIR}/core
   ${PROJECT_SOURCE_DIR}/core/lib
   ${PROJECT_SOURCE_DIR}/core/win32
   ${PROJECT_SOURCE_DIR}/core/x86
   ${PROJECT_BINARY_DIR} # for events.h
   )
-add_definitions(-D_CRT_SECURE_NO_WARNINGS -DUNICODE -D_UNICODE)
-add_definitions(-DNOT_DYNAMORIO_CORE)
-if (NOT HOT_PATCHING_INTERFACE)
-  # We define this to get processes.h included: PROBE_API controls whether we
-  # expose it
-  add_definitions(-DHOT_PATCHING_INTERFACE)
-endif (NOT HOT_PATCHING_INTERFACE)
 
-# FIXME i#98: fix the underlying cause of these warnings and remove these exceptions
-set(nowarn "/wd4996 /wd4047 /wd4024 /wd4133 /wd4127 /wd4100 /wd4292 /wd4127 /wd4100")
-set(libutil_cflags "/wd4996 /wd4047 /wd4024 /wd4133 /wd4127 /wd4100 /wd4292 /wd4127 /wd4100")
-set(libutil_ldflags "/nodefaultlib:libc.lib")
+if (WIN32)
+  set(CORE_SRCS
+    ${PROJECT_SOURCE_DIR}/core/options.c
+    ${PROJECT_SOURCE_DIR}/core/win32/inject_shared.c
+    ${PROJECT_SOURCE_DIR}/core/win32/module_shared.c
+    ${PROJECT_SOURCE_DIR}/core/win32/drmarker.c
+    ${EVENTS_SRCS}
+    ${SYSLOG_SRCS}
+    )
+  set(RESOURCES ${PROJECT_SOURCE_DIR}/core/win32/resources.rc)
+  set(BASE_SRCS
+    services.c
+    config.c
+    elm.c
+    processes.c
+    utils.c
+    policy.c
+    parser.c
+    )
+  set(ROOT_SRCS
+    detach.c
+    mfapi.c
+    )
 
-add_library(policy_static ${BASE_SRCS} ${ROOT_SRCS} ${CORE_SRCS})
-set_target_properties(policy_static PROPERTIES
-  COMPILE_FLAGS "${libutil_cflags}")
-set_target_properties(policy_static PROPERTIES
-  LINK_FLAGS "${libutil_ldflags}")
-if ("${CMAKE_GENERATOR}" MATCHES "Visual Studio")
-  # for parallel build correctness we need a target dependence
-  add_dependencies(policy_static generate_syslog generate_events)
-endif ()
+  add_definitions(-D_CRT_SECURE_NO_WARNINGS -DUNICODE -D_UNICODE)
+  add_definitions(-DNOT_DYNAMORIO_CORE)
+  if (NOT HOT_PATCHING_INTERFACE)
+    # We define this to get processes.h included: PROBE_API controls whether we
+    # expose it
+    add_definitions(-DHOT_PATCHING_INTERFACE)
+  endif (NOT HOT_PATCHING_INTERFACE)
 
-add_library(drconfiglib SHARED ${BASE_SRCS} ${ROOT_SRCS} ${CORE_SRCS}
-  ${RESOURCES} dr_config.c drconfig.def)
-set_target_properties(drconfiglib PROPERTIES
-  # Set define parameters for resources.rc
-  # Since it's hard to pass spaces in defines (I can get a " through using
-  # \\\\\\\" but no spaces) we put strings in resources.rc and select
-  # using RC_ defines.
-  COMPILE_FLAGS "${libutil_cflags} -DRC_IS_DRCONFIGLIB"
-  # put dll in lib dir
-  RUNTIME_OUTPUT_DIRECTORY${location_suffix} "${CMAKE_LIBRARY_OUTPUT_DIRECTORY}")
-set_target_properties(drconfiglib PROPERTIES
-  LINK_FLAGS "${libutil_ldflags}")
-# drinject.exe needs a copy in the bin dir
-add_custom_command(TARGET drconfiglib POST_BUILD COMMAND ${CMAKE_COMMAND}
-  ARGS -E copy "${CMAKE_LIBRARY_OUTPUT_DIRECTORY}/drconfiglib.dll"
-  "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/" VERBATIM)
-if ("${CMAKE_GENERATOR}" MATCHES "Visual Studio")
-  # for parallel build correctness we need a target dependence
-  add_dependencies(drconfiglib generate_syslog generate_events)
-endif ()
+  # FIXME i#98: fix the underlying cause of these warnings and remove these exceptions
+  set(nowarn "/wd4996 /wd4047 /wd4024 /wd4133 /wd4127 /wd4100 /wd4292 /wd4127 /wd4100")
+  set(libutil_cflags "/wd4996 /wd4047 /wd4024 /wd4133 /wd4127 /wd4100 /wd4292 /wd4127 /wd4100")
+  set(libutil_ldflags "/nodefaultlib:libc.lib")
 
-add_executable(dumpevts dumpevts.c elm.c ${RESOURCES})
-set_target_properties(dumpevts PROPERTIES
-  # Set define parameters for resources.rc
-  COMPILE_FLAGS "${libutil_cflags} -DRC_IS_DUMPEVTS")
-set_target_properties(dumpevts PROPERTIES
-  LINK_FLAGS "${libutil_ldflags}")
-if ("${CMAKE_GENERATOR}" MATCHES "Visual Studio")
-  # for parallel build correctness we need a target dependence
-  add_dependencies(dumpevts generate_syslog generate_events)
-endif ()
-
-# used at Determina: not supported anymore
-if (MFAPI_ENABLED)
-  add_library(mfapi SHARED ${BASE_SRCS} ${ROOT_SRCS} ${CORE_SRCS}
-    ${RESOURCES} mfapi.c mfapi.res)
-  set_target_properties(mfapi PROPERTIES
-    # Set define parameters for resources.rc
-    COMPILE_FLAGS "${libutil_cflags} -DRC_IS_MFAPI")
-  set_target_properties(mfapi PROPERTIES
+  add_library(policy_static ${BASE_SRCS} ${ROOT_SRCS} ${CORE_SRCS})
+  set_target_properties(policy_static PROPERTIES
+    COMPILE_FLAGS "${libutil_cflags}")
+  set_target_properties(policy_static PROPERTIES
     LINK_FLAGS "${libutil_ldflags}")
   if ("${CMAKE_GENERATOR}" MATCHES "Visual Studio")
     # for parallel build correctness we need a target dependence
-    add_dependencies(mfapi generate_syslog generate_events)
+    add_dependencies(policy_static generate_syslog generate_events)
   endif ()
-endif (MFAPI_ENABLED)
+
+  add_library(drconfiglib SHARED ${BASE_SRCS} ${ROOT_SRCS} ${CORE_SRCS}
+    ${RESOURCES} dr_config.c drconfig.def)
+  set_target_properties(drconfiglib PROPERTIES
+    # Set define parameters for resources.rc
+    # Since it's hard to pass spaces in defines (I can get a " through using
+    # \\\\\\\" but no spaces) we put strings in resources.rc and select
+    # using RC_ defines.
+    COMPILE_FLAGS "${libutil_cflags} -DRC_IS_DRCONFIGLIB"
+    # put dll in lib dir
+    RUNTIME_OUTPUT_DIRECTORY${location_suffix} "${CMAKE_LIBRARY_OUTPUT_DIRECTORY}")
+  set_target_properties(drconfiglib PROPERTIES
+    LINK_FLAGS "${libutil_ldflags}")
+  # drinject.exe needs a copy in the bin dir
+  add_custom_command(TARGET drconfiglib POST_BUILD COMMAND ${CMAKE_COMMAND}
+    ARGS -E copy "${CMAKE_LIBRARY_OUTPUT_DIRECTORY}/drconfiglib.dll"
+    "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/" VERBATIM)
+  if ("${CMAKE_GENERATOR}" MATCHES "Visual Studio")
+    # for parallel build correctness we need a target dependence
+    add_dependencies(drconfiglib generate_syslog generate_events)
+  endif ()
+
+  add_executable(dumpevts dumpevts.c elm.c ${RESOURCES})
+  set_target_properties(dumpevts PROPERTIES
+    # Set define parameters for resources.rc
+    COMPILE_FLAGS "${libutil_cflags} -DRC_IS_DUMPEVTS")
+  set_target_properties(dumpevts PROPERTIES
+    LINK_FLAGS "${libutil_ldflags}")
+  if ("${CMAKE_GENERATOR}" MATCHES "Visual Studio")
+    # for parallel build correctness we need a target dependence
+    add_dependencies(dumpevts generate_syslog generate_events)
+  endif ()
+
+  # used at Determina: not supported anymore
+  if (MFAPI_ENABLED)
+    add_library(mfapi SHARED ${BASE_SRCS} ${ROOT_SRCS} ${CORE_SRCS}
+      ${RESOURCES} mfapi.c mfapi.res)
+    set_target_properties(mfapi PROPERTIES
+      # Set define parameters for resources.rc
+      COMPILE_FLAGS "${libutil_cflags} -DRC_IS_MFAPI")
+    set_target_properties(mfapi PROPERTIES
+      LINK_FLAGS "${libutil_ldflags}")
+    if ("${CMAKE_GENERATOR}" MATCHES "Visual Studio")
+      # for parallel build correctness we need a target dependence
+      add_dependencies(mfapi generate_syslog generate_events)
+    endif ()
+  endif (MFAPI_ENABLED)
+else ()  # UNIX
+  # We're incrementally porting the features we need, so we can only add source
+  # files here one at a time.
+  add_library(drconfiglib SHARED dr_config.c utils.c)
+  set_target_properties(drconfiglib PROPERTIES
+    # Set define parameters for resources.rc
+    # Since it's hard to pass spaces in defines (I can get a " through using
+    # \\\\\\\" but no spaces) we put strings in resources.rc and select
+    # using RC_ defines.
+    COMPILE_FLAGS "${libutil_cflags} -DRC_IS_DRCONFIGLIB"
+    # put dll in lib dir
+    RUNTIME_OUTPUT_DIRECTORY${location_suffix} "${CMAKE_LIBRARY_OUTPUT_DIRECTORY}")
+endif ()
 
 DR_install(TARGETS drconfiglib
   EXPORT ${exported_targets_name}

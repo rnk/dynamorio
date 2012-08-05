@@ -34,18 +34,26 @@
 
 #include "share.h"
 #include "config.h"
-#include "elm.h"
-#include "events.h" /* for canary */
-#include "processes.h" /* for canary */
 
 #include <stdio.h>
-#include <io.h> /* for canary */
-#include <Fcntl.h> /* for canary */
+#include <string.h>
+#include <ctype.h>
 
-#include <aclapi.h>
+#ifdef WINDOWS
+# include "elm.h"
+# include "events.h" /* for canary */
+# include "processes.h" /* for canary */
+
+# include <io.h> /* for canary */
+# include <Fcntl.h> /* for canary */
+# include <aclapi.h>
+#else
+# include <sys/stat.h>
+#endif
 
 #ifndef UNIT_TEST
 
+#ifdef WINDOWS
 
 # ifdef DEBUG
 
@@ -265,19 +273,26 @@ show_all_events(FILE *fp)
     return;
 }
 
-# endif
+# endif  /* _DEBUG */
 
 
-# include "options.h" //from src module
-
+#endif /* WINDOWS */
 
 void
-wcstolower(WCHAR *str)
+tcstolower(TCHAR *str)
 {
-    UINT i;
-    for (i=0; i < wcslen(str); i++)
+    size_t i;
+    size_t len = _tcslen(str);
+    for (i = 0; i < len; i++) {
+#ifdef _UNICODE
         str[i] = towlower(str[i]);
+#else
+        str[i] = tolower(str[i]);
+#endif
+    }
 }
+
+#ifdef WINDOWS
 
 WCHAR *
 get_exename_from_path(const WCHAR *path)
@@ -361,6 +376,8 @@ reboot_system()
 
 #define LAST_WCHAR(wstr) wstr[wcslen(wstr) - 1]
 
+#endif /* WINDOWS */
+
 /* this sucks.
  * i can't believe this is best way to implement this in Win32...
  *  but i can't seem to find a better way. 
@@ -368,8 +385,9 @@ reboot_system()
  *   and then checking error codes; but the problem there is that C:\\
  *   returns PATH_NOT_FOUND regardless. */
 BOOL
-file_exists(const WCHAR *fn)
+file_exists(const TCHAR *fn)
 {
+#ifdef WINDOWS
     WIN32_FIND_DATA fd;
     HANDLE search;
 
@@ -407,8 +425,16 @@ file_exists(const WCHAR *fn)
         FindClose(search);
         return TRUE;
     }
-} 
+#else
+    struct stat st;
+    if (stat(fn, &st) == 0) {
+        return S_ISDIR(st.st_mode);
+    }
+    return false;
+#endif
+}
 
+#ifdef WINDOWS
 #define MAX_COUNTER 999999
 
 /* grokked from the core. 
@@ -619,11 +645,11 @@ is_wow64(HANDLE hProcess)
     }
 }
 
-static const WCHAR *
+static const TCHAR *
 get_dynamorio_home_helper(BOOL reset)
 {
-    static WCHAR dynamorio_home[MAX_PATH] = { 0 };
-    DWORD res;
+    static TCHAR dynamorio_home[MAXIMUM_PATH] = { 0 };
+    int res;
 
     if (reset)
         dynamorio_home[0] = L'\0';
@@ -632,7 +658,7 @@ get_dynamorio_home_helper(BOOL reset)
         return dynamorio_home;
 
     res = get_config_parameter(L_PRODUCT_NAME, FALSE,
-                               L_DYNAMORIO_VAR_HOME, dynamorio_home, MAX_PATH);
+                               L_DYNAMORIO_VAR_HOME, dynamorio_home, MAXIMUM_PATH);
 
     if (res == ERROR_SUCCESS && dynamorio_home[0] != L'\0')
         return dynamorio_home;
@@ -640,16 +666,16 @@ get_dynamorio_home_helper(BOOL reset)
         return NULL;
 }
 
-const WCHAR *
+const TCHAR *
 get_dynamorio_home() 
 {
     return get_dynamorio_home_helper(FALSE);
 }
 
-static const WCHAR *
+static const TCHAR *
 get_dynamorio_logdir_helper(BOOL reset)
 {
-    static WCHAR dynamorio_logdir[MAX_PATH] = { 0 };
+    static TCHAR dynamorio_logdir[MAXIMUM_PATH] = { 0 };
     DWORD res;
 
     if (reset)
@@ -659,7 +685,7 @@ get_dynamorio_logdir_helper(BOOL reset)
         return dynamorio_logdir;
 
     res = get_config_parameter(L_PRODUCT_NAME, FALSE,
-                               L_DYNAMORIO_VAR_LOGDIR, dynamorio_logdir, MAX_PATH);
+                               L_DYNAMORIO_VAR_LOGDIR, dynamorio_logdir, MAXIMUM_PATH);
 
     if (res == ERROR_SUCCESS && dynamorio_logdir[0] != L'\0')
         return dynamorio_logdir;
@@ -667,7 +693,7 @@ get_dynamorio_logdir_helper(BOOL reset)
         return NULL;
 }
 
-const WCHAR *
+const TCHAR *
 get_dynamorio_logdir() 
 {
     return get_dynamorio_logdir_helper(FALSE);
@@ -771,6 +797,8 @@ get_preinject_name(WCHAR *buf, int nchars)
     return ERROR_SUCCESS;
 }
 
+#endif /* WINDOWS */
+
 static dr_platform_t registry_view = DR_PLATFORM_DEFAULT;
 
 void
@@ -787,6 +815,8 @@ get_dr_platform()
         return DR_PLATFORM_64BIT;
     return DR_PLATFORM_32BIT;
 }
+
+#ifdef WINDOWS
 
 DWORD
 platform_key_flags()
@@ -2162,6 +2192,8 @@ run_canary_test(/* INOUT */ CANARY_INFO *info, WCHAR *version_msg)
     fclose(report_file);
     return result;
 }
+
+#endif /* WINDOWS */
 
 #else //ifdef UNIT_TEST
 

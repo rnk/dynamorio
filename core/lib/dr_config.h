@@ -135,8 +135,6 @@ typedef enum {
     DR_PLATFORM_64BIT,   /**< 64-bit settings (for native 64-bit processes). */
 } dr_platform_t;
 
-#ifdef WINDOWS
-
 /**
  * Register a process to run under DynamoRIO.
  * Note that this routine only sets the base options to run a process
@@ -242,6 +240,8 @@ dr_unregister_process(const char *process_name,
                       bool global,
                       dr_platform_t dr_platform);
 
+#ifdef WINDOWS
+
 /**
  * Sets up systemwide injection so that registered applications will run under
  * DynamoRIO however they are launched (i.e., they do not need to be explicitly
@@ -312,6 +312,8 @@ bool
 dr_syswide_is_on(dr_platform_t dr_platform,
                  const char *dr_root_dir);
 
+#endif /* WINDOWS */
+
 /**
  * Check if a process is registered to run under DynamoRIO.  To obtain client
  * information, use dr_get_client_info().
@@ -371,6 +373,8 @@ dr_process_is_registered(const char *process_name,
                          dr_operation_mode_t *dr_mode   /* OUT */,
                          bool *debug                    /* OUT */,
                          char *dr_options               /* OUT */);
+
+#ifdef WINDOWS
 
 typedef struct _dr_registered_process_iterator_t dr_registered_process_iterator_t;
 
@@ -456,6 +460,8 @@ dr_registered_process_iterator_next(dr_registered_process_iterator_t *iter,
  */
 void
 dr_registered_process_iterator_stop(dr_registered_process_iterator_t *iter);
+
+#endif /* WINDOWS */
 
 /**
  * Register a client for a particular process.  Note that the process must first
@@ -737,6 +743,7 @@ dr_client_iterator_next(dr_client_iterator_t *iter,
 void
 dr_client_iterator_stop(dr_client_iterator_t *iter);
 
+#ifdef WINDOWS
 
 /**
  * Provides a mechanism for an external entity on the guest OS to
