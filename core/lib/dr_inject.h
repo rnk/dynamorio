@@ -33,11 +33,8 @@
 #ifndef _DR_INJECT_H_
 #define _DR_INJECT_H_ 1
 
-#ifdef WINDOWS
-
 /* DR_API EXPORT TOFILE dr_inject.h */
 /* DR_API EXPORT BEGIN */
-#ifdef WINDOWS
 /****************************************************************************
  * Injection API
  */
@@ -68,7 +65,7 @@
  *          when finished to clean up internally-allocated resources.
  */
 int
-dr_inject_process_create(const char *app_name, const char *app_cmdline,
+dr_inject_process_create(const char *app_name, const char **app_cmdline,
                          void **data);
 
 /**
@@ -124,6 +121,7 @@ dr_inject_process_exit(void *data, bool terminate);
 char *
 dr_inject_get_image_name(void *data);
 
+#ifdef WINDOWS
 /**
  * Returns a handle to a process created by dr_inject_process_create().
  *
@@ -134,6 +132,7 @@ dr_inject_get_image_name(void *data);
  */
 HANDLE
 dr_inject_get_process_handle(void *data);
+#endif
 
 /**
  * Returns the pid of a process created by dr_inject_process_create().
@@ -164,10 +163,6 @@ dr_inject_using_debug_key(void *data);
 void
 dr_inject_print_stats(void *data, int elapsed_secs, bool showstats, bool showmem);
 
-#endif /* WINDOWS */
-
 /* DR_API EXPORT END */
-
-#endif /* WINDOWS */
 
 #endif /* _DR_INJECT_H_ */

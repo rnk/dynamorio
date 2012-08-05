@@ -1045,6 +1045,8 @@ dr_register_process(const char *process_name,
 
     /* set the options string last for faster updating w/ config files */
     opt_info.mode = dr_mode;
+    /* XXX: Expose LD_PRELOAD vs. early injection. */
+    add_extra_option_char(&opt_info, "-early_inject");
     add_extra_option_char(&opt_info, dr_options);
     write_options(&opt_info, wbuf);
     status = write_config_param(IF_REG_ELSE(proc_policy, f),

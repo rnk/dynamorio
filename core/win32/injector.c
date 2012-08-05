@@ -580,6 +580,8 @@ void restore_debugger_key_injection(int id, BOOL started)
 
 /***************************** end debug key injection ********************/
 
+#define MAX_CMDLINE 4096
+
 static const TCHAR *
 get_image_name(const TCHAR *app_name)
 {
@@ -591,22 +593,34 @@ get_image_name(const TCHAR *app_name)
     return name_start;
 }
 
-
 /* Returns 0 on success.
  * On failure, returns a Windows API error code.
  */
 DYNAMORIO_EXPORT
 int
-dr_inject_process_create(const char *app_name, const char *app_cmdline,
+dr_inject_process_create(const char *app_name, const char **argv,
                          void **data OUT)
 {
     dr_inject_info_t *info = HeapAlloc(GetProcessHeap(), 0, sizeof(*info));
     STARTUPINFO si;
     int errcode = 0;
     BOOL res;
+    char app_cmdline[MAX_CMDLINE];
+    size_t sofar = 0;
+    int i;
+
     if (data == NULL)
         return ERROR_INVALID_PARAMETER;
-    
+
+    /* Quote and concatenate the array of strings to pass to CreateProcess. */
+    /* XXX: Escapes. */
+    print_to_buffer(app_cmdline, BUFFER_SIZE_ELEMENTS(app_cmdline), &sofar,
+                    "\"%s\"", argv[0]);
+    for (i = 1; argv[i] != NULL; i++) {
+        print_to_buffer(app_cmdline, BUFFER_SIZE_ELEMENTS(app_cmdline), &sofar,
+                        " \"%s\"", argv[i]);
+    }
+
     /* Launch the application process. */
     ZeroMemory(&si, sizeof(si));
     si.cb = sizeof(si);
@@ -629,7 +643,7 @@ dr_inject_process_create(const char *app_name, const char *app_cmdline,
     }
 
     /* Must specify TRUE for bInheritHandles so child inherits stdin! */
-    res = CreateProcess(app_name, (char *)app_cmdline, NULL, NULL, TRUE,
+    res = CreateProcess(app_name, app_cmdline, NULL, NULL, TRUE,
                         CREATE_SUSPENDED |
                         ((debug_stop_function && info->using_debugger_injection) ?
                          DEBUG_PROCESS | DEBUG_ONLY_THIS_PROCESS : 0),
