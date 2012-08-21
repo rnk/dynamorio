@@ -914,20 +914,21 @@ function(rundr_cmd outcmd outops native dr_ops_aux is_runall)
     # Since the creation of CTestTestfile.cmake ends up replacing \ with / we
     # can't escape quotes, so we have to use a list variable
     set(cmd ${MAIN_RUNTIME_OUTPUT_DIRECTORY}/runstats -s ${TEST_SECONDS} -killpg -silent)
-    # We set LD_LIBRARY_PATH even for native api/ apps since we're not setting
-    # rpath (to make it easier to try different trees)
-    set(cmd ${cmd}
-      -env LD_LIBRARY_PATH "${MAIN_LIBRARY_OUTPUT_DIRECTORY}:${EXT_LIBRARY_OUTPUT_DIRECTORY}:$ENV{LD_LIBRARY_PATH}")
     if (NOT native)
-      # FIXME: should really use drrun to override any existing config file
-      set(cmd ${cmd}
-        -env DYNAMORIO_RUNUNDER 1
-        -env LD_PRELOAD "libdrpreload.so libdynamorio.so"
-        -env DYNAMORIO_CACHE_ROOT "${PCACHE_DIR}"
-        -env DYNAMORIO_CACHE_SHARED "${PCACHE_SHARED_DIR}")
-    endif (NOT native)
-    # add dr_ops last to avoid needing extra \ on ;
-    set(${outcmd} ${cmd} -env DYNAMORIO_OPTIONS "${dr_ops}" PARENT_SCOPE)
+      set(cmd ${cmd} ${MAIN_RUNTIME_OUTPUT_DIRECTORY}/drrun)
+      if (DEBUG)
+        set(cmd ${cmd} -debug)
+      endif ()
+      # add dr_ops last to avoid needing extra \ on ;
+      set(${outcmd} ${cmd} -ops "${dr_ops}" PARENT_SCOPE)
+    else ()
+      # We set LD_LIBRARY_PATH for native api/ apps since we're not setting
+      # rpath (to make it easier to try different trees)
+      set(cmd ${cmd} -env LD_LIBRARY_PATH
+        "${MAIN_LIBRARY_OUTPUT_DIRECTORY}:${EXT_LIBRARY_OUTPUT_DIRECTORY}:$ENV{LD_LIBRARY_PATH}")
+      # add dr_ops last to avoid needing extra \ on ;
+      set(${outcmd} ${cmd} -env DYNAMORIO_OPTIONS "${dr_ops}" PARENT_SCOPE)
+    endif ()
   else (UNIX)
     set(dr_ops "-stderr_mask 0xC -msgbox_mask 0 -dumpcore_mask 0xfd -staged ${dr_ops_aux} ${TEST_OPTIONS}")
     if (is_runall)
