@@ -31,25 +31,52 @@
  * DAMAGE.
  */
 
-#include <windows.h>
-#include <stdio.h>
-#include <tchar.h>
-#include <io.h> /* for _get_osfhandle */
+/* MSVC wants the linkage on the prototypes in the header to match the linkage
+ * on the definitions, so we have to put these defines first.
+ */
 #include "configure.h" /* since not including share.h */
-#include "utils.h"
-#include "processes.h"
-#include "globals_shared.h"
-#include "mfapi.h" /* for PLATFORM_WIN_2000 */
-#include "lib/dr_config.h"
+#ifdef WINDOWS
+# define EXPORT __declspec(dllexport)
+#else
+# define EXPORT __attribute__((visibility("default")))
+#endif
+#define DR_CONFIG_API EXPORT
 
-#define RELEASE32_DLL   L"\\lib32\\release\\dynamorio.dll"
-#define DEBUG32_DLL     L"\\lib32\\debug\\dynamorio.dll"
-#define RELEASE64_DLL   L"\\lib64\\release\\dynamorio.dll"
-#define DEBUG64_DLL     L"\\lib64\\debug\\dynamorio.dll"
-#define LOG_SUBDIR      L"\\logs"
-#define LIB32_SUBDIR    L"\\lib32"
-#define PREINJECT32_DLL L"\\lib32\\drpreinject.dll"
-#define PREINJECT64_DLL L"\\lib64\\drpreinject.dll"
+#include <stdlib.h>  /* for malloc */
+#include <stdio.h>
+#include <string.h>
+#include "utils.h"
+#include "globals_shared.h"
+#include "utils.h"
+#include "lib/dr_config.h"
+#include "our_tchar.h"
+
+#ifdef WINDOWS
+# include <windows.h>
+# include <io.h> /* for _get_osfhandle */
+# include "processes.h"
+# include "mfapi.h" /* for PLATFORM_WIN_2000 */
+
+# define RELEASE32_DLL   _TEXT("\\lib32\\release\\dynamorio.dll")
+# define DEBUG32_DLL     _TEXT("\\lib32\\debug\\dynamorio.dll")
+# define RELEASE64_DLL   _TEXT("\\lib64\\release\\dynamorio.dll")
+# define DEBUG64_DLL     _TEXT("\\lib64\\debug\\dynamorio.dll")
+# define LOG_SUBDIR      _TEXT("\\logs")
+# define LIB32_SUBDIR    _TEXT("\\lib32")
+# define PREINJECT32_DLL _TEXT("\\lib32\\drpreinject.dll")
+# define PREINJECT64_DLL _TEXT("\\lib64\\drpreinject.dll")
+#else
+# include <sys/stat.h>
+# include <sys/types.h>
+# include <unistd.h>
+
+# define RELEASE32_DLL   "/lib32/release/libdynamorio.so"
+# define DEBUG32_DLL     "/lib32/debug/libdynamorio.so"
+# define RELEASE64_DLL   "/lib64/release/libdynamorio.so"
+# define DEBUG64_DLL     "/lib64/debug/libdynamorio.so"
+# define LOG_SUBDIR      "/logs"
+# define LIB32_SUBDIR    "/lib32/"
+#endif
 
 /* The minimum option size is 3, e.g., "-x ".  Note that we need the
  * NULL term too so "-x -y" needs 6 characters.
@@ -89,12 +116,6 @@ convert_to_tchar(TCHAR *dst, const char *src, size_t dst_sz)
     strncpy(dst, src, dst_sz);
 #endif
 }
-
-#ifdef _UNICODE
-# define TSTR_FMT "%S"
-#else
-# define TSTR_FMT "%s"
-#endif
 
 /* Function to iterate over the options in a DYNAMORIO_OPTIONS string.
  * For the purposes of this function, we're not differentiating
@@ -300,7 +321,11 @@ free_opt_info(opt_info_t *opt_info)
 
 #ifndef PARAMS_IN_REGISTRY
 # define LOCAL_CONFIG_ENV "USERPROFILE"
-# define LOCAL_CONFIG_SUBDIR "dynamorio"
+# ifdef WINDOWS
+#  define LOCAL_CONFIG_SUBDIR "dynamorio"
+# else
+#  define LOCAL_CONFIG_SUBDIR ".dynamorio"
+# endif
 # define GLOBAL_CONFIG_SUBDIR "config"
 # define CFG_SFX_64 "config64"
 # define CFG_SFX_32 "config32"
@@ -330,13 +355,24 @@ get_config_dir(bool global, char *fname, size_t fname_len)
     char dir[MAXIMUM_PATH];
     const char *subdir;
     if (global) {
+#ifdef WINDOWS
         _snprintf(dir, BUFFER_SIZE_ELEMENTS(dir), TSTR_FMT, get_dynamorio_home());
         subdir = GLOBAL_CONFIG_SUBDIR;
+#else
+        /* XXX: Port utils.c. */
+        return false;
+#endif
     } else {
+#ifdef WINDOWS
         int len = GetEnvironmentVariableA(LOCAL_CONFIG_ENV, dir,
                                           BUFFER_SIZE_ELEMENTS(dir));
         if (len <= 0)
             return false;
+#else
+        char *home = getenv("HOME");
+        strncpy(dir, home, BUFFER_SIZE_ELEMENTS(dir));
+        NULL_TERMINATE_BUFFER(dir);
+#endif
         subdir = LOCAL_CONFIG_SUBDIR;
     }
     _snprintf(fname, fname_len, "%s/%s", dir, subdir);
@@ -362,12 +398,23 @@ get_config_file_name(const char *process_name,
         DO_ASSERT(false && "get_config_dir failed");
         return false;
     }
+#ifdef WINDOWS
     /* make sure subdir exists*/
     if (!CreateDirectoryA(fname, NULL) &&
         GetLastError() != ERROR_ALREADY_EXISTS) {
         DO_ASSERT(false && "failed to create subdir");
         return false;
     }
+#else
+    {
+        struct stat st;
+        mkdir(fname, 0770);
+        if (stat(fname, &st) != 0 || !S_ISDIR(st.st_mode)) {
+            DO_ASSERT(false && "failed to create subdir");
+            return false;
+        }
+    }
+#endif
     dir_len = strlen(fname);
     if (pid > 0) {
         /* <root>/appname.<pid>.1config */
@@ -410,7 +457,7 @@ open_config_file(const char *process_name,
     /* XXX: Checking existence and then opening is racy. */
     convert_to_tchar(wfname, fname, BUFFER_SIZE_ELEMENTS(wfname));
     NULL_TERMINATE_BUFFER(wfname);
-    if (!overwrite && file_exists(wfname))
+    if (write && !overwrite && file_exists(wfname))
         return NULL;
     return fopen(fname, mode);
 }
@@ -526,10 +573,16 @@ read_config_ex(FILE *f, const char *var, TCHAR *val, size_t val_len,
                     }
                     if (done) {
                         /* pointer goes back to end somehow in write_config_param */
+#ifdef WINDOWS
                         /* XXX: Can't find a way to truncate the file at the
                          * current position using the FILE API.
                          */
                         SetEndOfFile((HANDLE)_get_osfhandle(_fileno(f)));
+#else
+                        off_t pos = lseek(fileno(f), 0, SEEK_CUR);
+                        DO_ASSERT(pos != -1);
+                        ftruncate(fileno(f), (off_t)pos);
+#endif
                         break;
                     }
                     len = fwrite(buf, 1, bufread, f);
@@ -742,10 +795,13 @@ read_options(opt_info_t *opt_info, IF_REG_ELSE(ConfigGroup *proc_policy, FILE *f
  * by the DYNAMORIO_OPTIONS registry entry.
  */
 static void
-write_options(opt_info_t *opt_info, WCHAR *wbuf)
+write_options(opt_info_t *opt_info, TCHAR *wbuf)
 {
     size_t i;
     char *mode_str = "";
+    ssize_t len;
+    ssize_t sofar = 0;
+    ssize_t bufsz = DR_MAX_OPTIONS_LENGTH;
 
     /* NOTE - mode_str must come first since we want to give
      * client-supplied options the chance to override (for
@@ -785,7 +841,9 @@ write_options(opt_info_t *opt_info, WCHAR *wbuf)
             DO_ASSERT(false);
     }
 
-    _snwprintf(wbuf, DR_MAX_OPTIONS_LENGTH, L"%S", mode_str);
+    len = _sntprintf(wbuf + sofar, bufsz - sofar, _TEXT("%S"), mode_str);
+    if (len >= 0 && len <= bufsz - sofar)
+        sofar += len;
 
     /* extra options */
     for (i=0; i<opt_info->num_extra_opts; i++) {
@@ -794,14 +852,20 @@ write_options(opt_info_t *opt_info, WCHAR *wbuf)
          * options.  Maybe we should be checking that the options are
          * actually valid?
          */
-        _snwprintf(wbuf, DR_MAX_OPTIONS_LENGTH, L"%s %s", wbuf, opt_info->extra_opts[i]);
+        len = _sntprintf(wbuf + sofar, bufsz - sofar, _TEXT(" %s"),
+                         opt_info->extra_opts[i]);
+        if (len >= 0 && len <= bufsz - sofar)
+            sofar += len;
     }
 
     /* client lib options */
     for (i=0; i<opt_info->num_clients; i++) {
         client_opt_t *client_opts = opt_info->client_opts[i];
-        _snwprintf(wbuf, DR_MAX_OPTIONS_LENGTH, L"%s -client_lib \"%s;%x;%s\"",
-                   wbuf, client_opts->path, client_opts->id, client_opts->opts);
+        len = _sntprintf(wbuf + sofar, bufsz - sofar,
+                         _TEXT(" -client_lib \"%s;%x;%s\""),
+                         client_opts->path, client_opts->id, client_opts->opts);
+        if (len >= 0 && len <= bufsz - sofar)
+            sofar += len;
     }
 
     wbuf[DR_MAX_OPTIONS_LENGTH-1] = L'\0';
@@ -849,6 +913,7 @@ platform_is_64bit(dr_platform_t platform)
             IF_X64(|| platform == DR_PLATFORM_DEFAULT));
 }
 
+#ifdef WINDOWS
 static void
 get_syswide_path(TCHAR *wbuf,
                  const char *dr_root_dir)
@@ -906,6 +971,7 @@ dr_syswide_is_on(dr_platform_t dr_platform,
     get_syswide_path(wbuf, dr_root_dir);
     return CAST_TO_bool(is_custom_autoinjection_set(wbuf));
 }
+#endif
 
 dr_config_status_t
 dr_register_process(const char *process_name,
@@ -958,10 +1024,12 @@ dr_register_process(const char *process_name,
                          false/*!read*/, true/*write*/,
                          pid != 0/*overwrite for pid-specific*/);
     if (f == NULL) {
+# ifdef WINDOWS
         int err = GetLastError();
         if (err == ERROR_ALREADY_EXISTS)
             return DR_PROC_REG_EXISTS;
         else
+# endif
             return DR_FAILURE;
     }
 #endif
@@ -1035,11 +1103,13 @@ dr_register_process(const char *process_name,
      * FIXME: this requires admin privs!  oh well: only issue is early inject
      * on win2k...
      */
+#ifdef WINDOWS
     if (get_platform(&platform) == ERROR_SUCCESS && platform == PLATFORM_WIN_2000) {
         _sntprintf(wbuf, MAXIMUM_PATH, _TEXT(TSTR_FMT)LIB32_SUBDIR, dr_root_dir);
         NULL_TERMINATE_BUFFER(wbuf);
         copy_earlyhelper_dlls(wbuf);
     }
+#endif
 
     return DR_SUCCESS;
 }
@@ -1195,6 +1265,8 @@ read_process_policy(IF_REG_ELSE(ConfigGroup *proc_policy, FILE *f),
     free_opt_info(&opt_info);
 }
 
+#ifdef WINDOWS
+
 struct _dr_registered_process_iterator_t {
 #ifdef PARAMS_IN_REGISTRY
     ConfigGroup *policy;
@@ -1306,6 +1378,8 @@ dr_registered_process_iterator_stop(dr_registered_process_iterator_t *iter)
     free(iter);
 }
 
+#endif /* WINDOWS */
+
 bool
 dr_process_is_registered(const char *process_name,
                          process_id_t pid,
@@ -1409,7 +1483,7 @@ dr_client_iterator_next(dr_client_iterator_t *iter,
     }
     
     iter->cur++;
-}           
+}
 
 void
 dr_client_iterator_stop(dr_client_iterator_t *iter)
@@ -1677,6 +1751,8 @@ dr_unregister_client(const char *process_name,
     return status;
 }
 
+/* XXX: Support the nudge API on Linux. */
+#ifdef WINDOWS
 
 typedef struct {
     const char *process_name; /* if non-null nudges processes with matching name */
@@ -1779,3 +1855,5 @@ dr_nudge_all(client_id_t client_id, uint64 arg, uint timeout_ms, int *nudge_coun
         return DR_NUDGE_TIMEOUT;
     return DR_FAILURE;
 }
+
+#endif /* WINDOWS */

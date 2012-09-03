@@ -36,6 +36,7 @@
 
 /* DR_API EXPORT TOFILE dr_config.h */
 /* DR_API EXPORT BEGIN */
+
 /****************************************************************************
  * Deployment API
  */
@@ -48,6 +49,10 @@
  * the library should ensure that no more then one thread accesses the library
  * at a time.  This limitation will be addressed in future releases.
  */
+
+#ifndef DR_CONFIG_API
+# define DR_CONFIG_API
+#endif
 
 /** Maximum length of a registered process's options string */
 #define DR_MAX_OPTIONS_LENGTH 2048
@@ -135,8 +140,7 @@ typedef enum {
     DR_PLATFORM_64BIT,   /**< 64-bit settings (for native 64-bit processes). */
 } dr_platform_t;
 
-#ifdef WINDOWS
-
+DR_CONFIG_API
 /**
  * Register a process to run under DynamoRIO.
  * Note that this routine only sets the base options to run a process
@@ -205,6 +209,7 @@ dr_register_process(const char *process_name,
                     dr_platform_t dr_platform,
                     const char *dr_options);
 
+DR_CONFIG_API
 /**
  * Unregister a process from running under DynamoRIO.
  *
@@ -242,6 +247,9 @@ dr_unregister_process(const char *process_name,
                       bool global,
                       dr_platform_t dr_platform);
 
+#ifdef WINDOWS
+
+DR_CONFIG_API
 /**
  * Sets up systemwide injection so that registered applications will run under
  * DynamoRIO however they are launched (i.e., they do not need to be explicitly
@@ -273,6 +281,7 @@ dr_config_status_t
 dr_register_syswide(dr_platform_t dr_platform,
                     const char *dr_root_dir);
 
+DR_CONFIG_API
 /**
  * Disables systemwide injection.  Registered applications will not run
  * under DynamoRIO unless explicitly launched with the drrun or drinject
@@ -295,6 +304,7 @@ dr_config_status_t
 dr_unregister_syswide(dr_platform_t dr_platform,
                       const char *dr_root_dir);
 
+DR_CONFIG_API
 /**
  * Returns whether systemwide injection is enabled.
  *
@@ -312,6 +322,9 @@ bool
 dr_syswide_is_on(dr_platform_t dr_platform,
                  const char *dr_root_dir);
 
+#endif /* WINDOWS */
+
+DR_CONFIG_API
 /**
  * Check if a process is registered to run under DynamoRIO.  To obtain client
  * information, use dr_get_client_info().
@@ -372,8 +385,11 @@ dr_process_is_registered(const char *process_name,
                          bool *debug                    /* OUT */,
                          char *dr_options               /* OUT */);
 
+#ifdef WINDOWS
+
 typedef struct _dr_registered_process_iterator_t dr_registered_process_iterator_t;
 
+DR_CONFIG_API
 /**
  * Creates and starts an iterator for iterating over all processes registered for
  * the given platform and given global or local parameter. 
@@ -399,6 +415,7 @@ dr_registered_process_iterator_t *
 dr_registered_process_iterator_start(dr_platform_t dr_platform,
                                      bool global);
 
+DR_CONFIG_API
 /**
  * \param[in]    iter           A registered process iterator created with
  *                              dr_registered_process_iterator_start()
@@ -408,6 +425,7 @@ dr_registered_process_iterator_start(dr_platform_t dr_platform,
 bool
 dr_registered_process_iterator_hasnext(dr_registered_process_iterator_t *iter);
 
+DR_CONFIG_API
 /**
  * Return information about a registered process
  *
@@ -448,6 +466,7 @@ dr_registered_process_iterator_next(dr_registered_process_iterator_t *iter,
                                     bool *debug /* OUT */,
                                     char *dr_options /* OUT */);
 
+DR_CONFIG_API
 /**
  * Stops and frees a registered process iterator.
  *
@@ -457,6 +476,9 @@ dr_registered_process_iterator_next(dr_registered_process_iterator_t *iter,
 void
 dr_registered_process_iterator_stop(dr_registered_process_iterator_t *iter);
 
+#endif /* WINDOWS */
+
+DR_CONFIG_API
 /**
  * Register a client for a particular process.  Note that the process must first
  * be registered via dr_register_process() before calling this routine.
@@ -525,6 +547,7 @@ dr_register_client(const char *process_name,
                    const char *client_path,
                    const char *client_options);
 
+DR_CONFIG_API
 /**
  * Unregister a client for a particular process.
  *
@@ -564,6 +587,7 @@ dr_unregister_client(const char *process_name,
                      dr_platform_t dr_platform,
                      client_id_t client_id);
 
+DR_CONFIG_API
 /**
  * Retrieve the number of clients registered for a particular process for
  * the current user.
@@ -600,6 +624,7 @@ dr_num_registered_clients(const char *process_name,
                           bool global,
                           dr_platform_t dr_platform);
 
+DR_CONFIG_API
 /**
  * Retrieve client registration information for a particular process for
  * the current user.
@@ -657,6 +682,7 @@ dr_get_client_info(const char *process_name,
 
 typedef struct _dr_client_iterator_t dr_client_iterator_t;
 
+DR_CONFIG_API
 /**
  * Creates and starts an iterator for iterating over all clients registered for
  * the given process.
@@ -695,6 +721,7 @@ dr_client_iterator_start(const char *process_name,
                          bool global,
                          dr_platform_t dr_platform);
 
+DR_CONFIG_API
 /**
  * \param[in]   iter            A client iterator created with dr_client_iterator_start()
  *
@@ -703,6 +730,7 @@ dr_client_iterator_start(const char *process_name,
 bool
 dr_client_iterator_hasnext(dr_client_iterator_t *iter);
 
+DR_CONFIG_API
 /**
  * Return information about a client.
  *
@@ -729,6 +757,7 @@ dr_client_iterator_next(dr_client_iterator_t *iter,
                         char *client_path,      /* OUT */
                         char *client_options    /* OUT */);
 
+DR_CONFIG_API
 /**
  * Stops and frees a client iterator.
  *
@@ -737,7 +766,9 @@ dr_client_iterator_next(dr_client_iterator_t *iter,
 void
 dr_client_iterator_stop(dr_client_iterator_t *iter);
 
+#ifdef WINDOWS
 
+DR_CONFIG_API
 /**
  * Provides a mechanism for an external entity on the guest OS to
  * communicate with a client.  Requires administrative privileges.  A
@@ -790,6 +821,7 @@ dr_nudge_process(const char *process_name,
                  uint timeout_ms,
                  int *nudge_count /*OUT */);
 
+DR_CONFIG_API
 /**
  * Provides a mechanism for an external entity on the guest OS to
  * communicate with a client.  Requires administrative privileges.  A
@@ -831,6 +863,7 @@ dr_nudge_pid(process_id_t process_id,
              uint64 arg,
              uint timeout_ms);
 
+DR_CONFIG_API
 /**
  * Provides a mechanism for an external entity on the guest OS to
  * communicate with a client.  Requires administrative privileges.  A
