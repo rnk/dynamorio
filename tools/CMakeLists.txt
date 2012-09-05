@@ -99,6 +99,7 @@ if (UNIX)
     OUTPUT_QUIET)
   configure_file(gdbinit ${CMAKE_BINARY_DIR}/.gdbinit)
 
+  # FIXME i#840: Replace the shell scripts above when ready.
   # Add a native version of drconfig.
   add_executable(drconfig_exe drdeploy.c)
   target_link_libraries(drconfig_exe drconfiglib)

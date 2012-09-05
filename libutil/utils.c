@@ -43,7 +43,7 @@
 # include "elm.h"
 # include "events.h" /* for canary */
 # include "processes.h" /* for canary */
-# include "options.h" // from src module
+# include "options.h" /* for option checking */
 
 # include <io.h> /* for canary */
 # include <Fcntl.h> /* for canary */

@@ -35,7 +35,7 @@
 #ifndef _DETERMINA_SHAREUTILS_H_
 #define _DETERMINA_SHAREUTILS_H_
 
-#include "lib/globals_shared.h"
+#include "share.h"
 #include "lib/dr_config.h"
 #include "our_tchar.h"
 

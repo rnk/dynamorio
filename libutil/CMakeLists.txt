@@ -49,32 +49,33 @@ include_directories(BEFORE
   ${PROJECT_BINARY_DIR} # for events.h
   )
 
-if (WIN32)
-  set(CORE_SRCS
-    ${PROJECT_SOURCE_DIR}/core/options.c
-    ${PROJECT_SOURCE_DIR}/core/win32/inject_shared.c
-    ${PROJECT_SOURCE_DIR}/core/win32/module_shared.c
-    ${PROJECT_SOURCE_DIR}/core/win32/drmarker.c
-    ${EVENTS_SRCS}
-    ${SYSLOG_SRCS}
-    )
-  set(RESOURCES ${PROJECT_SOURCE_DIR}/core/win32/resources.rc)
-  set(BASE_SRCS
-    services.c
-    config.c
-    elm.c
-    processes.c
-    utils.c
-    policy.c
-    parser.c
-    )
-  set(ROOT_SRCS
-    detach.c
-    mfapi.c
-    )
+set(CORE_SRCS
+  ${PROJECT_SOURCE_DIR}/core/options.c
+  ${PROJECT_SOURCE_DIR}/core/win32/inject_shared.c
+  ${PROJECT_SOURCE_DIR}/core/win32/module_shared.c
+  ${PROJECT_SOURCE_DIR}/core/win32/drmarker.c
+  ${EVENTS_SRCS}
+  ${SYSLOG_SRCS}
+  )
+set(RESOURCES ${PROJECT_SOURCE_DIR}/core/win32/resources.rc)
+set(BASE_SRCS
+  services.c
+  config.c
+  elm.c
+  processes.c
+  utils.c
+  policy.c
+  parser.c
+  )
+set(ROOT_SRCS
+  detach.c
+  mfapi.c
+  )
 
+add_definitions(-DNOT_DYNAMORIO_CORE)
+
+if (WIN32)
   add_definitions(-D_CRT_SECURE_NO_WARNINGS -DUNICODE -D_UNICODE)
-  add_definitions(-DNOT_DYNAMORIO_CORE)
   if (NOT HOT_PATCHING_INTERFACE)
     # We define this to get processes.h included: PROBE_API controls whether we
     # expose it
@@ -96,16 +97,26 @@ if (WIN32)
     add_dependencies(policy_static generate_syslog generate_events)
   endif ()
 
-  add_library(drconfiglib SHARED ${BASE_SRCS} ${ROOT_SRCS} ${CORE_SRCS}
-    ${RESOURCES} dr_config.c)
-  set_target_properties(drconfiglib PROPERTIES
-    # Set define parameters for resources.rc
-    # Since it's hard to pass spaces in defines (I can get a " through using
-    # \\\\\\\" but no spaces) we put strings in resources.rc and select
-    # using RC_ defines.
-    COMPILE_FLAGS "${libutil_cflags} -DRC_IS_DRCONFIGLIB"
-    # put dll in lib dir
-    RUNTIME_OUTPUT_DIRECTORY${location_suffix} "${CMAKE_LIBRARY_OUTPUT_DIRECTORY}")
+  set(DRCONFIG_SRCS dr_config.c ${BASE_SRCS} ${ROOT_SRCS} ${CORE_SRCS}
+    ${RESOURCES})
+else () # UNIX
+  # Most of it is unported.  We're just reusing some utils.c and the config
+  # file writing code currently.
+  set(DRCONFIG_SRCS dr_config.c utils.c)
+  set(libutil_cflags "")
+endif ()
+
+add_library(drconfiglib SHARED ${DRCONFIG_SRCS})
+set_target_properties(drconfiglib PROPERTIES
+  # Set define parameters for resources.rc
+  # Since it's hard to pass spaces in defines (I can get a " through using
+  # \\\\\\\" but no spaces) we put strings in resources.rc and select
+  # using RC_ defines.
+  COMPILE_FLAGS "${libutil_cflags} -DRC_IS_DRCONFIGLIB"
+  # put dll in lib dir
+  RUNTIME_OUTPUT_DIRECTORY${location_suffix} "${CMAKE_LIBRARY_OUTPUT_DIRECTORY}")
+
+if (WIN32)
   set_target_properties(drconfiglib PROPERTIES
     LINK_FLAGS "${libutil_ldflags}")
   # drinject.exe needs a copy in the bin dir
@@ -142,18 +153,6 @@ if (WIN32)
       add_dependencies(mfapi generate_syslog generate_events)
     endif ()
   endif (MFAPI_ENABLED)
-else ()  # UNIX
-  # We're incrementally porting the features we need, so we can only add source
-  # files here one at a time.
-  add_library(drconfiglib SHARED dr_config.c utils.c)
-  set_target_properties(drconfiglib PROPERTIES
-    # Set define parameters for resources.rc
-    # Since it's hard to pass spaces in defines (I can get a " through using
-    # \\\\\\\" but no spaces) we put strings in resources.rc and select
-    # using RC_ defines.
-    COMPILE_FLAGS "${libutil_cflags} -DRC_IS_DRCONFIGLIB"
-    # put dll in lib dir
-    RUNTIME_OUTPUT_DIRECTORY${location_suffix} "${CMAKE_LIBRARY_OUTPUT_DIRECTORY}")
 endif ()
 
 DR_install(TARGETS drconfiglib

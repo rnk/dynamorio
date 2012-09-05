@@ -31,22 +31,11 @@
  * DAMAGE.
  */
 
-/* MSVC wants the linkage on the prototypes in the header to match the linkage
- * on the definitions, so we have to put these defines first.
- */
-#include "configure.h" /* since not including share.h */
-#ifdef WINDOWS
-# define EXPORT __declspec(dllexport)
-#else
-# define EXPORT __attribute__((visibility("default")))
-#endif
-#define DR_CONFIG_API EXPORT
-
 #include <stdlib.h>  /* for malloc */
 #include <stdio.h>
 #include <string.h>
 #include "utils.h"
-#include "globals_shared.h"
+#include "share.h"
 #include "utils.h"
 #include "lib/dr_config.h"
 #include "our_tchar.h"
@@ -320,10 +309,11 @@ free_opt_info(opt_info_t *opt_info)
 #endif
 
 #ifndef PARAMS_IN_REGISTRY
-# define LOCAL_CONFIG_ENV "USERPROFILE"
 # ifdef WINDOWS
+#  define LOCAL_CONFIG_ENV "USERPROFILE"
 #  define LOCAL_CONFIG_SUBDIR "dynamorio"
 # else
+#  define LOCAL_CONFIG_ENV "HOME"
 #  define LOCAL_CONFIG_SUBDIR ".dynamorio"
 # endif
 # define GLOBAL_CONFIG_SUBDIR "config"
@@ -359,7 +349,8 @@ get_config_dir(bool global, char *fname, size_t fname_len)
         _snprintf(dir, BUFFER_SIZE_ELEMENTS(dir), TSTR_FMT, get_dynamorio_home());
         subdir = GLOBAL_CONFIG_SUBDIR;
 #else
-        /* XXX: Port utils.c. */
+        /* FIXME i#840: Support global config files by porting more of utils.c.
+         */
         return false;
 #endif
     } else {
@@ -369,7 +360,7 @@ get_config_dir(bool global, char *fname, size_t fname_len)
         if (len <= 0)
             return false;
 #else
-        char *home = getenv("HOME");
+        char *home = getenv(LOCAL_CONFIG_ENV);
         strncpy(dir, home, BUFFER_SIZE_ELEMENTS(dir));
         NULL_TERMINATE_BUFFER(dir);
 #endif
@@ -841,7 +832,7 @@ write_options(opt_info_t *opt_info, TCHAR *wbuf)
             DO_ASSERT(false);
     }
 
-    len = _sntprintf(wbuf + sofar, bufsz - sofar, _TEXT("%S"), mode_str);
+    len = _sntprintf(wbuf + sofar, bufsz - sofar, _TEXT(TSTR_FMT), mode_str);
     if (len >= 0 && len <= bufsz - sofar)
         sofar += len;
 
@@ -971,7 +962,7 @@ dr_syswide_is_on(dr_platform_t dr_platform,
     get_syswide_path(wbuf, dr_root_dir);
     return CAST_TO_bool(is_custom_autoinjection_set(wbuf));
 }
-#endif
+#endif /* WINDOWS */
 
 dr_config_status_t
 dr_register_process(const char *process_name,
@@ -1099,11 +1090,11 @@ dr_register_process(const char *process_name,
     fclose(f);
 #endif
 
+#ifdef WINDOWS
     /* If on win2k, copy drearlyhelper?.dll to system32 
      * FIXME: this requires admin privs!  oh well: only issue is early inject
      * on win2k...
      */
-#ifdef WINDOWS
     if (get_platform(&platform) == ERROR_SUCCESS && platform == PLATFORM_WIN_2000) {
         _sntprintf(wbuf, MAXIMUM_PATH, _TEXT(TSTR_FMT)LIB32_SUBDIR, dr_root_dir);
         NULL_TERMINATE_BUFFER(wbuf);
@@ -1265,6 +1256,7 @@ read_process_policy(IF_REG_ELSE(ConfigGroup *proc_policy, FILE *f),
     free_opt_info(&opt_info);
 }
 
+/* FIXME i#840: NYI for Linux, need a FindFirstFile equivalent. */
 #ifdef WINDOWS
 
 struct _dr_registered_process_iterator_t {
@@ -1751,7 +1743,9 @@ dr_unregister_client(const char *process_name,
     return status;
 }
 
-/* XXX: Support the nudge API on Linux. */
+/* FIXME i#840: Support the nudge API on Linux by incorporating
+ * tools/nudgeunix.c.
+ */
 #ifdef WINDOWS
 
 typedef struct {

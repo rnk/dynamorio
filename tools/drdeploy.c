@@ -146,12 +146,12 @@ const char *usage_str =
     "                          This option requires administrative privileges.\n"
     "       -syswide_off       Disable systemwide injection.\n"
     "                          This option requires administrative privileges.\n"
+# endif
     "       -global            Use global configuration files instead of local\n"
     "                          user-private configuration files.  The global\n"
     "                          config dir must be set up ahead of time.\n"
     "                          This option may require administrative privileges.\n"
     "                          If a local file already exists it will take precedence.\n"
-# endif
     "       -norun             Create a configuration that excludes the application\n"
     "                          from running under DR control.  Useful for following\n"
     "                          all child processes except a handful (blacklist).\n"
@@ -317,10 +317,14 @@ static bool check_dr_root(const char *dr_root, bool debug,
         "lib64\\release\\dynamorio.dll",
         "lib64\\debug\\dynamorio.dll"
 #else /* LINUX */
-        "lib32/release/libdynamorio.so",
+        "lib32/debug/libdrpreload.so",
         "lib32/debug/libdynamorio.so",
-        "lib64/release/libdynamorio.so",
+        "lib32/release/libdrpreload.so",
+        "lib32/release/libdynamorio.so",
+        "lib64/debug/libdrpreload.so"
         "lib64/debug/libdynamorio.so"
+        "lib64/release/libdrpreload.so",
+        "lib64/release/libdynamorio.so",
 #endif
     };
 
@@ -469,6 +473,7 @@ bool register_client(const char *process_name,
     return true;
 }
 
+/* FIXME i#840: Port registered process iterator. */
 #ifdef WINDOWS
 static const char *
 platform_name(dr_platform_t platform)
@@ -478,7 +483,6 @@ platform_name(dr_platform_t platform)
         "64-bit" : "32-bit/WOW64";
 }
 
-/* XXX: Port registered process iterator. */
 static void
 list_process(char *name, bool global, dr_platform_t platform,
              dr_registered_process_iterator_t *iter)
@@ -522,7 +526,7 @@ list_process(char *name, bool global, dr_platform_t platform,
     }
     dr_client_iterator_stop(c_iter);
 }
-#endif
+#endif /* WINDOWS */
 
 #ifndef DRCONFIG
 /* i#200/PR 459481: communicate child pid via file */
@@ -542,7 +546,7 @@ write_pid_to_file(const char *pidfile, process_id_t pid)
         fclose(f);
     }
 }
-#endif
+#endif /* DRCONFIG */
 
 int main(int argc, char *argv[])
 {
@@ -570,6 +574,7 @@ int main(int argc, char *argv[])
     bool use_debug = false;
     dr_platform_t dr_platform = DR_PLATFORM_DEFAULT;
 #ifdef WINDOWS
+    /* FIXME i#840: Implement nudges on Linux. */
     bool nudge_all = false;
     process_id_t nudge_pid = 0;
     client_id_t nudge_id = 0;
@@ -653,6 +658,7 @@ int main(int argc, char *argv[])
         }
 #ifdef DRCONFIG
 # ifdef WINDOWS
+        /* FIXME i#840: These are NYI for Linux. */
         else if (!strcmp(argv[i], "-list_registered")) {
             action = action_list;
             list_registered = true;
@@ -745,6 +751,7 @@ int main(int argc, char *argv[])
             process = argv[++i];
         }
 # ifdef WINDOWS
+        /* FIXME i#840: Nudge is NYI for Linux. */
         else if (strcmp(argv[i], "-nudge_timeout") == 0) {
             nudge_timeout = strtoul(argv[++i], NULL, 10);
         }
@@ -953,11 +960,12 @@ int main(int argc, char *argv[])
         if (!unregister_proc(process, 0, global, dr_platform))
             die();
     }
-#ifndef WINDOWS
+# ifndef WINDOWS
     else {
         usage("no action specified");
     }
 # else /* WINDOWS */
+    /* FIXME i#840: Nudge NYI on Linux. */
     else if (action == action_nudge) {
         int count = 1;
         dr_config_status_t res = DR_SUCCESS;
