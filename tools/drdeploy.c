@@ -321,10 +321,10 @@ static bool check_dr_root(const char *dr_root, bool debug,
         "lib32/debug/libdynamorio.so",
         "lib32/release/libdrpreload.so",
         "lib32/release/libdynamorio.so",
-        "lib64/debug/libdrpreload.so"
-        "lib64/debug/libdynamorio.so"
+        "lib64/debug/libdrpreload.so",
+        "lib64/debug/libdynamorio.so",
         "lib64/release/libdrpreload.so",
-        "lib64/release/libdynamorio.so",
+        "lib64/release/libdynamorio.so"
 #endif
     };
 
