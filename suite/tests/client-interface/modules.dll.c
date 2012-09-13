@@ -43,6 +43,8 @@
 # define IF_WINDOWS(x) 
 #endif
 
+static const char import_name_start[] = IF_WINDOWS_ELSE("LoadLibrary", "dlopen");
+
 bool string_match(const char *str1, const char *str2)
 {
     if (str1 == NULL || str2 == NULL)
@@ -69,6 +71,7 @@ void module_load_event(void *dcontext, const module_data_t *data, bool loaded)
      * just look for the module in question.
      */
     /* Test i#138 */
+    dr_import_iterator_t *iter;
     if (data->full_path == NULL || data->full_path[0] == '\0')
         dr_fprintf(STDERR, "ERROR: full_path empty for %s\n", dr_module_preferred_name(data));
 #ifdef WINDOWS
@@ -79,6 +82,13 @@ void module_load_event(void *dcontext, const module_data_t *data, bool loaded)
     if (string_match(data->names.module_name,
                      IF_WINDOWS_ELSE("ADVAPI32.dll", "libz.so.1")))
         dr_fprintf(STDERR, "LOADED MODULE: %s\n", data->names.module_name);
+
+    /* Exercise this API from the load event. */
+    iter = dr_import_iterator_start(data->handle);
+    while (dr_import_iterator_next(iter)) {
+        /* nothing */
+    }
+    dr_import_iterator_stop(iter);
 }
 
 static
@@ -133,10 +143,27 @@ test_aux_lib(client_id_t id)
 DR_EXPORT
 void dr_init(client_id_t id)
 {
+    dr_import_iterator_t *iter;
+    bool found_import = false;
     module_data_t *main_mod = dr_get_main_module();
     if (strstr(dr_module_preferred_name(main_mod), "client.modules") == NULL) {
         dr_fprintf(STDERR, "ERROR: Main module has the wrong name\n");
     }
+
+    /* Look for an import that we know will be present. */
+    iter = dr_import_iterator_start(data->handle);
+    while (dr_import_iterator_next(iter)) {
+        /* Only compare the start of the string to avoid caring about
+         * LoadLibraryA vs LoadLibraryW on Windows.
+         */
+        if (strncmp(iter->name, import_name_start,
+                    strlen(import_name_start)) == 0) {
+            found_import = true;
+        }
+    }
+    if (!found_import)
+        dr_fprintf(STDERR, "ERROR: didn't find import %s\n", import_name_start);
+    dr_import_iterator_stop(iter);
     dr_free_module_data(main_mod);
 
     dr_register_module_load_event(module_load_event);

@@ -36,6 +36,7 @@
 #include "../module_shared.h"
 #include "os_private.h"
 #include "../utils.h"
+#include "../x86/instrument.h"
 #include <string.h>
 #include <stddef.h> /* offsetof */
 #include <link.h>   /* Elf_Symndx */
@@ -526,11 +527,10 @@ module_hashtab_init(os_module_data_t *os_data)
         /* set up symbol lookup fields */
         if (os_data->hash_is_gnu) {
             /* .gnu.hash format.  can't find good docs for it. */
-            Elf32_Word symbias;
             Elf32_Word bitmask_nwords;
             Elf32_Word *htab = (Elf32_Word *) os_data->hashtab;
             os_data->num_buckets = (size_t) *htab++;
-            symbias = *htab++;
+            os_data->gnu_symbias = *htab++;
             bitmask_nwords = *htab++;
             os_data->gnu_bitidx = (ptr_uint_t) (bitmask_nwords - 1);
             os_data->gnu_shift = (ptr_uint_t) *htab++;
@@ -538,7 +538,7 @@ module_hashtab_init(os_module_data_t *os_data)
             htab += ELF_WORD_SIZE / 32 * bitmask_nwords;
             os_data->buckets = (app_pc) htab;
             htab += os_data->num_buckets;
-            os_data->chain = (app_pc) (htab - symbias);
+            os_data->chain = (app_pc) (htab - os_data->gnu_symbias);
         } else {
             /* sysv .hash format: nbuckets; nchain; buckets[]; chain[] */
             Elf_Symndx *htab = (Elf_Symndx *) os_data->hashtab;
@@ -1504,6 +1504,122 @@ static void
 module_undef_symbols()
 {
     FATAL_USAGE_ERROR(UNDEFINED_SYMBOL_REFERENCE, 0, "");
+}
+
+typedef struct _elf_import_iterator_t {
+    /* C-style inheritance: put the public iterator fields at the beginning. */
+    dr_import_iterator_t pub;
+
+    /* Private fields. */
+    ELF_SYM_TYPE *dynsym;       /* absolute addr of .dynsym */
+    size_t symentry_size;       /* size of a .dynsym entry */
+    ELF_SYM_TYPE *import_end;   /* pointer beyond last import .dynsym entry */
+    char *dynstr;               /* absolute addr of .dynstr */
+    size_t dynstr_size;         /* size of .dynstr */
+    ELF_SYM_TYPE *cur_sym;      /* current position in .dynsym */
+} elf_import_iterator_t;
+
+static void
+dynsym_next(elf_import_iterator_t *iter)
+{
+    iter->cur_sym = (ELF_SYM_TYPE *) ((byte *) iter->cur_sym +
+                                      iter->symentry_size);
+}
+
+dr_import_iterator_t *
+dr_import_iterator_start(module_handle_t handle)
+{
+    module_area_t *ma;
+    elf_import_iterator_t *iter;
+    size_t max_imports;
+
+    iter = global_heap_alloc(sizeof(*iter) HEAPACCT(ACCT_CLIENT));
+    if (iter == NULL)
+        return NULL;
+
+    /* Public fields. */
+    iter->pub.name = NULL;
+
+    os_get_module_info_lock();
+    ma = module_pc_lookup((byte *) handle);
+    if (ma != NULL) {
+        iter->dynsym = (ELF_SYM_TYPE *) ma->os_data.dynsym;
+        iter->symentry_size = ma->os_data.symentry_size;
+        iter->dynstr = (char *) ma->os_data.dynstr;
+        iter->dynstr_size = ma->os_data.dynstr_size;
+        iter->cur_sym = iter->dynsym;
+
+        /* The length of .dynsym is not available in the mapped image, so we
+         * have to be creative.  The two export hashtables point into dynsym,
+         * though, so they have some info about the length.
+         */
+        if (ma->os_data.hash_is_gnu) {
+            /* See https://blogs.oracle.com/ali/entry/gnu_hash_elf_sections 
+             * "With GNU hash, the dynamic symbol table is divided into two
+             * parts. The first part receives the symbols that can be omitted
+             * from the hash table."
+             * gnu_symbias is the index of the first symbol in the hash table,
+             * so all of the imports are before it.  If we ever want to iterate
+             * all of .dynsym, we will have to look at the contents of the hash
+             * table.
+             */
+            max_imports = ma->os_data.gnu_symbias;
+        } else {
+            /* See http://www.sco.com/developers/gabi/latest/ch5.dynamic.html#hash
+             * "The number of symbol table entries should equal nchain"
+             */
+            max_imports = ma->os_data.num_chain;
+        }
+        iter->import_end = (ELF_SYM_TYPE *)((app_pc)iter->dynsym +
+                                            (max_imports * iter->symentry_size));
+
+        /* The first entry is zero sometimes.  Skip it. */
+        if (iter->cur_sym->st_name == 0) {
+            dynsym_next(iter);
+        }
+    } else {
+        global_heap_free(iter, sizeof(*iter) HEAPACCT(ACCT_CLIENT));
+        iter = NULL;
+    }
+    os_get_module_info_unlock();
+
+    return &iter->pub;
+}
+
+bool
+dr_import_iterator_next(dr_import_iterator_t *pub_iter)
+{
+    elf_import_iterator_t *iter = (elf_import_iterator_t *) pub_iter;
+
+    if (iter == NULL)
+        return false;
+
+    if (iter->cur_sym >= iter->import_end)
+        return false;
+
+    /* Imports have zero st_value fields.  Anything else is something else, so
+     * we skip it.  Modules using .gnu.hash symbol lookup tend to have imports
+     * come first, but sysv hash tables don't have any such split.
+     */
+    while (iter->cur_sym->st_value != 0) {
+        dynsym_next(iter);
+        if (iter->cur_sym >= iter->import_end)
+            return false;
+    }
+
+    iter->pub.name = (char *) iter->dynstr + iter->cur_sym->st_name;
+
+    dynsym_next(iter);
+    return true;
+}
+
+void
+dr_import_iterator_stop(dr_import_iterator_t *pub_iter)
+{
+    elf_import_iterator_t *iter = (elf_import_iterator_t *) pub_iter;
+    if (iter == NULL)
+        return;
+    global_heap_free(iter, sizeof(*iter) HEAPACCT(ACCT_CLIENT));
 }
 
 static void

@@ -2454,6 +2454,37 @@ DR_API
 const char *
 dr_module_preferred_name(const module_data_t *data);
 
+
+/* DR_API EXPORT BEGIN */
+/**
+ * NOCHECKIN
+ */
+typedef struct _dr_import_iterator_t {
+    char *name;                 /** Name of import. */
+} dr_import_iterator_t;
+/* DR_API EXPORT STOP */
+
+DR_API
+/**
+ * NOCHECKIN
+ */
+dr_import_iterator_t *
+dr_import_iterator_start(module_handle_t handle);
+
+DR_API
+/**
+ * NOCHECKIN
+ */
+bool
+dr_import_iterator_next(dr_import_iterator_t *iter);
+
+DR_API
+/**
+ * NOCHECKIN
+ */
+void
+dr_import_iterator_stop(dr_import_iterator_t *iter);
+
 /* DR_API EXPORT BEGIN */
 #ifdef WINDOWS
 /* DR_API EXPORT END */
