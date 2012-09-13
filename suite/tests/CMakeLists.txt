@@ -408,7 +408,7 @@ add_split_asm_target("${tools_c}" tools_asm generate_tools_asm "_asm"
 add_library(tools STATIC ${tools_c} ${tools_asm})
 if ("${CMAKE_GENERATOR}" MATCHES "Visual Studio")
   # for correct parallel builds we need a target
-  add_dependencies(${test} ${generate_tools_asm})
+  add_dependencies(tools ${generate_tools_asm})
 endif ()
 
 if (WIN32)
