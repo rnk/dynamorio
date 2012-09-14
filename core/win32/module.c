@@ -231,6 +231,16 @@ typedef struct module_info_vector_t {
     mutex_t lock;
 } module_info_vector_t;
 
+typedef struct _pe_import_iterator_t {
+    /* C-style inheritance: put the public iterator fields at the beginning. */
+    dr_import_iterator_t pub;
+
+    /* Private fields. */
+    byte *mod_base;
+    IMAGE_IMPORT_DESCRIPTOR *imports;
+    IMAGE_IMPORT_DESCRIPTOR *imports_end;
+} pe_import_iterator_t;
+
 /* debug-only so we don't need to efficiently protect it */
 DECLARE_CXTSWPROT_VAR(static module_info_vector_t process_module_vector,
                       {NULL, 0, 0, INIT_LOCK_FREE(process_module_vector_lock)});
@@ -6238,4 +6248,70 @@ os_module_has_dynamic_base(app_pc module_base)
     nt = NT_HEADER(module_base);
     return TEST(IMAGE_DLLCHARACTERISTICS_DYNAMIC_BASE,
                 nt->OptionalHeader.DllCharacteristics);
+}
+
+dr_import_iterator_t *
+dr_import_iterator_start(module_handle_t handle)
+{
+    pe_import_iterator_t *iter;
+    IMAGE_DOS_HEADER *dos;
+    IMAGE_NT_HEADERS *nt;
+    IMAGE_DATA_DIRECTORY *dir;
+
+    dos = (IMAGE_DOS_HEADER *) handle;
+    nt = (IMAGE_NT_HEADERS *) ((byte *) handle + dos->e_lfanew);
+    if (nt->Signature != IMAGE_NT_SIGNATURE)
+        return NULL;
+    /* Could be paranoid and de-ref this (and dos and nt) inside a TRY
+     * but these should be present: I'm actually more nervous about making
+     * a too-big DR_TRY_EXCEPT b/c it can't nest
+     */
+    dir = (nt->OptionalHeader.Magic == IMAGE_NT_OPTIONAL_HDR32_MAGIC ?
+           (nt->OptionalHeader.DataDirectory) :
+           (((IMAGE_NT_HEADERS64 *)nt)->OptionalHeader.DataDirectory)) +
+            IMAGE_DIRECTORY_ENTRY_IMPORT;
+    if (dir == NULL || dir->Size <= 0)
+        return NULL;
+
+    iter = global_heap_alloc(sizeof(*iter) HEAPACCT(ACCT_CLIENT));
+    if (iter == NULL)
+        return NULL;
+    iter->pub.name = NULL;
+
+    iter->mod_base = (byte *) handle;
+    iter->imports = (IMAGE_IMPORT_DESCRIPTOR *) (iter->mod_base + dir->VirtualAddress);
+    iter->imports_end = (IMAGE_IMPORT_DESCRIPTOR *)
+        (iter->mod_base + dir->VirtualAddress + dir->Size);
+
+    return &iter->pub;
+}
+
+bool
+dr_import_iterator_next(dr_import_iterator_t *pub_iter)
+{
+    pe_import_iterator_t *iter = (pe_import_iterator_t *) pub_iter;
+    bool partial = false;
+
+    if (iter->imports >= iter->imports_end)
+        return false;
+
+    DR_TRY_EXCEPT(dr_get_current_drcontext(), {
+        iter->pub.name = (const char *) (iter->mod_base + iter->imports->Name);
+    }, {
+        partial = true; /* partial map */
+    });
+    /* Can't return out of DR_TRY_EXCEPT */
+    if (partial)
+        return false;
+    iter->imports++;
+    return true;
+}
+
+void
+dr_import_iterator_stop(dr_import_iterator_t *pub_iter)
+{
+    pe_import_iterator_t *iter = (pe_import_iterator_t *) pub_iter;
+    if (iter == NULL)
+        return;
+    global_heap_free(iter, sizeof(*iter) HEAPACCT(ACCT_CLIENT));
 }
