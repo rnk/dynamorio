@@ -146,12 +146,14 @@ void dr_init(client_id_t id)
     dr_import_iterator_t *iter;
     bool found_import = false;
     module_data_t *main_mod = dr_get_main_module();
+    module_handle_t mod_handle = main_mod->handle;
     if (strstr(dr_module_preferred_name(main_mod), "client.modules") == NULL) {
         dr_fprintf(STDERR, "ERROR: Main module has the wrong name\n");
     }
+    dr_free_module_data(main_mod);
 
     /* Look for an import that we know will be present. */
-    iter = dr_import_iterator_start(data->handle);
+    iter = dr_import_iterator_start(mod_handle);
     while (dr_import_iterator_next(iter)) {
         /* Only compare the start of the string to avoid caring about
          * LoadLibraryA vs LoadLibraryW on Windows.
@@ -164,7 +166,6 @@ void dr_init(client_id_t id)
     if (!found_import)
         dr_fprintf(STDERR, "ERROR: didn't find import %s\n", import_name_start);
     dr_import_iterator_stop(iter);
-    dr_free_module_data(main_mod);
 
     dr_register_module_load_event(module_load_event);
     dr_register_module_unload_event(module_unload_event);    

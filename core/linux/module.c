@@ -46,6 +46,19 @@ typedef union _elf_generic_header_t {
     Elf32_Ehdr elf32;
 } elf_generic_header_t;
 
+typedef struct _elf_import_iterator_t {
+    /* C-style inheritance: put the public iterator fields at the beginning. */
+    dr_import_iterator_t pub;
+
+    /* Private fields. */
+    ELF_SYM_TYPE *dynsym;       /* absolute addr of .dynsym */
+    size_t symentry_size;       /* size of a .dynsym entry */
+    ELF_SYM_TYPE *import_end;   /* pointer beyond last import .dynsym entry */
+    char *dynstr;               /* absolute addr of .dynstr */
+    size_t dynstr_size;         /* size of .dynstr */
+    ELF_SYM_TYPE *cur_sym;      /* current position in .dynsym */
+} elf_import_iterator_t;
+
 /* In case want to build w/o gnu headers and use that to run recent gnu elf */
 #ifndef DT_GNU_HASH
 # define DT_GNU_HASH 0x6ffffef5
@@ -1506,19 +1519,6 @@ module_undef_symbols()
     FATAL_USAGE_ERROR(UNDEFINED_SYMBOL_REFERENCE, 0, "");
 }
 
-typedef struct _elf_import_iterator_t {
-    /* C-style inheritance: put the public iterator fields at the beginning. */
-    dr_import_iterator_t pub;
-
-    /* Private fields. */
-    ELF_SYM_TYPE *dynsym;       /* absolute addr of .dynsym */
-    size_t symentry_size;       /* size of a .dynsym entry */
-    ELF_SYM_TYPE *import_end;   /* pointer beyond last import .dynsym entry */
-    char *dynstr;               /* absolute addr of .dynstr */
-    size_t dynstr_size;         /* size of .dynstr */
-    ELF_SYM_TYPE *cur_sym;      /* current position in .dynsym */
-} elf_import_iterator_t;
-
 static void
 dynsym_next(elf_import_iterator_t *iter)
 {
@@ -1536,8 +1536,6 @@ dr_import_iterator_start(module_handle_t handle)
     iter = global_heap_alloc(sizeof(*iter) HEAPACCT(ACCT_CLIENT));
     if (iter == NULL)
         return NULL;
-
-    /* Public fields. */
     iter->pub.name = NULL;
 
     os_get_module_info_lock();

@@ -2457,30 +2457,36 @@ dr_module_preferred_name(const module_data_t *data);
 
 /* DR_API EXPORT BEGIN */
 /**
- * NOCHECKIN
+ * Module import iterator data type.  Can be created by calling
+ * dr_import_iterator_start() and must be freed by calling
+ * dr_import_iterator_stop().
  */
 typedef struct _dr_import_iterator_t {
-    char *name;                 /** Name of import. */
+    const char *name;               /** Name of import. */
 } dr_import_iterator_t;
 /* DR_API EXPORT STOP */
 
 DR_API
 /**
- * NOCHECKIN
+ * Module import iterator.  The iterator returned is invalid until after the
+ * first call to dr_import_iterator_next().
  */
 dr_import_iterator_t *
 dr_import_iterator_start(module_handle_t handle);
 
 DR_API
 /**
- * NOCHECKIN
+ * Module import iterator.  If there is another module import, updates \p iter
+ * with its data and returns true.  Returns false otherwise.  Iterator state is
+ * only valid until the next call to dr_import_iterator_next() or
+ * dr_import_iterator_stop().
  */
 bool
 dr_import_iterator_next(dr_import_iterator_t *iter);
 
 DR_API
 /**
- * NOCHECKIN
+ * Stops import iteration and frees a module import iterator.
  */
 void
 dr_import_iterator_stop(dr_import_iterator_t *iter);
