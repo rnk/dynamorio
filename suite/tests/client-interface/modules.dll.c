@@ -83,7 +83,7 @@ void module_load_event(void *dcontext, const module_data_t *data, bool loaded)
                      IF_WINDOWS_ELSE("ADVAPI32.dll", "libz.so.1")))
         dr_fprintf(STDERR, "LOADED MODULE: %s\n", data->names.module_name);
 
-    /* Exercise this API from the load event. */
+    /* Exercise this API on modules loaded from the system. */
     iter = dr_import_iterator_start(data->handle);
     while (dr_import_iterator_next(iter)) {
         /* nothing */
