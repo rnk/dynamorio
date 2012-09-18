@@ -671,6 +671,7 @@ else (UNIX)
   set(DBG_OPT "/Od")
   set(ASM_FLAGS "/nologo ${ASM_DBG}")
   set(BASE_CXXFLAGS "${BASE_CFLAGS}")
+  set(CMAKE_RC_FLAGS "/nologo")
 endif (UNIX)
 string(REPLACE " " ";" ASM_FLAGS_LIST "${ASM_FLAGS}")
 

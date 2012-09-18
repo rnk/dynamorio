@@ -33,13 +33,19 @@ if (UNIX)
   message(FATAL_ERROR "libutil is Windows-only")
 endif (UNIX)
 
-# These custom commands are per-subdir so can't just place at top level
-include(../make/CMake_events.cmake)
-if ("${CMAKE_GENERATOR}" MATCHES "Visual Studio")
-  # i#801: we use custom target (from core/CMakeLists.txt) for dependence,
-  # and sources cause problems w/ VS
+if ("${CMAKE_GENERATOR}" MATCHES "Visual Studio" OR
+    "${CMAKE_GENERATOR}" MATCHES "Ninja")
+  # i#801: We use custom target (from core/CMakeLists.txt) to ensure headers
+  # are generated before compiling .c files that use them.  We used to list the
+  # header as a source file dependence in the targets that use them, but that
+  # doesn't work well with non-Makefile generators.
   set(SYSLOG_SRCS "")
   set(EVENTS_SRCS "")
+  set(add_generated_header_deps ON)
+else ()
+  # These custom commands are per-subdir so can't just place at top level
+  include(../make/CMake_events.cmake)
+  set(add_generated_header_deps OFF)
 endif ()
 
 # FIXME i#60: add rules from old Makefile for building unit tests
@@ -93,8 +99,7 @@ set_target_properties(policy_static PROPERTIES
   COMPILE_FLAGS "${libutil_cflags}")
 set_target_properties(policy_static PROPERTIES
   LINK_FLAGS "${libutil_ldflags}")
-if ("${CMAKE_GENERATOR}" MATCHES "Visual Studio")
-  # for parallel build correctness we need a target dependence
+if (add_generated_header_deps)
   add_dependencies(policy_static generate_syslog generate_events)
 endif ()
 
@@ -114,8 +119,7 @@ set_target_properties(drconfiglib PROPERTIES
 add_custom_command(TARGET drconfiglib POST_BUILD COMMAND ${CMAKE_COMMAND}
   ARGS -E copy "${CMAKE_LIBRARY_OUTPUT_DIRECTORY}/drconfiglib.dll"
   "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/" VERBATIM)
-if ("${CMAKE_GENERATOR}" MATCHES "Visual Studio")
-  # for parallel build correctness we need a target dependence
+if (add_generated_header_deps)
   add_dependencies(drconfiglib generate_syslog generate_events)
 endif ()
 
@@ -125,8 +129,7 @@ set_target_properties(dumpevts PROPERTIES
   COMPILE_FLAGS "${libutil_cflags} -DRC_IS_DUMPEVTS")
 set_target_properties(dumpevts PROPERTIES
   LINK_FLAGS "${libutil_ldflags}")
-if ("${CMAKE_GENERATOR}" MATCHES "Visual Studio")
-  # for parallel build correctness we need a target dependence
+if (add_generated_header_deps)
   add_dependencies(dumpevts generate_syslog generate_events)
 endif ()
 
@@ -139,8 +142,7 @@ if (MFAPI_ENABLED)
     COMPILE_FLAGS "${libutil_cflags} -DRC_IS_MFAPI")
   set_target_properties(mfapi PROPERTIES
     LINK_FLAGS "${libutil_ldflags}")
-  if ("${CMAKE_GENERATOR}" MATCHES "Visual Studio")
-    # for parallel build correctness we need a target dependence
+  if (add_generated_header_deps)
     add_dependencies(mfapi generate_syslog generate_events)
   endif ()
 endif (MFAPI_ENABLED)

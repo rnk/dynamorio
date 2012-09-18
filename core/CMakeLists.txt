@@ -124,7 +124,8 @@ endif (X64)
 
 # These custom commands are per-subdir so can't just place at top level
 include(../make/CMake_events.cmake)
-if ("${CMAKE_GENERATOR}" MATCHES "Visual Studio")
+if ("${CMAKE_GENERATOR}" MATCHES "Visual Studio" OR
+    "${CMAKE_GENERATOR}" MATCHES "Ninja")
   # For correct parallel builds we need a target to avoid
   # duplicate and racy VS per-project rules.  We can't put this in
   # CMake_events.cmake b/c we end up w/ duplicate targets then.
@@ -136,6 +137,10 @@ if ("${CMAKE_GENERATOR}" MATCHES "Visual Studio")
   # i#801: we use custom target for dependence, and sources cause problems w/ VS
   set(SYSLOG_SRCS "")
   set(EVENTS_SRCS "")
+  set(add_generated_header_deps ON)
+else ()
+  # XXX: Are we sure we don't need this when using Makefile generators?
+  set(add_generated_header_deps OFF)
 endif ()
 
 if (UNIX)
@@ -206,7 +211,7 @@ else (UNIX)
     io.c
     )
   add_library(drinjectlib SHARED ${INJECTOR_SRCS} ${SYSLOG_SRCS} ${EVENTS_SRCS})
-  if ("${CMAKE_GENERATOR}" MATCHES "Visual Studio")
+  if (add_generated_header_deps)
     # for parallel build correctness we need a target dependence
     add_dependencies(drinjectlib ${x86_noncore_asm_tgt} generate_syslog
       generate_events)
@@ -236,8 +241,7 @@ set_target_properties(dynamorio PROPERTIES
   LIBRARY_OUTPUT_DIRECTORY${location_suffix} "${DR_LIBRARY_OUTPUT_DIRECTORY}"
   RUNTIME_OUTPUT_DIRECTORY${location_suffix} "${DR_LIBRARY_OUTPUT_DIRECTORY}"
   ARCHIVE_OUTPUT_DIRECTORY${location_suffix} "${DR_LIBRARY_OUTPUT_DIRECTORY}")
-if ("${CMAKE_GENERATOR}" MATCHES "Visual Studio")
-  # for parallel build correctness we need a target dependence
+if (add_generated_header_deps)
   add_dependencies(dynamorio ${x86_core_asm_tgt} generate_syslog generate_events)
 endif ()
 
@@ -285,8 +289,7 @@ endfunction (use_ldscript)
 if (BUILD_TESTS)
   add_executable(unit_tests unit_tests.c
     ${CORE_SRCS} ${ARCH_SRCS} ${OS_SRCS} ${SYSLOG_SRCS} ${EVENTS_SRCS})
-  if ("${CMAKE_GENERATOR}" MATCHES "Visual Studio")
-    # for parallel build correctness we need a target dependence
+  if (add_generated_header_deps)
     add_dependencies(unit_tests ${x86_core_asm_tgt} generate_syslog
       generate_events)
   endif ()
@@ -330,8 +333,7 @@ set_target_properties(${PRELOAD_NAME} PROPERTIES
   LIBRARY_OUTPUT_DIRECTORY${location_suffix} "${preload_dest}"
   RUNTIME_OUTPUT_DIRECTORY${location_suffix} "${preload_dest}"
   ARCHIVE_OUTPUT_DIRECTORY${location_suffix} "${preload_dest}")
-if ("${CMAKE_GENERATOR}" MATCHES "Visual Studio")
-  # for parallel build correctness we need a target dependence
+if (add_generated_header_deps)
   add_dependencies(${PRELOAD_NAME} ${x86_noncore_asm_tgt} ${preinject_asm_tgt}
     generate_syslog generate_events)
 endif ()
@@ -352,8 +354,7 @@ add_library(drdecode
   )
 set_target_properties(drdecode PROPERTIES
   COMPILE_FLAGS "-DNOT_DYNAMORIO_CORE_PROPER -DSTANDALONE_DECODER")
-if ("${CMAKE_GENERATOR}" MATCHES "Visual Studio")
-  # for parallel build correctness we need a target dependence
+if (add_generated_header_deps)
   add_dependencies(drdecode generate_syslog generate_events)
 endif ()
 
