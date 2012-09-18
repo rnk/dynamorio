@@ -2462,7 +2462,8 @@ dr_module_preferred_name(const module_data_t *data);
  * dr_import_iterator_stop().
  */
 typedef struct _dr_import_iterator_t {
-    const char *name;               /** Name of import. */
+    const char *name;               /** Name of imported symbol. */
+    const char *modname;            /** Short name of module (Windows only). */
 } dr_import_iterator_t;
 /* DR_API EXPORT STOP */
 

@@ -231,15 +231,51 @@ typedef struct module_info_vector_t {
     mutex_t lock;
 } module_info_vector_t;
 
+/* This constant isn't in winnt.h, but it is documented here:
+ * http://msdn.microsoft.com/en-us/library/565w213d.aspx
+ *
+ * "Only the first 2048 characters of Microsoft C++ identifiers are significant.
+ * Names for user-defined types are "decorated" by the compiler to preserve type
+ * information. The resultant name, including the type information, cannot be
+ * longer than 2048 characters. (See Decorated Names for more information.)"
+ */
+enum { MAX_PE_SYMBOL_LENGTH = 2048 };
+
 typedef struct _pe_import_iterator_t {
     /* C-style inheritance: put the public iterator fields at the beginning. */
     dr_import_iterator_t pub;
 
-    /* Private fields. */
+    /* Private fields.
+     * See "A Tour of the Win32 Portable Executable File Format":
+     * http://msdn.microsoft.com/en-us/library/ms809762.aspx
+     */
     byte *mod_base;
-    IMAGE_IMPORT_DESCRIPTOR *imports;
-    IMAGE_IMPORT_DESCRIPTOR *imports_end;
+    /* cur_module and next_module point into an array of IMAGE_IMPORT_DESCRIPTOR
+     * structs.  The last element of the array is zeroed.
+     */
+    IMAGE_IMPORT_DESCRIPTOR *cur_module;
+    IMAGE_IMPORT_DESCRIPTOR *next_module;
+    /* Points into array of offsets to IMAGE_IMPORT_BY_NAME structs.  The last
+     * array element is zeroed.
+     */
+    DWORD *next_sym;
+
+    /* We copy the symbol and module name strings out of the module in case it
+     * was a partial map or is racily unmapped.  We keep the lengths private and
+     * expose only pointers.
+     */
+    char symbol_storage[MAX_PE_SYMBOL_LENGTH];
+    char modname_storage[MAXIMUM_PATH];
 } pe_import_iterator_t;
+
+/* Does a safe_read of *src_ptr into dst_var, returning true for success.  We
+ * assert that the size of dst and src match.  The other advantage over plain
+ * safe_read is that the caller doesn't need to pass sizeof(dst), which is
+ * useful for repeated small memory accesses.
+ */
+#define SAFE_READ_VAL(dst_var, src_ptr) \
+    (ASSERT(sizeof(dst_var) == sizeof(*src_ptr)), \
+     safe_read(src_ptr, sizeof(dst_var), &dst_var))
 
 /* debug-only so we don't need to efficiently protect it */
 DECLARE_CXTSWPROT_VAR(static module_info_vector_t process_module_vector,
@@ -6257,53 +6293,100 @@ dr_import_iterator_start(module_handle_t handle)
     IMAGE_DOS_HEADER *dos;
     IMAGE_NT_HEADERS *nt;
     IMAGE_DATA_DIRECTORY *dir;
+    DWORD e_lfanew;
+    DWORD nt_signature;
+    WORD nt_magic;
+    DWORD import_desc_rva;
 
     dos = (IMAGE_DOS_HEADER *) handle;
-    nt = (IMAGE_NT_HEADERS *) ((byte *) handle + dos->e_lfanew);
-    if (nt->Signature != IMAGE_NT_SIGNATURE)
+    if (!SAFE_READ_VAL(e_lfanew, &dos->e_lfanew))
         return NULL;
-    /* Could be paranoid and de-ref this (and dos and nt) inside a TRY
-     * but these should be present: I'm actually more nervous about making
-     * a too-big DR_TRY_EXCEPT b/c it can't nest
-     */
-    dir = (nt->OptionalHeader.Magic == IMAGE_NT_OPTIONAL_HDR32_MAGIC ?
+    nt = (IMAGE_NT_HEADERS *) ((byte *) handle + e_lfanew);
+    if (!SAFE_READ_VAL(nt_signature, &nt->Signature))
+        return NULL;
+    if (nt_signature != IMAGE_NT_SIGNATURE)
+        return NULL;
+    if (!SAFE_READ_VAL(nt_magic, &nt->OptionalHeader.Magic))
+        return NULL;
+    /* No need to safe_read, DataDirectory is an array. */
+    dir = (nt_magic == IMAGE_NT_OPTIONAL_HDR32_MAGIC ?
            (nt->OptionalHeader.DataDirectory) :
            (((IMAGE_NT_HEADERS64 *)nt)->OptionalHeader.DataDirectory)) +
             IMAGE_DIRECTORY_ENTRY_IMPORT;
-    if (dir == NULL || dir->Size <= 0)
+    if (!SAFE_READ_VAL(import_desc_rva, &dir->VirtualAddress))
         return NULL;
 
     iter = global_heap_alloc(sizeof(*iter) HEAPACCT(ACCT_CLIENT));
     if (iter == NULL)
         return NULL;
     iter->pub.name = NULL;
+    iter->pub.modname = NULL;
 
     iter->mod_base = (byte *) handle;
-    iter->imports = (IMAGE_IMPORT_DESCRIPTOR *) (iter->mod_base + dir->VirtualAddress);
-    iter->imports_end = (IMAGE_IMPORT_DESCRIPTOR *)
-        (iter->mod_base + dir->VirtualAddress + dir->Size);
-
+    iter->cur_module = NULL;
+    iter->next_module = (IMAGE_IMPORT_DESCRIPTOR *)
+        (iter->mod_base + import_desc_rva);
+    iter->next_sym = NULL;
     return &iter->pub;
 }
 
 bool
 dr_import_iterator_next(dr_import_iterator_t *pub_iter)
 {
+    dcontext_t *dcontext = get_thread_private_dcontext();
     pe_import_iterator_t *iter = (pe_import_iterator_t *) pub_iter;
     bool partial = false;
+    DWORD symbol_rva = 0;
+    IMAGE_IMPORT_BY_NAME *sym;
 
-    if (iter->imports >= iter->imports_end)
+    if (iter == NULL)  /* Be defensive if _start failed. */
         return false;
 
-    DR_TRY_EXCEPT(dr_get_current_drcontext(), {
-        iter->pub.name = (const char *) (iter->mod_base + iter->imports->Name);
+    /* Read the next symbol RVA. */
+    if (iter->next_sym != NULL && !SAFE_READ_VAL(symbol_rva, iter->next_sym))
+        return false;
+
+    /* If we're out of symbols go to the next module import. */
+    while (symbol_rva == 0) {
+        DWORD imports_rva;
+        if (!SAFE_READ_VAL(imports_rva, &iter->next_module->OriginalFirstThunk))
+            return false;
+        if (imports_rva == 0)
+            return false;
+        iter->cur_module = iter->next_module;
+        iter->next_module++;
+        iter->next_sym = (DWORD *) (iter->mod_base + imports_rva);
+        /* Read the first symbol_rva in the new module.  We only continue the
+         * loop if the import list is empty, which is unlikely.
+         */
+        if (!SAFE_READ_VAL(symbol_rva, iter->next_sym))
+            return false;
+    }
+    iter->next_sym++;
+
+    /* Copy the symbol name and module import into our private storage.  We keep
+     * these buffers private so we can change their sizes.
+     */
+    sym = (IMAGE_IMPORT_BY_NAME *) (iter->mod_base + symbol_rva);
+    TRY_EXCEPT(dcontext, {
+        strncpy(iter->symbol_storage, (const char *) &sym->Name,
+                sizeof(iter->symbol_storage));
+        NULL_TERMINATE_BUFFER(iter->symbol_storage);
+        strncpy(iter->modname_storage,
+                (const char *) (iter->mod_base + iter->cur_module->Name),
+                sizeof(iter->modname_storage));
+        NULL_TERMINATE_BUFFER(iter->symbol_storage);
     }, {
-        partial = true; /* partial map */
+        partial = true;
     });
-    /* Can't return out of DR_TRY_EXCEPT */
     if (partial)
         return false;
-    iter->imports++;
+
+    iter->pub.name = iter->symbol_storage;
+    iter->pub.modname = iter->modname_storage;
+    LOG(THREAD, LOG_LOADER, 3, "%s: yielding %s!%s\n", __FUNCTION__,
+        iter->pub.modname, iter->pub.name);
+
     return true;
 }
 

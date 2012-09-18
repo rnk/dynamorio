@@ -1606,6 +1606,7 @@ dr_import_iterator_next(dr_import_iterator_t *pub_iter)
     }
 
     iter->pub.name = (char *) iter->dynstr + iter->cur_sym->st_name;
+    iter->pub.modname = NULL;
 
     dynsym_next(iter);
     return true;
