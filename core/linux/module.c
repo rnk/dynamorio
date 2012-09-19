@@ -46,6 +46,7 @@ typedef union _elf_generic_header_t {
     Elf32_Ehdr elf32;
 } elf_generic_header_t;
 
+#ifdef CLIENT_INTERFACE
 typedef struct _elf_import_iterator_t {
     /* C-style inheritance: put the public iterator fields at the beginning. */
     dr_sym_import_iterator_t pub;
@@ -58,6 +59,7 @@ typedef struct _elf_import_iterator_t {
     size_t dynstr_size;         /* size of .dynstr */
     ELF_SYM_TYPE *cur_sym;      /* current position in .dynsym */
 } elf_import_iterator_t;
+#endif /* CLIENT_INTERFACE */
 
 /* In case want to build w/o gnu headers and use that to run recent gnu elf */
 #ifndef DT_GNU_HASH
@@ -1519,6 +1521,7 @@ module_undef_symbols()
     FATAL_USAGE_ERROR(UNDEFINED_SYMBOL_REFERENCE, 0, "");
 }
 
+#ifdef CLIENT_INTERFACE
 /* We could implement import iteration of PE files in Wine, so we provide these
  * stubs.
  */
@@ -1649,6 +1652,7 @@ dr_sym_import_iterator_stop(dr_sym_import_iterator_t *pub_iter)
         return;
     global_heap_free(iter, sizeof(*iter) HEAPACCT(ACCT_CLIENT));
 }
+#endif /* CLIENT_INTERFACE */
 
 static void
 module_relocate_symbol(ELF_REL_TYPE *rel,

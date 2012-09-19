@@ -241,6 +241,7 @@ typedef struct module_info_vector_t {
  */
 enum { MAX_PE_SYMBOL_LENGTH = 2048 };
 
+#ifdef CLIENT_INTERFACE
 typedef struct _pe_mod_import_iterator_t {
     /* C-style inheritance: put the public iterator fields at the beginning. */
     dr_mod_import_iterator_t pub;
@@ -271,6 +272,7 @@ typedef struct _pe_sym_import_iterator_t {
     char symbol_storage[MAX_PE_SYMBOL_LENGTH];
     char modname_storage[MAXIMUM_PATH];
 } pe_sym_import_iterator_t;
+#endif /* CLIENT_INTERFACE */
 
 /* Does a safe_read of *src_ptr into dst_var, returning true for success.  We
  * assert that the size of dst and src match.  The other advantage over plain
@@ -6290,6 +6292,8 @@ os_module_has_dynamic_base(app_pc module_base)
                 nt->OptionalHeader.DllCharacteristics);
 }
 
+#ifdef CLIENT_INTERFACE
+
 dr_mod_import_iterator_t *
 dr_mod_import_iterator_start(module_handle_t handle)
 {
@@ -6500,3 +6504,5 @@ dr_sym_import_iterator_stop(dr_sym_import_iterator_t *pub_iter)
         dr_mod_import_iterator_stop(iter->mod_iter);
     global_heap_free(iter, sizeof(*iter) HEAPACCT(ACCT_CLIENT));
 }
+
+#endif /* CLIENT_INTERFACE */
