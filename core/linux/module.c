@@ -48,7 +48,7 @@ typedef union _elf_generic_header_t {
 
 typedef struct _elf_import_iterator_t {
     /* C-style inheritance: put the public iterator fields at the beginning. */
-    dr_import_iterator_t pub;
+    dr_sym_import_iterator_t pub;
 
     /* Private fields. */
     ELF_SYM_TYPE *dynsym;       /* absolute addr of .dynsym */
@@ -1519,6 +1519,28 @@ module_undef_symbols()
     FATAL_USAGE_ERROR(UNDEFINED_SYMBOL_REFERENCE, 0, "");
 }
 
+/* We could implement import iteration of PE files in Wine, so we provide these
+ * stubs.
+ */
+dr_mod_import_iterator_t *
+dr_mod_import_iterator_start(module_handle_t handle)
+{
+    CLIENT_ASSERT(false, "No imports on Linux, use "
+                  "dr_sym_import_iterator_t instead");
+    return NULL;
+}
+
+bool
+dr_mod_import_iterator_next(dr_mod_import_iterator_t *iter)
+{
+    return false;
+}
+
+void
+dr_mod_import_iterator_stop(dr_mod_import_iterator_t *iter)
+{
+}
+
 static void
 dynsym_next(elf_import_iterator_t *iter)
 {
@@ -1526,12 +1548,19 @@ dynsym_next(elf_import_iterator_t *iter)
                                       iter->symentry_size);
 }
 
-dr_import_iterator_t *
-dr_import_iterator_start(module_handle_t handle)
+dr_sym_import_iterator_t *
+dr_sym_import_iterator_start(module_handle_t handle,
+                             dr_import_module_t from_module)
 {
     module_area_t *ma;
     elf_import_iterator_t *iter;
     size_t max_imports;
+
+    if (from_module != NULL) {
+        CLIENT_ASSERT(false, "Cannot iterate imports from a given module on "
+                      "Linux");
+        return NULL;
+    }
 
     iter = global_heap_alloc(sizeof(*iter) HEAPACCT(ACCT_CLIENT));
     if (iter == NULL)
@@ -1585,7 +1614,7 @@ dr_import_iterator_start(module_handle_t handle)
 }
 
 bool
-dr_import_iterator_next(dr_import_iterator_t *pub_iter)
+dr_sym_import_iterator_next(dr_sym_import_iterator_t *pub_iter)
 {
     elf_import_iterator_t *iter = (elf_import_iterator_t *) pub_iter;
 
@@ -1613,7 +1642,7 @@ dr_import_iterator_next(dr_import_iterator_t *pub_iter)
 }
 
 void
-dr_import_iterator_stop(dr_import_iterator_t *pub_iter)
+dr_sym_import_iterator_stop(dr_sym_import_iterator_t *pub_iter)
 {
     elf_import_iterator_t *iter = (elf_import_iterator_t *) pub_iter;
     if (iter == NULL)

@@ -2454,43 +2454,107 @@ DR_API
 const char *
 dr_module_preferred_name(const module_data_t *data);
 
-
 /* DR_API EXPORT BEGIN */
 /**
- * Module import iterator data type.  Can be created by calling
- * dr_import_iterator_start() and must be freed by calling
- * dr_import_iterator_stop().
+ * Opaque type representing a set of imports from one module into another.
+ * Available in a \p dr_mod_import_iterator_t.
  */
-typedef struct _dr_import_iterator_t {
-    const char *name;               /** Name of imported symbol. */
-    const char *modname;            /** Short name of module (Windows only). */
-} dr_import_iterator_t;
+struct _dr_import_module_t;
+typedef struct _dr_import_module_t *dr_import_module_t;
+
+/**
+ * Iterates over the list of modules that the given module imports from.
+ * Created by calling dr_mod_import_iterator_start() and must be freed by
+ * calling dr_mod_import_iterator_stop().
+ *
+ * \note Windows only.  ELF does not import directly from other modules.
+ */
+typedef struct _dr_mod_import_iterator_t {
+    /** Short name of the imported module. */
+    const char *modname;
+
+    /**
+     * Opaque handle passed to dr_sym_import_iterator_start().  Valid until the
+     * original module is unmapped.
+     */
+    dr_import_module_t imported_module;
+} dr_mod_import_iterator_t;
 /* DR_API EXPORT STOP */
 
 DR_API
 /**
  * Module import iterator.  The iterator returned is invalid until after the
- * first call to dr_import_iterator_next().
+ * first call to dr_mod_import_iterator_next().
+ *
+ * \note Windows only.  ELF does not import directly from other modules.
  */
-dr_import_iterator_t *
-dr_import_iterator_start(module_handle_t handle);
+dr_mod_import_iterator_t *
+dr_mod_import_iterator_start(module_handle_t handle);
 
 DR_API
 /**
  * Module import iterator.  If there is another module import, updates \p iter
  * with its data and returns true.  Returns false otherwise.  Iterator state is
- * only valid until the next call to dr_import_iterator_next() or
- * dr_import_iterator_stop().
+ * only valid until the next call to dr_mod_import_iterator_next() or
+ * dr_mod_import_iterator_stop().
+ *
+ * \note Windows only.  ELF does not import directly from other modules.
  */
 bool
-dr_import_iterator_next(dr_import_iterator_t *iter);
+dr_mod_import_iterator_next(dr_mod_import_iterator_t *iter);
+
+DR_API
+/**
+ * Stops import iteration and frees a module import iterator.
+ *
+ * \note Windows only.  ELF does not import directly from other modules.
+ */
+void
+dr_mod_import_iterator_stop(dr_mod_import_iterator_t *iter);
+
+/* DR_API EXPORT BEGIN */
+/**
+ * Symbol import iterator data type.  Can be created by calling
+ * dr_sym_import_iterator_start() and must be freed by calling
+ * dr_sym_import_iterator_stop().
+ */
+typedef struct _dr_sym_import_iterator_t {
+    const char *name;               /**< Name of imported symbol. */
+    const char *modname;            /**< Short name of module (Windows only). */
+} dr_sym_import_iterator_t;
+/* DR_API EXPORT STOP */
+
+DR_API
+/**
+ * Iterator over symbols imported by a module.  If from_module is NULL, all
+ * imported symbols are yielded, regardless of which module they were imported
+ * from.
+ *
+ * On Windows, from_module can be taken from a \p dr_mod_import_iterator_t and
+ * used to iterate over all of the imports from a specific module.
+ *
+ * The iterator returned is invalid until after the first call to
+ * dr_sym_import_iterator_next().
+ */
+dr_sym_import_iterator_t *
+dr_sym_import_iterator_start(module_handle_t handle, dr_import_module_t from_module);
+
+DR_API
+/**
+ * Symbol import iterator.  If there is another module import, updates \p iter
+ * with its data and returns true.  Returns false otherwise.  Iterator state is
+ * only valid until the next call to dr_sym_import_iterator_next() or
+ * dr_sym_import_iterator_stop().
+ */
+bool
+dr_sym_import_iterator_next(dr_sym_import_iterator_t *iter);
 
 DR_API
 /**
  * Stops import iteration and frees a module import iterator.
  */
 void
-dr_import_iterator_stop(dr_import_iterator_t *iter);
+dr_sym_import_iterator_stop(dr_sym_import_iterator_t *iter);
 
 /* DR_API EXPORT BEGIN */
 #ifdef WINDOWS

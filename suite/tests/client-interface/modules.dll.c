@@ -71,7 +71,7 @@ void module_load_event(void *dcontext, const module_data_t *data, bool loaded)
      * just look for the module in question.
      */
     /* Test i#138 */
-    dr_import_iterator_t *iter;
+    dr_mod_import_iterator_t *mod_iter;
     if (data->full_path == NULL || data->full_path[0] == '\0')
         dr_fprintf(STDERR, "ERROR: full_path empty for %s\n", dr_module_preferred_name(data));
 #ifdef WINDOWS
@@ -83,12 +83,20 @@ void module_load_event(void *dcontext, const module_data_t *data, bool loaded)
                      IF_WINDOWS_ELSE("ADVAPI32.dll", "libz.so.1")))
         dr_fprintf(STDERR, "LOADED MODULE: %s\n", data->names.module_name);
 
-    /* Exercise this API on modules loaded from the system. */
-    iter = dr_import_iterator_start(data->handle);
-    while (dr_import_iterator_next(iter)) {
-        /* nothing */
+    /* Test iterating symbols imported from a specific module.  The typical use
+     * case is probably going to be looking for a specific module, like ntdll,
+     * and checking which symbols are used.
+     */
+    mod_iter = dr_mod_import_iterator_start(data->handle);
+    while (dr_mod_import_iterator_next(mod_iter)) {
+        dr_sym_import_iterator_t *sym_iter;
+        sym_iter = dr_sym_import_iterator_start(data->handle, mod_iter->imported_module);
+        while (dr_sym_import_iterator_next(sym_iter)) {
+            /* nothing */
+        }
+        dr_sym_import_iterator_stop(sym_iter);
     }
-    dr_import_iterator_stop(iter);
+    dr_mod_import_iterator_stop(mod_iter);
 }
 
 static
@@ -143,7 +151,8 @@ test_aux_lib(client_id_t id)
 DR_EXPORT
 void dr_init(client_id_t id)
 {
-    dr_import_iterator_t *iter;
+    dr_mod_import_iterator_t *mod_iter;
+    dr_sym_import_iterator_t *sym_iter;
     bool found_import = false;
     module_data_t *main_mod = dr_get_main_module();
     module_handle_t mod_handle = main_mod->handle;
@@ -152,20 +161,37 @@ void dr_init(client_id_t id)
     }
     dr_free_module_data(main_mod);
 
-    /* Look for an import that we know will be present. */
-    iter = dr_import_iterator_start(mod_handle);
-    while (dr_import_iterator_next(iter)) {
+    /* Look for an imported module that we know will be present. */
+    mod_iter = dr_mod_import_iterator_start(mod_handle);
+    while (dr_mod_import_iterator_next(mod_iter)) {
         /* Only compare the start of the string to avoid caring about
          * LoadLibraryA vs LoadLibraryW on Windows.
          */
-        if (strncmp(iter->name, import_name_start,
+        if (strncmp(mod_iter->name, import_name_start,
                     strlen(import_name_start)) == 0) {
             found_import = true;
         }
     }
     if (!found_import)
         dr_fprintf(STDERR, "ERROR: didn't find import %s\n", import_name_start);
-    dr_import_iterator_stop(iter);
+    dr_mod_import_iterator_stop(mod_iter);
+
+    /* Look for an import that we know will be present, and test out iterating
+     * all symbols.
+     */
+    sym_iter = dr_sym_import_iterator_start(mod_handle, NULL);
+    while (dr_sym_import_iterator_next(sym_iter)) {
+        /* Only compare the start of the string to avoid caring about
+         * LoadLibraryA vs LoadLibraryW on Windows.
+         */
+        if (strncmp(sym_iter->name, import_name_start,
+                    strlen(import_name_start)) == 0) {
+            found_import = true;
+        }
+    }
+    if (!found_import)
+        dr_fprintf(STDERR, "ERROR: didn't find import %s\n", import_name_start);
+    dr_sym_import_iterator_stop(sym_iter);
 
     dr_register_module_load_event(module_load_event);
     dr_register_module_unload_event(module_unload_event);    
