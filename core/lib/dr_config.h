@@ -37,9 +37,6 @@
 /* Internally we mark routines with export linkage. */
 #include "configure.h"  /* for WINDOWS/LINUX */
 #include "globals_shared.h"  /* for DR_EXPORT */
-#ifndef DR_API
-# define DR_API DR_EXPORT
-#endif
 
 /* DR_API EXPORT TOFILE dr_config.h */
 /* DR_API EXPORT BEGIN */
@@ -135,14 +132,14 @@ typedef enum {
 
 } dr_config_status_t;
 
-/** Allow targeting both WOW64 and native 64-bit processes separately. */
+/** Allow targeting both 32-bit and native 64-bit processes separately. */
 typedef enum {
     DR_PLATFORM_DEFAULT, /**< The platform this tool is compiled for. */
-    DR_PLATFORM_32BIT,   /**< 32-bit settings (for 32-bit or WOW64 processes). */
+    DR_PLATFORM_32BIT,   /**< 32-bit settings (for 32-bit processes). */
     DR_PLATFORM_64BIT,   /**< 64-bit settings (for native 64-bit processes). */
 } dr_platform_t;
 
-DR_API
+DR_EXPORT
 /**
  * Register a process to run under DynamoRIO.
  * Note that this routine only sets the base options to run a process
@@ -181,7 +178,7 @@ DR_API
  *                              otherwise, a release build will be used.
  *
  * \param[in]   dr_platform     Configurations are kept separate
- *                              for 32-bit (WOW64) processes and 64-bit processes.
+ *                              for 32-bit processes and 64-bit processes.
  *                              This parameter allows selecting which of those
  *                              configurations to set.
  *
@@ -213,7 +210,7 @@ dr_register_process(const char *process_name,
                     dr_platform_t dr_platform,
                     const char *dr_options);
 
-DR_API
+DR_EXPORT
 /**
  * Unregister a process from running under DynamoRIO.
  *
@@ -239,7 +236,7 @@ DR_API
  *                              create the global directory.
  *
  * \param[in]   dr_platform     Configurations are kept separate
- *                              for 32-bit (WOW64) processes and 64-bit processes.
+ *                              for 32-bit processes and 64-bit processes.
  *                              This parameter allows selecting which of those
  *                              configurations to set.
  *
@@ -255,7 +252,7 @@ dr_unregister_process(const char *process_name,
 
 #ifdef WINDOWS
 
-DR_API
+DR_EXPORT
 /**
  * Sets up systemwide injection so that registered applications will run under
  * DynamoRIO however they are launched (i.e., they do not need to be explicitly
@@ -264,7 +261,7 @@ DR_API
  * each user).  On Windows NT, a reboot is required for this to take effect.
  *
  * \param[in]   dr_platform     Configurations are kept separate
- *                              for 32-bit (WOW64) processes and 64-bit processes.
+ *                              for 32-bit processes and 64-bit processes.
  *                              This parameter allows selecting which of those
  *                              to use.
  *
@@ -288,7 +285,7 @@ dr_config_status_t
 dr_register_syswide(dr_platform_t dr_platform,
                     const char *dr_root_dir);
 
-DR_API
+DR_EXPORT
 /**
  * Disables systemwide injection.  Registered applications will not run
  * under DynamoRIO unless explicitly launched with the drrun or drinject
@@ -296,7 +293,7 @@ DR_API
  * On Windows NT, a reboot is required for this to take effect.
  *
  * \param[in]   dr_platform     Configurations are kept separate
- *                              for 32-bit (WOW64) processes and 64-bit processes.
+ *                              for 32-bit processes and 64-bit processes.
  *                              This parameter allows selecting which of those
  *                              to use.
  *
@@ -312,12 +309,12 @@ dr_config_status_t
 dr_unregister_syswide(dr_platform_t dr_platform,
                       const char *dr_root_dir);
 
-DR_API
+DR_EXPORT
 /**
  * Returns whether systemwide injection is enabled.
  *
  * \param[in]   dr_platform     Configurations are kept separate
- *                              for 32-bit (WOW64) processes and 64-bit processes.
+ *                              for 32-bit processes and 64-bit processes.
  *                              This parameter allows selecting which of those
  *                              to use.
  *
@@ -333,7 +330,7 @@ dr_syswide_is_on(dr_platform_t dr_platform,
 
 #endif /* WINDOWS */
 
-DR_API
+DR_EXPORT
 /**
  * Check if a process is registered to run under DynamoRIO.  To obtain client
  * information, use dr_get_client_info().
@@ -360,7 +357,7 @@ DR_API
  *                              create the global directory.
  *
  * \param[in]   dr_platform     Configurations are kept separate
- *                              for 32-bit (WOW64) processes and 64-bit processes.
+ *                              for 32-bit processes and 64-bit processes.
  *                              This parameter allows selecting which of those
  *                              configurations to check.
  *
@@ -400,13 +397,13 @@ dr_process_is_registered(const char *process_name,
 
 typedef struct _dr_registered_process_iterator_t dr_registered_process_iterator_t;
 
-DR_API
+DR_EXPORT
 /**
  * Creates and starts an iterator for iterating over all processes registered for
  * the given platform and given global or local parameter. 
  *
  * \param[in]   dr_platform     Configurations are kept separate
- *                              for 32-bit (WOW64) processes and 64-bit processes.
+ *                              for 32-bit processes and 64-bit processes.
  *                              This parameter allows selecting which of those
  *                              configurations to check.
  *
@@ -430,7 +427,7 @@ dr_registered_process_iterator_t *
 dr_registered_process_iterator_start(dr_platform_t dr_platform,
                                      bool global);
 
-DR_API
+DR_EXPORT
 /**
  * \param[in]    iter           A registered process iterator created with
  *                              dr_registered_process_iterator_start()
@@ -442,7 +439,7 @@ DR_API
 bool
 dr_registered_process_iterator_hasnext(dr_registered_process_iterator_t *iter);
 
-DR_API
+DR_EXPORT
 /**
  * Return information about a registered process
  *
@@ -485,7 +482,7 @@ dr_registered_process_iterator_next(dr_registered_process_iterator_t *iter,
                                     bool *debug /* OUT */,
                                     char *dr_options /* OUT */);
 
-DR_API
+DR_EXPORT
 /**
  * Stops and frees a registered process iterator.
  *
@@ -499,7 +496,7 @@ dr_registered_process_iterator_stop(dr_registered_process_iterator_t *iter);
 
 #endif /* WINDOWS */
 
-DR_API
+DR_EXPORT
 /**
  * Register a client for a particular process.  Note that the process must first
  * be registered via dr_register_process() before calling this routine.
@@ -526,7 +523,7 @@ DR_API
  *                              create the global directory.
  *
  * \param[in]   dr_platform     Configurations are kept separate
- *                              for 32-bit (WOW64) processes and 64-bit processes.
+ *                              for 32-bit processes and 64-bit processes.
  *                              This parameter allows selecting which of those
  *                              configurations to unset.
  *
@@ -570,7 +567,7 @@ dr_register_client(const char *process_name,
                    const char *client_path,
                    const char *client_options);
 
-DR_API
+DR_EXPORT
 /**
  * Unregister a client for a particular process.
  *
@@ -596,7 +593,7 @@ DR_API
  *                              create the global directory.
  *
  * \param[in]   dr_platform     Configurations are kept separate
- *                              for 32-bit (WOW64) processes and 64-bit processes.
+ *                              for 32-bit processes and 64-bit processes.
  *                              This parameter allows selecting which of those
  *                              configurations to unset.
  *
@@ -612,7 +609,7 @@ dr_unregister_client(const char *process_name,
                      dr_platform_t dr_platform,
                      client_id_t client_id);
 
-DR_API
+DR_EXPORT
 /**
  * Retrieve the number of clients registered for a particular process for
  * the current user.
@@ -639,7 +636,7 @@ DR_API
  *                              create the global directory.
  *
  * \param[in]   dr_platform     Configurations are kept separate
- *                              for 32-bit (WOW64) processes and 64-bit processes.
+ *                              for 32-bit processes and 64-bit processes.
  *                              This parameter allows selecting which of those
  *                              configurations to unset.
  *
@@ -651,7 +648,7 @@ dr_num_registered_clients(const char *process_name,
                           bool global,
                           dr_platform_t dr_platform);
 
-DR_API
+DR_EXPORT
 /**
  * Retrieve client registration information for a particular process for
  * the current user.
@@ -678,7 +675,7 @@ DR_API
  *                              create the global directory.
  *
  * \param[in]   dr_platform     Configurations are kept separate
- *                              for 32-bit (WOW64) processes and 64-bit processes.
+ *                              for 32-bit processes and 64-bit processes.
  *                              This parameter allows selecting which of those
  *                              configurations to unset.
  *
@@ -711,7 +708,7 @@ dr_get_client_info(const char *process_name,
 
 typedef struct _dr_client_iterator_t dr_client_iterator_t;
 
-DR_API
+DR_EXPORT
 /**
  * Creates and starts an iterator for iterating over all clients registered for
  * the given process.
@@ -738,7 +735,7 @@ DR_API
  *                              create the global directory.
  *
  * \param[in]   dr_platform     Configurations are kept separate
- *                              for 32-bit (WOW64) processes and 64-bit processes.
+ *                              for 32-bit processes and 64-bit processes.
  *                              This parameter allows selecting which of those
  *                              configurations to check.
  *
@@ -752,7 +749,7 @@ dr_client_iterator_start(const char *process_name,
                          bool global,
                          dr_platform_t dr_platform);
 
-DR_API
+DR_EXPORT
 /**
  * \param[in]   iter            A client iterator created with dr_client_iterator_start()
  *
@@ -761,7 +758,7 @@ DR_API
 bool
 dr_client_iterator_hasnext(dr_client_iterator_t *iter);
 
-DR_API
+DR_EXPORT
 /**
  * Return information about a client.
  *
@@ -788,7 +785,7 @@ dr_client_iterator_next(dr_client_iterator_t *iter,
                         char *client_path,      /* OUT */
                         char *client_options    /* OUT */);
 
-DR_API
+DR_EXPORT
 /**
  * Stops and frees a client iterator.
  *
@@ -799,7 +796,7 @@ dr_client_iterator_stop(dr_client_iterator_t *iter);
 
 #ifdef WINDOWS
 
-DR_API
+DR_EXPORT
 /**
  * Provides a mechanism for an external entity on the guest OS to
  * communicate with a client.  Requires administrative privileges.  A
@@ -854,7 +851,7 @@ dr_nudge_process(const char *process_name,
                  uint timeout_ms,
                  int *nudge_count /*OUT */);
 
-DR_API
+DR_EXPORT
 /**
  * Provides a mechanism for an external entity on the guest OS to
  * communicate with a client.  Requires administrative privileges.  A
@@ -898,7 +895,7 @@ dr_nudge_pid(process_id_t process_id,
              uint64 arg,
              uint timeout_ms);
 
-DR_API
+DR_EXPORT
 /**
  * Provides a mechanism for an external entity on the guest OS to
  * communicate with a client.  Requires administrative privileges.  A

@@ -502,7 +502,7 @@ read_config_ex(FILE *f, const char *var, TCHAR *val, size_t val_len,
             found = true;
             var_end = var_start + strlen(line);
             if (val != NULL) {
-                _snwprintf(val, val_len, L"%S", line+var_len+1);
+                convert_to_tchar(val, line+var_len+1, val_len);
                 val[val_len-1] = '\0';
                 trim_trailing_newline(val);
             }
@@ -862,7 +862,7 @@ get_proc_policy(ConfigGroup *policy, const char *process_name)
     }
     return res;
 }                
-#endif
+#endif /* PARAMS_IN_REGISTRY */
 
 static bool
 platform_is_64bit(dr_platform_t platform)
@@ -871,6 +871,7 @@ platform_is_64bit(dr_platform_t platform)
             IF_X64(|| platform == DR_PLATFORM_DEFAULT));
 }
 
+/* FIXME i#840: Syswide NYI for Linux. */
 #ifdef WINDOWS
 static void
 get_syswide_path(TCHAR *wbuf,

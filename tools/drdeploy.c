@@ -138,6 +138,7 @@ const char *usage_str =
 # endif
 #endif
 #ifdef DRCONFIG
+    /* FIXME i#840: Syswide NYI on Linux. */
 # ifdef WINDOWS
     "       -syswide_on        Set up systemwide injection so that registered\n"
     "                          applications will run under DR however they are\n"
