@@ -72,10 +72,10 @@
 */
 #define MAX_NUM_OPTIONS (DR_MAX_OPTIONS_LENGTH / 3)
 
-/* Maximum length of an fopen mode string, including the null terminator.  For
- * example, "rw+\0" or "ra\0".
+/* Upper bound on the length of an fopen mode string, including the null
+ * terminator.  For example, "rw+b\0" or "ra\0".
  */
-enum { MAX_MODE_STRING_SIZE = 4 };
+enum { MAX_MODE_STRING_SIZE = 16 };
 
 /* Data structs to hold info about the DYNAMORIO_OPTION registry entry */
 typedef struct _client_opt_t {
@@ -295,7 +295,7 @@ free_opt_info(opt_info_t *opt_info)
  *
  * The API uses char* here but be careful b/c this file is build w/ UNICODE
  * so we use *A versions of Windows API routines.
- * Also note that I left many types as wchar_t for less change in handling
+ * Also note that I left many types as TCHAR for less change in handling
  * PARAMS_IN_REGISTRY and config files: eventually should convert all
  * to char.
  */
@@ -431,26 +431,46 @@ open_config_file(const char *process_name,
     char fname[MAXIMUM_PATH];
     char mode[MAX_MODE_STRING_SIZE];
     int i = 0;
+    FILE *f;
     DO_ASSERT(read || write);
-    if (read)
-        mode[i++] = 'r';
-    if (write)
-        mode[i++] = 'w';
-    mode[i++] = '\0';
-    DO_ASSERT(i <= BUFFER_SIZE_ELEMENTS(mode));
-    NULL_TERMINATE_BUFFER(mode);
+    DO_ASSERT(!(read && overwrite) && "read+overwrite incompatible");
     if (!get_config_file_name(process_name, pid, global, dr_platform,
                              fname, BUFFER_SIZE_ELEMENTS(fname))) {
         DO_ASSERT(false && "get_config_file_name failed");
         return NULL;
     }
 
-    /* XXX: Checking existence and then opening is racy. */
+    /* XXX: Checking for existence before opening is racy. */
     convert_to_tchar(wfname, fname, BUFFER_SIZE_ELEMENTS(wfname));
     NULL_TERMINATE_BUFFER(wfname);
-    if (write && !overwrite && file_exists(wfname))
+    if (!read && write && !overwrite && file_exists(wfname)) {
         return NULL;
-    return fopen(fname, mode);
+    }
+
+    /* Careful, Windows fopen aborts the process on invalid mode strings.
+     * Order matters.  Modifiers like 'b' have to come after standard characters
+     * like r, w, and +.
+     */
+    if (read)
+        mode[i++] = 'r';
+    if (write)
+        mode[i++] = (read ? '+' : 'w');
+    mode[i++] = 'b';  /* Avoid CRLF translation on Windows. */
+    mode[i++] = '\0';
+    DO_ASSERT(i <= BUFFER_SIZE_ELEMENTS(mode));
+    NULL_TERMINATE_BUFFER(mode);
+    f = fopen(fname, mode);
+    return f;
+}
+
+static void
+trim_trailing_newline(TCHAR *line)
+{
+    TCHAR *cur = line + _tcslen(line) - 1;
+    while (cur >= line && (*cur == '\n' || *cur == '\r')) {
+        *cur = '\0';
+        cur--;
+    }
 }
 
 /* Copies the value for var, converted to a TCHAR, into val.  If elide is true,
@@ -463,129 +483,73 @@ read_config_ex(FILE *f, const char *var, TCHAR *val, size_t val_len,
                bool elide)
 {
     bool found = false;
-    /* could use _open_osfhandle() to get fd and _fdopen() to get FILE* and then
-     * use fgets: but then have to close with fclose on FILE and thus messy w/
-     * callers holding HANDLE instead.  already have code for line reading so
-     * sticking w/ HANDLE.  FIXME: share code w/ core/config.c
-     */
+    /* FIXME: share code w/ core/config.c */
 #   define BUFSIZE (MAX_CONFIG_VALUE+128)
-    char buf[BUFSIZE];
-    char *line, *newline = NULL;
-    ssize_t bufread = 0, bufwant;
-    ssize_t len;
+    char line[BUFSIZE];
+    size_t var_len = strlen(var);
+    /* Offsets into the file for the start and end of var. */
+    size_t var_start = 0;
+    size_t var_end = 0;
     /* each time we start from beginning: we assume a small file */
     if (f == NULL)
         return false;
     if (fseek(f, 0, SEEK_SET))
         return false;
-    while (true) {
-        /* break file into lines */
-        if (newline == NULL) {
-            bufwant = BUFSIZE-1;
-            bufread = fread(buf, 1, bufwant, f);
-            DO_ASSERT(bufread >= 0 && bufread <= bufwant);
-            if (bufread <= 0)
-                break;
-            buf[bufread] = '\0';
-            newline = strchr(buf, '\n');
-            line = buf;
-        } else {
-            line = newline + 1;
-            newline = strchr(line, '\n');
-            if (newline == NULL) {
-                /* shift 1st part of line to start of buf, then read in rest */
-                /* the memory for the processed part can be reused  */
-                bufwant = line - buf;
-                DO_ASSERT(bufwant <= bufread);
-                len = bufread - bufwant; /* what is left from last time */
-                /* using memmove since strings can overlap */
-                if (len > 0)
-                    memmove(buf, line, len);
-                bufread = fread(buf+len, 1, bufwant, f);
-                DO_ASSERT(bufread >= 0 && bufread <= bufwant);
-                if (bufread <= 0)
-                    break;
-                bufread += len; /* bufread is total in buf */
-                buf[bufread] = '\0';
-                newline = strchr(buf, '\n');
-                line = buf;
+    while (fgets(line, BUFFER_SIZE_ELEMENTS(line), f) != NULL) {
+        fflush(stdout);
+        /* Find lines starting with VAR=. */
+        if (strncmp(line, var, var_len) == 0 && line[var_len] == '=') {
+            found = true;
+            var_end = var_start + strlen(line);
+            if (val != NULL) {
+                _snwprintf(val, val_len, L"%S", line+var_len+1);
+                val[val_len-1] = '\0';
+                trim_trailing_newline(val);
             }
+            break;
         }
-        /* buffer is big enough to hold at least one line */
-        DO_ASSERT(newline != NULL);
-        *newline = '\0';
-        /* handle \r\n line endings */
-        if (newline > line && *(newline-1) == '\r')
-            *(newline-1) = '\0';
-        /* now we have one line */
-        /* we support blank lines and comments */
-        if (line[0] == '\0' || line[0] == '#')
-            continue;
-        if (strstr(line, var) == line) {
-            char *eq = strchr(line, '=');
-            if (eq != NULL &&
-                /* we don't have any vars that are prefixes of others so we
-                 * can do a hard match on whole var.
-                 * for parsing simplicity we don't allow whitespace before '='.
-                 */
-                eq == line + strlen(var)) {
-                /* we can only copy this much at once.  alternative is to
-                 * create a new file and rename it at the end.
-                 */
-                bufwant = (newline + 1 - line);
-                if (val != NULL) {
-                    convert_to_tchar(val, eq + 1, val_len);
-                }
-                found = true;
-                if (!elide)
-                    break; /* done */
-                /* now start shifting.  could be more efficient by
-                 * writing what's already in buffer, writing 2x the 1st
-                 * time (though check buf size), but keeping simple for now
-                 */
-                /* Seek to the end of the current line. */
-                if (fseek(f, (long) -((buf+bufread) - newline), SEEK_CUR) != 0) {
-                    DO_ASSERT(false);
-                    return false;
-                }
-                while (true) {
-                    bool done = false;
-                    bufread = fread(buf, 1, bufwant, f);
-                    DO_ASSERT(bufread >= 0 && bufread <= bufwant);
-                    if (bufread <= 0)
-                        done = true;
-                    /* Seek back to the beginning of the line we found on the
-                     * first iteration, and the end of the last write on
-                     * subsequent iterations.
-                     */
-                    if (fseek(f, (long) -(bufwant+bufread), SEEK_CUR) != 0) {
-                        DO_ASSERT(false);
-                        return false;
-                    }
-                    if (done) {
-                        /* pointer goes back to end somehow in write_config_param */
-#ifdef WINDOWS
-                        /* XXX: Can't find a way to truncate the file at the
-                         * current position using the FILE API.
-                         */
-                        SetEndOfFile((HANDLE)_get_osfhandle(_fileno(f)));
-#else
-                        off_t pos = lseek(fileno(f), 0, SEEK_CUR);
-                        DO_ASSERT(pos != -1);
-                        ftruncate(fileno(f), (off_t)pos);
-#endif
-                        break;
-                    }
-                    len = fwrite(buf, 1, bufread, f);
-                    DO_ASSERT(len == bufread);
-                    if (fseek(f, (long) bufwant, SEEK_CUR) != 0) {
-                        DO_ASSERT(false);
-                        return false;
-                    }
-                }
-            }
-        }
+        var_start += strlen(line);
+        fflush(stdout);
     }
+
+    /* If elide is true, seek back to the line, delete it, and shift the rest of
+     * the file backward.  It's easier to do this with a fixed size buffer than
+     * it is to it line-by-line with fgets/fputs.
+     */
+    if (found && elide) {
+        /* Use long instead of ssize_t to match FILE* API. */
+        long write_cur = (long) var_start;
+        long read_cur = (long) var_end;
+        long bufread;
+        fflush(stdout);
+        while (true) {
+            fseek(f, read_cur, SEEK_SET);
+            bufread = (long) fread(line, 1, BUFFER_SIZE_ELEMENTS(line), f);
+            DO_ASSERT(ferror(f) == 0);
+            line[bufread] = '\0';
+            fflush(stdout);
+            fseek(f, write_cur, SEEK_SET);
+            if (bufread > 0) {
+                fwrite(line, 1, bufread, f);
+                DO_ASSERT(ferror(f) == 0);
+                read_cur += bufread;
+                write_cur += bufread;
+            } else {
+                break;
+            }
+        }
+#ifdef WINDOWS
+        /* XXX: Can't find a way to truncate the file at the current position
+         * using the FILE API.
+         */
+        SetEndOfFile((HANDLE)_get_osfhandle(_fileno(f)));
+#else
+        off_t pos = lseek(fileno(f), 0, SEEK_CUR);
+        DO_ASSERT(pos != -1);
+        ftruncate(fileno(f), (off_t)pos);
+#endif
+    }
+
     return found;
 }
 
@@ -773,6 +737,8 @@ read_options(opt_info_t *opt_info, IF_REG_ELSE(ConfigGroup *proc_policy, FILE *f
         }
     }
 
+    fflush(stdout);
+
     return DR_SUCCESS;
 
  error:
@@ -828,8 +794,9 @@ write_options(opt_info_t *opt_info, TCHAR *wbuf)
             /* no API's so no added options */
             mode_str = "";
             break;
-#endif
+#else
             DO_ASSERT(false);
+#endif
     }
 
     len = _sntprintf(wbuf + sofar, bufsz - sofar, _TEXT(TSTR_FMT), mode_str);

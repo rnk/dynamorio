@@ -320,6 +320,7 @@ set_abortlevel(int level);
         }                                                       \
         else if (EXIT_ON_ASSERT) {                              \
             fprintf(stderr, "ASSERT: %s\n", ___buf);            \
+            fflush(stderr);                                     \
             exit(-1);                                           \
         }                                                       \
         else {                                                  \
