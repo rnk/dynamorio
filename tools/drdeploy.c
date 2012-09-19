@@ -254,7 +254,7 @@ _access(const char *fname, int mode)
 
 # ifndef DRCONFIG
 /* Implements a normal path search for fname on the paths in env_var.  Assumes
- * full_path is at MAXIMUM_PATH bytes long.
+ * full_path is at least MAXIMUM_PATH bytes long.
  */
 static int
 _searchenv(const char *fname, const char *env_var, char *full_path)
@@ -263,20 +263,27 @@ _searchenv(const char *fname, const char *env_var, char *full_path)
     const char *cur;
     const char *next;
     const char *end;
+    char tmp[MAXIMUM_PATH];
+    ssize_t len;
+
+    /* Windows searches the current directory first. */
+    if (realpath(fname, full_path) && _access(full_path, 0) == 0)
+        return 0;
 
     cur = paths;
     end = strchr(paths, '\0');
     while (cur < end) {
         next = strchr(cur, ':');
         next = (next == NULL ? end : next);
-        strncpy(full_path, cur, next - cur);
-        snprintf(full_path + (next - cur), MAXIMUM_PATH - (next - cur), "/%s",
-                 fname);
-        full_path[MAXIMUM_PATH-1] = '\0';
-        if (_access(full_path, 0) == 0)
+        len = next - cur;
+        strncpy(tmp, cur, len);
+        snprintf(tmp + len, MAXIMUM_PATH - len, "/%s", fname);
+        /* realpath checks for existence too. */
+        if (realpath(tmp, full_path) != NULL && _access(full_path, 0) == 0)
             return 0;
         cur = next + 1;
     }
+    full_path[0] = '\0';
     return -1;
 }
 
