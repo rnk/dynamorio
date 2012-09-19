@@ -539,7 +539,7 @@ write_pid_to_file(const char *pidfile, process_id_t pid)
         warn("cannot open %s: %d\n", pidfile, GetLastError());
     } else {
         char pidbuf[16];
-        int written;
+        ssize_t written;
         _snprintf(pidbuf, BUFFER_SIZE_ELEMENTS(pidbuf), "%d\n", pid);
         NULL_TERMINATE_BUFFER(pidbuf);
         written = fwrite(pidbuf, 1, strlen(pidbuf), f);
