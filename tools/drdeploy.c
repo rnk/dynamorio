@@ -939,8 +939,8 @@ int main(int argc, char *argv[])
 #endif
 
 #ifdef WINDOWS
-    /* FIXME: Does this even work on Windows?  It's calling the routine in
-     * policy_static, not drconfiglib, which is dynamically linked.
+    /* FIXME i#900: This doesn't work on Linux, and doesn't do the right thing
+     * on Windows.
      */
     /* PR 244206: set the registry view before any registry access */
     set_dr_platform(dr_platform);
