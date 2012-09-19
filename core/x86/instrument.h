@@ -2460,7 +2460,7 @@ dr_module_preferred_name(const module_data_t *data);
  * Available in a \p dr_mod_import_iterator_t.
  */
 struct _dr_import_module_t;
-typedef struct _dr_import_module_t *dr_import_module_t;
+typedef struct _dr_import_module_t *dr_imported_module_t;
 
 /**
  * Iterates over the list of modules that the given module imports from.
@@ -2477,7 +2477,7 @@ typedef struct _dr_mod_import_iterator_t {
      * Opaque handle passed to dr_sym_import_iterator_start().  Valid until the
      * original module is unmapped.
      */
-    dr_import_module_t imported_module;
+    dr_imported_module_t imported_module;
 } dr_mod_import_iterator_t;
 /* DR_API EXPORT STOP */
 
@@ -2537,7 +2537,7 @@ DR_API
  * dr_sym_import_iterator_next().
  */
 dr_sym_import_iterator_t *
-dr_sym_import_iterator_start(module_handle_t handle, dr_import_module_t from_module);
+dr_sym_import_iterator_start(module_handle_t handle, dr_imported_module_t from_module);
 
 DR_API
 /**

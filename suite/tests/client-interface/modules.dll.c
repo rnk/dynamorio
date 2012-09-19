@@ -43,7 +43,10 @@
 # define IF_WINDOWS(x) 
 #endif
 
-static const char import_name_start[] = IF_WINDOWS_ELSE("LoadLibrary", "dlopen");
+/* Only compare the start of the string to avoid caring about LoadLibraryA vs
+ * LoadLibraryW on Windows.
+ */
+static const char load_library_symbol[] = IF_WINDOWS_ELSE("LoadLibrary", "dlopen");
 
 bool string_match(const char *str1, const char *str2)
 {
@@ -71,7 +74,7 @@ void module_load_event(void *dcontext, const module_data_t *data, bool loaded)
      * just look for the module in question.
      */
     /* Test i#138 */
-    dr_mod_import_iterator_t *mod_iter;
+    dr_sym_import_iterator_t *sym_iter;
     if (data->full_path == NULL || data->full_path[0] == '\0')
         dr_fprintf(STDERR, "ERROR: full_path empty for %s\n", dr_module_preferred_name(data));
 #ifdef WINDOWS
@@ -83,20 +86,31 @@ void module_load_event(void *dcontext, const module_data_t *data, bool loaded)
                      IF_WINDOWS_ELSE("ADVAPI32.dll", "libz.so.1")))
         dr_fprintf(STDERR, "LOADED MODULE: %s\n", data->names.module_name);
 
+#ifdef WINDOWS
     /* Test iterating symbols imported from a specific module.  The typical use
      * case is probably going to be looking for a specific module, like ntdll,
      * and checking which symbols are used.
      */
-    mod_iter = dr_mod_import_iterator_start(data->handle);
-    while (dr_mod_import_iterator_next(mod_iter)) {
-        dr_sym_import_iterator_t *sym_iter;
-        sym_iter = dr_sym_import_iterator_start(data->handle, mod_iter->imported_module);
-        while (dr_sym_import_iterator_next(sym_iter)) {
-            /* nothing */
+    {
+        dr_mod_import_iterator_t *mod_iter;
+        mod_iter = dr_mod_import_iterator_start(data->handle);
+        while (dr_mod_import_iterator_next(mod_iter)) {
+            sym_iter = dr_sym_import_iterator_start(data->handle, mod_iter->imported_module);
+            while (dr_sym_import_iterator_next(sym_iter)) {
+                /* nothing */
+            }
+            dr_sym_import_iterator_stop(sym_iter);
         }
-        dr_sym_import_iterator_stop(sym_iter);
+        dr_mod_import_iterator_stop(mod_iter);
     }
-    dr_mod_import_iterator_stop(mod_iter);
+#else /* LINUX */
+    /* Linux has no module import iterator, just symbols. */
+    sym_iter = dr_sym_import_iterator_start(data->handle, NULL);
+    while (dr_sym_import_iterator_next(sym_iter)) {
+        /* nothing */
+    }
+    dr_sym_import_iterator_stop(sym_iter);
+#endif /* WINDOWS */
 }
 
 static
@@ -148,12 +162,29 @@ test_aux_lib(client_id_t id)
         dr_fprintf(STDERR, "ERROR: unable to unload %s\n", buf);
 }
 
+#ifdef WINDOWS
+/* Module import iterator is Windows-only. */
+static bool
+module_imports_from_kernel_star(module_handle_t mod)
+{
+    bool found_module = false;
+    dr_mod_import_iterator_t *mod_iter = dr_mod_import_iterator_start(mod);
+    while (dr_mod_import_iterator_next(mod_iter)) {
+        /* The exe probably imports from kernel32. */
+        if (_strnicmp(mod_iter->modname, "KERNEL", 6) == 0) {
+            found_module = true;
+        }
+    }
+    dr_mod_import_iterator_stop(mod_iter);
+    return found_module;
+}
+#endif /* WINDOWS */
+
 DR_EXPORT
 void dr_init(client_id_t id)
 {
-    dr_mod_import_iterator_t *mod_iter;
     dr_sym_import_iterator_t *sym_iter;
-    bool found_import = false;
+    bool found_symbol = false;
     module_data_t *main_mod = dr_get_main_module();
     module_handle_t mod_handle = main_mod->handle;
     if (strstr(dr_module_preferred_name(main_mod), "client.modules") == NULL) {
@@ -161,36 +192,25 @@ void dr_init(client_id_t id)
     }
     dr_free_module_data(main_mod);
 
-    /* Look for an imported module that we know will be present. */
-    mod_iter = dr_mod_import_iterator_start(mod_handle);
-    while (dr_mod_import_iterator_next(mod_iter)) {
-        /* Only compare the start of the string to avoid caring about
-         * LoadLibraryA vs LoadLibraryW on Windows.
-         */
-        if (strncmp(mod_iter->name, import_name_start,
-                    strlen(import_name_start)) == 0) {
-            found_import = true;
-        }
+#ifdef WINDOWS
+    if (!module_imports_from_kernel_star(mod_handle)) {
+        dr_fprintf(STDERR, "ERROR: didn't find imported module KERNEL*.dll\n");
     }
-    if (!found_import)
-        dr_fprintf(STDERR, "ERROR: didn't find import %s\n", import_name_start);
-    dr_mod_import_iterator_stop(mod_iter);
+#endif /* WINDOWS */
 
-    /* Look for an import that we know will be present, and test out iterating
-     * all symbols.
+    /* Test iterating all symbols by looking for a symbol that we know is
+     * imported.
      */
     sym_iter = dr_sym_import_iterator_start(mod_handle, NULL);
     while (dr_sym_import_iterator_next(sym_iter)) {
-        /* Only compare the start of the string to avoid caring about
-         * LoadLibraryA vs LoadLibraryW on Windows.
-         */
-        if (strncmp(sym_iter->name, import_name_start,
-                    strlen(import_name_start)) == 0) {
-            found_import = true;
+        if (strncmp(sym_iter->name, load_library_symbol,
+                    strlen(load_library_symbol)) == 0) {
+            found_symbol = true;
         }
     }
-    if (!found_import)
-        dr_fprintf(STDERR, "ERROR: didn't find import %s\n", import_name_start);
+    if (!found_symbol)
+        dr_fprintf(STDERR, "ERROR: didn't find imported symbol %s\n",
+                   load_library_symbol);
     dr_sym_import_iterator_stop(sym_iter);
 
     dr_register_module_load_event(module_load_event);

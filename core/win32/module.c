@@ -261,13 +261,15 @@ typedef struct _pe_sym_import_iterator_t {
     dr_sym_import_iterator_t pub;
 
     /* Private fields.  */
-    pe_mod_import_iterator_t mod_iter;  /* Only valid when iterating all syms. */
+    byte *mod_base;
+    dr_mod_import_iterator_t *mod_iter;  /* Only for iterating all syms. */
     IMAGE_IMPORT_DESCRIPTOR *cur_module;
     /* Points into array of offsets to IMAGE_IMPORT_BY_NAME structs.  The last
      * array element is zeroed.
      */
     DWORD *next_sym;
     char symbol_storage[MAX_PE_SYMBOL_LENGTH];
+    char modname_storage[MAXIMUM_PATH];
 } pe_sym_import_iterator_t;
 
 /* Does a safe_read of *src_ptr into dst_var, returning true for success.  We
@@ -6321,14 +6323,12 @@ dr_mod_import_iterator_start(module_handle_t handle)
     iter = global_heap_alloc(sizeof(*iter) HEAPACCT(ACCT_CLIENT));
     if (iter == NULL)
         return NULL;
-    iter->pub.name = NULL;
-    iter->pub.modname = NULL;
 
     iter->mod_base = (byte *) handle;
-    iter->cur_module = NULL;
     iter->next_module = (IMAGE_IMPORT_DESCRIPTOR *)
         (iter->mod_base + import_desc_rva);
-    iter->next_sym = NULL;
+    iter->pub.modname = NULL;
+    iter->pub.imported_module = NULL;
     return &iter->pub;
 }
 
@@ -6338,54 +6338,34 @@ dr_mod_import_iterator_next(dr_mod_import_iterator_t *pub_iter)
     dcontext_t *dcontext = get_thread_private_dcontext();
     pe_mod_import_iterator_t *iter = (pe_mod_import_iterator_t *) pub_iter;
     bool partial = false;
-    DWORD symbol_rva = 0;
-    IMAGE_IMPORT_BY_NAME *sym;
+    DWORD original_thunk_rva;
 
     if (iter == NULL)  /* Be defensive if _start failed. */
         return false;
 
-    /* Read the next symbol RVA. */
-    if (iter->next_sym != NULL && !SAFE_READ_VAL(symbol_rva, iter->next_sym))
+    /* The last imported module is zeroed. */
+    if (!SAFE_READ_VAL(original_thunk_rva, &iter->next_module->OriginalFirstThunk))
+        return false;
+    if (original_thunk_rva == 0)
         return false;
 
-    /* If we're out of symbols go to the next module import. */
-    while (symbol_rva == 0) {
-        DWORD imports_rva;
-        if (!SAFE_READ_VAL(imports_rva, &iter->next_module->OriginalFirstThunk))
-            return false;
-        if (imports_rva == 0)
-            return false;
-        iter->cur_module = iter->next_module;
-        iter->next_module++;
-        iter->next_sym = (DWORD *) (iter->mod_base + imports_rva);
-        /* Read the first symbol_rva in the new module.  We only continue the
-         * loop if the import list is empty, which is unlikely.
-         */
-        if (!SAFE_READ_VAL(symbol_rva, iter->next_sym))
-            return false;
-    }
-    iter->next_sym++;
-
-    /* Copy the module import into our private storage.  We keep these buffers
-     * private so we can change their sizes.
-     */
+    /* Copy the module name into our private storage. */
     TRY_EXCEPT(dcontext, {
         strncpy(iter->modname_storage,
-                (const char *) (iter->mod_base + iter->cur_module->Name),
+                (const char *) (iter->mod_base + iter->next_module->Name),
                 sizeof(iter->modname_storage));
-        NULL_TERMINATE_BUFFER(iter->symbol_storage);
+        NULL_TERMINATE_BUFFER(iter->modname_storage);
     }, {
         partial = true;
     });
     if (partial)
         return false;
 
-    iter->pub.name = iter->symbol_storage;
     iter->pub.modname = iter->modname_storage;
+    iter->pub.imported_module = (dr_imported_module_t) iter->next_module;
     LOG(THREAD, LOG_LOADER, 3,
-        "%s: yielding %s!%s\n", __FUNCTION__,
-        iter->pub.modname, iter->pub.name);
-
+        "%s: yielding module %s\n", __FUNCTION__, iter->pub.modname);
+    iter->next_module++;
     return true;
 }
 
@@ -6399,46 +6379,30 @@ dr_mod_import_iterator_stop(dr_mod_import_iterator_t *pub_iter)
 }
 
 dr_sym_import_iterator_t *
-dr_sym_import_iterator_start(module_handle_t handle)
+dr_sym_import_iterator_start(module_handle_t handle,
+                             dr_imported_module_t from_module)
 {
     pe_sym_import_iterator_t *iter;
-    IMAGE_DOS_HEADER *dos;
-    IMAGE_NT_HEADERS *nt;
-    IMAGE_DATA_DIRECTORY *dir;
-    DWORD e_lfanew;
-    DWORD nt_signature;
-    WORD nt_magic;
-    DWORD import_desc_rva;
-
-    dos = (IMAGE_DOS_HEADER *) handle;
-    if (!SAFE_READ_VAL(e_lfanew, &dos->e_lfanew))
-        return NULL;
-    nt = (IMAGE_NT_HEADERS *) ((byte *) handle + e_lfanew);
-    if (!SAFE_READ_VAL(nt_signature, &nt->Signature))
-        return NULL;
-    if (nt_signature != IMAGE_NT_SIGNATURE)
-        return NULL;
-    if (!SAFE_READ_VAL(nt_magic, &nt->OptionalHeader.Magic))
-        return NULL;
-    /* No need to safe_read, DataDirectory is an array. */
-    dir = (nt_magic == IMAGE_NT_OPTIONAL_HDR32_MAGIC ?
-           (nt->OptionalHeader.DataDirectory) :
-           (((IMAGE_NT_HEADERS64 *)nt)->OptionalHeader.DataDirectory)) +
-            IMAGE_DIRECTORY_ENTRY_IMPORT;
-    if (!SAFE_READ_VAL(import_desc_rva, &dir->VirtualAddress))
-        return NULL;
 
     iter = global_heap_alloc(sizeof(*iter) HEAPACCT(ACCT_CLIENT));
     if (iter == NULL)
         return NULL;
+
     iter->pub.name = NULL;
     iter->pub.modname = NULL;
-
-    iter->mod_base = (byte *) handle;
-    iter->cur_module = NULL;
-    iter->next_module = (IMAGE_IMPORT_DESCRIPTOR *)
-        (iter->mod_base + import_desc_rva);
+    if (from_module == NULL) {
+        iter->mod_iter = dr_mod_import_iterator_start(handle);
+        if (iter->mod_iter == NULL) {
+            global_heap_free(iter, sizeof(*iter) HEAPACCT(ACCT_CLIENT));
+            return NULL;
+        }
+        iter->cur_module = NULL;
+    } else {
+        iter->mod_iter = NULL;
+        iter->cur_module = (IMAGE_IMPORT_DESCRIPTOR *) from_module;
+    }
     iter->next_sym = NULL;
+    iter->mod_base = (byte *) handle;
     return &iter->pub;
 }
 
@@ -6448,33 +6412,61 @@ dr_sym_import_iterator_next(dr_sym_import_iterator_t *pub_iter)
     dcontext_t *dcontext = get_thread_private_dcontext();
     pe_sym_import_iterator_t *iter = (pe_sym_import_iterator_t *) pub_iter;
     bool partial = false;
+    DWORD original_thunk_rva = 0;
     DWORD symbol_rva = 0;
     IMAGE_IMPORT_BY_NAME *sym;
 
     if (iter == NULL)  /* Be defensive if _start failed. */
         return false;
 
+    if (iter->mod_iter == NULL && iter->next_sym == NULL) {
+        /* Copy the module name into private storage on the first iteration.
+         */
+        TRY_EXCEPT(dcontext, {
+            strncpy(iter->modname_storage,
+                    (const char *) (iter->mod_base + iter->cur_module->Name),
+                    sizeof(iter->modname_storage));
+            NULL_TERMINATE_BUFFER(iter->modname_storage);
+        }, {
+            partial = true;
+        });
+        if (partial)
+            return false;
+        iter->pub.modname = iter->modname_storage;
+        /* Initialize next_sym on the first iteration. */
+        if (!SAFE_READ_VAL(original_thunk_rva,
+                           &iter->cur_module->OriginalFirstThunk))
+            return false;
+        iter->next_sym = (DWORD *) (iter->mod_base + original_thunk_rva);
+    }
+
     /* Read the next symbol RVA. */
     if (iter->next_sym != NULL && !SAFE_READ_VAL(symbol_rva, iter->next_sym))
         return false;
 
-    /* If we're out of symbols go to the next module import. */
-    while (symbol_rva == 0) {
-        DWORD imports_rva;
-        if (!SAFE_READ_VAL(imports_rva, &iter->next_module->OriginalFirstThunk))
-            return false;
-        if (imports_rva == 0)
-            return false;
-        iter->cur_module = iter->next_module;
-        iter->next_module++;
-        iter->next_sym = (DWORD *) (iter->mod_base + imports_rva);
-        /* Read the first symbol_rva in the new module.  We only continue the
-         * loop if the import list is empty, which is unlikely.
-         */
-        if (!SAFE_READ_VAL(symbol_rva, iter->next_sym))
-            return false;
+    if (iter->mod_iter != NULL) {
+        /* If we're out of symbols from the current module, start on the next. */
+        while (symbol_rva == 0) {
+            if (!dr_mod_import_iterator_next(iter->mod_iter))
+                return false;
+            iter->cur_module = (IMAGE_IMPORT_DESCRIPTOR *)
+                iter->mod_iter->imported_module;
+            iter->pub.modname = iter->mod_iter->modname;
+            if (!SAFE_READ_VAL(original_thunk_rva,
+                               &iter->cur_module->OriginalFirstThunk))
+                return false;
+            iter->next_sym = (DWORD *) (iter->mod_base + original_thunk_rva);
+            /* Read the first symbol_rva in the new module.  We only continue the
+             * loop if the import list is empty, which is unlikely.
+             */
+            if (!SAFE_READ_VAL(symbol_rva, iter->next_sym))
+                return false;
+        }
     }
     iter->next_sym++;
+
+    if (symbol_rva == 0)
+        return false;
 
     /* Copy the symbol name and module import into our private storage.  We keep
      * these buffers private so we can change their sizes.
@@ -6484,10 +6476,6 @@ dr_sym_import_iterator_next(dr_sym_import_iterator_t *pub_iter)
         strncpy(iter->symbol_storage, (const char *) &sym->Name,
                 sizeof(iter->symbol_storage));
         NULL_TERMINATE_BUFFER(iter->symbol_storage);
-        strncpy(iter->modname_storage,
-                (const char *) (iter->mod_base + iter->cur_module->Name),
-                sizeof(iter->modname_storage));
-        NULL_TERMINATE_BUFFER(iter->symbol_storage);
     }, {
         partial = true;
     });
@@ -6496,9 +6484,8 @@ dr_sym_import_iterator_next(dr_sym_import_iterator_t *pub_iter)
 
     iter->pub.name = iter->symbol_storage;
     iter->pub.modname = iter->modname_storage;
-    LOG(THREAD, LOG_LOADER, 3,
-        "%s: yielding %s!%s\n", __FUNCTION__,
-        iter->pub.modname, iter->pub.name);
+    LOG(THREAD, LOG_LOADER, 3, "%s: yielding %s!%s\n",
+        __FUNCTION__, iter->pub.modname, iter->pub.name);
 
     return true;
 }
@@ -6509,5 +6496,7 @@ dr_sym_import_iterator_stop(dr_sym_import_iterator_t *pub_iter)
     pe_sym_import_iterator_t *iter = (pe_sym_import_iterator_t *) pub_iter;
     if (iter == NULL)
         return;
+    if (iter->mod_iter != NULL)
+        dr_mod_import_iterator_stop(iter->mod_iter);
     global_heap_free(iter, sizeof(*iter) HEAPACCT(ACCT_CLIENT));
 }
