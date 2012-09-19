@@ -544,9 +544,15 @@ read_config_ex(FILE *f, const char *var, TCHAR *val, size_t val_len,
          */
         SetEndOfFile((HANDLE)_get_osfhandle(_fileno(f)));
 #else
-        off_t pos = lseek(fileno(f), 0, SEEK_CUR);
-        DO_ASSERT(pos != -1);
-        ftruncate(fileno(f), (off_t)pos);
+        {
+            int r;
+            off_t pos = lseek(fileno(f), 0, SEEK_CUR);
+            if (pos == -1)
+                return false;
+            r = ftruncate(fileno(f), (off_t)pos);
+            if (r != 0)
+                return false;
+        }
 #endif
     }
 
