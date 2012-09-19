@@ -1550,7 +1550,7 @@ dynsym_next(elf_import_iterator_t *iter)
 
 dr_sym_import_iterator_t *
 dr_sym_import_iterator_start(module_handle_t handle,
-                             dr_import_module_t from_module)
+                             dr_imported_module_t from_module)
 {
     module_area_t *ma;
     elf_import_iterator_t *iter;
