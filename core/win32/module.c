@@ -72,6 +72,58 @@ module_area_free_IAT(module_area_t *ma);
 static bool
 get_module_resource_version_info(app_pc mod_base, version_info_t *info_out);
 
+/* This constant isn't in winnt.h, but it is documented here:
+ * http://msdn.microsoft.com/en-us/library/565w213d.aspx
+ *
+ * "Only the first 2048 characters of Microsoft C++ identifiers are significant.
+ * Names for user-defined types are "decorated" by the compiler to preserve type
+ * information. The resultant name, including the type information, cannot be
+ * longer than 2048 characters. (See Decorated Names for more information.)"
+ */
+enum { MAX_PE_SYMBOL_LENGTH = 2048 };
+
+#ifdef CLIENT_INTERFACE
+typedef struct _pe_mod_import_iterator_t {
+    /* C-style inheritance: put the public iterator fields at the beginning. */
+    dr_mod_import_iterator_t pub;
+
+    /* Private fields.  */
+    byte *mod_base;
+    /* Points into an array of IMAGE_IMPORT_DESCRIPTOR structs.  The last
+     * element of the array is zeroed.
+     * See "A Tour of the Win32 Portable Executable File Format":
+     * http://msdn.microsoft.com/en-us/library/ms809762.aspx
+     */
+    IMAGE_IMPORT_DESCRIPTOR *next_module;
+    char modname_storage[MAXIMUM_PATH];
+} pe_mod_import_iterator_t;
+
+typedef struct _pe_sym_import_iterator_t {
+    /* C-style inheritance: put the public iterator fields at the beginning. */
+    dr_sym_import_iterator_t pub;
+
+    /* Private fields.  */
+    byte *mod_base;
+    dr_mod_import_iterator_t *mod_iter;  /* Only for iterating all syms. */
+    IMAGE_IMPORT_DESCRIPTOR *cur_module;
+    /* Points into array of offsets to IMAGE_IMPORT_BY_NAME structs.  The last
+     * array element is zeroed.
+     */
+    DWORD *next_sym;
+    char symbol_storage[MAX_PE_SYMBOL_LENGTH];
+    char modname_storage[MAXIMUM_PATH];
+} pe_sym_import_iterator_t;
+#endif /* CLIENT_INTERFACE */
+
+/* Does a safe_read of *src_ptr into dst_var, returning true for success.  We
+ * assert that the size of dst and src match.  The other advantage over plain
+ * safe_read is that the caller doesn't need to pass sizeof(dst), which is
+ * useful for repeated small memory accesses.
+ */
+#define SAFE_READ_VAL(dst_var, src_ptr) \
+    (ASSERT(sizeof(dst_var) == sizeof(*src_ptr)), \
+     safe_read(src_ptr, sizeof(dst_var), &dst_var))
+
 /****************************************************************************
  * Section-to-file table for i#138 and PR 213463 (case 9028)
  */
@@ -230,58 +282,6 @@ typedef struct module_info_vector_t {
     /* FIXME: make this a read/write lock if readers contend too often */
     mutex_t lock;
 } module_info_vector_t;
-
-/* This constant isn't in winnt.h, but it is documented here:
- * http://msdn.microsoft.com/en-us/library/565w213d.aspx
- *
- * "Only the first 2048 characters of Microsoft C++ identifiers are significant.
- * Names for user-defined types are "decorated" by the compiler to preserve type
- * information. The resultant name, including the type information, cannot be
- * longer than 2048 characters. (See Decorated Names for more information.)"
- */
-enum { MAX_PE_SYMBOL_LENGTH = 2048 };
-
-#ifdef CLIENT_INTERFACE
-typedef struct _pe_mod_import_iterator_t {
-    /* C-style inheritance: put the public iterator fields at the beginning. */
-    dr_mod_import_iterator_t pub;
-
-    /* Private fields.  */
-    byte *mod_base;
-    /* Points into an array of IMAGE_IMPORT_DESCRIPTOR structs.  The last
-     * element of the array is zeroed.
-     * See "A Tour of the Win32 Portable Executable File Format":
-     * http://msdn.microsoft.com/en-us/library/ms809762.aspx
-     */
-    IMAGE_IMPORT_DESCRIPTOR *next_module;
-    char modname_storage[MAXIMUM_PATH];
-} pe_mod_import_iterator_t;
-
-typedef struct _pe_sym_import_iterator_t {
-    /* C-style inheritance: put the public iterator fields at the beginning. */
-    dr_sym_import_iterator_t pub;
-
-    /* Private fields.  */
-    byte *mod_base;
-    dr_mod_import_iterator_t *mod_iter;  /* Only for iterating all syms. */
-    IMAGE_IMPORT_DESCRIPTOR *cur_module;
-    /* Points into array of offsets to IMAGE_IMPORT_BY_NAME structs.  The last
-     * array element is zeroed.
-     */
-    DWORD *next_sym;
-    char symbol_storage[MAX_PE_SYMBOL_LENGTH];
-    char modname_storage[MAXIMUM_PATH];
-} pe_sym_import_iterator_t;
-#endif /* CLIENT_INTERFACE */
-
-/* Does a safe_read of *src_ptr into dst_var, returning true for success.  We
- * assert that the size of dst and src match.  The other advantage over plain
- * safe_read is that the caller doesn't need to pass sizeof(dst), which is
- * useful for repeated small memory accesses.
- */
-#define SAFE_READ_VAL(dst_var, src_ptr) \
-    (ASSERT(sizeof(dst_var) == sizeof(*src_ptr)), \
-     safe_read(src_ptr, sizeof(dst_var), &dst_var))
 
 /* debug-only so we don't need to efficiently protect it */
 DECLARE_CXTSWPROT_VAR(static module_info_vector_t process_module_vector,
