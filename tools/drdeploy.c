@@ -974,7 +974,7 @@ int main(int argc, char *argv[])
     info("targeting application: \"%s\"", app_name);
 
     /* note that we want target app name as part of cmd line
-     * (hence &argv[i - * 1])
+     * (hence &argv[i - 1])
      * (FYI: if we were using WinMain, the pzsCmdLine passed in
      *  does not have our own app name in it)
      */
