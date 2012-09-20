@@ -38,6 +38,7 @@
 
 #include "configure.h"
 #include "globals_shared.h"  /* for the types */
+#include "../config.h"  /* for get_config_val_other_app */
 
 #include <errno.h>
 #include <stdlib.h>
@@ -48,6 +49,13 @@
 
 #define EXPORT __attribute__((visibility("default")))
 
+/* Never actually called, but needed to link in config.c. */
+const char *
+get_application_short_name(void)
+{
+    return "";
+}
+
 /* Opaque type to users, holds our state */
 typedef struct _dr_inject_info_t {
     process_id_t pid;
@@ -57,7 +65,7 @@ typedef struct _dr_inject_info_t {
 
 
 static process_id_t
-fork_suspended_child(const char *exe, const char **argv, int *fds)
+fork_suspended_child(const char *exe, const char **argv, int fds[2])
 {
     process_id_t pid = fork();
     if (pid == 0) {
@@ -67,13 +75,23 @@ fork_suspended_child(const char *exe, const char **argv, int *fds)
         size_t sofar = 0;
         close(fds[1]);  /* Close writer in child, keep reader. */
         do {
-            nread = read(fds[0], libdr_path + sofar, sizeof(libdr_path) - sofar);
+            nread = read(fds[0], libdr_path + sofar,
+                         BUFFER_SIZE_BYTES(libdr_path) - sofar);
             sofar += nread;
-        } while (nread > 0 && sofar < sizeof(libdr_path)-1);
+        } while (nread > 0 && sofar < BUFFER_SIZE_BYTES(libdr_path)-1);
         libdr_path[sofar] = '\0';
         close(fds[0]);  /* Close reader before exec. */
-        argv[0] = exe;  /* Make argv[0] absolute for DR's benefit. */
-        execv(libdr_path, (char **) argv);
+        if (libdr_path[0] == '\0') {
+            execv((char *) exe, (char **) argv);
+        } else {
+            /* FIXME i#47: Allow the caller to pass an arbitrary argv[0] when
+             * using early injection.  We can probably pass the absolute path of
+             * the exe in an environment variable.
+             */
+            argv[0] = exe;  /* Make argv[0] absolute for DR's benefit. */
+            execv(libdr_path, (char **) argv);
+        }
+        /* If execv returns, there was an error. */
         exit(-1);
     }
     return pid;
@@ -93,7 +111,8 @@ dr_inject_process_create(const char *exe, const char **argv, void **data OUT)
         return -1;  /* exe should be absolute. */
     }
     basename++;
-    strncpy(info->image_name, basename, sizeof(info->image_name));
+    strncpy(info->image_name, basename, BUFFER_SIZE_ELEMENTS(info->image_name));
+    NULL_TERMINATE_BUFFER(info->image_name);
 
     /* Create a pipe to a forked child and have it block on the pipe. */
     r = pipe(fds);
@@ -129,18 +148,38 @@ dr_inject_get_image_name(void *data)
     return info->image_name;
 }
 
-/* XXX: library_path is optional on Windows, but on Linux it's excessively
- * difficult to get access to the config file and read DYNAMORIO_AUTOINJECT.
- * Therefore, we make it non-optional and push the work on the the caller,
- * since chances are they know where libdynamorio.so is.
- */
 EXPORT
 bool
 dr_inject_process_inject(void *data, bool force_injection,
                          const char *library_path)
 {
     dr_inject_info_t *info = (dr_inject_info_t *) data;
-    write(info->pipe_fd, library_path, strlen(library_path));
+    ssize_t towrite;
+    ssize_t written = 0;
+    char dr_path_buf[MAXIMUM_PATH];
+
+    /* Read the autoinject var from the config file if the caller didn't
+     * override it.
+     */
+    if (library_path == NULL) {
+        if (!get_config_val_other_app(info->image_name, info->pid,
+                                      DYNAMORIO_VAR_AUTOINJECT, dr_path_buf,
+                                      BUFFER_SIZE_ELEMENTS(dr_path_buf), NULL,
+                                      NULL, NULL)) {
+            return false;
+        }
+        library_path = dr_path_buf;
+    }
+
+    /* Write the path to DR to the pipe. */
+    towrite = strlen(library_path);
+    while (towrite > 0) {
+        ssize_t nwrote = write(info->pipe_fd, library_path + written, towrite);
+        if (nwrote <= 0)
+            break;
+        towrite -= nwrote;
+        written += nwrote;
+    }
     close(info->pipe_fd);
     info->pipe_fd = 0;
     return true;
@@ -151,7 +190,11 @@ bool
 dr_inject_process_run(void *data)
 {
     dr_inject_info_t *info = (dr_inject_info_t *) data;
-    kill(info->pid, SIGCONT);
+    /* Close the pipe without writing anything.  This will cause the app to run
+     * natively.
+     */
+    close(info->pipe_fd);
+    info->pipe_fd = 0;
     return true;
 }
 

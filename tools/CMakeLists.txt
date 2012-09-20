@@ -99,14 +99,17 @@ if (UNIX)
     OUTPUT_QUIET)
   configure_file(gdbinit ${CMAKE_BINARY_DIR}/.gdbinit)
 
-  # FIXME i#840: Replace the shell scripts above when ready.
+  # FIXME i#840: Drop the _exe suffix, replace the shell scripts, and combine
+  # with the Windows drdeploy.c targets below.
   # Add a native version of drconfig.
   add_executable(drconfig_exe drdeploy.c)
   target_link_libraries(drconfig_exe drconfiglib)
   set_target_properties(drconfig_exe PROPERTIES COMPILE_FLAGS "-DDRCONFIG")
   # Add a native version of drrun.
-  add_executable(drrun_exe drdeploy.c linux_inject.c)
-  target_link_libraries(drrun_exe drconfiglib)
+  add_executable(drrun_exe drdeploy.c)
+  # FIXME i#840: To distribute these binaries we'll need to strip the RPATH and
+  # come up with another way for them to find drconfiglib and drinjectlib.
+  target_link_libraries(drrun_exe drconfiglib drinjectlib)
   set_target_properties(drrun_exe PROPERTIES COMPILE_FLAGS "-DDRRUN")
 
   DR_install(TARGETS nudgeunix DESTINATION ${INSTALL_BIN})

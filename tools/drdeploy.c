@@ -635,8 +635,8 @@ int main(int argc, char *argv[])
     process_id_t nudge_pid = 0;
     client_id_t nudge_id = 0;
     uint64 nudge_arg = 0;
-    uint nudge_timeout = INFINITE;
     bool list_registered = false;
+    uint nudge_timeout = INFINITE;
     bool syswide_on = false;
     bool syswide_off = false;
 #endif /* WINDOWS */
@@ -649,6 +649,7 @@ int main(int argc, char *argv[])
     bool inject = true;
     int limit = 0; /* in seconds */
     char *drlib_path = NULL;
+    int exitcode;
 # ifdef WINDOWS
     bool debugger_key_injection = false;
     time_t start_time, end_time;
@@ -973,12 +974,20 @@ int main(int argc, char *argv[])
     info("targeting application: \"%s\"", app_name);
 
     /* note that we want target app name as part of cmd line
+     * (hence &argv[i - * 1])
      * (FYI: if we were using WinMain, the pzsCmdLine passed in
      *  does not have our own app name in it)
-     * it's easier to construct than to call GetCommandLine() and then
-     * remove our own args.
      */
     app_cmdline = (const char **) &argv[i - 1];
+    if (verbose) {
+        c = buf;
+        for (i = 0; app_cmdline[i] != NULL; i++) {
+            c += _snprintf(c, BUFFER_SIZE_ELEMENTS(buf) - (c - buf),
+                           " \"%s\"", app_cmdline[i]);
+        }
+        info("app cmdline: %s", buf);
+    }
+
 #else
     if (i < argc)
         usage("%s", "invalid extra arguments specified");
@@ -1036,6 +1045,7 @@ int main(int argc, char *argv[])
             printf("nudge operation failed, verify adequate permissions for this operation.");
     }
 #ifdef WINDOWS
+    /* FIXME i#840: Process iterator NYI for Linux. */
     else if (action == action_list) {
         if (!list_registered)
             list_process(process, global, dr_platform, NULL);
@@ -1100,9 +1110,11 @@ int main(int argc, char *argv[])
         error("%s", buf);
         goto error;
     }
+
     /* i#200/PR 459481: communicate child pid via file */
     if (pidfile != NULL)
         write_pid_to_file(pidfile, dr_inject_get_process_id(inject_data));
+
 # ifdef DRRUN
     /* even if !inject we create a config file, for use running standalone API
      * apps.  if user doesn't want a config file, should use "drinject -noinject".
@@ -1116,22 +1128,6 @@ int main(int argc, char *argv[])
                              dr_platform, client_ids[j],
                              client_paths[j], client_options[j]))
             goto error;
-    }
-# endif
-
-# ifdef LINUX
-    /* XXX: This arg to dr_inject_process_inject is not optional on Linux. */
-    if (drlib_path == NULL) {
-        char *arch_str = IF_X64_ELSE("64", "32");
-        if (dr_platform == DR_PLATFORM_64BIT) {
-            arch_str = "64";
-        } else if (dr_platform == DR_PLATFORM_32BIT) {
-            arch_str = "32";
-        }
-        _snprintf(buf, BUFFER_SIZE_ELEMENTS(buf), "%s/lib%s/%s/libdynamorio.so",
-                  dr_root, arch_str, (use_debug ? "debug" : "release"));
-        NULL_TERMINATE_BUFFER(buf);
-        drlib_path = buf;
     }
 # endif
 
@@ -1153,7 +1149,6 @@ int main(int argc, char *argv[])
 
     if (limit >= 0) {
         double wallclock;
-        int exitcode;
         int wait_result;
         info("waiting %sfor app to exit...", (limit <= 0) ? "forever " : "");
         wait_result = WaitForSingleObject(dr_inject_get_process_handle(inject_data),
@@ -1161,7 +1156,7 @@ int main(int argc, char *argv[])
         end_time = time(NULL);
         wallclock = difftime(end_time, start_time);
         if (wait_result == WAIT_OBJECT_0)
-            success = TRUE;
+            success = true;
         else
             info("timeout after %d seconds\n", limit);
 
@@ -1174,7 +1169,7 @@ int main(int argc, char *argv[])
     } else {
         /* if we are using env -> registry our changes won't get undone!
          * we can't unset now, the app may still reference them */
-        success = TRUE;
+        success = true;
         return 0;
     }
 # else /* LINUX */
@@ -1194,19 +1189,27 @@ int main(int argc, char *argv[])
 
     if (limit >= 0) {
         info("waiting %sfor app to exit...", (limit <= 0) ? "forever " : "");
-        int status;
         pid_t r;
         do {
-            r = waitpid(dr_inject_get_process_id(inject_data), &status, 0);
-        } while (r != dr_inject_get_process_id(inject_data));
-        /* FIXME: We can't actually match status on Linux perfectly since the
-         * kernel reserves most of the bits for signal codes.  It will probably
-         * only use the low byte, which may be zero...
+            r = waitpid(dr_inject_get_process_id(inject_data), &exitcode, 0);
+        } while (r != dr_inject_get_process_id(inject_data) && r != -1);
+        /* FIXME: We can't actually match exit status on Linux perfectly since
+         * the kernel reserves most of the bits for signal codes.  At the very
+         * least, we should ensure if the app exits with a signal we exit
+         * non-zero.
          */
-        return status;
     } else {
-        return 0;
+        /* Don't wait, just return success. */
+        exitcode = 0; 
     }
+
+    /* No need to kill the child process.  If the timeout expired, our signal
+     * handler does the kill.
+     */
+    dr_inject_process_exit(inject_data, false);
+    if (exit0)
+        exitcode = 0;
+    return exitcode;
 # endif
  error:
     /* we created the process suspended so if we later had an error be sure

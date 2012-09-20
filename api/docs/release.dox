@@ -132,6 +132,11 @@ And in the core API:
  - dr_get_milliseconds() now returns the number of milliseconds since Jan
    1, 1601 on all platforms.
 
+And in the non-core APIs:
+
+ - dr_inject_process_create() now takes a NULL-terminated array of strings for
+   the app command line to better support porting to Linux.
+
 Further non-compatibility-affecting changes include:
 
  - Added persistent cache support for clients via

@@ -40,8 +40,8 @@
  */
 /**
  * @file dr_inject.h
- * @brief Injection API for Windows.  Use these functions to launch
- * processes under the control of under DynamoRIO.
+ * @brief Injection API.  Use these functions to launch processes under the
+ * control of under DynamoRIO.
  */
 
 /**
@@ -55,12 +55,14 @@
  *
  * \param[in]   app_name       The path to the target executable.
  *
- * \param[in]   app_cmdline    The target executable and its arguments.
+ * \param[in]   app_cmdline    A NULL-terminated array of strings representing
+ *                             the app's command line.  This should match what
+ *                             the app will receive as \p argv in main().
  *
  * \param[out]  data           An opaque pointer that should be passed to
  *                             subsequent dr_inject_* routines to refer to
  *                             this process.
- * \return  Returns 0 on success.  On failure, returns a Windows API error code.
+ * \return  Returns 0 on success.  On failure, returns a system error code.
  *          Regardless of success, caller must call dr_inject_process_exit()
  *          when finished to clean up internally-allocated resources.
  */
@@ -127,12 +129,14 @@ dr_inject_get_image_name(void *data);
  *
  * \param[in]   data           The pointer returned by dr_inject_process_create()
  *
+ * \note Windows only.
+ *
  * \return  Returns the handle used by drinjectlib.  Do not close the handle: it
  *          will be closed in dr_inject_process_exit().
  */
 HANDLE
 dr_inject_get_process_handle(void *data);
-#endif
+#endif /* WINDOWS */
 
 /**
  * Returns the pid of a process created by dr_inject_process_create().

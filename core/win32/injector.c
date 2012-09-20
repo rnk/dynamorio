@@ -580,7 +580,8 @@ void restore_debugger_key_injection(int id, BOOL started)
 
 /***************************** end debug key injection ********************/
 
-#define MAX_CMDLINE 4096
+/* CreateProcess will take a string up to 36K. */
+enum { MAX_CMDLINE = 36 * 1024 };
 
 static const TCHAR *
 get_image_name(const TCHAR *app_name)
@@ -605,7 +606,7 @@ dr_inject_process_create(const char *app_name, const char **argv,
     STARTUPINFO si;
     int errcode = 0;
     BOOL res;
-    char app_cmdline[MAX_CMDLINE];
+    char *app_cmdline;
     size_t sofar = 0;
     int i;
 
@@ -613,7 +614,10 @@ dr_inject_process_create(const char *app_name, const char **argv,
         return ERROR_INVALID_PARAMETER;
 
     /* Quote and concatenate the array of strings to pass to CreateProcess. */
-    /* XXX: Escapes. */
+    app_cmdline = malloc(MAX_CMDLINE);
+    if (!app_cmdline)
+        return GetLastError();
+    /* FIXME: Need to escape quotes in args. */
     print_to_buffer(app_cmdline, BUFFER_SIZE_ELEMENTS(app_cmdline), &sofar,
                     "\"%s\"", argv[0]);
     for (i = 1; argv[i] != NULL; i++) {
@@ -650,6 +654,7 @@ dr_inject_process_create(const char *app_name, const char **argv,
                         NULL, NULL, &si, &info->pi);
     if (!res)
         errcode = GetLastError();
+    free(app_cmdline);
 
     if (info->using_debugger_injection) {
         restore_debugger_key_injection(info->pi.dwProcessId, res);

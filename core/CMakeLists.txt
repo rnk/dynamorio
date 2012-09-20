@@ -162,6 +162,12 @@ if (UNIX)
     linux/os.c
     ${x86_noncore_asm_src}
     )
+  set(INJECTOR_SRCS
+    linux/injector.c
+    config.c    # To read config
+    linux/os.c  # For file_t interface
+    ${x86_noncore_asm_src}  # For dynamorio_syscall.
+    )
 else (UNIX)
   set(OSNAME win32)
   set(OS_SRCS
@@ -204,13 +210,10 @@ else (UNIX)
     config.c
     win32/os.c
     io.c
+    # We don't include these headers on Linux.
+    ${SYSLOG_SRCS}
+    ${EVENTS_SRCS}
     )
-  add_library(drinjectlib SHARED ${INJECTOR_SRCS} ${SYSLOG_SRCS} ${EVENTS_SRCS})
-  if ("${CMAKE_GENERATOR}" MATCHES "Visual Studio")
-    # for parallel build correctness we need a target dependence
-    add_dependencies(drinjectlib ${x86_noncore_asm_tgt} generate_syslog
-      generate_events)
-  endif ()
 
   add_library(drearlyhelp1 SHARED
     win32/early_inject_helper1.c
@@ -335,6 +338,18 @@ if ("${CMAKE_GENERATOR}" MATCHES "Visual Studio")
   add_dependencies(${PRELOAD_NAME} ${x86_noncore_asm_tgt} ${preinject_asm_tgt}
     generate_syslog generate_events)
 endif ()
+
+# drinjectlib
+add_library(drinjectlib SHARED ${INJECTOR_SRCS})
+if ("${CMAKE_GENERATOR}" MATCHES "Visual Studio")
+  # for parallel build correctness we need a target dependence
+  add_dependencies(drinjectlib ${x86_noncore_asm_tgt} generate_syslog
+    generate_events)
+endif ()
+set_target_properties(drinjectlib PROPERTIES
+  # COMPILE_DEFINITONS isn't working for me: cmake bug?
+  # Set define parameters for resources.rc
+  COMPILE_FLAGS "-DNOT_DYNAMORIO_CORE_PROPER -DRC_IS_DRINJECTLIB")
 
 # static decoding library
 add_library(drdecode
@@ -563,11 +578,6 @@ else (UNIX)
 
   # we used to run dumpbin /headers on dynamorio.dll for info purposes
 
-
-  set_target_properties(drinjectlib PROPERTIES
-    # COMPILE_DEFINITONS isn't working for me: cmake bug?
-    # Set define parameters for resources.rc
-    COMPILE_FLAGS "-DNOT_DYNAMORIO_CORE_PROPER -DRC_IS_DRINJECTLIB")
   # I'm adding libcmt to attempt to make sure we have multithreaded C lib:
   if (DEBUG)
     set(WIN32_C_LIB libcmtd)
