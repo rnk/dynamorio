@@ -1250,17 +1250,16 @@ GLOBAL_LABEL(dynamorio_nonrt_sigreturn:)
         DECLARE_FUNC(master_signal_handler)
 GLOBAL_LABEL(master_signal_handler:)
 #ifdef X64
-	/* Pass xsp in arg4.  Don't need to add another frame. */
-        mov     ARG4, REG_XSP
-        jmp     master_signal_handler_C
-        /* Tail call, no ret. */
+        mov      rcx, rsp /* pass as 4th arg */
+        jmp      master_signal_handler_C
+        /* master_signal_handler_C will do the ret */
 #else
-	/* We need to pass in xsp.  The easiest way is to create an
-	 * intermediate frame.
-	 */
-	mov 	REG_XAX, REG_XSP
-	CALLC1(master_signal_handler_C, REG_XAX)
-	ret
+        /* We need to pass in xsp.  The easiest way is to create an
+         * intermediate frame.
+         */
+        mov      REG_XAX, REG_XSP
+        CALLC1(master_signal_handler_C, REG_XAX)
+        ret
 #endif
         END_FUNC(master_signal_handler)
 
@@ -1345,7 +1344,7 @@ no_swap:
 	/* We need to pass in xsp.  The easiest way is to create an
 	 * intermediate frame.
 	 */
-	mov 	REG_XAX, REG_XSP
+	mov 	 REG_XAX, REG_XSP
 	CALLC1(master_signal_handler_C, REG_XAX)
 	ret
 # endif
