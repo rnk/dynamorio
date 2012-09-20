@@ -1341,12 +1341,12 @@ no_swap:
         /* can't return, no retaddr */
 # else
         add      REG_XSP, 3*ARG_SZ
-	/* We need to pass in xsp.  The easiest way is to create an
-	 * intermediate frame.
-	 */
-	mov 	 REG_XAX, REG_XSP
-	CALLC1(master_signal_handler_C, REG_XAX)
-	ret
+        /* We need to pass in xsp.  The easiest way is to create an
+         * intermediate frame.
+         */
+        mov      REG_XAX, REG_XSP
+        CALLC1(master_signal_handler_C, REG_XAX)
+        ret
 # endif
         END_FUNC(master_signal_handler)
 #endif /* !HAVE_SIGALTSTACK */
