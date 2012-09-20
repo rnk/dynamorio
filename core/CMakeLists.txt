@@ -653,14 +653,14 @@ DR_install(TARGETS dynamorio
   ARCHIVE DESTINATION ${INSTALL_LIB} # .lib
   )
 export(TARGETS dynamorio FILE ${PROJECT_BINARY_DIR}/cmake/${exported_targets_name}.cmake)
+DR_install(TARGETS drinjectlib EXPORT ${exported_targets_name}
+  DESTINATION ${INSTALL_LIB_BASE})
+export(TARGETS FILE
+  ${PROJECT_BINARY_DIR}/cmake/${exported_targets_name}.cmake APPEND)
 if (UNIX)
   DR_install(TARGETS ${PRELOAD_NAME} DESTINATION ${INSTALL_LIB})
   DR_install(FILES ${COMPAT_SYMLINKS} DESTINATION ${INSTALL_LIB})
 else (UNIX)
-  DR_install(TARGETS drinjectlib EXPORT ${exported_targets_name}
-    DESTINATION ${INSTALL_LIB_BASE})
-  export(TARGETS drinjectlib FILE
-    ${PROJECT_BINARY_DIR}/cmake/${exported_targets_name}.cmake APPEND)
   # we put drinjectlib into bin for use by our tools
   DR_install(TARGETS drinjectlib DESTINATION ${INSTALL_BIN})
   DR_install(TARGETS ${PRELOAD_NAME} RUNTIME DESTINATION ${INSTALL_LIB_BASE})
