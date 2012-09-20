@@ -1193,9 +1193,9 @@ int main(int argc, char *argv[])
         do {
             r = waitpid(dr_inject_get_process_id(inject_data), &exitcode, 0);
         } while (r != dr_inject_get_process_id(inject_data) && r != -1);
-        /* FIXME: We can't actually match exit status on Linux perfectly since
-         * the kernel reserves most of the bits for signal codes.  At the very
-         * least, we should ensure if the app exits with a signal we exit
+        /* FIXME i#840: We can't actually match exit status on Linux perfectly
+         * since the kernel reserves most of the bits for signal codes.  At the
+         * very least, we should ensure if the app exits with a signal we exit
          * non-zero.
          */
     } else {

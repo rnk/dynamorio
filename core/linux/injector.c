@@ -37,7 +37,7 @@
  */
 
 #include "configure.h"
-#include "globals_shared.h"  /* for the types */
+#include "globals_shared.h"
 #include "../config.h"  /* for get_config_val_other_app */
 
 #include <errno.h>
@@ -46,8 +46,6 @@
 #include <string.h>
 #include <sys/wait.h>
 #include <unistd.h>
-
-#define EXPORT __attribute__((visibility("default")))
 
 /* Never actually called, but needed to link in config.c. */
 const char *
@@ -84,7 +82,7 @@ fork_suspended_child(const char *exe, const char **argv, int fds[2])
         if (libdr_path[0] == '\0') {
             execv((char *) exe, (char **) argv);
         } else {
-            /* FIXME i#47: Allow the caller to pass an arbitrary argv[0] when
+            /* FIXME i#908: Allow the caller to pass an arbitrary argv[0] when
              * using early injection.  We can probably pass the absolute path of
              * the exe in an environment variable.
              */
@@ -99,7 +97,7 @@ fork_suspended_child(const char *exe, const char **argv, int fds[2])
 
 /* Returns 0 on success.
  */
-EXPORT
+DR_EXPORT
 int
 dr_inject_process_create(const char *exe, const char **argv, void **data OUT)
 {
@@ -132,7 +130,7 @@ error:
     return errno;
 }
 
-EXPORT
+DR_EXPORT
 process_id_t
 dr_inject_get_process_id(void *data)
 {
@@ -140,7 +138,7 @@ dr_inject_get_process_id(void *data)
     return info->pid;
 }
 
-EXPORT
+DR_EXPORT
 char *
 dr_inject_get_image_name(void *data)
 {
@@ -148,7 +146,7 @@ dr_inject_get_image_name(void *data)
     return info->image_name;
 }
 
-EXPORT
+DR_EXPORT
 bool
 dr_inject_process_inject(void *data, bool force_injection,
                          const char *library_path)
@@ -185,7 +183,7 @@ dr_inject_process_inject(void *data, bool force_injection,
     return true;
 }
 
-EXPORT
+DR_EXPORT
 bool
 dr_inject_process_run(void *data)
 {
@@ -198,7 +196,7 @@ dr_inject_process_run(void *data)
     return true;
 }
 
-EXPORT
+DR_EXPORT
 int
 dr_inject_process_exit(void *data, bool terminate)
 {

@@ -594,6 +594,7 @@ get_image_name(const TCHAR *app_name)
     return name_start;
 }
 
+
 /* Returns 0 on success.
  * On failure, returns a Windows API error code.
  */
