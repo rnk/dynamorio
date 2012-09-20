@@ -33,20 +33,16 @@ if (UNIX)
   message(FATAL_ERROR "libutil is Windows-only")
 endif (UNIX)
 
-if ("${CMAKE_GENERATOR}" MATCHES "Visual Studio" OR
-    "${CMAKE_GENERATOR}" MATCHES "Ninja")
-  # i#801: We use custom target (from core/CMakeLists.txt) to ensure headers
-  # are generated before compiling .c files that use them.  We used to list the
-  # header as a source file dependence in the targets that use them, but that
-  # doesn't work well with non-Makefile generators.
-  set(SYSLOG_SRCS "")
-  set(EVENTS_SRCS "")
-  set(add_generated_header_deps ON)
-else ()
-  # These custom commands are per-subdir so can't just place at top level
-  include(../make/CMake_events.cmake)
-  set(add_generated_header_deps OFF)
-endif ()
+# i#801: We use custom target (from core/CMakeLists.txt) to ensure headers
+# are generated before compiling .c files that use them.  We used to list the
+# header as a source file dependence in the targets that use them, but that
+# doesn't work well with non-Makefile generators.
+function (add_gen_events_deps target)
+  add_dependencies(${target} generate_syslog)
+  if (WIN32)
+    add_dependencies(${target} generate_events)
+  endif ()
+endfunction (add_gen_events_deps)
 
 # FIXME i#60: add rules from old Makefile for building unit tests
 # the tests had been broken for a while
@@ -56,8 +52,6 @@ set(CORE_SRCS
   ${PROJECT_SOURCE_DIR}/core/win32/inject_shared.c
   ${PROJECT_SOURCE_DIR}/core/win32/module_shared.c
   ${PROJECT_SOURCE_DIR}/core/win32/drmarker.c
-  ${EVENTS_SRCS}
-  ${SYSLOG_SRCS}
   )
 set(RESOURCES ${PROJECT_SOURCE_DIR}/core/win32/resources.rc)
 set(BASE_SRCS
@@ -99,9 +93,7 @@ set_target_properties(policy_static PROPERTIES
   COMPILE_FLAGS "${libutil_cflags}")
 set_target_properties(policy_static PROPERTIES
   LINK_FLAGS "${libutil_ldflags}")
-if (add_generated_header_deps)
-  add_dependencies(policy_static generate_syslog generate_events)
-endif ()
+add_gen_events_deps(policy_static)
 
 add_library(drconfiglib SHARED ${BASE_SRCS} ${ROOT_SRCS} ${CORE_SRCS}
   ${RESOURCES} dr_config.c drconfig.def)
@@ -119,9 +111,7 @@ set_target_properties(drconfiglib PROPERTIES
 add_custom_command(TARGET drconfiglib POST_BUILD COMMAND ${CMAKE_COMMAND}
   ARGS -E copy "${CMAKE_LIBRARY_OUTPUT_DIRECTORY}/drconfiglib.dll"
   "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/" VERBATIM)
-if (add_generated_header_deps)
-  add_dependencies(drconfiglib generate_syslog generate_events)
-endif ()
+add_gen_events_deps(drconfiglib)
 
 add_executable(dumpevts dumpevts.c elm.c ${RESOURCES})
 set_target_properties(dumpevts PROPERTIES
@@ -129,9 +119,7 @@ set_target_properties(dumpevts PROPERTIES
   COMPILE_FLAGS "${libutil_cflags} -DRC_IS_DUMPEVTS")
 set_target_properties(dumpevts PROPERTIES
   LINK_FLAGS "${libutil_ldflags}")
-if (add_generated_header_deps)
-  add_dependencies(dumpevts generate_syslog generate_events)
-endif ()
+add_gen_events_deps(dumpevts)
 
 # used at Determina: not supported anymore
 if (MFAPI_ENABLED)
@@ -142,9 +130,7 @@ if (MFAPI_ENABLED)
     COMPILE_FLAGS "${libutil_cflags} -DRC_IS_MFAPI")
   set_target_properties(mfapi PROPERTIES
     LINK_FLAGS "${libutil_ldflags}")
-  if (add_generated_header_deps)
-    add_dependencies(mfapi generate_syslog generate_events)
-  endif ()
+  add_gen_events_deps(mfapi)
 endif (MFAPI_ENABLED)
 
 DR_install(TARGETS drconfiglib
