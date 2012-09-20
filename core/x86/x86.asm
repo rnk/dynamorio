@@ -1250,7 +1250,7 @@ GLOBAL_LABEL(dynamorio_nonrt_sigreturn:)
         DECLARE_FUNC(master_signal_handler)
 GLOBAL_LABEL(master_signal_handler:)
 #ifdef X64
-        mov      rcx, rsp /* pass as 4th arg */
+        mov      ARG4, REG_XSP /* pass as 4th arg */
         jmp      master_signal_handler_C
         /* master_signal_handler_C will do the ret */
 #else
