@@ -210,8 +210,9 @@ static uint gdt_entry_tls_min = IF_X64_ELSE(GDT_ENTRY_TLS_MIN_64,
  * FIXME i#107: For total segment transparency, we can use the same approach
  * with tls_gdt_index.
  */
-static mutex_t set_thread_area_lock = INIT_LOCK_FREE(set_thread_area_lock);
 static bool should_return_lib_tls_gdt_index;
+/* Guards data written by os_set_app_thread_area(). */
+static mutex_t set_thread_area_lock = INIT_LOCK_FREE(set_thread_area_lock);
 
 #ifndef HAVE_TLS
 /* We use a table lookup to find a thread's dcontext */
@@ -2037,22 +2038,23 @@ os_tls_init(void)
          * using the private loader.
          */
         choose_gdt_slots(os_tls);
-        if (tls_gdt_index > -1)
-            res = 0;
 
-        /* Now that we know which GDT slot to use, install the per-thread base
-         * into it.
-         */
-        ASSERT(tls_gdt_index > -1);
-        /* Base here must be 32-bit */
-        IF_X64(ASSERT(DYNAMO_OPTION(heap_in_lower_4GB) &&
-                      segment <= (byte*)UINT_MAX));
-        initialize_ldt_struct(&desc, segment, PAGE_SIZE, tls_gdt_index);
-        res = dynamorio_syscall(SYS_set_thread_area, 1, &desc);
-        LOG(GLOBAL, LOG_THREADS, 3,
-            "%s: set_thread_area %d => %d res, %d index\n",
-            __FUNCTION__, tls_gdt_index, res, desc.entry_number);
-        ASSERT(res < 0 || desc.entry_number == tls_gdt_index);
+        if (tls_gdt_index > -1) {
+            /* Now that we know which GDT slot to use, install the per-thread base
+             * into it.
+             */
+            /* Base here must be 32-bit */
+            IF_X64(ASSERT(DYNAMO_OPTION(heap_in_lower_4GB) &&
+                          segment <= (byte*)UINT_MAX));
+            initialize_ldt_struct(&desc, segment, PAGE_SIZE, tls_gdt_index);
+            res = dynamorio_syscall(SYS_set_thread_area, 1, &desc);
+            LOG(GLOBAL, LOG_THREADS, 3,
+                "%s: set_thread_area %d => %d res, %d index\n",
+                __FUNCTION__, tls_gdt_index, res, desc.entry_number);
+            ASSERT(res < 0 || desc.entry_number == tls_gdt_index);
+        } else {
+            res = -1;  /* Fall back on LDT. */
+        }
 
         if (res >= 0) {
             LOG(GLOBAL, LOG_THREADS, 1,
