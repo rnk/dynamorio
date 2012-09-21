@@ -31,46 +31,80 @@
  * DAMAGE.
  */
 
-#include <windows.h>
+#include <stdlib.h>  /* for malloc */
 #include <stdio.h>
-#include <tchar.h>
-#include "configure.h" /* since not including share.h */
+#include <string.h>
 #include "utils.h"
-#include "processes.h"
-#include "globals_shared.h"
-#include "mfapi.h" /* for PLATFORM_WIN_2000 */
+#include "share.h"
+#include "utils.h"
 #include "lib/dr_config.h"
+#include "our_tchar.h"
 
-#define RELEASE32_DLL   L"\\lib32\\release\\dynamorio.dll"
-#define DEBUG32_DLL     L"\\lib32\\debug\\dynamorio.dll"
-#define RELEASE64_DLL   L"\\lib64\\release\\dynamorio.dll"
-#define DEBUG64_DLL     L"\\lib64\\debug\\dynamorio.dll"
-#define LOG_SUBDIR      L"\\logs"
-#define LIB32_SUBDIR    L"\\lib32"
-#define PREINJECT32_DLL L"\\lib32\\drpreinject.dll"
-#define PREINJECT64_DLL L"\\lib64\\drpreinject.dll"
+#ifdef WINDOWS
+# include <windows.h>
+# include <io.h> /* for _get_osfhandle */
+# include "processes.h"
+# include "mfapi.h" /* for PLATFORM_WIN_2000 */
+
+# define RELEASE32_DLL   _TEXT("\\lib32\\release\\dynamorio.dll")
+# define DEBUG32_DLL     _TEXT("\\lib32\\debug\\dynamorio.dll")
+# define RELEASE64_DLL   _TEXT("\\lib64\\release\\dynamorio.dll")
+# define DEBUG64_DLL     _TEXT("\\lib64\\debug\\dynamorio.dll")
+# define LOG_SUBDIR      _TEXT("\\logs")
+# define LIB32_SUBDIR    _TEXT("\\lib32")
+# define PREINJECT32_DLL _TEXT("\\lib32\\drpreinject.dll")
+# define PREINJECT64_DLL _TEXT("\\lib64\\drpreinject.dll")
+#else
+# include <sys/stat.h>
+# include <sys/types.h>
+# include <unistd.h>
+
+# define RELEASE32_DLL   "/lib32/release/libdynamorio.so"
+# define DEBUG32_DLL     "/lib32/debug/libdynamorio.so"
+# define RELEASE64_DLL   "/lib64/release/libdynamorio.so"
+# define DEBUG64_DLL     "/lib64/debug/libdynamorio.so"
+# define LOG_SUBDIR      "/logs"
+# define LIB32_SUBDIR    "/lib32/"
+#endif
 
 /* The minimum option size is 3, e.g., "-x ".  Note that we need the
  * NULL term too so "-x -y" needs 6 characters.
 */
 #define MAX_NUM_OPTIONS (DR_MAX_OPTIONS_LENGTH / 3)
 
+/* Upper bound on the length of an fopen mode string, including the null
+ * terminator.  For example, "rw+b\0" or "ra\0".
+ */
+enum { MAX_MODE_STRING_SIZE = 16 };
+
 /* Data structs to hold info about the DYNAMORIO_OPTION registry entry */
 typedef struct _client_opt_t {
-    WCHAR *path;
+    TCHAR *path;
     client_id_t id;
-    WCHAR *opts;
+    TCHAR *opts;
 } client_opt_t;
 
 typedef struct _opt_info_t {
     dr_operation_mode_t mode;
-    WCHAR *extra_opts[MAX_NUM_OPTIONS];
+    TCHAR *extra_opts[MAX_NUM_OPTIONS];
     size_t num_extra_opts;
     /* note that clients are parsed and stored in priority order */
     client_opt_t *client_opts[MAX_CLIENT_LIBS];
     size_t num_clients;
 } opt_info_t;
 
+/* Does a straight copy when TCHAR is char, and a widening conversion when
+ * TCHAR is wchar_t.  Does not null terminate for use in buffered printing.
+ */
+static void
+convert_to_tchar(TCHAR *dst, const char *src, size_t dst_sz)
+{
+#ifdef _UNICODE
+    _snwprintf(dst, dst_sz, L"%S", src);
+#else
+    strncpy(dst, src, dst_sz);
+#endif
+}
 
 /* Function to iterate over the options in a DYNAMORIO_OPTIONS string.
  * For the purposes of this function, we're not differentiating
@@ -79,8 +113,8 @@ typedef struct _opt_info_t {
  * can be quoted.  'ptr' should point to the current location in the
  * options string; the option is copied to 'token'
  */
-static WCHAR *
-get_next_token(WCHAR* ptr, WCHAR *token)
+static TCHAR *
+get_next_token(TCHAR* ptr, TCHAR *token)
 {
     /* advance to next non-space character */
     while (*ptr == L' ') {
@@ -118,7 +152,7 @@ get_next_token(WCHAR* ptr, WCHAR *token)
 
 /* Allocate a new client_opt_t */
 static client_opt_t *
-new_client_opt(const WCHAR *path, client_id_t id, const WCHAR *opts)
+new_client_opt(const TCHAR *path, client_id_t id, const TCHAR *opts)
 {
     size_t len;
     client_opt_t *opt = (client_opt_t *)malloc(sizeof(client_opt_t));
@@ -128,14 +162,14 @@ new_client_opt(const WCHAR *path, client_id_t id, const WCHAR *opts)
 
     opt->id = id;
 
-    len = MIN(MAX_PATH-1, wcslen(path));
+    len = MIN(MAXIMUM_PATH-1, _tcslen(path));
     opt->path = malloc((len+1) * sizeof(opt->path[0]));
-    wcsncpy(opt->path, path, len);
+    _tcsncpy(opt->path, path, len);
     opt->path[len] = L'\0';
 
-    len = MIN(DR_MAX_OPTIONS_LENGTH-1, wcslen(opts));
+    len = MIN(DR_MAX_OPTIONS_LENGTH-1, _tcslen(opts));
     opt->opts = malloc((len+1) * sizeof(opt->opts[0]));
-    wcsncpy(opt->opts, opts, len);
+    _tcsncpy(opt->opts, opts, len);
     opt->opts[len] = L'\0';
 
     return opt;
@@ -160,7 +194,7 @@ free_client_opt(client_opt_t *opt)
 /* Add another client to an opt_info_t struct */
 static dr_config_status_t
 add_client_lib(opt_info_t *opt_info, client_id_t id, size_t pri,
-               const WCHAR *path, const WCHAR *opts)
+               const TCHAR *path, const TCHAR *opts)
 {
     size_t i;
     
@@ -208,7 +242,7 @@ remove_client_lib(opt_info_t *opt_info, client_id_t id)
 
 /* Add an 'extra' option (non-client related option) to an opt_info_t struct */
 static dr_config_status_t
-add_extra_option(opt_info_t *opt_info, const WCHAR *opt)
+add_extra_option(opt_info_t *opt_info, const TCHAR *opt)
 {
     if (opt != NULL && opt[0] != L'\0') {
         size_t idx, len;
@@ -217,10 +251,10 @@ add_extra_option(opt_info_t *opt_info, const WCHAR *opt)
             return DR_FAILURE;
         }
         
-        len = MIN(DR_MAX_OPTIONS_LENGTH-1, wcslen(opt));
+        len = MIN(DR_MAX_OPTIONS_LENGTH-1, _tcslen(opt));
         opt_info->extra_opts[idx] = malloc
             ((len+1) * sizeof(opt_info->extra_opts[idx][0]));
-        wcsncpy(opt_info->extra_opts[idx], opt, len);
+        _tcsncpy(opt_info->extra_opts[idx], opt, len);
         opt_info->extra_opts[idx][len] = L'\0';
 
         opt_info->num_extra_opts++;
@@ -233,8 +267,8 @@ static dr_config_status_t
 add_extra_option_char(opt_info_t *opt_info, const char *opt)
 {
     if (opt != NULL && opt[0] != '\0') {
-        WCHAR wbuf[DR_MAX_OPTIONS_LENGTH];
-        _snwprintf(wbuf, DR_MAX_OPTIONS_LENGTH, L"%S", opt);
+        TCHAR wbuf[DR_MAX_OPTIONS_LENGTH];
+        convert_to_tchar(wbuf, opt, DR_MAX_OPTIONS_LENGTH);
         NULL_TERMINATE_BUFFER(wbuf);
         return add_extra_option(opt_info, wbuf);
     }
@@ -261,7 +295,7 @@ free_opt_info(opt_info_t *opt_info)
  *
  * The API uses char* here but be careful b/c this file is build w/ UNICODE
  * so we use *A versions of Windows API routines.
- * Also note that I left many types as wchar_t for less change in handling
+ * Also note that I left many types as TCHAR for less change in handling
  * PARAMS_IN_REGISTRY and config files: eventually should convert all
  * to char.
  */
@@ -275,8 +309,13 @@ free_opt_info(opt_info_t *opt_info)
 #endif
 
 #ifndef PARAMS_IN_REGISTRY
-# define LOCAL_CONFIG_ENV "USERPROFILE"
-# define LOCAL_CONFIG_SUBDIR "dynamorio"
+# ifdef WINDOWS
+#  define LOCAL_CONFIG_ENV "USERPROFILE"
+#  define LOCAL_CONFIG_SUBDIR "dynamorio"
+# else
+#  define LOCAL_CONFIG_ENV "HOME"
+#  define LOCAL_CONFIG_SUBDIR ".dynamorio"
+# endif
 # define GLOBAL_CONFIG_SUBDIR "config"
 # define CFG_SFX_64 "config64"
 # define CFG_SFX_32 "config32"
@@ -306,13 +345,25 @@ get_config_dir(bool global, char *fname, size_t fname_len)
     char dir[MAXIMUM_PATH];
     const char *subdir;
     if (global) {
-        _snprintf(dir, BUFFER_SIZE_ELEMENTS(dir), "%S", get_dynamorio_home());
+#ifdef WINDOWS
+        _snprintf(dir, BUFFER_SIZE_ELEMENTS(dir), TSTR_FMT, get_dynamorio_home());
         subdir = GLOBAL_CONFIG_SUBDIR;
+#else
+        /* FIXME i#840: Support global config files by porting more of utils.c.
+         */
+        return false;
+#endif
     } else {
+#ifdef WINDOWS
         int len = GetEnvironmentVariableA(LOCAL_CONFIG_ENV, dir,
                                           BUFFER_SIZE_ELEMENTS(dir));
         if (len <= 0)
             return false;
+#else
+        char *home = getenv(LOCAL_CONFIG_ENV);
+        strncpy(dir, home, BUFFER_SIZE_ELEMENTS(dir));
+        NULL_TERMINATE_BUFFER(dir);
+#endif
         subdir = LOCAL_CONFIG_SUBDIR;
     }
     _snprintf(fname, fname_len, "%s/%s", dir, subdir);
@@ -334,11 +385,27 @@ get_config_file_name(const char *process_name,
                      size_t fname_len)
 {
     size_t dir_len;
-    if (!get_config_dir(global, fname, fname_len))
+    if (!get_config_dir(global, fname, fname_len)) {
+        DO_ASSERT(false && "get_config_dir failed");
         return false;
+    }
+#ifdef WINDOWS
     /* make sure subdir exists*/
-    if (!CreateDirectoryA(fname, NULL) && GetLastError() != ERROR_ALREADY_EXISTS)
+    if (!CreateDirectoryA(fname, NULL) &&
+        GetLastError() != ERROR_ALREADY_EXISTS) {
+        DO_ASSERT(false && "failed to create subdir");
         return false;
+    }
+#else
+    {
+        struct stat st;
+        mkdir(fname, 0770);
+        if (stat(fname, &st) != 0 || !S_ISDIR(st.st_mode)) {
+            DO_ASSERT(false && "failed to create subdir");
+            return false;
+        }
+    }
+#endif
     dir_len = strlen(fname);
     if (pid > 0) {
         /* <root>/appname.<pid>.1config */
@@ -353,183 +420,170 @@ get_config_file_name(const char *process_name,
     return true;
 }
 
-static HANDLE
+static FILE *
 open_config_file(const char *process_name,
                  process_id_t pid,
                  bool global,
                  dr_platform_t dr_platform,
                  bool read, bool write, bool overwrite)
 {
+    TCHAR wfname[MAXIMUM_PATH];
     char fname[MAXIMUM_PATH];
+    char mode[MAX_MODE_STRING_SIZE];
+    int i = 0;
+    FILE *f;
     DO_ASSERT(read || write);
-    if (get_config_file_name(process_name, pid, global, dr_platform,
+    DO_ASSERT(!(read && overwrite) && "read+overwrite incompatible");
+    if (!get_config_file_name(process_name, pid, global, dr_platform,
                              fname, BUFFER_SIZE_ELEMENTS(fname))) {
-        return CreateFileA(fname,
-                           (write ? FILE_GENERIC_WRITE : 0) |
-                           (read ? FILE_GENERIC_READ : 0),
-                           FILE_SHARE_READ, NULL,
-                           read ? OPEN_EXISTING :
-                           (overwrite ? CREATE_ALWAYS : CREATE_NEW),
-                           FILE_ATTRIBUTE_NORMAL, NULL);
+        DO_ASSERT(false && "get_config_file_name failed");
+        return NULL;
     }
-    return INVALID_HANDLE_VALUE;
+
+    /* XXX: Checking for existence before opening is racy. */
+    convert_to_tchar(wfname, fname, BUFFER_SIZE_ELEMENTS(wfname));
+    NULL_TERMINATE_BUFFER(wfname);
+    if (!read && write && !overwrite && file_exists(wfname)) {
+        return NULL;
+    }
+
+    /* Careful, Windows fopen aborts the process on invalid mode strings.
+     * Order matters.  Modifiers like 'b' have to come after standard characters
+     * like r, w, and +.
+     */
+    if (read)
+        mode[i++] = 'r';
+    if (write)
+        mode[i++] = (read ? '+' : 'w');
+    mode[i++] = 'b';  /* Avoid CRLF translation on Windows. */
+    mode[i++] = '\0';
+    DO_ASSERT(i <= BUFFER_SIZE_ELEMENTS(mode));
+    NULL_TERMINATE_BUFFER(mode);
+    f = fopen(fname, mode);
+    return f;
 }
 
-/* Copies the value for var, converted to a wchar, into val.  If elide is true,
+static void
+trim_trailing_newline(TCHAR *line)
+{
+    TCHAR *cur = line + _tcslen(line) - 1;
+    while (cur >= line && (*cur == '\n' || *cur == '\r')) {
+        *cur = '\0';
+        cur--;
+    }
+}
+
+/* Copies the value for var, converted to a TCHAR, into val.  If elide is true,
  * also overwrites var and its value in the file with all lines subsequent,
  * allowing for a simple append to change the value (the file must have been
  * opened with both read and write access).
  */
 static bool
-read_config_ex(HANDLE f, const char *var, wchar_t *val, size_t val_len,
+read_config_ex(FILE *f, const char *var, TCHAR *val, size_t val_len,
                bool elide)
 {
     bool found = false;
-    BOOL ok;
-    /* could use _open_osfhandle() to get fd and _fdopen() to get FILE* and then
-     * use fgets: but then have to close with fclose on FILE and thus messy w/
-     * callers holding HANDLE instead.  already have code for line reading so
-     * sticking w/ HANDLE.  FIXME: share code w/ core/config.c
-     */
+    /* FIXME: share code w/ core/config.c */
 #   define BUFSIZE (MAX_CONFIG_VALUE+128)
-    char buf[BUFSIZE];
-    char *line, *newline = NULL;
-    ssize_t bufread = 0, bufwant;
-    ssize_t len;
+    char line[BUFSIZE];
+    size_t var_len = strlen(var);
+    /* Offsets into the file for the start and end of var. */
+    size_t var_start = 0;
+    size_t var_end = 0;
     /* each time we start from beginning: we assume a small file */
-    if (f == INVALID_HANDLE_VALUE)
+    if (f == NULL)
         return false;
-    if (SetFilePointer(f, 0, NULL, FILE_BEGIN) == INVALID_SET_FILE_POINTER)
+    if (fseek(f, 0, SEEK_SET))
         return false;
-    while (true) {
-        /* break file into lines */
-        if (newline == NULL) {
-            bufwant = BUFSIZE-1;
-            ok = ReadFile(f, buf, (DWORD)bufwant, (LPDWORD)&bufread, NULL);
-            DO_ASSERT(ok && bufread <= bufwant);
-            if (!ok || bufread <= 0)
-                break;
-            buf[bufread] = '\0';
-            newline = strchr(buf, '\n');
-            line = buf;
-        } else {
-            line = newline + 1;
-            newline = strchr(line, '\n');
-            if (newline == NULL) {
-                /* shift 1st part of line to start of buf, then read in rest */
-                /* the memory for the processed part can be reused  */
-                bufwant = line - buf;
-                DO_ASSERT(bufwant <= bufread);
-                len = bufread - bufwant; /* what is left from last time */
-                /* using memmove since strings can overlap */
-                if (len > 0)
-                    memmove(buf, line, len);
-                ok = ReadFile(f, buf+len, (DWORD)bufwant, (LPDWORD)&bufread, NULL);
-                DO_ASSERT(ok && bufread <= bufwant);
-                if (!ok || bufread <= 0)
-                    break;
-                bufread += len; /* bufread is total in buf */
-                buf[bufread] = '\0';
-                newline = strchr(buf, '\n');
-                line = buf;
+    while (fgets(line, BUFFER_SIZE_ELEMENTS(line), f) != NULL) {
+        fflush(stdout);
+        /* Find lines starting with VAR=. */
+        if (strncmp(line, var, var_len) == 0 && line[var_len] == '=') {
+            found = true;
+            var_end = var_start + strlen(line);
+            if (val != NULL) {
+                convert_to_tchar(val, line+var_len+1, val_len);
+                val[val_len-1] = '\0';
+                trim_trailing_newline(val);
             }
+            break;
         }
-        /* buffer is big enough to hold at least one line */
-        DO_ASSERT(newline != NULL);
-        *newline = '\0';
-        /* handle \r\n line endings */
-        if (newline > line && *(newline-1) == '\r')
-            *(newline-1) = '\0';
-        /* now we have one line */
-        /* we support blank lines and comments */
-        if (line[0] == '\0' || line[0] == '#')
-            continue;
-        if (strstr(line, var) == line) {
-            char *eq = strchr(line, '=');
-            if (eq != NULL &&
-                /* we don't have any vars that are prefixes of others so we
-                 * can do a hard match on whole var.
-                 * for parsing simplicity we don't allow whitespace before '='.
-                 */
-                eq == line + strlen(var)) {
-                /* we can only copy this much at once.  alternative is to
-                 * create a new file and rename it at the end.
-                 */
-                bufwant = (newline + 1 - line);
-                if (val != NULL) {
-                    _snwprintf(val, val_len, L"%S", eq + 1);
-                }
-                found = true;
-                if (!elide)
-                    break; /* done */
-                /* now start shifting.  could be more efficient by
-                 * writing what's already in buffer, writing 2x the 1st
-                 * time (though check buf size), but keeping simple for now
-                 */
-                /* assuming file never going to need 64-bit => low dword never -1
-                 * so return value of INVALID_SET_FILE_POINTER always means error
-                 */
-                if (SetFilePointer(f, (LONG) -((buf+bufread) - newline), NULL,
-                                   FILE_CURRENT) == INVALID_SET_FILE_POINTER) {
-                    DO_ASSERT(false);
-                    return false;
-                }
-                while (true) {
-                    bool done = false;
-                    ok = ReadFile(f, buf, (DWORD) bufwant, (LPDWORD)&bufread, NULL);
-                    DO_ASSERT(ok && bufread <= bufwant);
-                    if (!ok || bufread <= 0)
-                        done = true;
-                    if (SetFilePointer(f, (LONG) -(bufwant+bufread), NULL, FILE_CURRENT)
-                        == INVALID_SET_FILE_POINTER) {
-                        DO_ASSERT(false);
-                        return false;
-                    }
-                    if (done) {
-                        /* pointer goes back to end somehow in write_config_param */
-                        SetEndOfFile(f);
-                        break;
-                    }
-                    ok = WriteFile(f, buf, (DWORD) bufread, (LPDWORD)&len, NULL);
-                    DO_ASSERT(ok && len == bufread);
-                    if (SetFilePointer(f, (LONG) bufwant, NULL, FILE_CURRENT) ==
-                        INVALID_SET_FILE_POINTER) {
-                        DO_ASSERT(false);
-                        return false;
-                    }
-                }
-            }
-        }
+        var_start += strlen(line);
+        fflush(stdout);
     }
+
+    /* If elide is true, seek back to the line, delete it, and shift the rest of
+     * the file backward.  It's easier to do this with a fixed size buffer than
+     * it is to it line-by-line with fgets/fputs.
+     */
+    if (found && elide) {
+        /* Use long instead of ssize_t to match FILE* API. */
+        long write_cur = (long) var_start;
+        long read_cur = (long) var_end;
+        long bufread;
+        fflush(stdout);
+        while (true) {
+            fseek(f, read_cur, SEEK_SET);
+            bufread = (long) fread(line, 1, BUFFER_SIZE_ELEMENTS(line), f);
+            DO_ASSERT(ferror(f) == 0);
+            line[bufread] = '\0';
+            fflush(stdout);
+            fseek(f, write_cur, SEEK_SET);
+            if (bufread > 0) {
+                fwrite(line, 1, bufread, f);
+                DO_ASSERT(ferror(f) == 0);
+                read_cur += bufread;
+                write_cur += bufread;
+            } else {
+                break;
+            }
+        }
+#ifdef WINDOWS
+        /* XXX: Can't find a way to truncate the file at the current position
+         * using the FILE API.
+         */
+        SetEndOfFile((HANDLE)_get_osfhandle(_fileno(f)));
+#else
+        {
+            int r;
+            off_t pos = lseek(fileno(f), 0, SEEK_CUR);
+            if (pos == -1)
+                return false;
+            r = ftruncate(fileno(f), (off_t)pos);
+            if (r != 0)
+                return false;
+        }
+#endif
+    }
+
     return found;
 }
 
-/* for simplest coexistence with PARAMS_IN_REGISTRY taking in wchar_t and
+/* for simplest coexistence with PARAMS_IN_REGISTRY taking in TCHAR and
  * converting to char.  not very efficient though.
  */
 static dr_config_status_t
-write_config_param(HANDLE f, const char *var, const wchar_t *val)
+write_config_param(FILE *f, const char *var, const TCHAR *val)
 {
-    BOOL ok;
-    DWORD written;
+    size_t written;
     int len;
     char buf[MAX_CONFIG_VALUE];
-    DO_ASSERT(f != INVALID_HANDLE_VALUE);
-    len = _snprintf(buf, BUFFER_SIZE_ELEMENTS(buf), "%s=%S\n", var, val);
+    DO_ASSERT(f != NULL);
+    len = _snprintf(buf, BUFFER_SIZE_ELEMENTS(buf), "%s="TSTR_FMT"\n", var, val);
     /* don't remove the newline: better to truncate options than to have none (i#547) */
     buf[BUFFER_SIZE_ELEMENTS(buf) - 2] = '\n';
     buf[BUFFER_SIZE_ELEMENTS(buf) - 1] = '\0';
-    ok = WriteFile(f, buf, (DWORD)strlen(buf), &written, NULL);
-    DO_ASSERT(ok && written == strlen(buf));
+    written = fwrite(buf, 1, strlen(buf), f);
+    DO_ASSERT(written == strlen(buf));
     if (len < 0)
         return DR_CONFIG_STRING_TOO_LONG;
-    if (!ok)
+    if (written != strlen(buf))
         return DR_CONFIG_FILE_WRITE_FAILED;
     return DR_SUCCESS;
 }
 
 static bool
-read_config_param(HANDLE f, const char *var, wchar_t *val, size_t val_len)
+read_config_param(FILE *f, const char *var, TCHAR *val, size_t val_len)
 {
     return read_config_ex(f, var, val, val_len, false);
 }
@@ -537,19 +591,19 @@ read_config_param(HANDLE f, const char *var, wchar_t *val, size_t val_len)
 #else /* !PARAMS_IN_REGISTRY */
 
 static dr_config_status_t
-write_config_param(ConfigGroup *policy, const wchar_t *var, const wchar_t *val)
+write_config_param(ConfigGroup *policy, const TCHAR *var, const TCHAR *val)
 {
     set_config_group_parameter(policy, var, val);
     return DR_SUCCESS;
 }
 
 static bool
-read_config_param(HANDLE f, const char *var, const wchar_t *val, size_t val_len)
+read_config_param(FILE *f, const char *var, const TCHAR *val, size_t val_len)
 {
-    WCHAR *ptr = get_config_group_parameter(proc_policy, L_DYNAMORIO_VAR_OPTIONS);
+    TCHAR *ptr = get_config_group_parameter(proc_policy, L_DYNAMORIO_VAR_OPTIONS);
     if (ptr == NULL)
         return false;
-    _snwprintf(val, val_len, L"%s", ptr);
+    _sntprintf(val, val_len, _TEXT("%s"), ptr);
     return true;
 }
 
@@ -559,10 +613,10 @@ read_config_param(HANDLE f, const char *var, const wchar_t *val, size_t val_len)
 
 /* Read a DYNAMORIO_OPTIONS string from 'wbuf' and populate an opt_info_t struct */
 static dr_config_status_t
-read_options(opt_info_t *opt_info, IF_REG_ELSE(ConfigGroup *proc_policy, HANDLE f))
+read_options(opt_info_t *opt_info, IF_REG_ELSE(ConfigGroup *proc_policy, FILE *f))
 {
-    WCHAR buf[MAX_CONFIG_VALUE];
-    WCHAR *ptr, token[DR_MAX_OPTIONS_LENGTH], tmp[DR_MAX_OPTIONS_LENGTH];
+    TCHAR buf[MAX_CONFIG_VALUE];
+    TCHAR *ptr, token[DR_MAX_OPTIONS_LENGTH], tmp[DR_MAX_OPTIONS_LENGTH];
     opt_info_t null_opt_info = {0,};
     size_t len;
     
@@ -580,8 +634,8 @@ read_options(opt_info_t *opt_info, IF_REG_ELSE(ConfigGroup *proc_policy, HANDLE 
      * approach would be to keep track of a string length and pass
      * that to get_next_token().
      */
-    len = MIN(DR_MAX_OPTIONS_LENGTH-1, wcslen(ptr));
-    wcsncpy(tmp, ptr, len);
+    len = MIN(DR_MAX_OPTIONS_LENGTH-1, _tcslen(ptr));
+    _tcsncpy(tmp, ptr, len);
     tmp[len] = L'\0';
 
     opt_info->mode = DR_MODE_NONE;
@@ -593,21 +647,21 @@ read_options(opt_info_t *opt_info, IF_REG_ELSE(ConfigGroup *proc_policy, HANDLE 
         /*
          * look for the mode 
          */
-        if (wcscmp(token, L"-code_api") == 0) {
+        if (_tcscmp(token, _TEXT("-code_api")) == 0) {
             if (opt_info->mode != DR_MODE_NONE) {
                 goto error;
             }
             opt_info->mode = DR_MODE_CODE_MANIPULATION;
         }
 #ifdef MF_API
-        else if (wcscmp(token, L"-security_api") == 0) {
+        else if (_tcscmp(token, _TEXT("-security_api")) == 0) {
             if (opt_info->mode != DR_MODE_NONE) {
                 goto error;
             }
             opt_info->mode = DR_MODE_MEMORY_FIREWALL;
         }
 #endif
-        else if (wcscmp(token, L"-probe_api") == 0) {
+        else if (_tcscmp(token, _TEXT("-probe_api")) == 0) {
 #ifdef PROBE_API
             /* nothing; we assign the mode when we see -code_api */
 #else
@@ -616,7 +670,7 @@ read_options(opt_info_t *opt_info, IF_REG_ELSE(ConfigGroup *proc_policy, HANDLE 
 #endif
         }
 #ifdef PROBE_API
-        else if (wcscmp(token, L"-hotp_only") == 0) {
+        else if (_tcscmp(token, _TEXT("-hotp_only")) == 0) {
             if (opt_info->mode != DR_MODE_NONE) {
                 goto error;
             }
@@ -627,8 +681,8 @@ read_options(opt_info_t *opt_info, IF_REG_ELSE(ConfigGroup *proc_policy, HANDLE 
         /* 
          * look for client options
          */
-        else if (wcscmp(token, L"-client_lib") == 0) {
-            WCHAR *path_str, *id_str, *opt_str;
+        else if (_tcscmp(token, _TEXT("-client_lib")) == 0) {
+            TCHAR *path_str, *id_str, *opt_str;
             client_id_t id;
 
             ptr = get_next_token(ptr, token);
@@ -642,7 +696,7 @@ read_options(opt_info_t *opt_info, IF_REG_ELSE(ConfigGroup *proc_policy, HANDLE 
                 size_t last;
 
                 path_str++;
-                last = wcslen(path_str)-1;
+                last = _tcslen(path_str)-1;
                 if (path_str[last] != L'\"') {
                     goto error;
                 }
@@ -652,7 +706,7 @@ read_options(opt_info_t *opt_info, IF_REG_ELSE(ConfigGroup *proc_policy, HANDLE 
             /* -client_lib options should have the form path;ID;options.
              * Client priority is left-to-right.
              */
-            id_str = wcsstr(path_str, L";");
+            id_str = _tcsstr(path_str, _TEXT(";"));
             if (id_str == NULL) {
                 goto error;
             }
@@ -660,7 +714,7 @@ read_options(opt_info_t *opt_info, IF_REG_ELSE(ConfigGroup *proc_policy, HANDLE 
             *id_str = L'\0';
             id_str++;
 
-            opt_str = wcsstr(id_str, L";");
+            opt_str = _tcsstr(id_str, _TEXT(";"));
             if (opt_str == NULL) {
                 goto error;
             }
@@ -669,7 +723,7 @@ read_options(opt_info_t *opt_info, IF_REG_ELSE(ConfigGroup *proc_policy, HANDLE 
             opt_str++;
 
             /* client IDs are in hex */
-            id = wcstoul(id_str, NULL, 16);
+            id = _tcstoul(id_str, NULL, 16);
 
             /* add the client info to our opt_info structure */
             if (add_client_lib(opt_info, id, opt_info->num_clients, 
@@ -689,6 +743,8 @@ read_options(opt_info_t *opt_info, IF_REG_ELSE(ConfigGroup *proc_policy, HANDLE 
         }
     }
 
+    fflush(stdout);
+
     return DR_SUCCESS;
 
  error:
@@ -702,10 +758,13 @@ read_options(opt_info_t *opt_info, IF_REG_ELSE(ConfigGroup *proc_policy, HANDLE 
  * by the DYNAMORIO_OPTIONS registry entry.
  */
 static void
-write_options(opt_info_t *opt_info, WCHAR *wbuf)
+write_options(opt_info_t *opt_info, TCHAR *wbuf)
 {
     size_t i;
     char *mode_str = "";
+    ssize_t len;
+    ssize_t sofar = 0;
+    ssize_t bufsz = DR_MAX_OPTIONS_LENGTH;
 
     /* NOTE - mode_str must come first since we want to give
      * client-supplied options the chance to override (for
@@ -741,11 +800,14 @@ write_options(opt_info_t *opt_info, WCHAR *wbuf)
             /* no API's so no added options */
             mode_str = "";
             break;
-#endif
+#else
             DO_ASSERT(false);
+#endif
     }
 
-    _snwprintf(wbuf, DR_MAX_OPTIONS_LENGTH, L"%S", mode_str);
+    len = _sntprintf(wbuf + sofar, bufsz - sofar, _TEXT(TSTR_FMT), mode_str);
+    if (len >= 0 && len <= bufsz - sofar)
+        sofar += len;
 
     /* extra options */
     for (i=0; i<opt_info->num_extra_opts; i++) {
@@ -754,14 +816,20 @@ write_options(opt_info_t *opt_info, WCHAR *wbuf)
          * options.  Maybe we should be checking that the options are
          * actually valid?
          */
-        _snwprintf(wbuf, DR_MAX_OPTIONS_LENGTH, L"%s %s", wbuf, opt_info->extra_opts[i]);
+        len = _sntprintf(wbuf + sofar, bufsz - sofar, _TEXT(" %s"),
+                         opt_info->extra_opts[i]);
+        if (len >= 0 && len <= bufsz - sofar)
+            sofar += len;
     }
 
     /* client lib options */
     for (i=0; i<opt_info->num_clients; i++) {
         client_opt_t *client_opts = opt_info->client_opts[i];
-        _snwprintf(wbuf, DR_MAX_OPTIONS_LENGTH, L"%s -client_lib \"%s;%x;%s\"",
-                   wbuf, client_opts->path, client_opts->id, client_opts->opts);
+        len = _sntprintf(wbuf + sofar, bufsz - sofar,
+                         _TEXT(" -client_lib \"%s;%x;%s\""),
+                         client_opts->path, client_opts->id, client_opts->opts);
+        if (len >= 0 && len <= bufsz - sofar)
+            sofar += len;
     }
 
     wbuf[DR_MAX_OPTIONS_LENGTH-1] = L'\0';
@@ -793,14 +861,14 @@ get_proc_policy(ConfigGroup *policy, const char *process_name)
 {
     ConfigGroup *res = NULL;
     if (policy != NULL) {
-        WCHAR wbuf[MAX_PATH];
-        _snwprintf(wbuf, MAX_PATH, L"%S", process_name);
+        TCHAR wbuf[MAXIMUM_PATH];
+        convert_to_tchar(wbuf, process_name, MAXIMUM_PATH);
         NULL_TERMINATE_BUFFER(wbuf);
         res = get_child(wbuf, policy);
     }
     return res;
 }                
-#endif
+#endif /* PARAMS_IN_REGISTRY */
 
 static bool
 platform_is_64bit(dr_platform_t platform)
@@ -809,16 +877,18 @@ platform_is_64bit(dr_platform_t platform)
             IF_X64(|| platform == DR_PLATFORM_DEFAULT));
 }
 
+/* FIXME i#840: Syswide NYI for Linux. */
+#ifdef WINDOWS
 static void
-get_syswide_path(WCHAR *wbuf,
+get_syswide_path(TCHAR *wbuf,
                  const char *dr_root_dir)
 {
-    WCHAR path[MAXIMUM_PATH];
-    DWORD len;
+    TCHAR path[MAXIMUM_PATH];
+    int len;
     if (!platform_is_64bit(get_dr_platform()))
-        _snwprintf(path, MAXIMUM_PATH, L"%S"PREINJECT32_DLL, dr_root_dir);
+        _sntprintf(path, MAXIMUM_PATH, _TEXT("%S")PREINJECT32_DLL, dr_root_dir);
     else
-        _snwprintf(path, MAXIMUM_PATH, L"%S"PREINJECT64_DLL, dr_root_dir);
+        _sntprintf(path, MAXIMUM_PATH, _TEXT("%S")PREINJECT64_DLL, dr_root_dir);
     path[MAXIMUM_PATH - 1] = '\0';
     /* spaces are separator in AppInit so use short path */
     len = GetShortPathName(path, wbuf, MAXIMUM_PATH);
@@ -830,7 +900,7 @@ dr_config_status_t
 dr_register_syswide(dr_platform_t dr_platform,
                     const char *dr_root_dir)
 {
-    WCHAR wbuf[MAXIMUM_PATH];
+    TCHAR wbuf[MAXIMUM_PATH];
     set_dr_platform(dr_platform);
     /* Set the appinit key */
     get_syswide_path(wbuf, dr_root_dir);
@@ -846,7 +916,7 @@ dr_config_status_t
 dr_unregister_syswide(dr_platform_t dr_platform,
                       const char *dr_root_dir)
 {
-    WCHAR wbuf[MAXIMUM_PATH];
+    TCHAR wbuf[MAXIMUM_PATH];
     set_dr_platform(dr_platform);
     /* Set the appinit key */
     get_syswide_path(wbuf, dr_root_dir);
@@ -860,12 +930,13 @@ bool
 dr_syswide_is_on(dr_platform_t dr_platform,
                  const char *dr_root_dir)
 {
-    WCHAR wbuf[MAXIMUM_PATH];
+    TCHAR wbuf[MAXIMUM_PATH];
     set_dr_platform(dr_platform);
     /* Set the appinit key */
     get_syswide_path(wbuf, dr_root_dir);
     return CAST_TO_bool(is_custom_autoinjection_set(wbuf));
 }
+#endif /* WINDOWS */
 
 dr_config_status_t
 dr_register_process(const char *process_name,
@@ -880,10 +951,10 @@ dr_register_process(const char *process_name,
 #ifdef PARAMS_IN_REGISTRY
     ConfigGroup *policy, *proc_policy;
 #else
-    HANDLE f;
+    FILE *f;
 #endif
-    WCHAR wbuf[MAX(MAX_PATH,DR_MAX_OPTIONS_LENGTH)];
-    DWORD platform;
+    TCHAR wbuf[MAX(MAXIMUM_PATH,DR_MAX_OPTIONS_LENGTH)];
+    IF_WINDOWS(DWORD platform;)
     opt_info_t opt_info = {0,};
     dr_config_status_t status;
 
@@ -901,9 +972,9 @@ dr_register_process(const char *process_name,
     if (read_config_group(&policy, L_PRODUCT_NAME, TRUE) != ERROR_SUCCESS) {
         return DR_FAILURE;
     }
-    
+
     /* create process key */
-    _snwprintf(wbuf, MAX_PATH, L"%S", process_name);    
+    convert_to_tchar(wbuf, process_name, MAXIMUM_PATH);
     NULL_TERMINATE_BUFFER(wbuf);
     proc_policy = get_child(wbuf, policy);
     if (proc_policy == NULL) {
@@ -917,38 +988,42 @@ dr_register_process(const char *process_name,
     f = open_config_file(process_name, pid, global, dr_platform,
                          false/*!read*/, true/*write*/,
                          pid != 0/*overwrite for pid-specific*/);
-    if (f == INVALID_HANDLE_VALUE) {
+    if (f == NULL) {
+# ifdef WINDOWS
         int err = GetLastError();
         if (err == ERROR_ALREADY_EXISTS)
             return DR_PROC_REG_EXISTS;
         else
+# endif
             return DR_FAILURE;
     }
 #endif
 
     /* set the rununder string */
-    _snwprintf(wbuf, MAX_PATH, (dr_mode == DR_MODE_DO_NOT_RUN) ? L"0" : L"1");
+    _sntprintf(wbuf, MAXIMUM_PATH, (dr_mode == DR_MODE_DO_NOT_RUN) ? _TEXT("0") : _TEXT("1"));
     NULL_TERMINATE_BUFFER(wbuf);
     status = write_config_param(IF_REG_ELSE(proc_policy, f),
                                 PARAM_STR(DYNAMORIO_VAR_RUNUNDER), wbuf);
+    DO_ASSERT(status == DR_SUCCESS);
     if (status != DR_SUCCESS)
         return status;
 
     /* set the autoinject string (i.e., path to dynamorio.dll */
     if (debug) {
         if (!platform_is_64bit(get_dr_platform()))
-            _snwprintf(wbuf, MAX_PATH, L"%S"DEBUG32_DLL, dr_root_dir);
+            _sntprintf(wbuf, MAXIMUM_PATH, _TEXT(TSTR_FMT)DEBUG32_DLL, dr_root_dir);
         else
-            _snwprintf(wbuf, MAX_PATH, L"%S"DEBUG64_DLL, dr_root_dir);
+            _sntprintf(wbuf, MAXIMUM_PATH, _TEXT(TSTR_FMT)DEBUG64_DLL, dr_root_dir);
     } else {
         if (!platform_is_64bit(get_dr_platform()))
-            _snwprintf(wbuf, MAX_PATH, L"%S"RELEASE32_DLL, dr_root_dir);
+            _sntprintf(wbuf, MAXIMUM_PATH, _TEXT(TSTR_FMT)RELEASE32_DLL, dr_root_dir);
         else
-            _snwprintf(wbuf, MAX_PATH, L"%S"RELEASE64_DLL, dr_root_dir);
+            _sntprintf(wbuf, MAXIMUM_PATH, _TEXT(TSTR_FMT)RELEASE64_DLL, dr_root_dir);
     }
     NULL_TERMINATE_BUFFER(wbuf);
     status = write_config_param(IF_REG_ELSE(proc_policy, f),
                                 PARAM_STR(DYNAMORIO_VAR_AUTOINJECT), wbuf);
+    DO_ASSERT(status == DR_SUCCESS);
     if (status != DR_SUCCESS)
         return status;
 
@@ -960,10 +1035,11 @@ dr_register_process(const char *process_name,
      * strings to have more control over the default.  Linux dr{config,run} does
      * allow such control today.
      */
-    _snwprintf(wbuf, MAX_PATH, L"%S"LOG_SUBDIR, dr_root_dir);
+    _sntprintf(wbuf, MAXIMUM_PATH, _TEXT(TSTR_FMT)LOG_SUBDIR, dr_root_dir);
     NULL_TERMINATE_BUFFER(wbuf);
     status = write_config_param(IF_REG_ELSE(proc_policy, f),
                                 PARAM_STR(DYNAMORIO_VAR_LOGDIR), wbuf);
+    DO_ASSERT(status == DR_SUCCESS);
     if (status != DR_SUCCESS)
         return status;
 
@@ -974,27 +1050,31 @@ dr_register_process(const char *process_name,
     status = write_config_param(IF_REG_ELSE(proc_policy, f),
                                 PARAM_STR(DYNAMORIO_VAR_OPTIONS), wbuf);
     free_opt_info(&opt_info);
+    DO_ASSERT(status == DR_SUCCESS);
     if (status != DR_SUCCESS)
         return status;
 
 #ifdef PARAMS_IN_REGISTRY
     /* write the registry */
     if (write_config_group(policy) != ERROR_SUCCESS) {
+        DO_ASSERT(false);
         return DR_FAILURE;
     }
 #else
-    CloseHandle(f);
+    fclose(f);
 #endif
 
+#ifdef WINDOWS
     /* If on win2k, copy drearlyhelper?.dll to system32 
      * FIXME: this requires admin privs!  oh well: only issue is early inject
      * on win2k...
      */
     if (get_platform(&platform) == ERROR_SUCCESS && platform == PLATFORM_WIN_2000) {
-        _snwprintf(wbuf, MAX_PATH, L"%S"LIB32_SUBDIR, dr_root_dir);
+        _sntprintf(wbuf, MAXIMUM_PATH, _TEXT(TSTR_FMT)LIB32_SUBDIR, dr_root_dir);
         NULL_TERMINATE_BUFFER(wbuf);
         copy_earlyhelper_dlls(wbuf);
     }
+#endif
 
     return DR_SUCCESS;
 }
@@ -1010,14 +1090,14 @@ dr_unregister_process(const char *process_name,
     char fname[MAXIMUM_PATH];
     if (get_config_file_name(process_name, pid, global, dr_platform,
                              fname, BUFFER_SIZE_ELEMENTS(fname))) {
-        if (DeleteFileA(fname))
+        if (remove(fname) == 0)
             return DR_SUCCESS;
     }
     return DR_FAILURE;
 #else
     ConfigGroup *policy = get_policy(dr_platform);
     ConfigGroup *proc_policy = get_proc_policy(policy, process_name);
-    WCHAR wbuf[MAX_PATH];
+    TCHAR wbuf[MAXIMUM_PATH];
     dr_config_status_t status = DR_SUCCESS;
 
     if (proc_policy == NULL) {
@@ -1026,7 +1106,7 @@ dr_unregister_process(const char *process_name,
     }
 
     /* remove it */
-    _snwprintf(wbuf, MAX_PATH, L"%S", process_name);
+    convert_to_tchar(wbuf, process_name, MAXIMUM_PATH);
     NULL_TERMINATE_BUFFER(wbuf);
     remove_child(wbuf, policy);
     policy->should_clear = TRUE;
@@ -1051,14 +1131,14 @@ dr_unregister_process(const char *process_name,
 
 /* For !PARAMS_IN_REGISTRY, process_name is NOT filled in! */
 static void
-read_process_policy(IF_REG_ELSE(ConfigGroup *proc_policy, HANDLE f),
+read_process_policy(IF_REG_ELSE(ConfigGroup *proc_policy, FILE *f),
                     char *process_name /* OUT */,
                     char *dr_root_dir /* OUT */,
                     dr_operation_mode_t *dr_mode /* OUT */,
                     bool *debug /* OUT */,
                     char *dr_options /* OUT */)
 {
-    WCHAR autoinject[MAX_CONFIG_VALUE];
+    TCHAR autoinject[MAX_CONFIG_VALUE];
     opt_info_t opt_info;
     
     if (dr_mode != NULL)
@@ -1072,8 +1152,8 @@ read_process_policy(IF_REG_ELSE(ConfigGroup *proc_policy, HANDLE f),
     if (process_name != NULL)
         *process_name = '\0';
     if (process_name != NULL && proc_policy->name != NULL) {
-        SIZE_T len = MIN(wcslen(proc_policy->name), MAX_PATH-1);
-        _snprintf(process_name, len, "%S", proc_policy->name);
+        SIZE_T len = MIN(_tcslen(proc_policy->name), MAXIMUM_PATH-1);
+        _snprintf(process_name, len, TSTR_FMT, proc_policy->name);
         process_name[len] = '\0';
     }
 #else
@@ -1084,19 +1164,19 @@ read_process_policy(IF_REG_ELSE(ConfigGroup *proc_policy, HANDLE f),
         read_config_param(IF_REG_ELSE(proc_policy, f),
                           PARAM_STR(DYNAMORIO_VAR_AUTOINJECT),
                           autoinject, BUFFER_SIZE_ELEMENTS(autoinject))) {
-        WCHAR *vers = wcsstr(autoinject, RELEASE32_DLL);
+        TCHAR *vers = _tcsstr(autoinject, RELEASE32_DLL);
         if (vers == NULL) {
-            vers = wcsstr(autoinject, DEBUG32_DLL);
+            vers = _tcsstr(autoinject, DEBUG32_DLL);
         }
         if (vers == NULL) {
-            vers = wcsstr(autoinject, RELEASE64_DLL);
+            vers = _tcsstr(autoinject, RELEASE64_DLL);
         }
         if (vers == NULL) {
-            vers = wcsstr(autoinject, DEBUG64_DLL);
+            vers = _tcsstr(autoinject, DEBUG64_DLL);
         }
         if (vers != NULL) {
-            size_t len = MIN(MAX_PATH-1, vers - autoinject);
-            _snprintf(dr_root_dir, len, "%S", autoinject);
+            size_t len = MIN(MAXIMUM_PATH-1, vers - autoinject);
+            _snprintf(dr_root_dir, len, TSTR_FMT, autoinject);
             dr_root_dir[len] = '\0';
         }
         else {
@@ -1114,14 +1194,14 @@ read_process_policy(IF_REG_ELSE(ConfigGroup *proc_policy, HANDLE f),
         if (read_config_param(IF_REG_ELSE(proc_policy, f),
                               PARAM_STR(DYNAMORIO_VAR_RUNUNDER),
                               autoinject, BUFFER_SIZE_ELEMENTS(autoinject))) {
-            if (wcscmp(autoinject, L"0") == 0)
+            if (_tcscmp(autoinject, _TEXT("0")) == 0)
                 *dr_mode = DR_MODE_DO_NOT_RUN;
         }
     }
 
     if (debug != NULL) {
-        if (wcsstr(autoinject, DEBUG32_DLL) != NULL ||
-            wcsstr(autoinject, DEBUG64_DLL) != NULL) {
+        if (_tcsstr(autoinject, DEBUG32_DLL) != NULL ||
+            _tcsstr(autoinject, DEBUG64_DLL) != NULL) {
             *debug = true;
         }
         else {
@@ -1139,8 +1219,8 @@ read_process_policy(IF_REG_ELSE(ConfigGroup *proc_policy, HANDLE f),
                 len_remain--;
                 dr_options[cur_off++] = ' ';
             }
-            len = MIN(len_remain, wcslen(opt_info.extra_opts[i]));
-            _snprintf(dr_options+cur_off, len, "%S", opt_info.extra_opts[i]);
+            len = MIN(len_remain, _tcslen(opt_info.extra_opts[i]));
+            _snprintf(dr_options+cur_off, len, TSTR_FMT, opt_info.extra_opts[i]);
             cur_off += len;
             len_remain -= len;
             dr_options[cur_off] = '\0';
@@ -1149,6 +1229,9 @@ read_process_policy(IF_REG_ELSE(ConfigGroup *proc_policy, HANDLE f),
 
     free_opt_info(&opt_info);
 }
+
+/* FIXME i#840: NYI for Linux, need a FindFirstFile equivalent. */
+#ifdef WINDOWS
 
 struct _dr_registered_process_iterator_t {
 #ifdef PARAMS_IN_REGISTRY
@@ -1184,8 +1267,8 @@ dr_registered_process_iterator_start(dr_platform_t dr_platform,
         iter->has_next = false;
         return iter;
     }
-    _snwprintf(iter->fname, BUFFER_SIZE_ELEMENTS(iter->fname),
-               L"%S/*.%S", iter->dir, get_config_sfx(dr_platform));
+    _sntprintf(iter->fname, BUFFER_SIZE_ELEMENTS(iter->fname),
+               _TEXT("%S/*.%S"), iter->dir, get_config_sfx(dr_platform));
     NULL_TERMINATE_BUFFER(iter->fname);
     iter->find_handle = FindFirstFile(iter->fname, &iter->find_data);
     iter->has_next = (iter->find_handle != INVALID_HANDLE_VALUE);
@@ -1217,12 +1300,11 @@ dr_registered_process_iterator_next(dr_registered_process_iterator_t *iter,
     return true;
 #else
     bool ok = true;
-    HANDLE f;
-    _snwprintf(iter->fname, BUFFER_SIZE_ELEMENTS(iter->fname),
-               L"%S/%s", iter->dir, iter->find_data.cFileName);
+    FILE *f;
+    _sntprintf(iter->fname, BUFFER_SIZE_ELEMENTS(iter->fname),
+               _TEXT("%S/%s"), iter->dir, iter->find_data.cFileName);
     NULL_TERMINATE_BUFFER(iter->fname);
-    f = CreateFile(iter->fname, FILE_GENERIC_READ, FILE_SHARE_READ, NULL,
-                   OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    f = fopen(iter->fname, "r");
     if (process_name != NULL) {
         TCHAR *end;
         end = _tcsstr(iter->find_data.cFileName, _TEXT(".config"));
@@ -1241,10 +1323,10 @@ dr_registered_process_iterator_next(dr_registered_process_iterator_t *iter,
     }
     if (!FindNextFile(iter->find_handle, &iter->find_data))
         iter->has_next = false;
-    if (f == INVALID_HANDLE_VALUE || !ok)
+    if (f == NULL || !ok)
         return false;
     read_process_policy(f, process_name, dr_root_dir, dr_mode, debug, dr_options);
-    CloseHandle(f);
+    fclose(f);
     return true;
 #endif
 }
@@ -1262,6 +1344,8 @@ dr_registered_process_iterator_stop(dr_registered_process_iterator_t *iter)
     free(iter);
 }
 
+#endif /* WINDOWS */
+
 bool
 dr_process_is_registered(const char *process_name,
                          process_id_t pid,
@@ -1277,10 +1361,10 @@ dr_process_is_registered(const char *process_name,
     ConfigGroup *policy = get_policy(dr_platform);
     ConfigGroup *proc_policy = get_proc_policy(policy, process_name);
 #else
-    HANDLE f = open_config_file(process_name, pid, global, dr_platform,
+    FILE *f = open_config_file(process_name, pid, global, dr_platform,
                                 true/*read*/, false/*!write*/, false/*!overwrite*/);
 #endif
-    if (IF_REG_ELSE(proc_policy == NULL, f == INVALID_HANDLE_VALUE))
+    if (IF_REG_ELSE(proc_policy == NULL, f == NULL))
         goto exit;
     result = true;
     
@@ -1292,7 +1376,8 @@ dr_process_is_registered(const char *process_name,
     if (policy != NULL)
         free_config_group(policy);
 #else
-    CloseHandle(f);
+    if (f != NULL)
+        fclose(f);
 #endif
     return result;
 }
@@ -1313,7 +1398,7 @@ dr_client_iterator_start(const char *process_name,
     ConfigGroup *policy = get_policy(dr_platform);
     ConfigGroup *proc_policy = get_proc_policy(policy, process_name);
 #else
-    HANDLE f = open_config_file(process_name, pid, global, dr_platform,
+    FILE *f = open_config_file(process_name, pid, global, dr_platform,
                                 true/*read*/, false/*!write*/, false/*!overwrite*/);
 #endif
     dr_client_iterator_t *iter = (dr_client_iterator_t *)
@@ -1321,7 +1406,7 @@ dr_client_iterator_start(const char *process_name,
     
     iter->valid = false;
     iter->cur = 0;
-    if (IF_REG_ELSE(proc_policy == NULL, f == INVALID_HANDLE_VALUE))
+    if (IF_REG_ELSE(proc_policy == NULL, f == NULL))
         return iter;
     if (read_options(&iter->opt_info, IF_REG_ELSE(proc_policy, f)) != DR_SUCCESS)
         return iter;
@@ -1349,8 +1434,8 @@ dr_client_iterator_next(dr_client_iterator_t *iter,
         *client_pri = iter->cur;
 
     if (client_path != NULL) {
-        size_t len = MIN(MAX_PATH-1, wcslen(client_opt->path));
-        _snprintf(client_path, len, "%S", client_opt->path);
+        size_t len = MIN(MAXIMUM_PATH-1, _tcslen(client_opt->path));
+        _snprintf(client_path, len, TSTR_FMT, client_opt->path);
         client_path[len] = '\0';
     }
 
@@ -1358,13 +1443,13 @@ dr_client_iterator_next(dr_client_iterator_t *iter,
         *client_id = client_opt->id;
 
     if (client_options != NULL) {
-        size_t len = MIN(DR_MAX_OPTIONS_LENGTH-1, wcslen(client_opt->opts));
-        _snprintf(client_options, len, "%S", client_opt->opts);
+        size_t len = MIN(DR_MAX_OPTIONS_LENGTH-1, _tcslen(client_opt->opts));
+        _snprintf(client_options, len, TSTR_FMT, client_opt->opts);
         client_options[len] = '\0';
     }
     
     iter->cur++;
-}           
+}
 
 void
 dr_client_iterator_stop(dr_client_iterator_t *iter)
@@ -1386,10 +1471,10 @@ dr_num_registered_clients(const char *process_name,
     ConfigGroup *policy = get_policy(dr_platform);
     ConfigGroup *proc_policy = get_proc_policy(policy, process_name);
 #else
-    HANDLE f = open_config_file(process_name, pid, global, dr_platform,
+    FILE *f = open_config_file(process_name, pid, global, dr_platform,
                                 true/*read*/, false/*!write*/, false/*!overwrite*/);
 #endif
-    if (IF_REG_ELSE(proc_policy == NULL, f == INVALID_HANDLE_VALUE))
+    if (IF_REG_ELSE(proc_policy == NULL, f == NULL))
         goto exit;
 
     if (read_options(&opt_info, IF_REG_ELSE(proc_policy, f)) != DR_SUCCESS)
@@ -1403,7 +1488,7 @@ dr_num_registered_clients(const char *process_name,
     if (policy != NULL)
         free_config_group(policy);
 #else
-    CloseHandle(f);
+    fclose(f);
 #endif
     return num;
 }
@@ -1426,10 +1511,10 @@ dr_get_client_info(const char *process_name,
     ConfigGroup *policy = get_policy(dr_platform);
     ConfigGroup *proc_policy = get_proc_policy(policy, process_name);
 #else
-    HANDLE f = open_config_file(process_name, pid, global, dr_platform,
+    FILE *f = open_config_file(process_name, pid, global, dr_platform,
                                 true/*read*/, false/*!write*/, false/*!overwrite*/);
 #endif
-    if (IF_REG_ELSE(proc_policy == NULL, f == INVALID_HANDLE_VALUE)) {
+    if (IF_REG_ELSE(proc_policy == NULL, f == NULL)) {
         status = DR_PROC_REG_INVALID;
         goto exit;
     }
@@ -1447,14 +1532,14 @@ dr_get_client_info(const char *process_name,
             }
 
             if (client_path != NULL) {
-                size_t len = MIN(MAX_PATH-1, wcslen(client_opt->path));
-                _snprintf(client_path, len, "%S", client_opt->path);
+                size_t len = MIN(MAXIMUM_PATH-1, _tcslen(client_opt->path));
+                _snprintf(client_path, len, TSTR_FMT, client_opt->path);
                 client_path[len] = '\0';
             }
 
             if (client_options != NULL) {
-                size_t len = MIN(DR_MAX_OPTIONS_LENGTH-1, wcslen(client_opt->opts));
-                _snprintf(client_options, len, "%S", client_opt->opts);
+                size_t len = MIN(DR_MAX_OPTIONS_LENGTH-1, _tcslen(client_opt->opts));
+                _snprintf(client_options, len, TSTR_FMT, client_opt->opts);
                 client_options[len] = '\0';
             }
 
@@ -1470,7 +1555,7 @@ dr_get_client_info(const char *process_name,
     if (policy != NULL)
         free_config_group(policy);
 #else
-    CloseHandle(f);
+    fclose(f);
 #endif
     return status;
 }
@@ -1486,13 +1571,13 @@ dr_register_client(const char *process_name,
                    const char *client_path,
                    const char *client_options)
 {
-    WCHAR new_opts[DR_MAX_OPTIONS_LENGTH];
-    WCHAR wpath[MAX_PATH], woptions[DR_MAX_OPTIONS_LENGTH];
+    TCHAR new_opts[DR_MAX_OPTIONS_LENGTH];
+    TCHAR wpath[MAXIMUM_PATH], woptions[DR_MAX_OPTIONS_LENGTH];
 #ifdef PARAMS_IN_REGISTRY
     ConfigGroup *policy = get_policy(dr_platform);
     ConfigGroup *proc_policy = get_proc_policy(policy, process_name);
 #else
-    HANDLE f = open_config_file(process_name, pid, global, dr_platform,
+    FILE *f = open_config_file(process_name, pid, global, dr_platform,
                                 true/*read*/, true/*write*/, false/*!overwrite*/);
 #endif
     dr_config_status_t status;
@@ -1500,7 +1585,7 @@ dr_register_client(const char *process_name,
     bool opt_info_alloc = false;
     size_t i;
 
-    if (IF_REG_ELSE(proc_policy == NULL, f == INVALID_HANDLE_VALUE)) {
+    if (IF_REG_ELSE(proc_policy == NULL, f == NULL)) {
         status = DR_PROC_REG_INVALID;
         goto exit;
     }
@@ -1523,9 +1608,9 @@ dr_register_client(const char *process_name,
         goto exit;
     }
 
-    _snwprintf(wpath, MAX_PATH, L"%S", client_path);
+    convert_to_tchar(wpath, client_path, MAXIMUM_PATH);
     NULL_TERMINATE_BUFFER(wpath);
-    _snwprintf(woptions, DR_MAX_OPTIONS_LENGTH, L"%S", client_options);
+    convert_to_tchar(woptions, client_options, DR_MAX_OPTIONS_LENGTH);
     NULL_TERMINATE_BUFFER(woptions);
 
     status = add_client_lib(&opt_info, client_id, client_pri, wpath, woptions);
@@ -1557,8 +1642,8 @@ dr_register_client(const char *process_name,
     if (policy != NULL)
         free_config_group(policy);
 #else
-    if (f != INVALID_HANDLE_VALUE)
-        CloseHandle(f);
+    if (f != NULL)
+        fclose(f);
 #endif
     if (opt_info_alloc)
         free_opt_info(&opt_info);
@@ -1573,19 +1658,19 @@ dr_unregister_client(const char *process_name,
                      dr_platform_t dr_platform,
                      client_id_t client_id)
 {
-    WCHAR new_opts[DR_MAX_OPTIONS_LENGTH];
+    TCHAR new_opts[DR_MAX_OPTIONS_LENGTH];
 #ifdef PARAMS_IN_REGISTRY
     ConfigGroup *policy = get_policy(dr_platform);
     ConfigGroup *proc_policy = get_proc_policy(policy, process_name);
 #else
-    HANDLE f = open_config_file(process_name, pid, global, dr_platform,
+    FILE *f = open_config_file(process_name, pid, global, dr_platform,
                                 true/*read*/, true/*write*/, false/*!overwrite*/);
 #endif
     dr_config_status_t status;
     opt_info_t opt_info;
     bool opt_info_alloc = false;
 
-    if (IF_REG_ELSE(proc_policy == NULL, f == INVALID_HANDLE_VALUE)) {
+    if (IF_REG_ELSE(proc_policy == NULL, f == NULL)) {
         status = DR_PROC_REG_INVALID;
         goto exit;
     }
@@ -1624,14 +1709,18 @@ dr_unregister_client(const char *process_name,
     if (policy != NULL)
         free_config_group(policy);
 #else
-    if (f != INVALID_HANDLE_VALUE)
-        CloseHandle(f);
+    if (f != NULL)
+        fclose(f);
 #endif
     if (opt_info_alloc)
         free_opt_info(&opt_info);
     return status;
 }
 
+/* FIXME i#840: Support the nudge API on Linux by incorporating
+ * tools/nudgeunix.c.
+ */
+#ifdef WINDOWS
 
 typedef struct {
     const char *process_name; /* if non-null nudges processes with matching name */
@@ -1646,7 +1735,7 @@ typedef struct {
 static
 BOOL pw_nudge_callback(process_info_t *pi, void **param)
 {
-    char buf[MAX_PATH];
+    char buf[MAXIMUM_PATH];
     pw_nudge_callback_data_t *data = (pw_nudge_callback_data_t *)param;
 
     if (pi->ProcessID == 0)
@@ -1654,10 +1743,10 @@ BOOL pw_nudge_callback(process_info_t *pi, void **param)
 
     buf[0] = '\0';
     if (pi->ProcessName != NULL)
-        _snprintf(buf, MAX_PATH, "%S", pi->ProcessName);
+        _snprintf(buf, MAXIMUM_PATH, "%S", pi->ProcessName);
     NULL_TERMINATE_BUFFER(buf);
     if (data->all || (data->process_name != NULL &&
-                      strnicmp(data->process_name, buf, MAX_PATH) == 0)) {
+                      strnicmp(data->process_name, buf, MAXIMUM_PATH) == 0)) {
         DWORD res = generic_nudge(pi->ProcessID, true, NUDGE_GENERIC(client),
                                   data->client_id, data->argument, data->timeout);
         if (res == ERROR_SUCCESS || res == ERROR_TIMEOUT) {
@@ -1734,3 +1823,5 @@ dr_nudge_all(client_id_t client_id, uint64 arg, uint timeout_ms, int *nudge_coun
         return DR_NUDGE_TIMEOUT;
     return DR_FAILURE;
 }
+
+#endif /* WINDOWS */

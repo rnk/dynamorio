@@ -2974,6 +2974,13 @@ dr_lookup_module(byte *pc)
 }
 
 DR_API
+module_data_t *
+dr_get_main_module(void)
+{
+    return dr_lookup_module(get_image_entry());
+}
+
+DR_API
 /* Looks up the module with name matching name (ignoring case).  Returns NULL if not
  * found. Returned module_data_t must be freed with dr_free_module_data(). */
 module_data_t *
@@ -3679,7 +3686,7 @@ dr_print_instr(void *drcontext, file_t f, instr_t *instr, const char *msg)
 {
     dcontext_t *dcontext = (dcontext_t *) drcontext;
     CLIENT_ASSERT(drcontext != NULL, "dr_print_instr: drcontext cannot be NULL");
-    CLIENT_ASSERT(drcontext != GLOBAL_DCONTEXT,
+    CLIENT_ASSERT(drcontext != GLOBAL_DCONTEXT || standalone_library,
                   "dr_print_instr: drcontext is invalid");
     dr_fprintf(f, "%s "PFX" ", msg, instr_get_translation(instr));
     instr_disassemble(dcontext, instr, f);
@@ -3691,7 +3698,7 @@ dr_print_opnd(void *drcontext, file_t f, opnd_t opnd, const char *msg)
 {
     dcontext_t *dcontext = (dcontext_t *) drcontext;
     CLIENT_ASSERT(drcontext != NULL, "dr_print_opnd: drcontext cannot be NULL");
-    CLIENT_ASSERT(drcontext != GLOBAL_DCONTEXT,
+    CLIENT_ASSERT(drcontext != GLOBAL_DCONTEXT || standalone_library,
                   "dr_print_opnd: drcontext is invalid");
     dr_fprintf(f, "%s ", msg);
     opnd_disassemble(dcontext, opnd, f);
