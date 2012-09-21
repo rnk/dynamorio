@@ -124,19 +124,23 @@ endif (X64)
 
 # These custom commands are per-subdir so can't just place at top level
 include(../make/CMake_events.cmake)
-if ("${CMAKE_GENERATOR}" MATCHES "Visual Studio")
-  # For correct parallel builds we need a target to avoid
-  # duplicate and racy VS per-project rules.  We can't put this in
-  # CMake_events.cmake b/c we end up w/ duplicate targets then.
-  # Note that libutil/ uses these same targets but core is always enabled.
-  add_custom_target(generate_syslog DEPENDS "${SYSLOG_SRCS}")
+
+# i#801: For generated headers, we need to use add_dependencies to ensure that
+# they are generated before compiling the other sources.  Listing the header as
+# a source in the target isn't enough because it's really the source files
+# themselves that need the header.  We can't put this in CMake_events.cmake b/c
+# we end up w/ duplicate targets then.  Note that libutil/ uses these same
+# targets but core is always enabled.
+add_custom_target(generate_syslog DEPENDS "${SYSLOG_SRCS}")
+if (WIN32)
+  add_custom_target(generate_events DEPENDS "${EVENTS_SRCS}")
+endif (WIN32)
+function (add_gen_events_deps target)
+  add_dependencies(${target} generate_syslog)
   if (WIN32)
-    add_custom_target(generate_events DEPENDS "${EVENTS_SRCS}")
-  endif (WIN32)
-  # i#801: we use custom target for dependence, and sources cause problems w/ VS
-  set(SYSLOG_SRCS "")
-  set(EVENTS_SRCS "")
-endif ()
+    add_dependencies(${target} generate_events)
+  endif ()
+endfunction (add_gen_events_deps)
 
 if (UNIX)
   set(OSNAME linux)
@@ -205,11 +209,11 @@ else (UNIX)
     win32/os.c
     io.c
     )
-  add_library(drinjectlib SHARED ${INJECTOR_SRCS} ${SYSLOG_SRCS} ${EVENTS_SRCS})
+  add_library(drinjectlib SHARED ${INJECTOR_SRCS})
+  add_gen_events_deps(drinjectlib)
   if ("${CMAKE_GENERATOR}" MATCHES "Visual Studio")
     # for parallel build correctness we need a target dependence
-    add_dependencies(drinjectlib ${x86_noncore_asm_tgt} generate_syslog
-      generate_events)
+    add_dependencies(drinjectlib ${x86_noncore_asm_tgt})
   endif ()
 
   add_library(drearlyhelp1 SHARED
@@ -223,7 +227,7 @@ else (UNIX)
 endif (UNIX)
 
 add_library(dynamorio SHARED 
-  ${CORE_SRCS} ${ARCH_SRCS} ${OS_SRCS} ${SYSLOG_SRCS} ${EVENTS_SRCS}
+  ${CORE_SRCS} ${ARCH_SRCS} ${OS_SRCS}
   # FIXME: any other way to add a dependence?  this is for export_list,
   # where the PRE_LINK custom command doesn't support DEPENDS.
   # Apparently just files w/ certain extensions are pulled out of here
@@ -236,9 +240,9 @@ set_target_properties(dynamorio PROPERTIES
   LIBRARY_OUTPUT_DIRECTORY${location_suffix} "${DR_LIBRARY_OUTPUT_DIRECTORY}"
   RUNTIME_OUTPUT_DIRECTORY${location_suffix} "${DR_LIBRARY_OUTPUT_DIRECTORY}"
   ARCHIVE_OUTPUT_DIRECTORY${location_suffix} "${DR_LIBRARY_OUTPUT_DIRECTORY}")
+add_gen_events_deps(dynamorio)
 if ("${CMAKE_GENERATOR}" MATCHES "Visual Studio")
-  # for parallel build correctness we need a target dependence
-  add_dependencies(dynamorio ${x86_core_asm_tgt} generate_syslog generate_events)
+  add_dependencies(dynamorio ${x86_core_asm_tgt})
 endif ()
 
 if (UNIX)
@@ -284,11 +288,10 @@ endfunction (use_ldscript)
 
 if (BUILD_TESTS)
   add_executable(unit_tests unit_tests.c
-    ${CORE_SRCS} ${ARCH_SRCS} ${OS_SRCS} ${SYSLOG_SRCS} ${EVENTS_SRCS})
+    ${CORE_SRCS} ${ARCH_SRCS} ${OS_SRCS})
+  add_gen_events_deps(unit_tests)
   if ("${CMAKE_GENERATOR}" MATCHES "Visual Studio")
-    # for parallel build correctness we need a target dependence
-    add_dependencies(unit_tests ${x86_core_asm_tgt} generate_syslog
-      generate_events)
+    add_dependencies(unit_tests ${x86_core_asm_tgt})
   endif ()
   set_target_properties(unit_tests PROPERTIES
     COMPILE_FLAGS "-DRC_IS_TEST -DSTANDALONE_UNIT_TEST"
@@ -313,7 +316,7 @@ if (CLIENT_INTERFACE OR APP_EXPORTS)
   add_dependencies(dynamorio api_headers)
 endif ()
 
-add_library(${PRELOAD_NAME} SHARED ${PRELOAD_SRCS} ${SYSLOG_SRCS} ${EVENTS_SRCS})
+add_library(${PRELOAD_NAME} SHARED ${PRELOAD_SRCS})
 # We do not issue:
 #   target_link_libraries(${PRELOAD_NAME} dynamorio)
 # b/c preload dynamically loads dynamorio by name and does not have a
@@ -330,10 +333,9 @@ set_target_properties(${PRELOAD_NAME} PROPERTIES
   LIBRARY_OUTPUT_DIRECTORY${location_suffix} "${preload_dest}"
   RUNTIME_OUTPUT_DIRECTORY${location_suffix} "${preload_dest}"
   ARCHIVE_OUTPUT_DIRECTORY${location_suffix} "${preload_dest}")
+add_gen_events_deps(${PRELOAD_NAME})
 if ("${CMAKE_GENERATOR}" MATCHES "Visual Studio")
-  # for parallel build correctness we need a target dependence
-  add_dependencies(${PRELOAD_NAME} ${x86_noncore_asm_tgt} ${preinject_asm_tgt}
-    generate_syslog generate_events)
+  add_dependencies(${PRELOAD_NAME} ${x86_noncore_asm_tgt} ${preinject_asm_tgt})
 endif ()
 
 # static decoding library
@@ -347,15 +349,10 @@ add_library(drdecode
   x86/decode_fast.c
   x86/mangle.c
   x86/decodelib.c
-  ${SYSLOG_SRCS}
-  ${EVENTS_SRCS}
   )
 set_target_properties(drdecode PROPERTIES
   COMPILE_FLAGS "-DNOT_DYNAMORIO_CORE_PROPER -DSTANDALONE_DECODER")
-if ("${CMAKE_GENERATOR}" MATCHES "Visual Studio")
-  # for parallel build correctness we need a target dependence
-  add_dependencies(drdecode generate_syslog generate_events)
-endif ()
+add_gen_events_deps(drdecode)
 
 ###########################################################################
 # linux build customization
