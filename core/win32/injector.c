@@ -619,12 +619,11 @@ dr_inject_process_create(const char *app_name, const char **argv,
     if (!app_cmdline)
         return GetLastError();
     /* FIXME: Need to escape quotes in args. */
-    print_to_buffer(app_cmdline, BUFFER_SIZE_ELEMENTS(app_cmdline), &sofar,
-                    "\"%s\"", argv[0]);
-    for (i = 1; argv[i] != NULL; i++) {
+    for (i = 0; argv[i] != NULL; i++) {
         print_to_buffer(app_cmdline, BUFFER_SIZE_ELEMENTS(app_cmdline), &sofar,
-                        " \"%s\"", argv[i]);
+                        "\"%s\" ", argv[i]);
     }
+    app_cmdline[sofar-1] = '\0'; /* Trim the trailing space. */
 
     /* Launch the application process. */
     ZeroMemory(&si, sizeof(si));

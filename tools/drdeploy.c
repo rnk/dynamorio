@@ -264,9 +264,11 @@ _searchenv(const char *fname, const char *env_var, char *full_path)
     const char *next;
     const char *end;
     char tmp[MAXIMUM_PATH];
-    ssize_t len;
 
     /* Windows searches the current directory first. */
+    /* NOCHECKIN: realpath resolves symlinks, which can change the basename of
+     * the app!  Consider clang++ -> clang.
+     */
     if (realpath(fname, full_path) && _access(full_path, 0) == 0)
         return 0;
 
@@ -275,9 +277,9 @@ _searchenv(const char *fname, const char *env_var, char *full_path)
     while (cur < end) {
         next = strchr(cur, ':');
         next = (next == NULL ? end : next);
-        len = next - cur;
-        strncpy(tmp, cur, len);
-        snprintf(tmp + len, MAXIMUM_PATH - len, "/%s", fname);
+        snprintf(tmp, BUFFER_SIZE_ELEMENTS(tmp),
+                 "%.*s/%s", cur, next - cur, fname);
+        NULL_TERMINATE_BUFFER(tmp);
         /* realpath checks for existence too. */
         if (realpath(tmp, full_path) != NULL && _access(full_path, 0) == 0)
             return 0;
@@ -656,7 +658,7 @@ int main(int argc, char *argv[])
 # endif /* WINDOWS */
     char *app_name;
     char full_app_name[MAXIMUM_PATH];
-    const char **app_cmdline;
+    const char **app_argv;
     char custom_dll[MAXIMUM_PATH];
     int errcode;
     void *inject_data;
@@ -978,12 +980,12 @@ int main(int argc, char *argv[])
      * (FYI: if we were using WinMain, the pzsCmdLine passed in
      *  does not have our own app name in it)
      */
-    app_cmdline = (const char **) &argv[i - 1];
+    app_argv = (const char **) &argv[i - 1];
     if (verbose) {
         c = buf;
-        for (i = 0; app_cmdline[i] != NULL; i++) {
+        for (i = 0; app_argv[i] != NULL; i++) {
             c += _snprintf(c, BUFFER_SIZE_ELEMENTS(buf) - (c - buf),
-                           " \"%s\"", app_cmdline[i]);
+                           " \"%s\"", app_argv[i]);
         }
         info("app cmdline: %s", buf);
     }
@@ -1093,7 +1095,7 @@ int main(int argc, char *argv[])
 # endif /* WINDOWS */
     return 0;
 #else /* DRCONFIG */
-    errcode = dr_inject_process_create(app_name, app_cmdline, &inject_data);
+    errcode = dr_inject_process_create(app_name, app_argv, &inject_data);
     if (errcode != 0) {
         IF_WINDOWS(int sofar =)
             _snprintf(buf, BUFFER_SIZE_ELEMENTS(buf),

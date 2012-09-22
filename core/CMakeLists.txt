@@ -220,9 +220,9 @@ if (UNIX)
     )
   set(INJECTOR_SRCS
     linux/injector.c
-    config.c    # To read config
-    linux/os.c  # For file_t interface
-    ${x86_noncore_asm_src}  # For dynamorio_syscall.
+    config.c    # to read config
+    linux/os.c  # for file_t interface
+    ${x86_noncore_asm_src}  # for dynamorio_syscall
     )
 else (UNIX)
   set(OSNAME win32)
@@ -369,18 +369,6 @@ add_gen_events_deps(${PRELOAD_NAME})
 if ("${CMAKE_GENERATOR}" MATCHES "Visual Studio")
   add_dependencies(${PRELOAD_NAME} ${x86_noncore_asm_tgt} ${preinject_asm_tgt})
 endif ()
-
-# drinjectlib
-add_library(drinjectlib SHARED ${INJECTOR_SRCS})
-add_gen_events_deps(drinjectlib)
-if ("${CMAKE_GENERATOR}" MATCHES "Visual Studio")
-  # for parallel build correctness we need a target dependence
-  add_dependencies(drinjectlib ${x86_noncore_asm_tgt} ntimp_tgt)
-endif ()
-set_target_properties(drinjectlib PROPERTIES
-  # COMPILE_DEFINITONS isn't working for me: cmake bug?
-  # Set define parameters for resources.rc
-  COMPILE_FLAGS "-DNOT_DYNAMORIO_CORE_PROPER -DRC_IS_DRINJECTLIB")
 
 # static decoding library
 add_library(drdecode
@@ -610,27 +598,6 @@ else (UNIX)
 
   # we used to run dumpbin /headers on dynamorio.dll for info purposes
 
-  # I'm adding libcmt to attempt to make sure we have multithreaded C lib:
-  if (DEBUG)
-    set(WIN32_C_LIB libcmtd)
-  else (DEBUG)
-    set(WIN32_C_LIB libcmt)
-  endif (DEBUG)
-  set(drinjectlib_link_flags
-    # not bothering with map files
-    "${LD_FLAGS} /incremental:no /subsystem:console /NODEFAULTLIB")
-  # If we use ${ntimp_flags} in the link flags and thus prior to the
-  # target_link_libraries() list, on VS2005 and VS2008 we end up with duplicate
-  # symbols atoi and iswctype from libcmtd and ntdll.  Unlike dynamorio.dll we're
-  # ok w/ libc syms so we re-order and take the static syms first.
-  set_target_properties(drinjectlib PROPERTIES LINK_FLAGS "${drinjectlib_link_flags}")
-  target_link_libraries(drinjectlib drdecode ${WIN32_C_LIB} ntdll ${ntimp_lib}
-    kernel32 advapi32 imagehlp)
-  # drinject.exe needs a copy in the bin dir
-  add_custom_command(TARGET drinjectlib POST_BUILD COMMAND ${CMAKE_COMMAND}
-    ARGS -E copy "${CMAKE_LIBRARY_OUTPUT_DIRECTORY}/drinjectlib.dll"
-    "${EXECUTABLE_OUTPUT_DIRECTORY}/" VERBATIM)
-
 
   set_target_properties(${PRELOAD_NAME} PROPERTIES
     COMPILE_FLAGS "-DNOT_DYNAMORIO_CORE_PROPER -DRC_IS_PRELOAD")
@@ -659,6 +626,41 @@ else (UNIX)
     LINK_FLAGS "${LD_FLAGS} /dll /NODEFAULTLIB /base:0x71110000 ${NOLIBC_DLL_ENTRY}")
 
 endif (UNIX)
+
+# drinjectlib
+add_library(drinjectlib SHARED ${INJECTOR_SRCS})
+add_gen_events_deps(drinjectlib)
+set_target_properties(drinjectlib PROPERTIES
+  # COMPILE_DEFINITONS isn't working for me: cmake bug?
+  # Set define parameters for resources.rc
+  COMPILE_FLAGS "-DNOT_DYNAMORIO_CORE_PROPER -DRC_IS_DRINJECTLIB")
+if (WIN32)
+  if ("${CMAKE_GENERATOR}" MATCHES "Visual Studio")
+    # for parallel build correctness we need a target dependence
+    add_dependencies(drinjectlib ${x86_noncore_asm_tgt} ntimp_tgt)
+  endif ()
+  # I'm adding libcmt to attempt to make sure we have multithreaded C lib:
+  if (DEBUG)
+    set(WIN32_C_LIB libcmtd)
+  else (DEBUG)
+    set(WIN32_C_LIB libcmt)
+  endif (DEBUG)
+  # NOCHECKIN: LD_FLAGS is set below.
+  set(drinjectlib_link_flags
+    # not bothering with map files
+    "${LD_FLAGS} /incremental:no /subsystem:console /NODEFAULTLIB")
+  # If we use ${ntimp_flags} in the link flags and thus prior to the
+  # target_link_libraries() list, on VS2005 and VS2008 we end up with duplicate
+  # symbols atoi and iswctype from libcmtd and ntdll.  Unlike dynamorio.dll we're
+  # ok w/ libc syms so we re-order and take the static syms first.
+  set_target_properties(drinjectlib PROPERTIES LINK_FLAGS "${drinjectlib_link_flags}")
+  target_link_libraries(drinjectlib drdecode ${WIN32_C_LIB} ntdll ${ntimp_lib}
+    kernel32 advapi32 imagehlp)
+  # drinject.exe needs a copy in the bin dir
+  add_custom_command(TARGET drinjectlib POST_BUILD COMMAND ${CMAKE_COMMAND}
+    ARGS -E copy "${CMAKE_LIBRARY_OUTPUT_DIRECTORY}/drinjectlib.dll"
+    "${EXECUTABLE_OUTPUT_DIRECTORY}/" VERBATIM)
+endif (WIN32)
 
 if (BUILD_TESTS)
   add_executable(unit_tests unit_tests.c
@@ -715,7 +717,7 @@ DR_install(TARGETS dynamorio
 export(TARGETS dynamorio FILE ${PROJECT_BINARY_DIR}/cmake/${exported_targets_name}.cmake)
 DR_install(TARGETS drinjectlib EXPORT ${exported_targets_name}
   DESTINATION ${INSTALL_LIB_BASE})
-export(TARGETS FILE
+export(TARGETS drinjectlib FILE
   ${PROJECT_BINARY_DIR}/cmake/${exported_targets_name}.cmake APPEND)
 if (UNIX)
   DR_install(TARGETS ${PRELOAD_NAME} DESTINATION ${INSTALL_LIB})

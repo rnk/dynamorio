@@ -41,7 +41,7 @@
 /**
  * @file dr_inject.h
  * @brief Injection API.  Use these functions to launch processes under the
- * control of under DynamoRIO.
+ * control of DynamoRIO.
  */
 
 /**
