@@ -97,11 +97,13 @@ set(vmap_run_list
   "SHORT::ONLY::client.events$::-code_api -thread_private"
   "SHORT::ONLY::client.events$::-code_api -disable_traces"
   "SHORT::ONLY::client.events$::-code_api -thread_private -disable_traces"
+  "SHORT::LIN::ONLY::client.events$::-code_api -early_inject"
   # maybe this should be SHORT as -coarse_units will eventually be the default?
   "-code_api -opt_memory"
   "-code_api -thread_private"
   "-code_api -disable_traces"
   "-code_api -thread_private -disable_traces"
+  "LIN::-code_api -early_inject"
   "DEBUG::ONLY::^common::-code_api -loglevel 1"
   "ONLY::^common::-code_api -stack_size 120k"
   "WIN::ONLY::^(runall|client)::-enable_full_api"
@@ -129,14 +131,6 @@ set(vmap_run_list
   "ONLY::^(runall|${osname})::-finite_shared_bb_cache -cache_shared_bb_regen 80"
   "ONLY::^(runall|${osname})::-finite_shared_trace_cache -cache_shared_trace_regen 80"
   )
-
-# FIXME i#47: Early injection doesn't work on ia32 yet.
-if (X64)
-  set(vmap_run_list ${vmap_run_list}
-    "SHORT::LIN::ONLY::client.events$::-code_api -early_inject"
-    "LIN::-code_api -early_inject"
-    )
-endif()
 
 set(vmsafe_run_list
   # keep lightweight modes alive
@@ -231,10 +225,11 @@ endif (LINKCOUNT AND TEST_SUITE)
 
 if (WIN32)
   find_program(BIND_EXECUTABLE bind.exe DOC "path to bind.exe")
-  if (NOT BIND_EXECUTABLE)
-    message(FATAL_ERROR "bind.exe not found: required to build Windows tests")
-  endif (NOT BIND_EXECUTABLE)
-  message(STATUS "Found bind.exe: ${BIND_EXECUTABLE}")
+  if (BIND_EXECUTABLE)
+    message(STATUS "Found bind.exe: ${BIND_EXECUTABLE}")
+  else (BIND_EXECUTABLE)
+    # else we'll use editbin via link.exe
+  endif (BIND_EXECUTABLE)
   mark_as_advanced(BIND_EXECUTABLE)
 
   # if cygwin or mingw gcc is available, we do some extra tests
@@ -336,7 +331,8 @@ if (UNIX)
 else (UNIX)
   set(ARCH_CFLAGS "")
   # we don't add /debug here (=> SHARED_LINKER flags) since can't remove
-  set(ARCH_LDFLAGS "")
+  # XXX i#893: VS2012 won't build any tools_asm test w/ safeseh
+  set(ARCH_LDFLAGS "/safeseh:no")
   if (RUNNING_OVER_SSH)
     set(ARCH_DEBUG "")
   else (RUNNING_OVER_SSH)
@@ -405,6 +401,16 @@ set_source_files_properties(${tools_c} PROPERTIES
 add_split_asm_target("${tools_c}" tools_asm generate_tools_asm "_asm"
   "${asm_defs}" "${asm_deps}")
 
+add_library(tools STATIC ${tools_c} ${tools_asm})
+if (UNIX)
+  # We link tools into shared libraries, so it has to be PIC.
+  append_property_string(SOURCE ${tools_c} COMPILE_FLAGS "-fPIC")
+endif ()
+if ("${CMAKE_GENERATOR}" MATCHES "Visual Studio")
+  # for correct parallel builds we need a target
+  add_dependencies(tools ${generate_tools_asm})
+endif ()
+
 if (WIN32)
   set_source_files_properties(${PROJECT_SOURCE_DIR}/core/win32/resources.rc
     PROPERTIES COMPILE_FLAGS "-DRC_IS_TEST")
@@ -449,6 +455,13 @@ function (set_cflags source)
   endif ()
 endfunction (set_cflags)
 
+function(append_link_flags target newflags)
+  get_target_property(cur_ldflags ${target} LINK_FLAGS)
+  # cmake should add an APPEND option
+  set_target_properties(${target} PROPERTIES
+    LINK_FLAGS "${cur_ldflags} ${newflags}")
+endfunction(append_link_flags)
+
 function(add_exe test source)
   get_filename_component(srcbase ${source} NAME_WE)
   get_filename_component(srcpath ${source} PATH)
@@ -472,10 +485,6 @@ function(add_exe test source)
   set(test_srcs ${source} ${rc_srcs})
   set_cflags(${source}) # sets srccode var
 
-  if ("${srccode}" MATCHES "include \"tools\\.h\"")
-    set(test_srcs ${test_srcs} ${tools_c} ${tools_asm})
-  endif ()
-
   # Some files use asm code, which must be separate for x64, but it's much
   # more convenient to have it in the same source file and auto-split.
   if ("${srccode}" MATCHES "ifndef ASM_CODE_ONLY")
@@ -498,11 +507,11 @@ function(add_exe test source)
     if ("${test}" MATCHES "^pthread|startstop")
       target_link_libraries(${test} ${libpthread})
     endif ("${test}" MATCHES "^pthread|startstop")
+  else (UNIX)
+    append_link_flags(${test} "${ARCH_LDFLAGS}")
   endif (UNIX)
-  if ("${srccode}" MATCHES "include \"tools\\.h\"" AND
-      "${CMAKE_GENERATOR}" MATCHES "Visual Studio")
-    # for correct parallel builds we need a target
-    add_dependencies(${test} ${generate_tools_asm})
+  if ("${srccode}" MATCHES "include \"tools\\.h\"")
+    target_link_libraries(${test} tools)
   endif ()
   if ("${srccode}" MATCHES "ifndef ASM_CODE_ONLY" AND
       "${CMAKE_GENERATOR}" MATCHES "Visual Studio")
@@ -536,16 +545,11 @@ function(tobuild_dll test source dr_ops)
 
   set(lib_srcs ${dll_source})
   set_cflags(${dll_source}) # sets srccode var
-  if ("${srccode}" MATCHES "include \"tools\\.h\"")
-    set(lib_srcs ${lib_srcs} ${tools_c} ${tools_asm})
-  endif ()
   add_library(${test}.dll SHARED ${lib_srcs})
   set_target_properties(${test}.dll PROPERTIES LINK_FLAGS "${ARCH_DEBUG}")
   target_link_libraries(${test} ${test}.dll)
-  if ("${srccode}" MATCHES "include \"tools\\.h\"" AND
-      "${CMAKE_GENERATOR}" MATCHES "Visual Studio")
-    # for correct parallel builds we need a target
-    add_dependencies(${test}.dll ${generate_tools_asm})
+  if ("${srccode}" MATCHES "include \"tools\\.h\"")
+    target_link_libraries(${test}.dll tools)
   endif ()
 
   set(testlist_normal ${testlist_normal} ${test} PARENT_SCOPE)
@@ -592,9 +596,6 @@ function(tobuild_appdll test source)
     string(REGEX REPLACE "\\.(c|cpp)$" ".appdll.\\1" dll_source "${source}")
     set(lib_srcs ${dll_source})
     set_cflags(${dll_source}) # sets srccode var
-    if ("${srccode}" MATCHES "include \"tools\\.h\"")
-      set(lib_srcs ${lib_srcs} ${tools_c} ${tools_asm})
-    endif ()
     
     if ("${srccode}" MATCHES "ifndef ASM_CODE_ONLY")
       # we rely on the asm rule doing preprocessing for us, so we just make
@@ -611,10 +612,8 @@ function(tobuild_appdll test source)
     set_target_properties(${test}.appdll PROPERTIES LINK_FLAGS "${ARCH_DEBUG}")
     # so far these are all dynamically loaded so we don't bother
     # with "target_link_libraries(${test} ${test}.appdll)"
-    if ("${srccode}" MATCHES "include \"tools\\.h\"" AND
-        "${CMAKE_GENERATOR}" MATCHES "Visual Studio")
-      # for correct parallel builds we need a target
-      add_dependencies(${test}.appdll ${generate_tools_asm})
+    if ("${srccode}" MATCHES "include \"tools\\.h\"")
+      target_link_libraries(${test}.appdll tools)
     endif ()
     if ("${srccode}" MATCHES "ifndef ASM_CODE_ONLY" AND
         "${CMAKE_GENERATOR}" MATCHES "Visual Studio")
@@ -730,12 +729,21 @@ endfunction(torunonly)
 
 function(tobind target)
   get_target_property(binary ${target} LOCATION${location_suffix})
-  add_custom_command(TARGET ${target}
-    POST_BUILD
-    COMMAND ${BIND_EXECUTABLE}
-    ARGS -u ${binary}
-    VERBATIM # recommended: p260
-  )
+  if (BIND_EXECUTABLE)
+    add_custom_command(TARGET ${target}
+      POST_BUILD
+      COMMAND ${BIND_EXECUTABLE}
+      ARGS -u ${binary}
+      VERBATIM # recommended: p260
+      )
+  else (BIND_EXECUTABLE)
+    add_custom_command(TARGET ${target}
+      POST_BUILD
+      COMMAND ${CMAKE_LINKER}
+      ARGS /edit /bind ${binary}
+      VERBATIM # recommended: p260
+      )
+  endif (BIND_EXECUTABLE)
 endfunction(tobind)
 
 # i#215: mark tests w/ text relocations to avoid violating selinux policies:
@@ -763,13 +771,6 @@ function(mark_execstack target)
       "-Wl,-z,execstack ${existing_flags}")
   endif (UNIX)
 endfunction(mark_execstack)
-
-function(append_link_flags target newflags)
-  get_target_property(cur_ldflags ${target} LINK_FLAGS)
-  # cmake should add an APPEND option
-  set_target_properties(${target} PROPERTIES
-    LINK_FLAGS "${cur_ldflags} ${newflags}")
-endfunction(append_link_flags)
 
 ###########################################################################
 # RUNNING

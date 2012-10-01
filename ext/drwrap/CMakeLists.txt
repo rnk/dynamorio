@@ -70,10 +70,15 @@ use_DynamoRIO_extension(drwrap drcontainers)
 if (UNIX)
   # static containers must be PIC to be linked into clients: else requires
   # relocations that run afoul of security policies, etc.
-  # we need to add asm_defs to target b/c add_asm_target() is not able to set flags
-  # for Makefile generators
-  append_property_string(TARGET drwrap COMPILE_FLAGS "${asm_defs} -fPIC")
+  append_property_string(TARGET drwrap COMPILE_FLAGS "-fPIC")
 endif (UNIX)
+
+if (NOT "${CMAKE_GENERATOR}" MATCHES "Visual Studio")
+  # we need to add asm_defs to target b/c add_asm_target() is not able to set flags
+  # for non-VS generators
+  append_property_string(TARGET drwrap COMPILE_FLAGS "${asm_defs}")
+endif ()
+
 # ensure we rebuild if includes change
 add_dependencies(drwrap api_headers)
 
@@ -87,6 +92,10 @@ if (WIN32 AND GENERATE_PDBS)
   # In any case we make sure to add it (for release and debug, to get pdb):
   append_property_string(TARGET drwrap LINK_FLAGS "/debug")
 endif (WIN32 AND GENERATE_PDBS)
+if (WIN32)
+  # XXX i#893: our asm isn't seh complient
+  append_property_string(TARGET drwrap LINK_FLAGS "/safeseh:no")
+endif (WIN32)
 
 # documentation is put into main DR docs/ dir
 

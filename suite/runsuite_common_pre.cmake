@@ -284,6 +284,11 @@ else ()
       get_filename_component(vs_dir [HKEY_LOCAL_MACHINE\\SOFTWARE\\Microsoft\\VisualStudio\\10.0\\Setup\\VS;ProductDir] REALPATH)
       if ("${vs_dir}" MATCHES "Studio")
         set(vs_generator "Visual Studio 10")
+      else ()
+        get_filename_component(vs_dir [HKEY_LOCAL_MACHINE\\SOFTWARE\\Microsoft\\VisualStudio\\11.0\\Setup\\VS;ProductDir] REALPATH)
+        if ("${vs_dir}" MATCHES "Studio")
+          set(vs_generator "Visual Studio 11")
+        endif ()
       endif ()
     endif ()
   endif ()
@@ -296,7 +301,7 @@ else ()
       # Unfortunately we have to provide all the args (setting CMAKE_MAKE_PROGRAM
       # doesn't do it for ctest builds).  We want ALL_BUILD.vcproj for pre-VS2010
       # and ALL_BUILD.vcxproj for VS2010.
-      if (vs_generator MATCHES "Visual Studio 10")
+      if (vs_generator MATCHES "Visual Studio 1.")
         set(proj_file "ALL_BUILD.vcxproj")
       else ()
         set(proj_file "ALL_BUILD.vcproj")
@@ -336,7 +341,7 @@ endfunction(get_default_config)
 function(testbuild_ex name is64 initial_cache test_only_in_long 
     add_to_package build_args)
   set(CTEST_BUILD_NAME "${name}")
-  if (NOT arg_use_nmake AND NOT arg_use_make)
+  if (NOT arg_use_nmake AND NOT arg_use_make AND NOT arg_use_ninja)
     # we need a separate generator for 64-bit as well as the PATH
     # env var changes below (since we run cl directly)
     if (is64)
@@ -397,6 +402,7 @@ function(testbuild_ex name is64 initial_cache test_only_in_long
       # FIXME: would be nice to have case-insensitive regex flag!
       # For now hardcoding VC, Bin, amd64
       if (is64)
+        set(ENV{ASM} "ml64")
         if (NOT "$ENV{LIB}" MATCHES "[Aa][Mm][Dd]64")
           # Note that we can't set ENV{PATH} as the output var of the replace:
           # it has to be its own set().
@@ -418,6 +424,7 @@ function(testbuild_ex name is64 initial_cache test_only_in_long
           set(ENV{LIBPATH} "${newlibpath}")
         endif (NOT "$ENV{LIB}" MATCHES "[Aa][Mm][Dd]64")
       else (is64)
+        set(ENV{ASM} "ml")
         if ("$ENV{LIB}" MATCHES "[Aa][Mm][Dd]64")
           string(REGEX REPLACE "(VC[/\\\\][Bb][Ii][Nn][/\\\\])[Aa][Mm][Dd]64" "\\1"
             newpath "$ENV{PATH}")
