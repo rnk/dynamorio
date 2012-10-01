@@ -620,8 +620,7 @@ dr_inject_process_create(const char *app_name, const char **argv,
         return GetLastError();
     /* FIXME: Need to escape quotes in args. */
     for (i = 0; argv[i] != NULL; i++) {
-        print_to_buffer(app_cmdline, BUFFER_SIZE_ELEMENTS(app_cmdline), &sofar,
-                        "\"%s\" ", argv[i]);
+        print_to_buffer(app_cmdline, MAX_CMDLINE, &sofar, "\"%s\" ", argv[i]);
     }
     app_cmdline[sofar-1] = '\0'; /* Trim the trailing space. */
 
