@@ -35,6 +35,8 @@
 #define TOOLS_H
 
 #include "configure.h"
+#include <stdarg.h>
+#include <stdio.h>
 #include <string.h> /* memcpy */
 #include <assert.h>
 

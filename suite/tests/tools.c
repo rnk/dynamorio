@@ -33,8 +33,6 @@
 
 #ifndef ASM_CODE_ONLY /* C code */
 #include "tools.h"
-#include <stdarg.h>
-#include <stdio.h>
 
 #ifdef LINUX
 # include <sys/syscall.h> /* for SYS_* numbers */
