@@ -408,6 +408,10 @@ add_split_asm_target("${tools_c}" tools_asm generate_tools_asm "_asm"
   "${asm_defs}" "${asm_deps}")
 
 add_library(tools STATIC ${tools_c} ${tools_asm})
+if (UNIX)
+  # We link tools into shared libraries, so it has to be PIC.
+  append_property_string(SOURCE ${tools_c} COMPILE_FLAGS "-fPIC")
+endif ()
 if ("${CMAKE_GENERATOR}" MATCHES "Visual Studio")
   # for correct parallel builds we need a target
   add_dependencies(tools ${generate_tools_asm})
