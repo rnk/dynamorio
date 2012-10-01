@@ -35,8 +35,6 @@
 #define TOOLS_H
 
 #include "configure.h"
-#include <stdarg.h>
-#include <stdio.h>
 #include <string.h> /* memcpy */
 #include <assert.h>
 
@@ -199,15 +197,8 @@ static void VERBOSE_PRINT(char *fmt, ...) {}
  * Likely to crash if the stack is unaligned due to possible floating point args
  * in XMM registers.
  */
-static void
-print(const char *fmt, ...)
-{
-    va_list ap;
-    va_start(ap, fmt);
-    vfprintf(stderr, fmt, ap);
-    fflush(stderr);
-    va_end(ap);
-}
+void
+print(const char *fmt, ...);
 
 /* just to be sure */
 #define printf do_not_use_printf__use_print

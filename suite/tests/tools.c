@@ -33,6 +33,8 @@
 
 #ifndef ASM_CODE_ONLY /* C code */
 #include "tools.h"
+#include <stdarg.h>
+#include <stdio.h>
 
 #ifdef LINUX
 # include <sys/syscall.h> /* for SYS_* numbers */
@@ -288,6 +290,16 @@ get_cache_line_size()
     /* people who use this in ALIGN* macros are assuming it's a power of 2 */
     assert((cache_line_size & (cache_line_size - 1)) == 0);
     return cache_line_size;
+}
+
+void
+print(const char *fmt, ...)
+{
+    va_list ap;
+    va_start(ap, fmt);
+    vfprintf(stderr, fmt, ap);
+    fflush(stderr);
+    va_end(ap);
 }
 
 #ifdef LINUX
