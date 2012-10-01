@@ -206,13 +206,15 @@ static uint gdt_entry_tls_min = IF_X64_ELSE(GDT_ENTRY_TLS_MIN_64,
                                             GDT_ENTRY_TLS_MIN_32);
 
 /* Indicates that on the next request for a GDT entry, we should return the GDT
- * entry we took for library TLS.  The entry index is in lib_tls_gdt_index.
+ * entry we stole for private library TLS.  The entry index is in
+ * lib_tls_gdt_index.
  * FIXME i#107: For total segment transparency, we can use the same approach
  * with tls_gdt_index.
  */
-static bool should_return_lib_tls_gdt_index;
+static bool return_stolen_lib_tls_gdt;
 /* Guards data written by os_set_app_thread_area(). */
-static mutex_t set_thread_area_lock = INIT_LOCK_FREE(set_thread_area_lock);
+DECLARE_CXTSWPROT_VAR(static mutex_t set_thread_area_lock,
+                      INIT_LOCK_FREE(set_thread_area_lock));
 
 #ifndef HAVE_TLS
 /* We use a table lookup to find a thread's dcontext */
@@ -1144,7 +1146,7 @@ typedef enum {
  * This depends on the kernel, not on the app!
  */
 static int tls_gdt_index = -1;
-/* GDT slot we use for library TLS. */
+/* GDT slot we use for private library TLS. */
 static int lib_tls_gdt_index = -1;
 # define GDT_NO_SIZE_LIMIT  0xfffff
 # ifdef DEBUG
@@ -1802,7 +1804,7 @@ choose_gdt_slots(os_local_state_t *os_tls)
 
 #ifndef X64
     /* In x86-64's ia32 emulation,
-     * set_thread_area(6 <= entry_number && entry_number <= 8) fails 
+     * set_thread_area(6 <= entry_number && entry_number <= 8) fails
      * with EINVAL (22) because x86-64 only accepts GDT indices 12 to 14
      * for TLS entries.
      */
@@ -1830,9 +1832,9 @@ choose_gdt_slots(os_local_state_t *os_tls)
 # ifdef CLIENT_INTERFACE
     if (INTERNAL_OPTION(private_loader) && tls_gdt_index != -1) {
         /* Use the app's selector with our own TLS base for libraries.  app_fs
-         * and app_gs are initialized in os_tls_app_seg_init() below.
+         * and app_gs are initialized by the caller in os_tls_app_seg_init().
          */
-        int index = SELECTOR_INDEX(IF_X64_ELSE(os_tls->app_fs, 
+        int index = SELECTOR_INDEX(IF_X64_ELSE(os_tls->app_fs,
                                                os_tls->app_gs));
         if (index == 0) {
             /* An index of zero means the app has no TLS (yet), and happens
@@ -1849,7 +1851,7 @@ choose_gdt_slots(os_local_state_t *os_tls)
                 __FUNCTION__, res, desc.entry_number);
             ASSERT(res >= 0);
             if (res >= 0) {
-                should_return_lib_tls_gdt_index = true;
+                return_stolen_lib_tls_gdt = true;
                 index = desc.entry_number;
             }
         }
@@ -2053,7 +2055,7 @@ os_tls_init(void)
                 __FUNCTION__, tls_gdt_index, res, desc.entry_number);
             ASSERT(res < 0 || desc.entry_number == tls_gdt_index);
         } else {
-            res = -1;  /* Fall back on LDT. */
+            res = -1;  /* fall back on LDT */
         }
 
         if (res >= 0) {
@@ -5075,20 +5077,20 @@ os_set_app_thread_area(dcontext_t *dcontext, our_modify_ldt_t *user_desc)
          * direct the app to use the GDT entry we already set up for our private
          * libraries, but only the first time it requests TLS.
          */
-        if (user_desc->entry_number == -1 && should_return_lib_tls_gdt_index) {
-            SELF_UNPROTECT_DATASEC(DATASEC_RARELY_PROT);
+        if (user_desc->entry_number == -1 && return_stolen_lib_tls_gdt) {
             mutex_lock(&set_thread_area_lock);
-            if (should_return_lib_tls_gdt_index) {
+            if (return_stolen_lib_tls_gdt) {
                 uint selector = read_selector(LIB_SEG_TLS);
                 uint index = SELECTOR_INDEX(selector);
-                should_return_lib_tls_gdt_index = false;
+                SELF_UNPROTECT_DATASEC(DATASEC_RARELY_PROT);
+                return_stolen_lib_tls_gdt = false;
+                SELF_PROTECT_DATASEC(DATASEC_RARELY_PROT);
                 user_desc->entry_number = index;
                 LOG(GLOBAL, LOG_THREADS, 2, "%s: directing app to use "
                     "selector 0x%x for first call to set_thread_area\n",
                     __FUNCTION__, selector);
             }
             mutex_unlock(&set_thread_area_lock);
-            SELF_PROTECT_DATASEC(DATASEC_RARELY_PROT);
         }
 
         /* update the specific one */
