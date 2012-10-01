@@ -287,6 +287,15 @@ mark_as_advanced(
 # if we do support we'll need to remove flags like /MD coming from
 # the CMAKE_C_FLAGS_*, which are added to the base CMAKE_C_FLAGS.
 # XXX: could use CMAKE_USER_MAKE_RULES_OVERRIDE to set these but not any cleaner
+#
+# i#919: Ninja generator does not leave CMAKE_BUILD_TYPE blank, and that affects
+# the exported target files, so we set it here.  This shouldn't hurt containing
+# tools as they should set our DEBUG to match the incoming CMAKE_BUILD_TYPE.
+if (DEBUG)
+  set(CMAKE_BUILD_TYPE "Debug")
+else (DEBUG)
+  set(CMAKE_BUILD_TYPE "Release")
+endif (DEBUG)
 string(TOUPPER "${CMAKE_BUILD_TYPE}" CMAKE_BUILD_TYPE_UPPER)
 foreach (config ${CMAKE_BUILD_TYPE} ${CMAKE_CONFIGURATION_TYPES})
   string(TOUPPER "${config}" config_upper)
@@ -1068,6 +1077,14 @@ file(READ "${PROJECT_SOURCE_DIR}/core/x86/asm_defines.asm" str)
 string(REPLACE "#include \"configure.h\"" "" str "${str}")
 file(WRITE "${BUILD_CMAKE}/cpp2asm_defines.h" "${str}")
 
+# Export docs files just like full install, for using from build dir
+# with projects that include DR sources.  Do this even if not BUILD_DOCS,
+# for containing projects.
+configure_file(${PROJECT_SOURCE_DIR}/api/docs/CMake_rundoxygen.cmake
+  ${BUILD_CMAKE}/docs_rundoxygen.cmake COPYONLY)
+configure_file(${PROJECT_SOURCE_DIR}/api/docs/CMake_doxyutils.cmake
+  ${BUILD_CMAKE}/docs_doxyutils.cmake COPYONLY)
+
 ###########################################################################
 
 # used by docs, samples, and tests, so here instead of in core/CMakeLists.txt
@@ -1254,6 +1271,14 @@ DR_install(FILES ${PROJECT_SOURCE_DIR}/make/CMake_asm.cmake
 DR_install(CODE "file(READ \"\${PROJECT_SOURCE_DIR}/core/x86/asm_defines.asm\" str)
   string(REPLACE \"#include \\\\\"configure.h\\\\\"\" \"\" str \"\\\${str}\")
   file(WRITE \"\${CMAKE_INSTALL_PREFIX}/\${INSTALL_CMAKE}/cpp2asm_defines.h\" \"\\\${str}\")")
+
+# export docs support, with consistent names
+DR_install(FILES ${PROJECT_SOURCE_DIR}/api/docs/CMake_rundoxygen.cmake
+  DESTINATION ${INSTALL_CMAKE} RENAME docs_rundoxygen.cmake
+)
+DR_install(FILES ${PROJECT_SOURCE_DIR}/api/docs/CMake_doxyutils.cmake
+  DESTINATION ${INSTALL_CMAKE} RENAME docs_doxyutils.cmake
+)
 
 # Extensions (i#277/PR 540817)
 if (BUILD_EXT)
