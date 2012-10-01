@@ -88,6 +88,10 @@ typedef DWORD cxt_seg_t;
 #include "aslr.h"               /* for aslr_context */
 
 /* you can rely on these increasing with later versions */
+/* XXX: when updating, also update DR_WINDOWS_VERSION_* in instrument.h
+ * and get_windows_version() in suite/tests/tools.h
+ */
+#define WINDOWS_VERSION_8      62
 #define WINDOWS_VERSION_7      61
 #define WINDOWS_VERSION_VISTA  60
 #define WINDOWS_VERSION_2003   52
@@ -450,6 +454,13 @@ bool use_ki_syscall_routines(void);
 wchar_t *get_application_cmdline(void);
 const char *
 get_application_short_unqualified_name(void);
+
+/* in syscall.c */
+bool
+syscall_uses_wow64_index();
+
+bool
+syscall_uses_edx_param_base();
 
 /* in loader.c */
 /* Handles a private-library FLS callback called from interpreted app code */

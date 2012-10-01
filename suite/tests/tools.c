@@ -53,7 +53,9 @@ get_windows_version(void)
     assert(res != 0);
     if (version.dwPlatformId == VER_PLATFORM_WIN32_NT) {
         /* WinNT or descendents */
-        if (version.dwMajorVersion == 6 && version.dwMinorVersion == 1) {
+        if (version.dwMajorVersion == 6 && version.dwMinorVersion == 2) {
+            return WINDOWS_VERSION_8;
+        } else if (version.dwMajorVersion == 6 && version.dwMinorVersion == 1) {
             return WINDOWS_VERSION_7;
         } else if (version.dwMajorVersion == 6 && version.dwMinorVersion == 0) {
             return WINDOWS_VERSION_VISTA;
@@ -286,6 +288,16 @@ get_cache_line_size()
     /* people who use this in ALIGN* macros are assuming it's a power of 2 */
     assert((cache_line_size & (cache_line_size - 1)) == 0);
     return cache_line_size;
+}
+
+void
+print(const char *fmt, ...)
+{
+    va_list ap;
+    va_start(ap, fmt);
+    vfprintf(stderr, fmt, ap);
+    fflush(stderr);
+    va_end(ap);
 }
 
 #ifdef LINUX

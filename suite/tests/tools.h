@@ -199,15 +199,8 @@ static void VERBOSE_PRINT(char *fmt, ...) {}
  * Likely to crash if the stack is unaligned due to possible floating point args
  * in XMM registers.
  */
-static void
-print(const char *fmt, ...)
-{
-    va_list ap;
-    va_start(ap, fmt);
-    vfprintf(stderr, fmt, ap);
-    fflush(stderr);
-    va_end(ap);
-}
+void
+print(const char *fmt, ...);
 
 /* just to be sure */
 #define printf do_not_use_printf__use_print
@@ -628,6 +621,8 @@ intercept_signal(int sig, handler_t handler)
 
 #  define INIT() set_global_filter()
 
+/* XXX: when updating here, update core/os_exports.h too */
+# define WINDOWS_VERSION_8      62
 # define WINDOWS_VERSION_7      61
 # define WINDOWS_VERSION_VISTA  60
 # define WINDOWS_VERSION_2003   52

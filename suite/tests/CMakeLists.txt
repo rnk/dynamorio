@@ -97,11 +97,13 @@ set(vmap_run_list
   "SHORT::ONLY::client.events$::-code_api -thread_private"
   "SHORT::ONLY::client.events$::-code_api -disable_traces"
   "SHORT::ONLY::client.events$::-code_api -thread_private -disable_traces"
+  "SHORT::LIN::ONLY::client.events$::-code_api -early_inject"
   # maybe this should be SHORT as -coarse_units will eventually be the default?
   "-code_api -opt_memory"
   "-code_api -thread_private"
   "-code_api -disable_traces"
   "-code_api -thread_private -disable_traces"
+  "LIN::-code_api -early_inject"
   "DEBUG::ONLY::^common::-code_api -loglevel 1"
   "ONLY::^common::-code_api -stack_size 120k"
   "WIN::ONLY::^(runall|client)::-enable_full_api"
@@ -129,14 +131,6 @@ set(vmap_run_list
   "ONLY::^(runall|${osname})::-finite_shared_bb_cache -cache_shared_bb_regen 80"
   "ONLY::^(runall|${osname})::-finite_shared_trace_cache -cache_shared_trace_regen 80"
   )
-
-# FIXME i#47: Early injection doesn't work on ia32 yet.
-if (X64)
-  set(vmap_run_list ${vmap_run_list}
-    "SHORT::LIN::ONLY::client.events$::-code_api -early_inject"
-    "LIN::-code_api -early_inject"
-    )
-endif()
 
 set(vmsafe_run_list
   # keep lightweight modes alive
@@ -407,6 +401,16 @@ set_source_files_properties(${tools_c} PROPERTIES
 add_split_asm_target("${tools_c}" tools_asm generate_tools_asm "_asm"
   "${asm_defs}" "${asm_deps}")
 
+add_library(tools STATIC ${tools_c} ${tools_asm})
+if (UNIX)
+  # We link tools into shared libraries, so it has to be PIC.
+  append_property_string(SOURCE ${tools_c} COMPILE_FLAGS "-fPIC")
+endif ()
+if ("${CMAKE_GENERATOR}" MATCHES "Visual Studio")
+  # for correct parallel builds we need a target
+  add_dependencies(tools ${generate_tools_asm})
+endif ()
+
 if (WIN32)
   set_source_files_properties(${PROJECT_SOURCE_DIR}/core/win32/resources.rc
     PROPERTIES COMPILE_FLAGS "-DRC_IS_TEST")
@@ -481,10 +485,6 @@ function(add_exe test source)
   set(test_srcs ${source} ${rc_srcs})
   set_cflags(${source}) # sets srccode var
 
-  if ("${srccode}" MATCHES "include \"tools\\.h\"")
-    set(test_srcs ${test_srcs} ${tools_c} ${tools_asm})
-  endif ()
-
   # Some files use asm code, which must be separate for x64, but it's much
   # more convenient to have it in the same source file and auto-split.
   if ("${srccode}" MATCHES "ifndef ASM_CODE_ONLY")
@@ -510,10 +510,8 @@ function(add_exe test source)
   else (UNIX)
     append_link_flags(${test} "${ARCH_LDFLAGS}")
   endif (UNIX)
-  if ("${srccode}" MATCHES "include \"tools\\.h\"" AND
-      "${CMAKE_GENERATOR}" MATCHES "Visual Studio")
-    # for correct parallel builds we need a target
-    add_dependencies(${test} ${generate_tools_asm})
+  if ("${srccode}" MATCHES "include \"tools\\.h\"")
+    target_link_libraries(${test} tools)
   endif ()
   if ("${srccode}" MATCHES "ifndef ASM_CODE_ONLY" AND
       "${CMAKE_GENERATOR}" MATCHES "Visual Studio")
@@ -547,16 +545,11 @@ function(tobuild_dll test source dr_ops)
 
   set(lib_srcs ${dll_source})
   set_cflags(${dll_source}) # sets srccode var
-  if ("${srccode}" MATCHES "include \"tools\\.h\"")
-    set(lib_srcs ${lib_srcs} ${tools_c} ${tools_asm})
-  endif ()
   add_library(${test}.dll SHARED ${lib_srcs})
   set_target_properties(${test}.dll PROPERTIES LINK_FLAGS "${ARCH_DEBUG}")
   target_link_libraries(${test} ${test}.dll)
-  if ("${srccode}" MATCHES "include \"tools\\.h\"" AND
-      "${CMAKE_GENERATOR}" MATCHES "Visual Studio")
-    # for correct parallel builds we need a target
-    add_dependencies(${test}.dll ${generate_tools_asm})
+  if ("${srccode}" MATCHES "include \"tools\\.h\"")
+    target_link_libraries(${test}.dll tools)
   endif ()
 
   set(testlist_normal ${testlist_normal} ${test} PARENT_SCOPE)
@@ -603,9 +596,6 @@ function(tobuild_appdll test source)
     string(REGEX REPLACE "\\.(c|cpp)$" ".appdll.\\1" dll_source "${source}")
     set(lib_srcs ${dll_source})
     set_cflags(${dll_source}) # sets srccode var
-    if ("${srccode}" MATCHES "include \"tools\\.h\"")
-      set(lib_srcs ${lib_srcs} ${tools_c} ${tools_asm})
-    endif ()
     
     if ("${srccode}" MATCHES "ifndef ASM_CODE_ONLY")
       # we rely on the asm rule doing preprocessing for us, so we just make
@@ -622,10 +612,8 @@ function(tobuild_appdll test source)
     set_target_properties(${test}.appdll PROPERTIES LINK_FLAGS "${ARCH_DEBUG}")
     # so far these are all dynamically loaded so we don't bother
     # with "target_link_libraries(${test} ${test}.appdll)"
-    if ("${srccode}" MATCHES "include \"tools\\.h\"" AND
-        "${CMAKE_GENERATOR}" MATCHES "Visual Studio")
-      # for correct parallel builds we need a target
-      add_dependencies(${test}.appdll ${generate_tools_asm})
+    if ("${srccode}" MATCHES "include \"tools\\.h\"")
+      target_link_libraries(${test}.appdll tools)
     endif ()
     if ("${srccode}" MATCHES "ifndef ASM_CODE_ONLY" AND
         "${CMAKE_GENERATOR}" MATCHES "Visual Studio")
