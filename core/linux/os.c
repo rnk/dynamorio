@@ -877,10 +877,11 @@ get_application_name_helper(bool ignore_cache, bool full_path)
             vmk_getnamefrompid(pid, executable_path, sizeof(executable_path));
         } else
 #endif
-        {
-            /* Populate cache from /proc/self/exe link. */
-            ASSERT(!DYNAMO_OPTION(early_inject) &&
+        if (DYNAMO_OPTION(early_inject)) {
+            ASSERT(executable_path[0] != '\0' &&
                    "i#907: Can't read /proc/self/exe for early injection");
+        } else {
+            /* Populate cache from /proc/self/exe link. */
             strncpy(executable_path, read_proc_self_exe(ignore_cache),
                     BUFFER_SIZE_ELEMENTS(executable_path));
             NULL_TERMINATE_BUFFER(executable_path);
