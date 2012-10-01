@@ -266,9 +266,7 @@ _searchenv(const char *fname, const char *env_var, char *full_path)
     char tmp[MAXIMUM_PATH];
 
     /* Windows searches the current directory first. */
-    /* NOCHECKIN: realpath resolves symlinks, which can change the basename of
-     * the app!  Consider clang++ -> clang.
-     */
+    /* XXX: realpath resolves symlinks, which we may not want. */
     if (realpath(fname, full_path) && _access(full_path, 0) == 0)
         return 0;
 
@@ -278,7 +276,7 @@ _searchenv(const char *fname, const char *env_var, char *full_path)
         next = strchr(cur, ':');
         next = (next == NULL ? end : next);
         snprintf(tmp, BUFFER_SIZE_ELEMENTS(tmp),
-                 "%.*s/%s", cur, next - cur, fname);
+                 "%.*s/%s", (int)(next - cur), cur, fname);
         NULL_TERMINATE_BUFFER(tmp);
         /* realpath checks for existence too. */
         if (realpath(tmp, full_path) != NULL && _access(full_path, 0) == 0)
