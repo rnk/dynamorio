@@ -287,6 +287,15 @@ mark_as_advanced(
 # if we do support we'll need to remove flags like /MD coming from
 # the CMAKE_C_FLAGS_*, which are added to the base CMAKE_C_FLAGS.
 # XXX: could use CMAKE_USER_MAKE_RULES_OVERRIDE to set these but not any cleaner
+#
+# i#919: Ninja generator does not leave CMAKE_BUILD_TYPE blank, and that affects
+# the exported target files, so we set it here.  This shouldn't hurt containing
+# tools as they should set our DEBUG to match the incoming CMAKE_BUILD_TYPE.
+if (DEBUG)
+  set(CMAKE_BUILD_TYPE "Debug")
+else (DEBUG)
+  set(CMAKE_BUILD_TYPE "Release")
+endif (DEBUG)
 string(TOUPPER "${CMAKE_BUILD_TYPE}" CMAKE_BUILD_TYPE_UPPER)
 foreach (config ${CMAKE_BUILD_TYPE} ${CMAKE_CONFIGURATION_TYPES})
   string(TOUPPER "${config}" config_upper)
@@ -492,20 +501,34 @@ else (UNIX)
     set(DDK_ROOT "$ENV{SYSTEMDRIVE}/WINDDK/6000/")
   elseif (EXISTS "$ENV{SYSTEMDRIVE}/WINDDK/7600.16385.1/")
     set(DDK_ROOT "$ENV{SYSTEMDRIVE}/WINDDK/7600.16385.1/")
+  elseif (EXISTS "$ENV{ProgramFiles(x86)}/Windows Kits")
+    # just take first
+    file(GLOB subdirs "$ENV{ProgramFiles(x86)}/Windows Kits/*")
+    list(GET subdirs 0 subdir)
+    set(DDK_ROOT ${subdir})
   endif (NOT "$ENV{DDKROOT}" STREQUAL "")
   # Note that we want the oldest ntdll.lib for maximum compatibility.
   # The 2003 DDK (3790.1830) or Vista WDK (6000) both have these paths:
   if (X64)
-    set(NTDLL_LIB_SUBPATH lib/wnet/amd64)
+    if (EXISTS "${DDK_ROOT}/Lib/win8/um/x64")
+      set(NTDLL_LIB_SUBPATH Lib/win8/um/x64)
+    else ()
+      set(NTDLL_LIB_SUBPATH lib/wnet/amd64)
+    endif ()
   else (X64)
     # Newer WDK (7600.16385.1) does not have w2k so use wxp: if using
     # that WDK, won't be able to run on 2K or NT.
     if (EXISTS "${DDK_ROOT}/lib/w2k/i386")
       set(NTDLL_LIB_SUBPATH lib/w2k/i386)
-    else (EXISTS "${DDK_ROOT}/lib/w2k/i386")
-      message(STATUS "DDK/WDK is too recent: no support for Windows 2000 or earlier")
-      set(NTDLL_LIB_SUBPATH lib/wxp/i386)
-    endif (EXISTS "${DDK_ROOT}/lib/w2k/i386")
+    else ()
+      message(STATUS "(DDK/WDK for targeting Windows 2000 or earlier not found)")
+      # Win8 WDK has different path.
+      if (EXISTS "${DDK_ROOT}/Lib/win8/um/x86")
+        set(NTDLL_LIB_SUBPATH Lib/win8/um/x86)
+      else ()
+        set(NTDLL_LIB_SUBPATH lib/wxp/i386)
+      endif ()
+    endif ()
   endif (X64)
   # Use find_library() and not find_path() in case on LIB env var or sthg
   find_library(NTDLL_LIBPATH ntdll.lib HINTS "${DDK_ROOT}/${NTDLL_LIB_SUBPATH}"
@@ -596,6 +619,7 @@ if (UNIX)
     # clang turns off color when it's writing to a pipe, but the user may still
     # wish to force color if it eventually goes to a terminal.
     option(CLANG_COLOR_DIAGNOSTICS "force colored clang diagnostics" OFF)
+    set(clang_args "")
     if (CLANG_COLOR_DIAGNOSTICS)
       set(clang_args "-fcolor-diagnostics ${clang_args}")
     endif (CLANG_COLOR_DIAGNOSTICS)
@@ -1028,9 +1052,7 @@ if (BUILD_CORE)
 endif (BUILD_CORE)
 
 if (BUILD_TOOLS OR BUILD_DRGUI)
-  if (WIN32)
-    add_subdirectory(libutil)
-  endif (WIN32)
+  add_subdirectory(libutil)
 endif (BUILD_TOOLS OR BUILD_DRGUI)
   
 if (BUILD_TOOLS)
@@ -1054,6 +1076,14 @@ configure_file(${PROJECT_SOURCE_DIR}/make/CMake_asm.cmake
 file(READ "${PROJECT_SOURCE_DIR}/core/x86/asm_defines.asm" str)
 string(REPLACE "#include \"configure.h\"" "" str "${str}")
 file(WRITE "${BUILD_CMAKE}/cpp2asm_defines.h" "${str}")
+
+# Export docs files just like full install, for using from build dir
+# with projects that include DR sources.  Do this even if not BUILD_DOCS,
+# for containing projects.
+configure_file(${PROJECT_SOURCE_DIR}/api/docs/CMake_rundoxygen.cmake
+  ${BUILD_CMAKE}/docs_rundoxygen.cmake COPYONLY)
+configure_file(${PROJECT_SOURCE_DIR}/api/docs/CMake_doxyutils.cmake
+  ${BUILD_CMAKE}/docs_doxyutils.cmake COPYONLY)
 
 ###########################################################################
 
@@ -1241,6 +1271,14 @@ DR_install(FILES ${PROJECT_SOURCE_DIR}/make/CMake_asm.cmake
 DR_install(CODE "file(READ \"\${PROJECT_SOURCE_DIR}/core/x86/asm_defines.asm\" str)
   string(REPLACE \"#include \\\\\"configure.h\\\\\"\" \"\" str \"\\\${str}\")
   file(WRITE \"\${CMAKE_INSTALL_PREFIX}/\${INSTALL_CMAKE}/cpp2asm_defines.h\" \"\\\${str}\")")
+
+# export docs support, with consistent names
+DR_install(FILES ${PROJECT_SOURCE_DIR}/api/docs/CMake_rundoxygen.cmake
+  DESTINATION ${INSTALL_CMAKE} RENAME docs_rundoxygen.cmake
+)
+DR_install(FILES ${PROJECT_SOURCE_DIR}/api/docs/CMake_doxyutils.cmake
+  DESTINATION ${INSTALL_CMAKE} RENAME docs_doxyutils.cmake
+)
 
 # Extensions (i#277/PR 540817)
 if (BUILD_EXT)

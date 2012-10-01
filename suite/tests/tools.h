@@ -153,9 +153,11 @@ typedef enum {
 #define ALIGN_FORWARD(x, alignment) ((((uint)x) + ((alignment)-1)) & (~((alignment)-1)))
 #define ALIGN_BACKWARD(x, alignment) (((uint)x) & (~((alignment)-1)))
 
-#ifndef true
-# define true  (1)
-# define false (0)
+#ifndef __cplusplus
+# ifndef true
+#  define true  (1)
+#  define false (0)
+# endif
 #endif
 
 #if VERBOSE
@@ -626,6 +628,8 @@ intercept_signal(int sig, handler_t handler)
 
 #  define INIT() set_global_filter()
 
+/* XXX: when updating here, update core/os_exports.h too */
+# define WINDOWS_VERSION_8      62
 # define WINDOWS_VERSION_7      61
 # define WINDOWS_VERSION_VISTA  60
 # define WINDOWS_VERSION_2003   52

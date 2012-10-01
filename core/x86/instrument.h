@@ -1653,6 +1653,7 @@ dr_get_parent_id(void);
 
 /** Windows versions */
 typedef enum {
+    DR_WINDOWS_VERSION_8     = 62,
     DR_WINDOWS_VERSION_7     = 61,
     DR_WINDOWS_VERSION_VISTA = 60,
     DR_WINDOWS_VERSION_2003  = 52, /**< 64-bit XP is this version as well */
@@ -2387,6 +2388,14 @@ dr_lookup_module_by_name(const char *name);
 
 DR_API
 /**
+ * Looks up module data for the main executable.  
+ * \note Returned module_data_t must be freed with dr_free_module_data().
+ */
+module_data_t *
+dr_get_main_module(void);
+
+DR_API
+/**
  * Initialize a new module iterator.  The returned module iterator contains a snapshot
  * of the modules loaded at the time it was created.  Use dr_module_iterator_hasnext()
  * and dr_module_iterator_next() to walk the loaded modules.  Call
@@ -2489,6 +2498,16 @@ DR_API
 /**
  * Returns the entry point of the exported function with the given
  * name in the module with the given base.  Returns NULL on failure.
+ *
+ * On Linux, when we say "exported" we mean present in the dynamic
+ * symbol table (.dynsym).  Global functions and variables in an
+ * executable (as opposed to a library) are not exported by default.
+ * If an executable is built with the \p -rdynamic flag to \p gcc, its
+ * global symbols will be present in .dynsym and dr_get_proc_address()
+ * will locate them.  Otherwise, the drsyms Extension (see \ref
+ * page_drsyms) must be used to locate the symbols.  drsyms searches
+ * the debug symbol table (.symtab) in addition to .dynsym.
+ *
  * \note On Linux this ignores symbol preemption by other modules and only
  * examines the specified module.
  * \note On Linux, in order to handle indirect code objects, use
@@ -2525,6 +2544,9 @@ DR_API
 /**
  * Returns information in \p info about the symbol \p name exported
  * by the module \p lib.  Returns false if the symbol is not found.
+ * See the information in dr_get_proc_address() about what an
+ * "exported" function is on Linux.
+ *
  * \note On Linux this ignores symbol preemption by other modules and only
  * examines the specified module.
  */
@@ -4372,7 +4394,14 @@ DR_API
 /**
  * Returns whether the given thread indicated by \p drcontext
  * is currently using the application version of its system state.
- * \sa dr_switch_to_dr_state(), dr_switch_to_app_state()
+ * \sa dr_switch_to_dr_state(), dr_switch_to_app_state().
+ *
+ * This function does not indicate whether the machine context
+ * (registers) contains application state or not.
+ *
+ * On Linux, DR very rarely switches the system state, while on
+ * Windows DR switches the system state to the DR and client version
+ * on every event callback or clean call.
  */
 bool
 dr_using_app_state(void *drcontext);
@@ -4385,6 +4414,9 @@ DR_API
  * versions of system state.  Invoking non-DR library routines while
  * the application state is in place can lead to unpredictable
  * results: call dr_switch_to_dr_state() before doing so.
+ *
+ * This function does not affect whether the current machine context
+ * (registers) contains application state or not.
  */
 void
 dr_switch_to_app_state(void *drcontext);
@@ -4396,16 +4428,21 @@ DR_API
  * application state.  Swaps from the application version of system
  * state for the given thread back to the DR and client version.
  *
- * On Windows, a client running in an application context must call
- * dr_switch_to_dr_state() in order to safely call private library
- * routines.  But on Linux that's not the case because of how
- * DynamoRIO mangles application segment references.  On Linux,
- * running private library code should work fine without any change
- * from the application state.  Only if subsequent code will examine a
- * segment selector or descriptor does the state need to be swapped.
- * A state swap is much more expensive on Linux (it requires a system
- * call).
+ * This function does not affect whether the current machine context
+ * (registers) contains application state or not.
  *
+ * A client must call dr_switch_to_dr_state() in order to safely call
+ * private library routines if it is running in an application context
+ * where dr_using_app_state() returns true.  On Windows, this is the
+ * case for any application context, as the system state is always
+ * swapped.  On Linux, however, execution of application code in the
+ * code cache only swaps the machine context and not the system state.
+ * Thus, on Linux, while in the code cache, dr_using_app_state() will
+ * return false, and it is safe to invoke private library routines
+ * without calling dr_switch_to_dr_state().  Only if client or
+ * client-invoked code will examine a segment selector or descriptor
+ * does the state need to be swapped.  A state swap is much more
+ * expensive on Linux (it requires a system call) than on Windows.
  */
 void
 dr_switch_to_dr_state(void *drcontext);

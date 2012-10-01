@@ -655,6 +655,11 @@ instrument_exit(void)
     DEBUG_DECLARE(size_t i);
     /* Note - currently own initexit lock when this is called (see PR 227619). */
 
+    /* we guarantee we're in DR state at all callbacks and clean calls */
+    CLIENT_ASSERT(IF_WINDOWS(!should_swap_peb_pointer() ||)
+                  IF_LINUX(!INTERNAL_OPTION(mangle_app_seg) ||)
+                  !dr_using_app_state(get_thread_private_dcontext()), "state error");
+
     /* support dr_get_mcontext() from the exit event */
     if (!standalone_library)
         get_thread_private_dcontext()->client_data->mcontext_in_dcontext = true;
@@ -2263,6 +2268,7 @@ dr_get_os_version(dr_os_version_info_t *info)
     get_os_version_ex(&ver, &sp_major, &sp_minor);
     if (info->size > offsetof(dr_os_version_info_t, version)) {
         switch (ver) {
+        case WINDOWS_VERSION_8:     info->version = DR_WINDOWS_VERSION_8;     break;
         case WINDOWS_VERSION_7:     info->version = DR_WINDOWS_VERSION_7;     break;
         case WINDOWS_VERSION_VISTA: info->version = DR_WINDOWS_VERSION_VISTA; break;
         case WINDOWS_VERSION_2003:  info->version = DR_WINDOWS_VERSION_2003;  break;
@@ -2974,6 +2980,13 @@ dr_lookup_module(byte *pc)
 }
 
 DR_API
+module_data_t *
+dr_get_main_module(void)
+{
+    return dr_lookup_module(get_image_entry());
+}
+
+DR_API
 /* Looks up the module with name matching name (ignoring case).  Returns NULL if not
  * found. Returned module_data_t must be freed with dr_free_module_data(). */
 module_data_t *
@@ -3679,7 +3692,7 @@ dr_print_instr(void *drcontext, file_t f, instr_t *instr, const char *msg)
 {
     dcontext_t *dcontext = (dcontext_t *) drcontext;
     CLIENT_ASSERT(drcontext != NULL, "dr_print_instr: drcontext cannot be NULL");
-    CLIENT_ASSERT(drcontext != GLOBAL_DCONTEXT,
+    CLIENT_ASSERT(drcontext != GLOBAL_DCONTEXT || standalone_library,
                   "dr_print_instr: drcontext is invalid");
     dr_fprintf(f, "%s "PFX" ", msg, instr_get_translation(instr));
     instr_disassemble(dcontext, instr, f);
@@ -3691,7 +3704,7 @@ dr_print_opnd(void *drcontext, file_t f, opnd_t opnd, const char *msg)
 {
     dcontext_t *dcontext = (dcontext_t *) drcontext;
     CLIENT_ASSERT(drcontext != NULL, "dr_print_opnd: drcontext cannot be NULL");
-    CLIENT_ASSERT(drcontext != GLOBAL_DCONTEXT,
+    CLIENT_ASSERT(drcontext != GLOBAL_DCONTEXT || standalone_library,
                   "dr_print_opnd: drcontext is invalid");
     dr_fprintf(f, "%s ", msg);
     opnd_disassemble(dcontext, opnd, f);

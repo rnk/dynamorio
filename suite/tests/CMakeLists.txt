@@ -231,10 +231,11 @@ endif (LINKCOUNT AND TEST_SUITE)
 
 if (WIN32)
   find_program(BIND_EXECUTABLE bind.exe DOC "path to bind.exe")
-  if (NOT BIND_EXECUTABLE)
-    message(FATAL_ERROR "bind.exe not found: required to build Windows tests")
-  endif (NOT BIND_EXECUTABLE)
-  message(STATUS "Found bind.exe: ${BIND_EXECUTABLE}")
+  if (BIND_EXECUTABLE)
+    message(STATUS "Found bind.exe: ${BIND_EXECUTABLE}")
+  else (BIND_EXECUTABLE)
+    # else we'll use editbin via link.exe
+  endif (BIND_EXECUTABLE)
   mark_as_advanced(BIND_EXECUTABLE)
 
   # if cygwin or mingw gcc is available, we do some extra tests
@@ -336,7 +337,8 @@ if (UNIX)
 else (UNIX)
   set(ARCH_CFLAGS "")
   # we don't add /debug here (=> SHARED_LINKER flags) since can't remove
-  set(ARCH_LDFLAGS "")
+  # XXX i#893: VS2012 won't build any tools_asm test w/ safeseh
+  set(ARCH_LDFLAGS "/safeseh:no")
   if (RUNNING_OVER_SSH)
     set(ARCH_DEBUG "")
   else (RUNNING_OVER_SSH)
@@ -455,6 +457,13 @@ function (set_cflags source)
   endif ()
 endfunction (set_cflags)
 
+function(append_link_flags target newflags)
+  get_target_property(cur_ldflags ${target} LINK_FLAGS)
+  # cmake should add an APPEND option
+  set_target_properties(${target} PROPERTIES
+    LINK_FLAGS "${cur_ldflags} ${newflags}")
+endfunction(append_link_flags)
+
 function(add_exe test source)
   get_filename_component(srcbase ${source} NAME_WE)
   get_filename_component(srcpath ${source} PATH)
@@ -500,6 +509,8 @@ function(add_exe test source)
     if ("${test}" MATCHES "^pthread|startstop")
       target_link_libraries(${test} ${libpthread})
     endif ("${test}" MATCHES "^pthread|startstop")
+  else (UNIX)
+    append_link_flags(${test} "${ARCH_LDFLAGS}")
   endif (UNIX)
   if ("${srccode}" MATCHES "include \"tools\\.h\"")
     target_link_libraries(${test} tools)
@@ -720,12 +731,21 @@ endfunction(torunonly)
 
 function(tobind target)
   get_target_property(binary ${target} LOCATION${location_suffix})
-  add_custom_command(TARGET ${target}
-    POST_BUILD
-    COMMAND ${BIND_EXECUTABLE}
-    ARGS -u ${binary}
-    VERBATIM # recommended: p260
-  )
+  if (BIND_EXECUTABLE)
+    add_custom_command(TARGET ${target}
+      POST_BUILD
+      COMMAND ${BIND_EXECUTABLE}
+      ARGS -u ${binary}
+      VERBATIM # recommended: p260
+      )
+  else (BIND_EXECUTABLE)
+    add_custom_command(TARGET ${target}
+      POST_BUILD
+      COMMAND ${CMAKE_LINKER}
+      ARGS /edit /bind ${binary}
+      VERBATIM # recommended: p260
+      )
+  endif (BIND_EXECUTABLE)
 endfunction(tobind)
 
 # i#215: mark tests w/ text relocations to avoid violating selinux policies:
@@ -753,13 +773,6 @@ function(mark_execstack target)
       "-Wl,-z,execstack ${existing_flags}")
   endif (UNIX)
 endfunction(mark_execstack)
-
-function(append_link_flags target newflags)
-  get_target_property(cur_ldflags ${target} LINK_FLAGS)
-  # cmake should add an APPEND option
-  set_target_properties(${target} PROPERTIES
-    LINK_FLAGS "${cur_ldflags} ${newflags}")
-endfunction(append_link_flags)
 
 ###########################################################################
 # RUNNING

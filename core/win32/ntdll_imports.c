@@ -1,5 +1,5 @@
 /* **********************************************************
- * Copyright (c) 2005-2008 VMware, Inc.  All rights reserved.
+ * Copyright (c) 2012 Google, Inc.  All rights reserved.
  * **********************************************************/
 
 /*
@@ -13,64 +13,59 @@
  *   this list of conditions and the following disclaimer in the documentation
  *   and/or other materials provided with the distribution.
  * 
- * * Neither the name of VMware, Inc. nor the names of its contributors may be
+ * * Neither the name of Google, Inc. nor the names of its contributors may be
  *   used to endorse or promote products derived from this software without
  *   specific prior written permission.
  * 
  * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
  * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
  * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
- * ARE DISCLAIMED. IN NO EVENT SHALL VMWARE, INC. OR CONTRIBUTORS BE LIABLE
+ * ARE DISCLAIMED. NO EVENT SHALL GOOGLE, INC. OR CONTRIBUTORS BE LIABLE
  * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
  * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
  * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
- * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+ * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER CONTRACT, STRICT
+ * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH
  * DAMAGE.
  */
 
-/*
- *
- * internal common header file for share interface
- *
+/* i#894: Win8 WDK ntdll.lib does not list Ki routines so we make our own .lib.
+ * Since they're stdcall we need to both list them in .def and to have stubs
+ * in an .obj file.
  */
 
-#ifndef _DETERMINA_SHARE_H_
-#define _DETERMINA_SHARE_H_
-
-#include "configure.h"
-
-#ifdef WINDOWS
-/* 
-C:\PROGRAM FILES\MICROSOFT VISUAL STUDIO\VC98\INCLUDE\rpcasync.h(45) : 
-warning C4115: '_RPC_ASYNC_STATE' : named type definition in parentheses
-*/
-# pragma warning(disable : 4115)
-
-# include "mfapi.h"
-#endif /* WINDOWS */
-
 #ifdef __cplusplus
-extern "C"{
-#endif 
-
-/* make sure; for example, mmcgui shouldn't have to know about this */
-#ifndef NOT_DYNAMORIO_CORE
-#  define NOT_DYNAMORIO_CORE
+extern "C" {
 #endif
 
-/* FIXME: this should be stripped out of the core at some point...*/
-#ifndef HOT_PATCHING_INTERFACE
-#  define HOT_PATCHING_INTERFACE
-#endif
+__declspec(dllexport) void __stdcall
+KiUserApcDispatcher(void *Unknown1, 
+                    void *Unknown2, 
+                    void *Unknown3, 
+                    void *ContextStart, 
+                    void *ContextBody)
+{
+}
 
-#include "globals_shared.h"
+__declspec(dllexport) void __stdcall
+KiUserCallbackDispatcher(void *Unknown1, 
+                         void *Unknown2, 
+                         void *Unknown3)
+{
+}
+
+__declspec(dllexport) void __stdcall
+KiUserExceptionDispatcher(void *Unknown1, 
+                          void *Unknown2)
+{
+}
+
+__declspec(dllexport) void __stdcall
+KiRaiseUserExceptionDispatcher(void)
+{
+}
 
 #ifdef __cplusplus
 }
-#endif
-
-#include "utils.h"
-
 #endif
