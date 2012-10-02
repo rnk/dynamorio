@@ -1538,9 +1538,15 @@ dr_module_import_iterator_start(module_handle_t handle)
 }
 
 bool
-dr_module_import_iterator_next(dr_module_import_iterator_t *iter)
+dr_module_import_iterator_hasnext(dr_module_import_iterator_t *iter)
 {
     return false;
+}
+
+dr_module_import_t *
+dr_module_import_iterator_next(dr_module_import_iterator_t *iter)
+{
+    return NULL;
 }
 
 void
@@ -1582,7 +1588,7 @@ dynsym_next_import(elf_import_iterator_t *iter)
 
 dr_symbol_import_iterator_t *
 dr_symbol_import_iterator_start(module_handle_t handle,
-                                dr_imported_module_t from_module)
+                                dr_module_import_desc_t from_module)
 {
     module_area_t *ma;
     elf_import_iterator_t *iter;
