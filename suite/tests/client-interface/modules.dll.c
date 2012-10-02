@@ -43,7 +43,7 @@
 # define IF_WINDOWS(x) 
 #endif
 
-static bool verbose = true;
+static bool verbose = false;
 
 #define info(msg, ...) do { \
     if (verbose) { \
@@ -108,7 +108,7 @@ void module_load_event(void *dcontext, const module_data_t *data, bool loaded)
                 dr_module_import_iterator_next(mod_iter);
             info("import module: %s\n", mod_import->modname);
             sym_iter = dr_symbol_import_iterator_start
-                    (data->handle, mod_import->module_import_cursor);
+                    (data->handle, mod_import->module_import_desc);
             while (dr_symbol_import_iterator_hasnext(sym_iter)) {
                 dr_symbol_import_t *sym_import =
                     dr_symbol_import_iterator_next(sym_iter);
@@ -116,7 +116,8 @@ void module_load_event(void *dcontext, const module_data_t *data, bool loaded)
                     dr_fprintf(STDERR, "ERROR: modname mismatch: %s vs %s\n",
                                mod_import->modname, sym_import->name);
                 }
-                info("import: %s!%s\n", sym_import->modname, sym_import->name);
+                info("%s imports %s!%s\n", dr_module_preferred_name(data),
+                     sym_import->modname, sym_import->name);
             }
             dr_symbol_import_iterator_stop(sym_iter);
         }
@@ -127,7 +128,8 @@ void module_load_event(void *dcontext, const module_data_t *data, bool loaded)
     sym_iter = dr_symbol_import_iterator_start(data->handle, NULL);
     while (dr_symbol_import_iterator_hasnext(sym_iter)) {
         dr_symbol_import_t *sym_import = dr_symbol_import_iterator_next(sym_iter);
-        info("import: %s\n", sym_import->name);
+        info("%s imports %s\n", dr_module_preferred_name(data),
+             sym_import->name);
     }
     dr_symbol_import_iterator_stop(sym_iter);
 #endif /* WINDOWS */

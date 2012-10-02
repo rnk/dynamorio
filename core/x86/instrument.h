@@ -2461,7 +2461,7 @@ dr_module_preferred_name(const module_data_t *data);
  * by calling dr_module_import_iterator_start() and must be freed by calling
  * dr_module_import_iterator_stop().
  *
- * \note Does not yet include delay-loaded imports.
+ * On Windows, delay-loaded DLLs are not included yet.
  *
  * \note Windows only.  ELF does not import directly from other modules.
  */
@@ -2469,10 +2469,10 @@ struct _dr_module_import_iterator_t;
 typedef struct _dr_module_import_iterator_t dr_module_import_iterator_t;
 
 /**
- * Opaque cursor used to iterate the symbols imported from a specific module.
+ * Descriptor used to iterate the symbols imported from a specific module.
  */
-struct _dr_module_import_cursor_t;
-typedef struct _dr_module_import_cursor_t *dr_module_import_cursor_t;
+struct _dr_module_import_desc_t;
+typedef struct _dr_module_import_desc_t *dr_module_import_desc_t;
 
 /**
  * Module import data returned from dr_module_import_iterator_next().
@@ -2493,7 +2493,7 @@ typedef struct _dr_module_import_t {
      * Opaque handle that can be passed to dr_symbol_import_iterator_start().
      * Valid until the original module is unmapped.
      */
-    dr_module_import_cursor_t module_import_cursor;
+    dr_module_import_desc_t module_import_desc;
 } dr_module_import_t;
 /* DR_API EXPORT STOP */
 
@@ -2570,14 +2570,15 @@ DR_API
  * from.
  *
  * On Windows, from_module can be taken from a \p dr_module_import_iterator_t
- * and used to iterate over all of the imports from a specific module.
+ * and used to iterate over all of the imports from a specific module.  Symbols
+ * imported from delay-loaded DLLs are not included yet.
  *
  * The iterator returned is invalid until after the first call to
  * dr_symbol_import_iterator_next().
  */
 dr_symbol_import_iterator_t *
 dr_symbol_import_iterator_start(module_handle_t handle,
-                                dr_module_import_cursor_t from_module);
+                                dr_module_import_desc_t from_module);
 
 DR_API
 /**
