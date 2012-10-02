@@ -48,16 +48,20 @@ typedef union _elf_generic_header_t {
 
 #ifdef CLIENT_INTERFACE
 typedef struct _elf_import_iterator_t {
-    /* C-style inheritance: put the public iterator fields at the beginning. */
-    dr_sym_import_iterator_t pub;
+    dr_symbol_import_t symbol_import;  /* symbol import returned by next() */
 
-    /* Private fields. */
-    ELF_SYM_TYPE *dynsym;       /* absolute addr of .dynsym */
-    size_t symentry_size;       /* size of a .dynsym entry */
-    ELF_SYM_TYPE *import_end;   /* pointer beyond last import .dynsym entry */
-    char *dynstr;               /* absolute addr of .dynstr */
-    size_t dynstr_size;         /* size of .dynstr */
-    ELF_SYM_TYPE *cur_sym;      /* current position in .dynsym */
+    /* This data is copied from os_module_data_t so we don't have to hold the
+     * module area lock while the client iterates.
+     */
+    ELF_SYM_TYPE *dynsym;              /* absolute addr of .dynsym */
+    size_t symentry_size;              /* size of a .dynsym entry */
+    const char *dynstr;                /* absolute addr of .dynstr */
+    size_t dynstr_size;                /* size of .dynstr */
+
+    ELF_SYM_TYPE *cur_sym;             /* pointer to next import in .dynsym */
+    ELF_SYM_TYPE safe_cur_sym;         /* safe_read() copy of cur_sym */
+    ELF_SYM_TYPE *import_end;          /* end of imports in .dynsym */
+    bool error_encountered;            /* error during iteration */
 } elf_import_iterator_t;
 #endif /* CLIENT_INTERFACE */
 
@@ -1525,22 +1529,22 @@ module_undef_symbols()
 /* We could implement import iteration of PE files in Wine, so we provide these
  * stubs.
  */
-dr_mod_import_iterator_t *
-dr_mod_import_iterator_start(module_handle_t handle)
+dr_module_import_iterator_t *
+dr_module_import_iterator_start(module_handle_t handle)
 {
     CLIENT_ASSERT(false, "No imports on Linux, use "
-                  "dr_sym_import_iterator_t instead");
+                  "dr_symbol_import_iterator_t instead");
     return NULL;
 }
 
 bool
-dr_mod_import_iterator_next(dr_mod_import_iterator_t *iter)
+dr_module_import_iterator_next(dr_module_import_iterator_t *iter)
 {
     return false;
 }
 
 void
-dr_mod_import_iterator_stop(dr_mod_import_iterator_t *iter)
+dr_module_import_iterator_stop(dr_module_import_iterator_t *iter)
 {
 }
 
@@ -1551,9 +1555,34 @@ dynsym_next(elf_import_iterator_t *iter)
                                       iter->symentry_size);
 }
 
-dr_sym_import_iterator_t *
-dr_sym_import_iterator_start(module_handle_t handle,
-                             dr_imported_module_t from_module)
+static void
+dynsym_next_import(elf_import_iterator_t *iter)
+{
+    /* Imports have zero st_value fields.  Anything else is something else, so
+     * we skip it.  Modules using .gnu.hash symbol lookup tend to have imports
+     * come first, but sysv hash tables don't have any such split.
+     */
+    do {
+        dynsym_next(iter);
+        if (iter->cur_sym >= iter->import_end)
+            return;
+        if (!SAFE_READ_VAL(iter->safe_cur_sym, iter->cur_sym)) {
+            memset(&iter->safe_cur_sym, 0, sizeof(iter->safe_cur_sym));
+            iter->error_encountered = true;
+            return;
+        }
+    } while (iter->safe_cur_sym.st_value != 0);
+
+    if (iter->safe_cur_sym.st_name >= iter->dynstr_size) {
+        ASSERT_CURIOSITY(false && "st_name out of .dynstr bounds");
+        iter->error_encountered = true;
+        return;
+    }
+}
+
+dr_symbol_import_iterator_t *
+dr_symbol_import_iterator_start(module_handle_t handle,
+                                dr_imported_module_t from_module)
 {
     module_area_t *ma;
     elf_import_iterator_t *iter;
@@ -1568,14 +1597,14 @@ dr_sym_import_iterator_start(module_handle_t handle,
     iter = global_heap_alloc(sizeof(*iter) HEAPACCT(ACCT_CLIENT));
     if (iter == NULL)
         return NULL;
-    iter->pub.name = NULL;
+    memset(iter, 0, sizeof(*iter));
 
     os_get_module_info_lock();
     ma = module_pc_lookup((byte *) handle);
     if (ma != NULL) {
         iter->dynsym = (ELF_SYM_TYPE *) ma->os_data.dynsym;
         iter->symentry_size = ma->os_data.symentry_size;
-        iter->dynstr = (char *) ma->os_data.dynstr;
+        iter->dynstr = (const char *) ma->os_data.dynstr;
         iter->dynstr_size = ma->os_data.dynstr_size;
         iter->cur_sym = iter->dynsym;
 
@@ -1584,7 +1613,7 @@ dr_sym_import_iterator_start(module_handle_t handle,
          * though, so they have some info about the length.
          */
         if (ma->os_data.hash_is_gnu) {
-            /* See https://blogs.oracle.com/ali/entry/gnu_hash_elf_sections 
+            /* See https://blogs.oracle.com/ali/entry/gnu_hash_elf_sections
              * "With GNU hash, the dynamic symbol table is divided into two
              * parts. The first part receives the symbols that can be omitted
              * from the hash table."
@@ -1603,51 +1632,46 @@ dr_sym_import_iterator_start(module_handle_t handle,
         iter->import_end = (ELF_SYM_TYPE *)((app_pc)iter->dynsym +
                                             (max_imports * iter->symentry_size));
 
-        /* The first entry is zero sometimes.  Skip it. */
-        if (iter->cur_sym->st_name == 0) {
-            dynsym_next(iter);
-        }
+        /* Set up invariant that cur_sym and safe_cur_sym point to the next
+         * symbol to yeild.  This skips the first entry, which is fake according
+         * to the spec.
+         */
+        ASSERT_CURIOSITY(iter->cur_sym->st_name == 0);
+        dynsym_next_import(iter);
     } else {
         global_heap_free(iter, sizeof(*iter) HEAPACCT(ACCT_CLIENT));
         iter = NULL;
     }
     os_get_module_info_unlock();
 
-    return &iter->pub;
+    return (dr_symbol_import_iterator_t *) iter;
 }
 
 bool
-dr_sym_import_iterator_next(dr_sym_import_iterator_t *pub_iter)
+dr_symbol_import_iterator_hasnext(dr_symbol_import_iterator_t *dr_iter)
 {
-    elf_import_iterator_t *iter = (elf_import_iterator_t *) pub_iter;
+    elf_import_iterator_t *iter = (elf_import_iterator_t *) dr_iter;
+    return (iter != NULL && !iter->error_encountered &&
+            iter->cur_sym < iter->import_end);
+}
 
-    if (iter == NULL)
-        return false;
+dr_symbol_import_t *
+dr_symbol_import_iterator_next(dr_symbol_import_iterator_t *dr_iter)
+{
+    elf_import_iterator_t *iter = (elf_import_iterator_t *) dr_iter;
 
-    if (iter->cur_sym >= iter->import_end)
-        return false;
-
-    /* Imports have zero st_value fields.  Anything else is something else, so
-     * we skip it.  Modules using .gnu.hash symbol lookup tend to have imports
-     * come first, but sysv hash tables don't have any such split.
-     */
-    while (iter->cur_sym->st_value != 0) {
-        dynsym_next(iter);
-        if (iter->cur_sym >= iter->import_end)
-            return false;
-    }
-
-    iter->pub.name = (char *) iter->dynstr + iter->cur_sym->st_name;
-    iter->pub.modname = NULL;
-
-    dynsym_next(iter);
-    return true;
+    CLIENT_ASSERT(iter != NULL, "invalid parameter");
+    iter->symbol_import.name = iter->dynstr + iter->safe_cur_sym.st_name;
+    iter->symbol_import.modname = NULL;  /* no module for ELFs */
+    iter->symbol_import.delay_load = false;
+    dynsym_next_import(iter);
+    return &iter->symbol_import;
 }
 
 void
-dr_sym_import_iterator_stop(dr_sym_import_iterator_t *pub_iter)
+dr_symbol_import_iterator_stop(dr_symbol_import_iterator_t *dr_iter)
 {
-    elf_import_iterator_t *iter = (elf_import_iterator_t *) pub_iter;
+    elf_import_iterator_t *iter = (elf_import_iterator_t *) dr_iter;
     if (iter == NULL)
         return;
     global_heap_free(iter, sizeof(*iter) HEAPACCT(ACCT_CLIENT));

@@ -85,7 +85,7 @@ enum { MAX_PE_SYMBOL_LENGTH = 2048 };
 #ifdef CLIENT_INTERFACE
 typedef struct _pe_mod_import_iterator_t {
     /* C-style inheritance: put the public iterator fields at the beginning. */
-    dr_mod_import_iterator_t pub;
+    dr_module_import_iterator_t base;
 
     /* Private fields.  */
     byte *mod_base;
@@ -100,11 +100,11 @@ typedef struct _pe_mod_import_iterator_t {
 
 typedef struct _pe_sym_import_iterator_t {
     /* C-style inheritance: put the public iterator fields at the beginning. */
-    dr_sym_import_iterator_t pub;
+    dr_symbol_import_iterator_t base;
 
     /* Private fields.  */
     byte *mod_base;
-    dr_mod_import_iterator_t *mod_iter;  /* Only for iterating all syms. */
+    dr_module_import_iterator_t *mod_iter;  /* Only for iterating all syms. */
     IMAGE_IMPORT_DESCRIPTOR *cur_module;
     /* Points into array of offsets to IMAGE_IMPORT_BY_NAME structs.  The last
      * array element is zeroed.
@@ -114,15 +114,6 @@ typedef struct _pe_sym_import_iterator_t {
     char modname_storage[MAXIMUM_PATH];
 } pe_sym_import_iterator_t;
 #endif /* CLIENT_INTERFACE */
-
-/* Does a safe_read of *src_ptr into dst_var, returning true for success.  We
- * assert that the size of dst and src match.  The other advantage over plain
- * safe_read is that the caller doesn't need to pass sizeof(dst), which is
- * useful for repeated small memory accesses.
- */
-#define SAFE_READ_VAL(dst_var, src_ptr) \
-    (ASSERT(sizeof(dst_var) == sizeof(*src_ptr)), \
-     safe_read(src_ptr, sizeof(dst_var), &dst_var))
 
 /****************************************************************************
  * Section-to-file table for i#138 and PR 213463 (case 9028)
@@ -6294,8 +6285,8 @@ os_module_has_dynamic_base(app_pc module_base)
 
 #ifdef CLIENT_INTERFACE
 
-dr_mod_import_iterator_t *
-dr_mod_import_iterator_start(module_handle_t handle)
+dr_module_import_iterator_t *
+dr_module_import_iterator_start(module_handle_t handle)
 {
     pe_mod_import_iterator_t *iter;
     IMAGE_DOS_HEADER *dos;
@@ -6337,7 +6328,7 @@ dr_mod_import_iterator_start(module_handle_t handle)
 }
 
 bool
-dr_mod_import_iterator_next(dr_mod_import_iterator_t *pub_iter)
+dr_module_import_iterator_next(dr_module_import_iterator_t *pub_iter)
 {
     dcontext_t *dcontext = get_thread_private_dcontext();
     pe_mod_import_iterator_t *iter = (pe_mod_import_iterator_t *) pub_iter;
@@ -6374,17 +6365,17 @@ dr_mod_import_iterator_next(dr_mod_import_iterator_t *pub_iter)
 }
 
 void
-dr_mod_import_iterator_stop(dr_mod_import_iterator_t *pub_iter)
+dr_module_import_iterator_stop(dr_module_import_iterator_t *dr_iter)
 {
-    pe_mod_import_iterator_t *iter = (pe_mod_import_iterator_t *) pub_iter;
+    pe_mod_import_iterator_t *iter = (pe_mod_import_iterator_t *) dr_iter;
     if (iter == NULL)
         return;
     global_heap_free(iter, sizeof(*iter) HEAPACCT(ACCT_CLIENT));
 }
 
-dr_sym_import_iterator_t *
-dr_sym_import_iterator_start(module_handle_t handle,
-                             dr_imported_module_t from_module)
+dr_symbol_import_iterator_t *
+dr_symbol_import_iterator_start(module_handle_t handle,
+                                dr_imported_module_t from_module)
 {
     pe_sym_import_iterator_t *iter;
 
@@ -6395,7 +6386,7 @@ dr_sym_import_iterator_start(module_handle_t handle,
     iter->pub.name = NULL;
     iter->pub.modname = NULL;
     if (from_module == NULL) {
-        iter->mod_iter = dr_mod_import_iterator_start(handle);
+        iter->mod_iter = dr_module_import_iterator_start(handle);
         if (iter->mod_iter == NULL) {
             global_heap_free(iter, sizeof(*iter) HEAPACCT(ACCT_CLIENT));
             return NULL;
@@ -6411,10 +6402,10 @@ dr_sym_import_iterator_start(module_handle_t handle,
 }
 
 bool
-dr_sym_import_iterator_next(dr_sym_import_iterator_t *pub_iter)
+dr_symbol_import_iterator_next(dr_symbol_import_iterator_t *dr_iter)
 {
     dcontext_t *dcontext = get_thread_private_dcontext();
-    pe_sym_import_iterator_t *iter = (pe_sym_import_iterator_t *) pub_iter;
+    pe_sym_import_iterator_t *iter = (pe_sym_import_iterator_t *) dr_iter;
     bool partial = false;
     DWORD original_thunk_rva = 0;
     DWORD symbol_rva = 0;
@@ -6429,7 +6420,7 @@ dr_sym_import_iterator_next(dr_sym_import_iterator_t *pub_iter)
         TRY_EXCEPT(dcontext, {
             strncpy(iter->modname_storage,
                     (const char *) (iter->mod_base + iter->cur_module->Name),
-                    sizeof(iter->modname_storage));
+                    BUFFER_SIZE_ELEMENTS(iter->modname_storage));
             NULL_TERMINATE_BUFFER(iter->modname_storage);
         }, {
             partial = true;
@@ -6451,7 +6442,7 @@ dr_sym_import_iterator_next(dr_sym_import_iterator_t *pub_iter)
     if (iter->mod_iter != NULL) {
         /* If we're out of symbols from the current module, start on the next. */
         while (symbol_rva == 0) {
-            if (!dr_mod_import_iterator_next(iter->mod_iter))
+            if (!dr_module_import_iterator_next(iter->mod_iter))
                 return false;
             iter->cur_module = (IMAGE_IMPORT_DESCRIPTOR *)
                 iter->mod_iter->imported_module;
@@ -6478,7 +6469,7 @@ dr_sym_import_iterator_next(dr_sym_import_iterator_t *pub_iter)
     sym = (IMAGE_IMPORT_BY_NAME *) (iter->mod_base + symbol_rva);
     TRY_EXCEPT(dcontext, {
         strncpy(iter->symbol_storage, (const char *) &sym->Name,
-                sizeof(iter->symbol_storage));
+                BUFFER_SIZE_ELEMENTS(iter->symbol_storage));
         NULL_TERMINATE_BUFFER(iter->symbol_storage);
     }, {
         partial = true;
@@ -6495,13 +6486,13 @@ dr_sym_import_iterator_next(dr_sym_import_iterator_t *pub_iter)
 }
 
 void
-dr_sym_import_iterator_stop(dr_sym_import_iterator_t *pub_iter)
+dr_symbol_import_iterator_stop(dr_symbol_import_iterator_t *dr_iter)
 {
-    pe_sym_import_iterator_t *iter = (pe_sym_import_iterator_t *) pub_iter;
+    pe_sym_import_iterator_t *iter = (pe_sym_import_iterator_t *) dr_iter;
     if (iter == NULL)
         return;
     if (iter->mod_iter != NULL)
-        dr_mod_import_iterator_stop(iter->mod_iter);
+        dr_module_import_iterator_stop(iter->mod_iter);
     global_heap_free(iter, sizeof(*iter) HEAPACCT(ACCT_CLIENT));
 }
 

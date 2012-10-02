@@ -43,6 +43,8 @@
 # define IF_WINDOWS(x) 
 #endif
 
+static bool verbose = true;
+
 /* Only compare the start of the string to avoid caring about LoadLibraryA vs
  * LoadLibraryW on Windows.
  */
@@ -74,7 +76,7 @@ void module_load_event(void *dcontext, const module_data_t *data, bool loaded)
      * just look for the module in question.
      */
     /* Test i#138 */
-    dr_sym_import_iterator_t *sym_iter;
+    dr_symbol_import_iterator_t *sym_iter;
     if (data->full_path == NULL || data->full_path[0] == '\0')
         dr_fprintf(STDERR, "ERROR: full_path empty for %s\n", dr_module_preferred_name(data));
 #ifdef WINDOWS
@@ -92,24 +94,35 @@ void module_load_event(void *dcontext, const module_data_t *data, bool loaded)
      * and checking which symbols are used.
      */
     {
-        dr_mod_import_iterator_t *mod_iter;
-        mod_iter = dr_mod_import_iterator_start(data->handle);
-        while (dr_mod_import_iterator_next(mod_iter)) {
-            sym_iter = dr_sym_import_iterator_start(data->handle, mod_iter->imported_module);
-            while (dr_sym_import_iterator_next(sym_iter)) {
-                /* nothing */
+        dr_module_import_iterator_t *mod_iter;
+        mod_iter = dr_module_import_iterator_start(data->handle);
+        while (dr_module_import_iterator_next(mod_iter)) {
+            sym_iter = dr_symbol_import_iterator_start(data->handle,
+                                                       mod_iter->imported_module);
+            while (dr_symbol_import_iterator_next(sym_iter)) {
+                if (strcmp(mod_import->modname, sym_import->modname) != 0) {
+                    dr_fprintf(STDERR, "ERROR: modname mismatch: %s vs %s\n",
+                               mod_import->modname, sym_import->name);
+                }
+                if (verbose) {
+                    dr_fprintf(STDERR, "import: %s!%s\n",
+                               sym_import->modname, sym_import->name);
+                }
             }
-            dr_sym_import_iterator_stop(sym_iter);
+            dr_symbol_import_iterator_stop(sym_iter);
         }
-        dr_mod_import_iterator_stop(mod_iter);
+        dr_module_import_iterator_stop(mod_iter);
     }
 #else /* LINUX */
     /* Linux has no module import iterator, just symbols. */
-    sym_iter = dr_sym_import_iterator_start(data->handle, NULL);
-    while (dr_sym_import_iterator_next(sym_iter)) {
-        /* nothing */
+    sym_iter = dr_symbol_import_iterator_start(data->handle, NULL);
+    while (dr_symbol_import_iterator_hasnext(sym_iter)) {
+        dr_symbol_import_t *sym_import = dr_symbol_import_iterator_next(sym_iter);
+        if (verbose) {
+            dr_fprintf(STDERR, "import: %s\n", sym_import->name);
+        }
     }
-    dr_sym_import_iterator_stop(sym_iter);
+    dr_symbol_import_iterator_stop(sym_iter);
 #endif /* WINDOWS */
 }
 
@@ -168,14 +181,14 @@ static bool
 module_imports_from_kernel_star(module_handle_t mod)
 {
     bool found_module = false;
-    dr_mod_import_iterator_t *mod_iter = dr_mod_import_iterator_start(mod);
-    while (dr_mod_import_iterator_next(mod_iter)) {
+    dr_module_import_iterator_t *mod_iter = dr_module_import_iterator_start(mod);
+    while (dr_module_import_iterator_next(mod_iter)) {
         /* The exe probably imports from kernel32. */
         if (_strnicmp(mod_iter->modname, "KERNEL", 6) == 0) {
             found_module = true;
         }
     }
-    dr_mod_import_iterator_stop(mod_iter);
+    dr_module_import_iterator_stop(mod_iter);
     return found_module;
 }
 #endif /* WINDOWS */
@@ -183,7 +196,7 @@ module_imports_from_kernel_star(module_handle_t mod)
 DR_EXPORT
 void dr_init(client_id_t id)
 {
-    dr_sym_import_iterator_t *sym_iter;
+    dr_symbol_import_iterator_t *sym_iter;
     bool found_symbol = false;
     module_data_t *main_mod = dr_get_main_module();
     module_handle_t mod_handle = main_mod->handle;
@@ -201,17 +214,20 @@ void dr_init(client_id_t id)
     /* Test iterating all symbols by looking for a symbol that we know is
      * imported.
      */
-    sym_iter = dr_sym_import_iterator_start(mod_handle, NULL);
-    while (dr_sym_import_iterator_next(sym_iter)) {
-        if (strncmp(sym_iter->name, load_library_symbol,
+    sym_iter = dr_symbol_import_iterator_start(mod_handle, NULL);
+    while (dr_symbol_import_iterator_hasnext(sym_iter)) {
+        dr_symbol_import_t *sym_import = dr_symbol_import_iterator_next(sym_iter);
+        if (strncmp(sym_import->name, load_library_symbol,
                     strlen(load_library_symbol)) == 0) {
             found_symbol = true;
         }
     }
-    if (!found_symbol)
+    dr_symbol_import_iterator_stop(sym_iter);
+
+    if (!found_symbol) {
         dr_fprintf(STDERR, "ERROR: didn't find imported symbol %s\n",
                    load_library_symbol);
-    dr_sym_import_iterator_stop(sym_iter);
+    }
 
     dr_register_module_load_event(module_load_event);
     dr_register_module_unload_event(module_unload_event);    
