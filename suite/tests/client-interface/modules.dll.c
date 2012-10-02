@@ -45,6 +45,12 @@
 
 static bool verbose = true;
 
+#define info(msg, ...) do { \
+    if (verbose) { \
+        dr_fprintf(STDERR, msg, ##__VA_ARGS__); \
+    } \
+} while (0)
+
 /* Only compare the start of the string to avoid caring about LoadLibraryA vs
  * LoadLibraryW on Windows.
  */
@@ -95,19 +101,22 @@ void module_load_event(void *dcontext, const module_data_t *data, bool loaded)
      */
     {
         dr_module_import_iterator_t *mod_iter;
+        info("iterating imports for module %s\n", data->full_path);
         mod_iter = dr_module_import_iterator_start(data->handle);
-        while (dr_module_import_iterator_next(mod_iter)) {
-            sym_iter = dr_symbol_import_iterator_start(data->handle,
-                                                       mod_iter->imported_module);
-            while (dr_symbol_import_iterator_next(sym_iter)) {
+        while (dr_module_import_iterator_hasnext(mod_iter)) {
+            dr_module_import_t *mod_import =
+                dr_module_import_iterator_next(mod_iter);
+            info("import module: %s\n", mod_import->modname);
+            sym_iter = dr_symbol_import_iterator_start
+                    (data->handle, mod_import->module_import_cursor);
+            while (dr_symbol_import_iterator_hasnext(sym_iter)) {
+                dr_symbol_import_t *sym_import =
+                    dr_symbol_import_iterator_next(sym_iter);
                 if (strcmp(mod_import->modname, sym_import->modname) != 0) {
                     dr_fprintf(STDERR, "ERROR: modname mismatch: %s vs %s\n",
                                mod_import->modname, sym_import->name);
                 }
-                if (verbose) {
-                    dr_fprintf(STDERR, "import: %s!%s\n",
-                               sym_import->modname, sym_import->name);
-                }
+                info("import: %s!%s\n", sym_import->modname, sym_import->name);
             }
             dr_symbol_import_iterator_stop(sym_iter);
         }
@@ -118,9 +127,7 @@ void module_load_event(void *dcontext, const module_data_t *data, bool loaded)
     sym_iter = dr_symbol_import_iterator_start(data->handle, NULL);
     while (dr_symbol_import_iterator_hasnext(sym_iter)) {
         dr_symbol_import_t *sym_import = dr_symbol_import_iterator_next(sym_iter);
-        if (verbose) {
-            dr_fprintf(STDERR, "import: %s\n", sym_import->name);
-        }
+        info("import: %s\n", sym_import->name);
     }
     dr_symbol_import_iterator_stop(sym_iter);
 #endif /* WINDOWS */
@@ -181,10 +188,13 @@ static bool
 module_imports_from_kernel_star(module_handle_t mod)
 {
     bool found_module = false;
-    dr_module_import_iterator_t *mod_iter = dr_module_import_iterator_start(mod);
-    while (dr_module_import_iterator_next(mod_iter)) {
+    dr_module_import_iterator_t *mod_iter =
+        dr_module_import_iterator_start(mod);
+    while (dr_module_import_iterator_hasnext(mod_iter)) {
         /* The exe probably imports from kernel32. */
-        if (_strnicmp(mod_iter->modname, "KERNEL", 6) == 0) {
+        dr_module_import_t *mod_import =
+            dr_module_import_iterator_next(mod_iter);
+        if (_strnicmp(mod_import->modname, "KERNEL", 6) == 0) {
             found_module = true;
         }
     }

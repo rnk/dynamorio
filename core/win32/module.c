@@ -72,47 +72,33 @@ module_area_free_IAT(module_area_t *ma);
 static bool
 get_module_resource_version_info(app_pc mod_base, version_info_t *info_out);
 
-/* This constant isn't in winnt.h, but it is documented here:
- * http://msdn.microsoft.com/en-us/library/565w213d.aspx
- *
- * "Only the first 2048 characters of Microsoft C++ identifiers are significant.
- * Names for user-defined types are "decorated" by the compiler to preserve type
- * information. The resultant name, including the type information, cannot be
- * longer than 2048 characters. (See Decorated Names for more information.)"
- */
-enum { MAX_PE_SYMBOL_LENGTH = 2048 };
-
 #ifdef CLIENT_INTERFACE
-typedef struct _pe_mod_import_iterator_t {
-    /* C-style inheritance: put the public iterator fields at the beginning. */
-    dr_module_import_iterator_t base;
+typedef struct _pe_module_import_iterator_t {
+    dr_module_import_t module_import;  /* module import returned by next() */
 
-    /* Private fields.  */
     byte *mod_base;
     /* Points into an array of IMAGE_IMPORT_DESCRIPTOR structs.  The last
      * element of the array is zeroed.
-     * See "A Tour of the Win32 Portable Executable File Format":
-     * http://msdn.microsoft.com/en-us/library/ms809762.aspx
      */
-    IMAGE_IMPORT_DESCRIPTOR *next_module;
-    char modname_storage[MAXIMUM_PATH];
-} pe_mod_import_iterator_t;
-
-typedef struct _pe_sym_import_iterator_t {
-    /* C-style inheritance: put the public iterator fields at the beginning. */
-    dr_symbol_import_iterator_t base;
-
-    /* Private fields.  */
-    byte *mod_base;
-    dr_module_import_iterator_t *mod_iter;  /* Only for iterating all syms. */
     IMAGE_IMPORT_DESCRIPTOR *cur_module;
+    IMAGE_IMPORT_DESCRIPTOR safe_module;
+    /* End of the import descriptor table.
+     */
+    byte *imports_end;
+    bool hasnext;
+} pe_module_import_iterator_t;
+
+typedef struct _pe_symbol_import_iterator_t {
+    dr_symbol_import_t symbol_import;  /* symbol import returned by next() */
+
+    byte *mod_base;
+    dr_module_import_iterator_t *mod_iter;
     /* Points into array of offsets to IMAGE_IMPORT_BY_NAME structs.  The last
      * array element is zeroed.
      */
-    DWORD *next_sym;
-    char symbol_storage[MAX_PE_SYMBOL_LENGTH];
-    char modname_storage[MAXIMUM_PATH];
-} pe_sym_import_iterator_t;
+    DWORD *cur_sym;
+    bool hasnext;
+} pe_symbol_import_iterator_t;
 #endif /* CLIENT_INTERFACE */
 
 /****************************************************************************
@@ -6285,99 +6271,98 @@ os_module_has_dynamic_base(app_pc module_base)
 
 #ifdef CLIENT_INTERFACE
 
+/* Returns true if the next module import was read and is valid.
+ */
+static bool
+safe_read_cur_module(pe_module_import_iterator_t *iter)
+{
+    /* Modules with no imports, such as ntdll, hit this check and not the
+     * OriginalFirstThunk sentinel check below.
+     */
+    if ((byte *)(iter->cur_module + 1) > iter->imports_end)
+        return false;
+    if (!SAFE_READ_VAL(iter->safe_module, iter->cur_module)) {
+        memset(&iter->safe_module, 0, sizeof(iter->safe_module));
+        return false;
+    }
+    /* The last module import is zeroed. */
+    if (iter->safe_module.OriginalFirstThunk == 0)
+        return false;
+    return true;
+}
+
 dr_module_import_iterator_t *
 dr_module_import_iterator_start(module_handle_t handle)
 {
-    pe_mod_import_iterator_t *iter;
-    IMAGE_DOS_HEADER *dos;
+    pe_module_import_iterator_t *iter;
     IMAGE_NT_HEADERS *nt;
     IMAGE_DATA_DIRECTORY *dir;
-    DWORD e_lfanew;
-    DWORD nt_signature;
-    WORD nt_magic;
-    DWORD import_desc_rva;
+    app_pc base = (app_pc) handle;
 
-    dos = (IMAGE_DOS_HEADER *) handle;
-    if (!SAFE_READ_VAL(e_lfanew, &dos->e_lfanew))
+    if (!is_readable_pe_base(base))
         return NULL;
-    nt = (IMAGE_NT_HEADERS *) ((byte *) handle + e_lfanew);
-    if (!SAFE_READ_VAL(nt_signature, &nt->Signature))
-        return NULL;
-    if (nt_signature != IMAGE_NT_SIGNATURE)
-        return NULL;
-    if (!SAFE_READ_VAL(nt_magic, &nt->OptionalHeader.Magic))
-        return NULL;
-    /* No need to safe_read, DataDirectory is an array. */
-    dir = (nt_magic == IMAGE_NT_OPTIONAL_HDR32_MAGIC ?
-           (nt->OptionalHeader.DataDirectory) :
-           (((IMAGE_NT_HEADERS64 *)nt)->OptionalHeader.DataDirectory)) +
-            IMAGE_DIRECTORY_ENTRY_IMPORT;
-    if (!SAFE_READ_VAL(import_desc_rva, &dir->VirtualAddress))
-        return NULL;
-
     iter = global_heap_alloc(sizeof(*iter) HEAPACCT(ACCT_CLIENT));
     if (iter == NULL)
         return NULL;
 
-    iter->mod_base = (byte *) handle;
-    iter->next_module = (IMAGE_IMPORT_DESCRIPTOR *)
-        (iter->mod_base + import_desc_rva);
-    iter->pub.modname = NULL;
-    iter->pub.imported_module = NULL;
-    return &iter->pub;
+    /* Should be safe after is_readable_pe_base(). */
+    nt = NT_HEADER(base);
+    dir = OPT_HDR(nt, DataDirectory) + IMAGE_DIRECTORY_ENTRY_IMPORT;
+    iter->mod_base = (byte *) base;
+    iter->cur_module = (IMAGE_IMPORT_DESCRIPTOR *)
+        RVA_TO_VA(base, dir->VirtualAddress);
+    iter->imports_end = (byte *) RVA_TO_VA(base, dir->VirtualAddress) + dir->Size;
+    iter->hasnext = safe_read_cur_module(iter);
+
+    iter->module_import.modname = NULL;
+    iter->module_import.module_import_cursor = NULL;
+    return (dr_module_import_iterator_t *) iter;
 }
 
 bool
-dr_module_import_iterator_next(dr_module_import_iterator_t *pub_iter)
+dr_module_import_iterator_hasnext(dr_module_import_iterator_t *dr_iter)
 {
+    pe_module_import_iterator_t *iter = (pe_module_import_iterator_t *) dr_iter;
+    return (iter != NULL && iter->hasnext);
+}
+
+dr_module_import_t *
+dr_module_import_iterator_next(dr_module_import_iterator_t *dr_iter)
+{
+    pe_module_import_iterator_t *iter = (pe_module_import_iterator_t *) dr_iter;
     dcontext_t *dcontext = get_thread_private_dcontext();
-    pe_mod_import_iterator_t *iter = (pe_mod_import_iterator_t *) pub_iter;
-    bool partial = false;
-    DWORD original_thunk_rva;
 
-    if (iter == NULL)  /* Be defensive if _start failed. */
-        return false;
+    CLIENT_ASSERT(iter != NULL, "invalid parameter");
+    CLIENT_ASSERT(iter->hasnext, "dr_module_import_iterator_next: !hasnext");
+    iter->module_import.modname =
+        (const char *) RVA_TO_VA(iter->mod_base, iter->safe_module.Name);
+    iter->module_import.module_import_cursor =
+        (dr_module_import_cursor_t) iter->cur_module;
+    LOG(THREAD, LOG_LOADER, 3, "%s: yielding module "PFX", %s\n", __FUNCTION__,
+        iter->cur_module, iter->module_import.modname);
 
-    /* The last imported module is zeroed. */
-    if (!SAFE_READ_VAL(original_thunk_rva, &iter->next_module->OriginalFirstThunk))
-        return false;
-    if (original_thunk_rva == 0)
-        return false;
+    iter->cur_module++;
+    iter->hasnext = safe_read_cur_module(iter);
 
-    /* Copy the module name into our private storage. */
-    TRY_EXCEPT(dcontext, {
-        strncpy(iter->modname_storage,
-                (const char *) (iter->mod_base + iter->next_module->Name),
-                sizeof(iter->modname_storage));
-        NULL_TERMINATE_BUFFER(iter->modname_storage);
-    }, {
-        partial = true;
-    });
-    if (partial)
-        return false;
-
-    iter->pub.modname = iter->modname_storage;
-    iter->pub.imported_module = (dr_imported_module_t) iter->next_module;
-    LOG(THREAD, LOG_LOADER, 3,
-        "%s: yielding module %s\n", __FUNCTION__, iter->pub.modname);
-    iter->next_module++;
-    return true;
+    return &iter->module_import;
 }
 
 void
 dr_module_import_iterator_stop(dr_module_import_iterator_t *dr_iter)
 {
-    pe_mod_import_iterator_t *iter = (pe_mod_import_iterator_t *) dr_iter;
+    pe_module_import_iterator_t *iter = (pe_module_import_iterator_t *) dr_iter;
     if (iter == NULL)
         return;
     global_heap_free(iter, sizeof(*iter) HEAPACCT(ACCT_CLIENT));
 }
 
+#if 0
+
 dr_symbol_import_iterator_t *
 dr_symbol_import_iterator_start(module_handle_t handle,
                                 dr_imported_module_t from_module)
 {
-    pe_sym_import_iterator_t *iter;
+    pe_symbol_import_iterator_t *iter;
 
     iter = global_heap_alloc(sizeof(*iter) HEAPACCT(ACCT_CLIENT));
     if (iter == NULL)
@@ -6402,10 +6387,17 @@ dr_symbol_import_iterator_start(module_handle_t handle,
 }
 
 bool
+dr_symbol_import_iterator_hasnext(dr_symbol_import_iterator_t *dr_iter)
+{
+    pe_symbol_import_iterator_t *iter = (pe_symbol_import_iterator_t *) dr_iter;
+    return (iter != NULL && iter->hasnext);
+}
+
+bool
 dr_symbol_import_iterator_next(dr_symbol_import_iterator_t *dr_iter)
 {
+    pe_symbol_import_iterator_t *iter = (pe_symbol_import_iterator_t *) dr_iter;
     dcontext_t *dcontext = get_thread_private_dcontext();
-    pe_sym_import_iterator_t *iter = (pe_sym_import_iterator_t *) dr_iter;
     bool partial = false;
     DWORD original_thunk_rva = 0;
     DWORD symbol_rva = 0;
@@ -6488,12 +6480,42 @@ dr_symbol_import_iterator_next(dr_symbol_import_iterator_t *dr_iter)
 void
 dr_symbol_import_iterator_stop(dr_symbol_import_iterator_t *dr_iter)
 {
-    pe_sym_import_iterator_t *iter = (pe_sym_import_iterator_t *) dr_iter;
+    pe_symbol_import_iterator_t *iter = (pe_symbol_import_iterator_t *) dr_iter;
     if (iter == NULL)
         return;
     if (iter->mod_iter != NULL)
         dr_module_import_iterator_stop(iter->mod_iter);
     global_heap_free(iter, sizeof(*iter) HEAPACCT(ACCT_CLIENT));
 }
+
+#else
+
+/* NOCHECKIN STUB */
+
+dr_symbol_import_iterator_t *
+dr_symbol_import_iterator_start(module_handle_t handle,
+                                dr_module_import_cursor_t from_module)
+{
+    return NULL;
+}
+
+bool
+dr_symbol_import_iterator_hasnext(dr_symbol_import_iterator_t *iter)
+{
+    return false;
+}
+
+dr_symbol_import_t *
+dr_symbol_import_iterator_next(dr_symbol_import_iterator_t *iter)
+{
+    return NULL;
+}
+
+void
+dr_symbol_import_iterator_stop(dr_symbol_import_iterator_t *iter)
+{
+}
+
+#endif /* 0 */
 
 #endif /* CLIENT_INTERFACE */

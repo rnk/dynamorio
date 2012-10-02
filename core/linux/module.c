@@ -48,20 +48,20 @@ typedef union _elf_generic_header_t {
 
 #ifdef CLIENT_INTERFACE
 typedef struct _elf_import_iterator_t {
-    dr_symbol_import_t symbol_import;  /* symbol import returned by next() */
+    dr_symbol_import_t symbol_import;   /* symbol import returned by next() */
 
     /* This data is copied from os_module_data_t so we don't have to hold the
      * module area lock while the client iterates.
      */
-    ELF_SYM_TYPE *dynsym;              /* absolute addr of .dynsym */
-    size_t symentry_size;              /* size of a .dynsym entry */
-    const char *dynstr;                /* absolute addr of .dynstr */
-    size_t dynstr_size;                /* size of .dynstr */
+    ELF_SYM_TYPE *dynsym;               /* absolute addr of .dynsym */
+    size_t symentry_size;               /* size of a .dynsym entry */
+    const char *dynstr;                 /* absolute addr of .dynstr */
+    size_t dynstr_size;                 /* size of .dynstr */
 
-    ELF_SYM_TYPE *cur_sym;             /* pointer to next import in .dynsym */
-    ELF_SYM_TYPE safe_cur_sym;         /* safe_read() copy of cur_sym */
-    ELF_SYM_TYPE *import_end;          /* end of imports in .dynsym */
-    bool error_encountered;            /* error during iteration */
+    ELF_SYM_TYPE *cur_sym;              /* pointer to next import in .dynsym */
+    ELF_SYM_TYPE safe_cur_sym;          /* safe_read() copy of cur_sym */
+    ELF_SYM_TYPE *import_end;           /* end of imports in .dynsym */
+    bool error_occurred;                /* error during iteration */
 } elf_import_iterator_t;
 #endif /* CLIENT_INTERFACE */
 
@@ -1568,14 +1568,14 @@ dynsym_next_import(elf_import_iterator_t *iter)
             return;
         if (!SAFE_READ_VAL(iter->safe_cur_sym, iter->cur_sym)) {
             memset(&iter->safe_cur_sym, 0, sizeof(iter->safe_cur_sym));
-            iter->error_encountered = true;
+            iter->error_occurred = true;
             return;
         }
     } while (iter->safe_cur_sym.st_value != 0);
 
     if (iter->safe_cur_sym.st_name >= iter->dynstr_size) {
         ASSERT_CURIOSITY(false && "st_name out of .dynstr bounds");
-        iter->error_encountered = true;
+        iter->error_occurred = true;
         return;
     }
 }
@@ -1651,7 +1651,7 @@ bool
 dr_symbol_import_iterator_hasnext(dr_symbol_import_iterator_t *dr_iter)
 {
     elf_import_iterator_t *iter = (elf_import_iterator_t *) dr_iter;
-    return (iter != NULL && !iter->error_encountered &&
+    return (iter != NULL && !iter->error_occurred &&
             iter->cur_sym < iter->import_end);
 }
 
@@ -1664,6 +1664,7 @@ dr_symbol_import_iterator_next(dr_symbol_import_iterator_t *dr_iter)
     iter->symbol_import.name = iter->dynstr + iter->safe_cur_sym.st_name;
     iter->symbol_import.modname = NULL;  /* no module for ELFs */
     iter->symbol_import.delay_load = false;
+
     dynsym_next_import(iter);
     return &iter->symbol_import;
 }

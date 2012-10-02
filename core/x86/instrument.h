@@ -2457,37 +2457,50 @@ dr_module_preferred_name(const module_data_t *data);
 
 /* DR_API EXPORT BEGIN */
 /**
- * Opaque type representing a set of imports from one module into another.
- * Available in a \p dr_module_import_iterator_t.
- */
-struct _dr_imported_module_t;
-typedef struct _dr_imported_module_t *dr_imported_module_t;
-
-/**
- * Iterates over the list of modules that the given module imports from.
- * Created by calling dr_module_import_iterator_start() and must be freed by
- * calling dr_module_import_iterator_stop().
+ * Iterator over the list of modules that a given module imports from.  Created
+ * by calling dr_module_import_iterator_start() and must be freed by calling
+ * dr_module_import_iterator_stop().
  *
  * \note Does not yet include delay-loaded imports.
  *
  * \note Windows only.  ELF does not import directly from other modules.
  */
-typedef struct _dr_module_import_iterator_t {
-    /** Short name of the imported module. */
+struct _dr_module_import_iterator_t;
+typedef struct _dr_module_import_iterator_t dr_module_import_iterator_t;
+
+/**
+ * Opaque cursor used to iterate the symbols imported from a specific module.
+ */
+struct _dr_module_import_cursor_t;
+typedef struct _dr_module_import_cursor_t *dr_module_import_cursor_t;
+
+/**
+ * Module import data returned from dr_module_import_iterator_next().
+ *
+ * String fields point into the importing module image.  Robust clients should
+ * use DR_TRY_EXCEPT while inspecting the strings in case the module is
+ * partially mapped or the app racily unmaps it.
+ *
+ * \note Windows only.  ELF does not import directly from other modules.
+ */
+typedef struct _dr_module_import_t {
+    /**
+     * Short name of the imported module or API set.
+     */
     const char *modname;
 
     /**
      * Opaque handle that can be passed to dr_symbol_import_iterator_start().
      * Valid until the original module is unmapped.
      */
-    dr_imported_module_t imported_module;
-} dr_module_import_iterator_t;
+    dr_module_import_cursor_t module_import_cursor;
+} dr_module_import_t;
 /* DR_API EXPORT STOP */
 
 DR_API
 /**
- * Module import iterator.  The iterator returned is invalid until after the
- * first call to dr_module_import_iterator_next().
+ * Module import iterator.  Iterates over the list of modules that a given
+ * module imports from.
  *
  * \note Windows only.  ELF does not import directly from other modules.
  */
@@ -2504,6 +2517,18 @@ DR_API
  * \note Windows only.  ELF does not import directly from other modules.
  */
 bool
+dr_module_import_iterator_hasnext(dr_module_import_iterator_t *iter);
+
+DR_API
+/**
+ * Module import iterator.  If there is another module import, updates \p iter
+ * with its data and returns true.  Returns false otherwise.  Iterator state is
+ * only valid until the next call to dr_module_import_iterator_next() or
+ * dr_module_import_iterator_stop().
+ *
+ * \note Windows only.  ELF does not import directly from other modules.
+ */
+dr_module_import_t *
 dr_module_import_iterator_next(dr_module_import_iterator_t *iter);
 
 DR_API
@@ -2552,11 +2577,11 @@ DR_API
  */
 dr_symbol_import_iterator_t *
 dr_symbol_import_iterator_start(module_handle_t handle,
-                                dr_imported_module_t from_module);
+                                dr_module_import_cursor_t from_module);
 
 DR_API
 /**
- * Returns true if there is another imported symbol.
+ * Returns true if there is another imported symbol in the iterator.
  */
 bool
 dr_symbol_import_iterator_hasnext(dr_symbol_import_iterator_t *iter);
