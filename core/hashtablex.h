@@ -161,6 +161,11 @@
 # define IFLOOKUP_ELSE(x,y) (y)
 #endif
 
+#ifdef DEBUG
+/* on by default but higher than general asserts */
+# define CHKLVL_HASHTABLE CHKLVL_DEFAULT
+#endif
+
 /****************************************************************************/
 #ifdef HASHTABLEX_HEADER
 
@@ -879,7 +884,8 @@ HTNAME(hashtable_,NAME_KEY,_add)(dcontext_t *dcontext, ENTRY_TYPE e,
      * shared fragments
      */
 #ifdef DEBUG
-    if (!TEST(HASHTABLE_RELAX_CLUSTER_CHECKS, table->table_flags) &&
+    if (DEBUG_CHECKS(CHKLVL_HASHTABLE) &&
+        !TEST(HASHTABLE_RELAX_CLUSTER_CHECKS, table->table_flags) &&
         (table->hash_func != HASH_FUNCTION_NONE || SHARED_FRAGMENTS_ENABLED())) {
         uint max_cluster_len =
             HASHTABLE_SIZE((1+table->hash_bits)/2 + 1 /* double */) + 64;
@@ -1830,7 +1836,8 @@ HTNAME(hashtable_,NAME_KEY,_study)(dcontext_t *dcontext,
             HTNAME(hashtable_,NAME_KEY,_dump_table)(dcontext, table);
         }
     });
-    ASSERT_CURIOSITY((total_len <= ave_len_threshold * num
+    ASSERT_CURIOSITY(!DEBUG_CHECKS(CHKLVL_HASHTABLE) ||
+                     (total_len <= ave_len_threshold * num
                       || (TEST(HASHTABLE_RELAX_CLUSTER_CHECKS, table->table_flags) &&
                           table->capacity <= 513))
                      && "hash table high average collision length");
