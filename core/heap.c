@@ -3243,13 +3243,11 @@ common_heap_alloc(thread_units_t *tu, size_t size HEAPACCT(which_heap_t which))
                     tu->free_list[bucket] = next;
                 else
                     *((heap_pc *)prev) = next;
-#ifdef DEBUG_MEMORY
                 LOG(THREAD, LOG_HEAP, 2,
                     "Variable-size block: allocating "PFX" (%d bytes [%d aligned] in "
                     "%d block)\n", p, size, aligned_size, sz);
                 /* ensure memory we got from the free list is in a heap unit */
                 ASSERT_RANGE_IN_HEAP_UNIT(tu, p, sz);
-#endif
                 ASSERT(ALIGNED(sz, HEAP_ALIGNMENT));
                 alloc_size = sz + HEADER_SIZE;
                 ACCOUNT_FOR_ALLOC(alloc_reuse, tu, which, alloc_size, aligned_size);
@@ -3262,10 +3260,8 @@ common_heap_alloc(thread_units_t *tu, size_t size HEAPACCT(which_heap_t which))
             p = tu->free_list[bucket];
             tu->free_list[bucket] = *((heap_pc *)p);
             ASSERT(ALIGNED(tu->free_list[bucket], HEAP_ALIGNMENT));
-#ifdef DEBUG_MEMORY
             /* ensure memory we got from the free list is in a heap unit */
             ASSERT_RANGE_IN_HEAP_UNIT(tu, p, alloc_size);
-#endif
             ACCOUNT_FOR_ALLOC(alloc_reuse, tu, which, alloc_size, aligned_size);
         }
     }
@@ -3510,10 +3506,8 @@ common_heap_free(thread_units_t *tu, void *p_void, size_t size HEAPACCT(which_he
         /* we must have used a special unit just for this allocation */
         heap_unit_t *u = tu->top_unit, *prev = NULL;
 
-#ifdef DEBUG_MEMORY
         /* ensure we are freeing memory in a proper unit */
         ASSERT_RANGE_IN_HEAP_UNIT(tu, p, size);
-#endif
 
         if (!safe_to_allocate_or_free_heap_units()) {
             /* circular dependence solution: we need to hold DR lock before

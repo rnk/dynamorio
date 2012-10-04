@@ -2951,10 +2951,9 @@ add_to_free_list(dcontext_t *dcontext, fcache_t *cache, fcache_unit_t *unit,
         if (f != NULL)
             cache->free_size_histogram[get_histogram_bucket(size)]++; 
     });
-    DOCHECK(CHKLVL_DEFAULT, {
-        /* XXX: In a debug build this check makes fragment_exit() O(n^2). */
-        ASSERT(dynamo_resetting || fcache_pc_in_live_unit(cache, start_pc));
-    });
+    /* XXX: In a debug build this check makes fragment_exit() O(n^2). */
+    ASSERT_MESSAGE(CHKLVL_DEFAULT, "attempting to free unit not in cache",
+                   dynamo_resetting || fcache_pc_in_live_unit(cache, start_pc));
 
     if (size > MAX_FREE_ENTRY_SIZE) {
         /* FIXME PR 203913: fifo_prepend_empty can handle larger sizes, but
@@ -3165,9 +3164,8 @@ find_free_list_slot(dcontext_t *dcontext, fcache_t *cache, fragment_t *f, uint s
      * unit ptr/tag in the free header.*/
     unit = fcache_lookup_unit(start_pc);
     ASSERT(unit != NULL);
-    DOCHECK(CHKLVL_DEFAULT, {
-        ASSERT(fcache_pc_in_live_unit(cache, start_pc));
-    });
+    ASSERT_MESSAGE(CHKLVL_DEFAULT, "free list header not in cache",
+                   fcache_pc_in_live_unit(cache, start_pc));
 
     /* FIXME: if bucket sizes are spread apart further than
      * MIN_EMPTY_HOLE() this will also kick in.  Currently an
