@@ -1720,7 +1720,6 @@ endif (UNIX)
 
 tobuild(security-common.codemod security-common/codemod.c)
 tochcon(security-common.codemod execmem_exec_t)
-tobuild(security-common.sandbox_ind_call security-common/sandbox_ind_call.c)
 mark_execstack(security-common.codemod)
 tobuild(security-common.decode-bad-stack security-common/decode-bad-stack.c)
 tochcon(security-common.decode-bad-stack execmem_exec_t)
@@ -1742,6 +1741,7 @@ if (NOT X64)
 endif (NOT X64)
 tobuild(security-common.selfmod security-common/selfmod.c)
 tochcon(security-common.selfmod textrel_shlib_t)
+tobuild(security-common.selfmod_cross_page security-common/selfmod_cross_page.c)
 
 tobuild("security-common.TestAllocWE" security-common/TestAllocWE.c)
 

@@ -2781,17 +2781,7 @@ find_heap_unit(thread_units_t *tu, heap_pc p, size_t size)
          unit = unit->next_local);
     return unit;
 }
-
-/* Check if [p, p+size) is in the heap units of tu.  Always returns true for
- * -checklevel < CHKLVL_DEFAULT to work around the linear runtime of
- * find_heap_unit().
- */
-static bool
-range_in_heap_unit(thread_units_t *tu, heap_pc p, size_t size)
-{
-    return (!DEBUG_CHECKS(CHKLVL_DEFAULT) || find_heap_unit(tu, p, size) != NULL);
-}
-#endif /* DEBUG_MEMORY */
+#endif
 
 static void
 threadunits_init(dcontext_t *dcontext, thread_units_t *tu, size_t size)
