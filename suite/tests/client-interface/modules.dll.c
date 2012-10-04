@@ -223,7 +223,7 @@ exit_event(void)
 #ifdef WINDOWS
     dr_os_version_info_t info;
     info.size = sizeof(info);
-    if (dr_get_os_version(&info) && info->version >= DR_WINDOWS_VERSION_7 &&
+    if (dr_get_os_version(&info) && info.version >= DR_WINDOWS_VERSION_7 &&
         !found_ordinal_import) {
         dr_fprintf(STDERR, "ERROR: Failed to find ordinal imports on Win7+\n");
     }
