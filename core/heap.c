@@ -60,14 +60,6 @@
 #ifdef DEBUG_MEMORY
 /* on by default but higher than general asserts */
 # define CHKLVL_MEMFILL CHKLVL_DEFAULT
-/* This check is O(n) in the number of units, so on by default but higher than
- * CHKLVL_ASSERTS.
- */
-# define ASSERT_RANGE_IN_HEAP_UNIT(units, start, size) \
-    ASSERT_MESSAGE(CHKLVL_DEFAULT, "range not within heap unit", \
-                   find_heap_unit(tu, start, size) != NULL)
-#else
-# define ASSERT_RANGE_IN_HEAP_UNIT(units, start, size)
 #endif
 
 extern bool vm_areas_exited;
@@ -2789,7 +2781,7 @@ find_heap_unit(thread_units_t *tu, heap_pc p, size_t size)
          unit = unit->next_local);
     return unit;
 }
-#endif /* DEBUG_MEMORY */
+#endif
 
 static void
 threadunits_init(dcontext_t *dcontext, thread_units_t *tu, size_t size)
@@ -3243,11 +3235,15 @@ common_heap_alloc(thread_units_t *tu, size_t size HEAPACCT(which_heap_t which))
                     tu->free_list[bucket] = next;
                 else
                     *((heap_pc *)prev) = next;
+#ifdef DEBUG_MEMORY
                 LOG(THREAD, LOG_HEAP, 2,
                     "Variable-size block: allocating "PFX" (%d bytes [%d aligned] in "
                     "%d block)\n", p, size, aligned_size, sz);
                 /* ensure memory we got from the free list is in a heap unit */
-                ASSERT_RANGE_IN_HEAP_UNIT(tu, p, sz);
+                DOCHECK(CHKLVL_DEFAULT, {  /* expensive check */
+                   ASSERT(find_heap_unit(tu, start, size) != NULL);
+                });
+#endif
                 ASSERT(ALIGNED(sz, HEAP_ALIGNMENT));
                 alloc_size = sz + HEADER_SIZE;
                 ACCOUNT_FOR_ALLOC(alloc_reuse, tu, which, alloc_size, aligned_size);
@@ -3260,8 +3256,12 @@ common_heap_alloc(thread_units_t *tu, size_t size HEAPACCT(which_heap_t which))
             p = tu->free_list[bucket];
             tu->free_list[bucket] = *((heap_pc *)p);
             ASSERT(ALIGNED(tu->free_list[bucket], HEAP_ALIGNMENT));
+#ifdef DEBUG_MEMORY
             /* ensure memory we got from the free list is in a heap unit */
-            ASSERT_RANGE_IN_HEAP_UNIT(tu, p, alloc_size);
+            DOCHECK(CHKLVL_DEFAULT, {  /* expensive check */
+                ASSERT(find_heap_unit(tu, p, alloc_size) != NULL);
+            });
+#endif
             ACCOUNT_FOR_ALLOC(alloc_reuse, tu, which, alloc_size, aligned_size);
         }
     }
@@ -3506,8 +3506,12 @@ common_heap_free(thread_units_t *tu, void *p_void, size_t size HEAPACCT(which_he
         /* we must have used a special unit just for this allocation */
         heap_unit_t *u = tu->top_unit, *prev = NULL;
 
+#ifdef DEBUG_MEMORY
         /* ensure we are freeing memory in a proper unit */
-        ASSERT_RANGE_IN_HEAP_UNIT(tu, p, size);
+        DOCHECK(CHKLVL_DEFAULT, {  /* expensive check */
+            ASSERT(find_heap_unit(tu, p, size) != NULL);
+        });
+#endif
 
         if (!safe_to_allocate_or_free_heap_units()) {
             /* circular dependence solution: we need to hold DR lock before
@@ -3557,7 +3561,9 @@ common_heap_free(thread_units_t *tu, void *p_void, size_t size HEAPACCT(which_he
                        is_region_memset_to_char(p+size, (alloc_size-HEADER_SIZE)-size,
                                                 HEAP_PAD_BYTE));
         /* ensure we are freeing memory in a proper unit */
-        ASSERT_RANGE_IN_HEAP_UNIT(tu, p, alloc_size - HEADER_SIZE);
+        DOCHECK(CHKLVL_DEFAULT, {  /* expensive check */
+            ASSERT(find_heap_unit(tu, p, alloc_size - HEADER_SIZE) != NULL);
+        });
         /* set used and padding memory back to unallocated */
         DOCHECK(CHKLVL_MEMFILL, memset(p, HEAP_UNALLOCATED_BYTE, alloc_size-HEADER_SIZE););
 # endif
@@ -3570,7 +3576,9 @@ common_heap_free(thread_units_t *tu, void *p_void, size_t size HEAPACCT(which_he
         ASSERT_MESSAGE(chklvl, "heap overflow",
                        is_region_memset_to_char(p+size, alloc_size-size, HEAP_PAD_BYTE));
         /* ensure we are freeing memory in a proper unit */
-        ASSERT_RANGE_IN_HEAP_UNIT(tu, p, alloc_size);
+        DOCHECK(CHKLVL_DEFAULT, {  /* expensive check */
+            ASSERT(find_heap_unit(tu, p, alloc_size) != NULL);
+        });
         /* set used and padding memory back to unallocated */
         DOCHECK(CHKLVL_MEMFILL, memset(p, HEAP_UNALLOCATED_BYTE, alloc_size););
 # endif
