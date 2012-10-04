@@ -57,12 +57,10 @@ START_FILE
  *   Windows by skipping DECLARE_FUNC/END_FUNC and putting the labels in
  *   manually.
  */
-GLOBAL_LABEL(bar)
 ADDRTAKEN_LABEL(bar:)
         mov    REG_XAX, ARG1
         shl    REG_XAX, 1
         ret
-GLOBAL_LABEL(bar_end)
 ADDRTAKEN_LABEL(bar_end:)
 
 /* int foo(int value)
