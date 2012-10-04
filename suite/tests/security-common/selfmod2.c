@@ -53,25 +53,24 @@ main(void)
 START_FILE
 
 /* int bar(int value)
- *   Returns value.  We used to hardcode bytes to implement this to avoid issues
- *   with SYMREF(bar) resolving to the PLT, but today this works just fine.
+ *   Returns value.  We avoid issues with bar resolving to a jump table on
+ *   Windows by skipping DECLARE_FUNC/END_FUNC and putting the labels in
+ *   manually.
  */
-#define FUNCNAME bar
-        DECLARE_FUNC_SEH(FUNCNAME)
-GLOBAL_LABEL(FUNCNAME:)
+GLOBAL_LABEL(bar)
+ADDRTAKEN_LABEL(bar:)
         mov    REG_XAX, ARG1
         shl    REG_XAX, 1
         ret
-        END_FUNC(FUNCNAME)
-GLOBAL_LABEL(bar_end:)
+GLOBAL_LABEL(bar_end)
+ADDRTAKEN_LABEL(bar_end:)
 
 /* int foo(int value)
  *   copies bar over the front of itself, so future invocations will
  *   run bar's code
  */
-#undef FUNCNAME
 #define FUNCNAME foo
-        DECLARE_FUNC_SEH(FUNCNAME)
+        DECLARE_FUNC(FUNCNAME)
 GLOBAL_LABEL(FUNCNAME:)
         mov  REG_XAX, ARG1
         /* save callee-saved regs */
