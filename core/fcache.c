@@ -3165,7 +3165,7 @@ find_free_list_slot(dcontext_t *dcontext, fcache_t *cache, fragment_t *f, uint s
     unit = fcache_lookup_unit(start_pc);
     ASSERT(unit != NULL);
     DOCHECK(CHKLVL_DEFAULT, {  /* expensive */
-        ASSERT_MESSAGE(fcache_pc_in_live_unit(cache, start_pc));
+        ASSERT(fcache_pc_in_live_unit(cache, start_pc));
     });
 
     /* FIXME: if bucket sizes are spread apart further than

@@ -3241,7 +3241,7 @@ common_heap_alloc(thread_units_t *tu, size_t size HEAPACCT(which_heap_t which))
                     "%d block)\n", p, size, aligned_size, sz);
                 /* ensure memory we got from the free list is in a heap unit */
                 DOCHECK(CHKLVL_DEFAULT, {  /* expensive check */
-                   ASSERT(find_heap_unit(tu, start, size) != NULL);
+                   ASSERT(find_heap_unit(tu, p, sz) != NULL);
                 });
 #endif
                 ASSERT(ALIGNED(sz, HEAP_ALIGNMENT));
