@@ -38,7 +38,7 @@ typedef unsigned char byte;
 
 static byte global_buf[8];
 
-void sandbox_ind_call(int i, byte buf[8]);
+void sandbox_cross_page(int i, byte buf[8]);
 
 void
 print_int(int a)
@@ -58,14 +58,14 @@ main(void)
 
     INIT();
 
-    /* Make sandbox_ind_call code writable */
-    protect_mem(sandbox_ind_call, 1024, ALLOW_READ|ALLOW_WRITE|ALLOW_EXEC);
+    /* Make sandbox_cross_page code writable */
+    protect_mem(sandbox_cross_page, 1024, ALLOW_READ|ALLOW_WRITE|ALLOW_EXEC);
 
     /* Trigger sandboxing by repeatedly modifying and executing this code.  The
      * default sandbox2ro_threshold is 10.
      */
     for (i = 0; i < 50; i++) {
-        sandbox_ind_call(i, global_buf);
+        sandbox_cross_page(i, global_buf);
     }
 
     return 0;
@@ -79,12 +79,23 @@ START_FILE
 
 DECL_EXTERN(print_int)
 
-
     /* The following code needs to cross a page boundary. */
-.align 4096
-.fill 4080, 1, 0x90  /* nop fill */
+#if defined(ASSEMBLE_WITH_GAS)
+.align 4096           /* nop fill */
+.fill 4080, 1, 0x90   /* nop fill */
+#elif defined(ASSEMBLE_WITH_MASM)
+/* MASM thinks the .text segment is not 4096 byte aligned.  If we use plain
+ * ALIGN, we get A2189.  Declaring our own segment seems to work.
+ */
+_MYTEXT SEGMENT ALIGN(4096) ALIAS(".mytext")
+REPEAT 4080
+    nop
+    ENDM
+#else
+# error NASM NYI
+#endif
 
-#define FUNCNAME sandbox_ind_call
+#define FUNCNAME sandbox_cross_page
         DECLARE_FUNC(FUNCNAME)
 GLOBAL_LABEL(FUNCNAME:)
         mov    REG_XAX, ARG1
@@ -94,7 +105,13 @@ GLOBAL_LABEL(FUNCNAME:)
         push   REG_XDI  /* for 16-alignment on x64 */
         xchg   REG_XDI, REG_XDI  /* NOCHECKIN */
 
-        .align 4096, 0x90  /* nop fill */
+#if defined(ASSEMBLE_WITH_GAS)
+        .align 4096
+#elif defined(ASSEMBLE_WITH_MASM)
+        ALIGN 4096
+#else
+# error NASM NYI
+#endif
 
         /* Do enough writes to cause the sandboxing code to split the block. */
         mov    [REG_XCX + 0], al
@@ -122,6 +139,10 @@ ADDRTAKEN_LABEL(immediate_addr_plus_four:)
         pop    REG_XBP
         ret
         END_FUNC(FUNCNAME)
+
+#ifdef ASSEMBLE_WITH_MASM
+_MYTEXT ENDS
+#endif
 
 END_FILE
 
