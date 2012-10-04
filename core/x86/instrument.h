@@ -2463,7 +2463,7 @@ dr_module_preferred_name(const module_data_t *data);
  *
  * \note On Windows, delay-loaded DLLs are not included yet.
  *
- * \note Windows only.  ELF does not import directly from other modules.
+ * \note ELF does not import directly from other modules.
  */
 struct _dr_module_import_iterator_t;
 typedef struct _dr_module_import_iterator_t dr_module_import_iterator_t;
@@ -2482,11 +2482,11 @@ typedef struct _dr_module_import_desc_t dr_module_import_desc_t;
  * partially mapped or the app racily unmaps it.  The iterator routines
  * themselves handle faults by stopping the iteration.
  *
- * \note Windows only.  ELF does not import directly from other modules.
+ * \note ELF does not import directly from other modules.
  */
 typedef struct _dr_module_import_t {
     /**
-     * Preferred name of the imported module or API set.
+     * Specified name of the imported module or API set.
      */
     const char *modname;
 
@@ -2503,16 +2503,16 @@ DR_API
  * Creates a module import iterator.  Iterates over the list of modules that a
  * given module imports from.
  *
- * \note Windows only.  ELF does not import directly from other modules.
+ * \note ELF does not import directly from other modules.
  */
 dr_module_import_iterator_t *
 dr_module_import_iterator_start(module_handle_t handle);
 
 DR_API
 /**
- * Returns true there is another module import in the iterator.
+ * Returns true if there is another module import in the iterator.
  *
- * \note Windows only.  ELF does not import directly from other modules.
+ * \note ELF does not import directly from other modules.
  */
 bool
 dr_module_import_iterator_hasnext(dr_module_import_iterator_t *iter);
@@ -2523,7 +2523,7 @@ DR_API
  * iterator.  The pointer returned is only valid until the next call to
  * dr_module_import_iterator_next() or dr_module_import_iterator_stop().
  *
- * \note Windows only.  ELF does not import directly from other modules.
+ * \note ELF does not import directly from other modules.
  */
 dr_module_import_t *
 dr_module_import_iterator_next(dr_module_import_iterator_t *iter);
@@ -2532,7 +2532,7 @@ DR_API
 /**
  * Stops import iteration and frees a module import iterator.
  *
- * \note Windows only.  ELF does not import directly from other modules.
+ * \note ELF does not import directly from other modules.
  */
 void
 dr_module_import_iterator_stop(dr_module_import_iterator_t *iter);

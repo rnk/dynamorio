@@ -6340,6 +6340,7 @@ dr_module_import_iterator_next(dr_module_import_iterator_t *dr_iter)
 
     iter->cur_module++;
     iter->hasnext = safe_read_cur_module(iter);
+    /* FIXME i#931: Iterate delay-load imports after normal imports. */
 
     return &iter->module_import;
 }
@@ -6481,6 +6482,7 @@ dr_symbol_import_iterator_next(dr_symbol_import_iterator_t *dr_iter)
     iter->hasnext = pe_symbol_import_iterator_read_thunk(iter);
     if (!iter->hasnext)
         iter->hasnext = pe_symbol_import_iterator_next_module(iter);
+    /* FIXME i#931: Iterate delay-load imports after normal imports. */
 
     return &iter->symbol_import;
 }

@@ -47,6 +47,10 @@
 
 static bool verbose = false;
 
+#ifdef WINDOWS
+static bool found_ordinal_import = false;
+#endif
+
 #define INFO(msg, ...) do { \
     if (verbose) { \
         dr_fprintf(STDERR, msg, ##__VA_ARGS__); \
@@ -119,6 +123,7 @@ void module_load_event(void *dcontext, const module_data_t *data, bool loaded)
                                mod_import->modname, sym_import->name);
                 }
                 if (sym_import->by_ordinal) {
+                    found_ordinal_import = true;
                     INFO("%s imports %s!Ordinal%d\n", dr_module_preferred_name(data),
                          sym_import->modname, sym_import->ordinal);
                 } else {
@@ -212,6 +217,19 @@ module_imports_from_kernel_star(module_handle_t mod)
 }
 #endif /* WINDOWS */
 
+static void
+exit_event(void)
+{
+#ifdef WINDOWS
+    dr_os_version_info_t info;
+    info.size = sizeof(info);
+    if (dr_get_os_version(&info) && info->version >= DR_WINDOWS_VERSION_7 &&
+        !found_ordinal_import) {
+        dr_fprintf(STDERR, "ERROR: Failed to find ordinal imports on Win7+\n");
+    }
+#endif /* WINDOWS */
+}
+
 DR_EXPORT
 void dr_init(client_id_t id)
 {
@@ -249,7 +267,8 @@ void dr_init(client_id_t id)
     }
 
     dr_register_module_load_event(module_load_event);
-    dr_register_module_unload_event(module_unload_event);    
+    dr_register_module_unload_event(module_unload_event);
+    dr_register_exit_event(exit_event);
     test_aux_lib(id);
 }
 

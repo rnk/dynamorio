@@ -1526,8 +1526,8 @@ module_undef_symbols()
 }
 
 #ifdef CLIENT_INTERFACE
-/* We could implement import iteration of PE files in Wine, so we provide these
- * stubs.
+/* XXX: We could implement import iteration of PE files in Wine, so we provide
+ * these stubs.
  */
 dr_module_import_iterator_t *
 dr_module_import_iterator_start(module_handle_t handle)
