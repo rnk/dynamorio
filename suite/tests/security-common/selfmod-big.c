@@ -98,7 +98,7 @@ ADDRTAKEN_LABEL(foo_start:)
         mov  REG_XCX, REG_XBX               /* restore iters after call */
 
         lea  REG_XDX, SYMREF(immed_plus_four)
-        mov  dword ptr [REG_XDX - 0x4], ecx /* the modifying store */
+        mov  dword ptr [REG_XDX - 4], ecx /* the modifying store */
         mov  eax, HEX(12345678) /* this instr's immed gets overwritten */
     immed_plus_four:
 
@@ -1006,11 +1006,11 @@ ADDRTAKEN_LABEL(foo_start:)
         mov  dword ptr [REG_XDX + 897], ecx
         mov  dword ptr [REG_XDX + 898], ecx
         mov  dword ptr [REG_XDX + 899], ecx
-        mov  REG_XCX,0x0 /* counter for diagnostics */
+        mov  REG_XCX, 0 /* counter for diagnostics */
       repeata:
         dec  eax
         inc  ecx
-        cmp  eax,0x0
+        cmp  eax, 0
         jnz  repeata
 
         mov  eax,ecx
