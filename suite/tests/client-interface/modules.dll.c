@@ -33,6 +33,8 @@
 
 #include "dr_api.h"
 
+#include "client_tools.h"
+
 #include <string.h>
 
 #ifdef WINDOWS
@@ -116,8 +118,13 @@ void module_load_event(void *dcontext, const module_data_t *data, bool loaded)
                     dr_fprintf(STDERR, "ERROR: modname mismatch: %s vs %s\n",
                                mod_import->modname, sym_import->name);
                 }
-                INFO("%s imports %s!%s\n", dr_module_preferred_name(data),
-                     sym_import->modname, sym_import->name);
+                if (sym_import->by_ordinal) {
+                    INFO("%s imports %s!Ordinal%d\n", dr_module_preferred_name(data),
+                         sym_import->modname, sym_import->ordinal);
+                } else {
+                    INFO("%s imports %s!%s\n", dr_module_preferred_name(data),
+                         sym_import->modname, sym_import->name);
+                }
             }
             dr_symbol_import_iterator_stop(sym_iter);
         }

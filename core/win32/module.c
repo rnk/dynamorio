@@ -87,15 +87,14 @@ typedef struct _pe_module_import_iterator_t {
 } pe_module_import_iterator_t;
 
 typedef struct _pe_symbol_import_iterator_t {
-    dr_symbol_import_t symbol_import;  /* symbol import returned by next() */
+    dr_symbol_import_t symbol_import;       /* symbol import returned by next() */
+    dr_symbol_import_t next_symbol;         /* next symbol import */
 
     byte *mod_base;
     dr_module_import_iterator_t *mod_iter;  /* only for iterating all modules */
     IMAGE_IMPORT_DESCRIPTOR *cur_module;    /* always valid */
     /* Points into the OriginalFirstThunk array of mod_iter->cur_module. */
     IMAGE_THUNK_DATA *cur_thunk;
-    const char *cur_name;                   /* read from cur_thunk */
-    const char *cur_modname;                /* always valid */
     bool hasnext;                           /* set to false on error or end */
 } pe_symbol_import_iterator_t;
 #endif /* CLIENT_INTERFACE */
@@ -6354,8 +6353,8 @@ dr_module_import_iterator_stop(dr_module_import_iterator_t *dr_iter)
     global_heap_free(iter, sizeof(*iter) HEAPACCT(ACCT_CLIENT));
 }
 
-/* Reads iter->cur_thunk and sets iter->cur_name.  Returns false if there are no
- * more imports.
+/* Reads iter->cur_thunk and sets iter->next_symbol.  Returns false if there are
+ * no more imports.
  */
 static bool
 pe_symbol_import_iterator_read_thunk(pe_symbol_import_iterator_t *iter)
@@ -6365,17 +6364,19 @@ pe_symbol_import_iterator_read_thunk(pe_symbol_import_iterator_t *iter)
         return false;
     if (safe_thunk.u1.Function == 0)
         return false;
-    iter->by_ordinal =
+    iter->next_symbol.delay_load = false;
+    iter->next_symbol.by_ordinal =
         CAST_TO_bool(TEST(IMAGE_ORDINAL_FLAG, safe_thunk.u1.Function));
-    if (iter->by_ordinal) {
-        iter->ordinal = safe_thunk.u1.AddressOfData & (~IMAGE_ORDINAL_FLAG)
-        iter->cur_name = NULL;
+    if (iter->next_symbol.by_ordinal) {
+        iter->next_symbol.ordinal =
+            safe_thunk.u1.AddressOfData & (~IMAGE_ORDINAL_FLAG);
+        iter->next_symbol.name = NULL;
     } else {
         IMAGE_IMPORT_BY_NAME *by_name = (IMAGE_IMPORT_BY_NAME *)
             RVA_TO_VA(iter->mod_base, safe_thunk.u1.AddressOfData);
         /* Name is an array, so no safe_read. */
-        iter->cur_name = (const char *) by_name->Name;
-        iter->ordinal = 0;
+        iter->next_symbol.name = (const char *) by_name->Name;
+        iter->next_symbol.ordinal = 0;
     }
     return true;
 }
@@ -6413,7 +6414,7 @@ pe_symbol_import_iterator_next_module(pe_symbol_import_iterator_t *iter)
         mod_import = dr_module_import_iterator_next(iter->mod_iter);
         iter->cur_module = (IMAGE_IMPORT_DESCRIPTOR *)
             mod_import->module_import_desc;
-        iter->cur_modname = mod_import->modname;
+        iter->next_symbol.modname = mod_import->modname;
         if (!pe_symbol_import_iterator_first_thunk(iter))
             return false;
         return true;
@@ -6430,7 +6431,6 @@ dr_symbol_import_iterator_start(module_handle_t handle,
     memset(iter, 0, sizeof(*iter));
     iter->mod_base = (byte *) handle;
     iter->cur_thunk = NULL;
-    iter->cur_name = NULL;
 
     if (from_module == NULL) {
         iter->mod_iter = dr_module_import_iterator_start(handle);
@@ -6443,7 +6443,8 @@ dr_symbol_import_iterator_start(module_handle_t handle,
         iter->cur_module = (IMAGE_IMPORT_DESCRIPTOR *) from_module;
         if (!SAFE_READ_VAL(modname_rva, &iter->cur_module->Name))
             goto error;
-        iter->cur_modname = (const char *) RVA_TO_VA(iter->mod_base, modname_rva);
+        iter->next_symbol.modname =
+            (const char *) RVA_TO_VA(iter->mod_base, modname_rva);
         iter->hasnext = pe_symbol_import_iterator_first_thunk(iter);
     }
 
@@ -6472,10 +6473,9 @@ dr_symbol_import_iterator_next(dr_symbol_import_iterator_t *dr_iter)
 
     CLIENT_ASSERT(iter != NULL, "invalid parameter");
     CLIENT_ASSERT(iter->hasnext, "dr_symbol_import_iterator_next: !hasnext");
-    iter->symbol_import.name = iter->cur_name;
-    iter->symbol_import.modname = iter->cur_modname;
-    /* FIXME: Include delay load imports. */
-    iter->symbol_import.delay_load = false;
+    /* Copy the data to return before we advance next_symbol. */
+    memcpy(&iter->symbol_import, &iter->next_symbol,
+           sizeof(iter->symbol_import));
 
     iter->cur_thunk++;
     iter->hasnext = pe_symbol_import_iterator_read_thunk(iter);
