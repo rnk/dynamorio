@@ -393,13 +393,16 @@ must_not_be_elided(app_pc pc)
      * interpret the return path from trampolines.  The forward jump leads to
      * the trampoline and shouldn't be elided. */
     if (vmvector_overlap(landing_pad_areas, pc, pc + 1)) {
-        /* Ok, is it the return jump, which is always 32-bit rel and the target
-         * is not in the interception buffer?  If so, elide. */
-        if (*pc == JMP_REL32_OPCODE &&
-            !is_in_interception_buffer(PC_RELATIVE_TARGET(pc + 1))) {
-            return false;
-        } else {
+        /* Look for the forward jump.  For x64, any ind jmp will do, as reverse
+         * jmp is direct.
+         */
+        if (IF_X64_ELSE(*pc == JMP_ABS_IND64_OPCODE &&
+                        *(pc + 1) == JMP_ABS_MEM_IND64_MODRM,
+                        *pc == JMP_REL32_OPCODE &&
+                        is_in_interception_buffer(PC_RELATIVE_TARGET(pc + 1)))) {
             return true;
+        } else {
+            return false;
         }
     }
 #endif
@@ -863,18 +866,19 @@ bb_process_ubr(dcontext_t *dcontext, build_bb_t *bb)
     BBPRINT(bb, 4, "interp: direct jump at "PFX"\n", bb->instr_start);
     if (must_not_be_elided(tgt)) {
 #ifdef WINDOWS
-        if (is_syscall_trampoline(tgt)) {
+        byte *wrapper_start;
+        if (is_syscall_trampoline(tgt, &wrapper_start)) {
             /* HACK to avoid entering the syscall trampoline that is meant
              * only for native syscalls -- we replace the jmp with the
              * original app mov immed that it replaced
              */
             BBPRINT(bb, 3,
                     "interp: replacing syscall trampoline @"PFX" w/ orig mov @"PFX"\n",
-                    bb->instr_start, tgt);
+                    bb->instr_start, wrapper_start);
             instr_reset(dcontext, bb->instr);
 
             /* leave bb->cur_pc unchanged */
-            decode(dcontext, tgt, bb->instr);
+            decode(dcontext, wrapper_start, bb->instr);
             /* ASSUMPTION: syscall trampoline puts hooked instruction
              * (usually mov_imm but can be lea if hooked_deeper) here */
             ASSERT(instr_get_opcode(bb->instr) == OP_mov_imm ||
