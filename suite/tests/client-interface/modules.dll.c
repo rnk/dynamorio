@@ -45,7 +45,7 @@
 
 static bool verbose = false;
 
-#define info(msg, ...) do { \
+#define INFO(msg, ...) do { \
     if (verbose) { \
         dr_fprintf(STDERR, msg, ##__VA_ARGS__); \
     } \
@@ -101,14 +101,14 @@ void module_load_event(void *dcontext, const module_data_t *data, bool loaded)
      */
     {
         dr_module_import_iterator_t *mod_iter;
-        info("iterating imports for module %s\n", data->full_path);
+        INFO("iterating imports for module %s\n", data->full_path);
         mod_iter = dr_module_import_iterator_start(data->handle);
         while (dr_module_import_iterator_hasnext(mod_iter)) {
             dr_module_import_t *mod_import =
                 dr_module_import_iterator_next(mod_iter);
-            info("import module: %s\n", mod_import->modname);
+            INFO("import module: %s\n", mod_import->modname);
             sym_iter = dr_symbol_import_iterator_start
-                    (data->handle, mod_import->module_import_desc);
+                (data->handle, mod_import->module_import_desc);
             while (dr_symbol_import_iterator_hasnext(sym_iter)) {
                 dr_symbol_import_t *sym_import =
                     dr_symbol_import_iterator_next(sym_iter);
@@ -116,7 +116,7 @@ void module_load_event(void *dcontext, const module_data_t *data, bool loaded)
                     dr_fprintf(STDERR, "ERROR: modname mismatch: %s vs %s\n",
                                mod_import->modname, sym_import->name);
                 }
-                info("%s imports %s!%s\n", dr_module_preferred_name(data),
+                INFO("%s imports %s!%s\n", dr_module_preferred_name(data),
                      sym_import->modname, sym_import->name);
             }
             dr_symbol_import_iterator_stop(sym_iter);
@@ -128,7 +128,7 @@ void module_load_event(void *dcontext, const module_data_t *data, bool loaded)
     sym_iter = dr_symbol_import_iterator_start(data->handle, NULL);
     while (dr_symbol_import_iterator_hasnext(sym_iter)) {
         dr_symbol_import_t *sym_import = dr_symbol_import_iterator_next(sym_iter);
-        info("%s imports %s\n", dr_module_preferred_name(data),
+        INFO("%s imports %s\n", dr_module_preferred_name(data),
              sym_import->name);
     }
     dr_symbol_import_iterator_stop(sym_iter);

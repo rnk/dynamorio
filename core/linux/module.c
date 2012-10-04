@@ -1588,7 +1588,7 @@ dynsym_next_import(elf_import_iterator_t *iter)
 
 dr_symbol_import_iterator_t *
 dr_symbol_import_iterator_start(module_handle_t handle,
-                                dr_module_import_desc_t from_module)
+                                dr_module_import_desc_t *from_module)
 {
     module_area_t *ma;
     elf_import_iterator_t *iter;
@@ -1639,7 +1639,7 @@ dr_symbol_import_iterator_start(module_handle_t handle,
                                             (max_imports * iter->symentry_size));
 
         /* Set up invariant that cur_sym and safe_cur_sym point to the next
-         * symbol to yeild.  This skips the first entry, which is fake according
+         * symbol to yield.  This skips the first entry, which is fake according
          * to the spec.
          */
         ASSERT_CURIOSITY(iter->cur_sym->st_name == 0);

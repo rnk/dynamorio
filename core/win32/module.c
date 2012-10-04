@@ -81,25 +81,22 @@ typedef struct _pe_module_import_iterator_t {
      * element of the array is zeroed.
      */
     IMAGE_IMPORT_DESCRIPTOR *cur_module;
-    IMAGE_IMPORT_DESCRIPTOR safe_module;
-    /* End of the import descriptor table.
-     */
-    byte *imports_end;
-    bool hasnext;
+    IMAGE_IMPORT_DESCRIPTOR safe_module;    /* safe_read copy of cur_module */
+    byte *imports_end;                      /* end of the import descriptors */
+    bool hasnext;                           /* set to false on error or end */
 } pe_module_import_iterator_t;
 
 typedef struct _pe_symbol_import_iterator_t {
     dr_symbol_import_t symbol_import;  /* symbol import returned by next() */
 
     byte *mod_base;
-    dr_module_import_iterator_t *mod_iter;
-    IMAGE_IMPORT_DESCRIPTOR *cur_module;
+    dr_module_import_iterator_t *mod_iter;  /* only for iterating all modules */
+    IMAGE_IMPORT_DESCRIPTOR *cur_module;    /* always valid */
     /* Points into the OriginalFirstThunk array of mod_iter->cur_module. */
     IMAGE_THUNK_DATA *cur_thunk;
-    IMAGE_THUNK_DATA safe_thunk;
-    const char *cur_name;
-    const char *cur_modname;
-    bool hasnext;
+    const char *cur_name;                   /* read from cur_thunk */
+    const char *cur_modname;                /* always valid */
+    bool hasnext;                           /* set to false on error or end */
 } pe_symbol_import_iterator_t;
 #endif /* CLIENT_INTERFACE */
 
@@ -6304,8 +6301,6 @@ dr_module_import_iterator_start(module_handle_t handle)
     if (!is_readable_pe_base(base))
         return NULL;
     iter = global_heap_alloc(sizeof(*iter) HEAPACCT(ACCT_CLIENT));
-    if (iter == NULL)
-        return NULL;
 
     /* Should be safe after is_readable_pe_base(). */
     /* XXX: Share with privload_get_import_descriptor()? */
@@ -6333,14 +6328,14 @@ dr_module_import_t *
 dr_module_import_iterator_next(dr_module_import_iterator_t *dr_iter)
 {
     pe_module_import_iterator_t *iter = (pe_module_import_iterator_t *) dr_iter;
-    dcontext_t *dcontext = get_thread_private_dcontext();
+    DEBUG_DECLARE(dcontext_t *dcontext = get_thread_private_dcontext();)
 
     CLIENT_ASSERT(iter != NULL, "invalid parameter");
     CLIENT_ASSERT(iter->hasnext, "dr_module_import_iterator_next: !hasnext");
     iter->module_import.modname =
         (const char *) RVA_TO_VA(iter->mod_base, iter->safe_module.Name);
     iter->module_import.module_import_desc =
-        (dr_module_import_desc_t) iter->cur_module;
+        (dr_module_import_desc_t *) iter->cur_module;
     LOG(THREAD, LOG_LOADER, 3, "%s: yielding module "PFX", %s\n", __FUNCTION__,
         iter->cur_module, iter->module_import.modname);
 
@@ -6361,27 +6356,27 @@ dr_module_import_iterator_stop(dr_module_import_iterator_t *dr_iter)
 
 /* Reads iter->cur_thunk and sets iter->cur_name.  Returns false if there are no
  * more imports.
- * FIXME i#877: Skips imports by ordinal.
  */
 static bool
 pe_symbol_import_iterator_read_thunk(pe_symbol_import_iterator_t *iter)
 {
-    IMAGE_IMPORT_BY_NAME *by_name;
-    while (true) {
-        if (!SAFE_READ_VAL(iter->safe_thunk, iter->cur_thunk))
-            return false;
-        if (iter->safe_thunk.u1.Function == 0)
-            return false;
-        if (TEST(IMAGE_ORDINAL_FLAG, iter->safe_thunk.u1.Function)) {
-            /* FIXME i#877: Do something with imports by ordinal. */
-            iter->cur_thunk++;
-        } else {
-            break;
-        }
+    IMAGE_THUNK_DATA safe_thunk;
+    if (!SAFE_READ_VAL(safe_thunk, iter->cur_thunk))
+        return false;
+    if (safe_thunk.u1.Function == 0)
+        return false;
+    iter->by_ordinal =
+        CAST_TO_bool(TEST(IMAGE_ORDINAL_FLAG, safe_thunk.u1.Function));
+    if (iter->by_ordinal) {
+        iter->ordinal = safe_thunk.u1.AddressOfData & (~IMAGE_ORDINAL_FLAG)
+        iter->cur_name = NULL;
+    } else {
+        IMAGE_IMPORT_BY_NAME *by_name = (IMAGE_IMPORT_BY_NAME *)
+            RVA_TO_VA(iter->mod_base, safe_thunk.u1.AddressOfData);
+        /* Name is an array, so no safe_read. */
+        iter->cur_name = (const char *) by_name->Name;
+        iter->ordinal = 0;
     }
-    by_name = (IMAGE_IMPORT_BY_NAME *)
-        RVA_TO_VA(iter->mod_base, iter->safe_thunk.u1.AddressOfData);
-    iter->cur_name = (const char *) by_name->Name;
     return true;
 }
 
@@ -6427,17 +6422,14 @@ pe_symbol_import_iterator_next_module(pe_symbol_import_iterator_t *iter)
 
 dr_symbol_import_iterator_t *
 dr_symbol_import_iterator_start(module_handle_t handle,
-                                dr_module_import_desc_t from_module)
+                                dr_module_import_desc_t *from_module)
 {
     pe_symbol_import_iterator_t *iter;
 
     iter = global_heap_alloc(sizeof(*iter) HEAPACCT(ACCT_CLIENT));
-    if (iter == NULL)
-        return NULL;
     memset(iter, 0, sizeof(*iter));
     iter->mod_base = (byte *) handle;
     iter->cur_thunk = NULL;
-    iter->safe_thunk.u1.Function = 0;
     iter->cur_name = NULL;
 
     if (from_module == NULL) {
@@ -6482,6 +6474,7 @@ dr_symbol_import_iterator_next(dr_symbol_import_iterator_t *dr_iter)
     CLIENT_ASSERT(iter->hasnext, "dr_symbol_import_iterator_next: !hasnext");
     iter->symbol_import.name = iter->cur_name;
     iter->symbol_import.modname = iter->cur_modname;
+    /* FIXME: Include delay load imports. */
     iter->symbol_import.delay_load = false;
 
     iter->cur_thunk++;
