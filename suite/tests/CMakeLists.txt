@@ -1720,6 +1720,7 @@ endif (UNIX)
 
 tobuild(security-common.codemod security-common/codemod.c)
 tochcon(security-common.codemod execmem_exec_t)
+tobuild(security-common.sandbox_ind_call security-common/sandbox_ind_call.c)
 mark_execstack(security-common.codemod)
 tobuild(security-common.decode-bad-stack security-common/decode-bad-stack.c)
 tochcon(security-common.decode-bad-stack execmem_exec_t)
