@@ -932,7 +932,7 @@ hook_text(byte *hook_code_buf, const app_pc image_addr,
           intercept_function_t hook_func, const void *callee_arg, 
           const after_intercept_action_t action_after,
           const bool abort_if_hooked, const bool ignore_cti,
-          byte **app_code_copy_p, byte **alt_exit_cti_p);
+          byte **app_code_copy_p, byte **alt_exit_tgt_p);
 void
 unhook_text(byte *hook_code_buf, app_pc image_addr);
 void
@@ -947,14 +947,17 @@ os_check_option_compatibility(void);
 
 /* Introduced as part of PR 250294 - 64-bit hook reachability. */
 #define LANDING_PAD_AREA_SIZE   64*1024
+#define MAX_HOOK_DISPLACED_LENGTH (JMP_LONG_LENGTH + MAX_INSTR_LENGTH)
 #ifdef X64
 /* 8 bytes for the 64-bit abs addr, 6 for abs ind jmp to the trampoline and 5
- * for return jmp back to the instruction after the hook. */
-# define LANDING_PAD_SIZE    19
+ * for return jmp back to the instruction after the hook.  Plus displaced instr(s).
+ */
+# define LANDING_PAD_SIZE    (19 + MAX_HOOK_DISPLACED_LENGTH)
 #else
 /* 5 bytes each for the two relative jumps (one to the trampoline and the 
- * other back to instruction after hook. */
-# define LANDING_PAD_SIZE    10
+ * other back to instruction after hook.  Plus displaced instr(s).
+ */
+# define LANDING_PAD_SIZE    (10 + MAX_HOOK_DISPLACED_LENGTH)
 #endif
 byte *alloc_landing_pad(app_pc addr_to_hook);
 void landing_pads_to_executable_areas(bool add);
