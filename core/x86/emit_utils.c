@@ -315,7 +315,7 @@ exit_stub_size(dcontext_t *dcontext, cache_pc target, uint flags)
 /* The write that inserts the relative target is done atomically so this
  * function is safe with respect to a thread executing the code containing 
  * this target, presuming that the code in both the before and after states
- * is valid.
+ * is valid, and that [pc, pc+4) does not cross a cache line.
  * For x64 this routine only works for 32-bit reachability.  If further
  * reach is needed the caller must use indirection.  Xref PR 215395.
  */
@@ -1145,7 +1145,8 @@ exit_cti_disp_pc(cache_pc branch_pc)
 /* Patch the (direct) branch at branch_pc so it branches to target_pc 
  * The write that actually patches the branch is done atomically so this
  * function is safe with respect to a thread executing this branch presuming
- * that both the before and after targets are valid
+ * that both the before and after targets are valid and that [pc, pc+4) does
+ * not cross a cache line.
  */
 void
 patch_branch(cache_pc branch_pc, cache_pc target_pc, bool hot_patch)
@@ -7695,14 +7696,10 @@ decode_syscall_num(dcontext_t *dcontext, byte *entry)
 #ifdef WINDOWS /* since no interception code buffer to check on linux */
             if (DYNAMO_OPTION(native_exec_syscalls) && instr_is_ubr(&instr)) {
                 /* probably our own trampoline, follow it
-                 * ASSUMPTION: mov eax is the instr that jmp targets
-                 * Today native_exec syscall hooking doesn't use landing pads
-                 * to reach trampolines.  When that is done as part of PR
-                 * 245169, this should check landing_pad_areas first (see fix
-                 * for PR 250294 to see how it is done).
+                 * ASSUMPTION: mov eax is the instr that jmp targets: i.e.,
+                 * we don't handle deep hooks here.
                  */
-                pc = opnd_get_pc(instr_get_target(&instr));
-                if (!is_in_interception_buffer(pc)) {
+                if (!is_syscall_trampoline(opnd_get_pc(instr_get_target(&instr)), &pc)) {
                     break;  /* give up gracefully */
                 } /* else, carry on at pc */
             } else

@@ -1284,11 +1284,9 @@ vmm_heap_init()
 #ifdef X64
     /* add reachable regions before we allocate the heap, xref PR 215395 */
 # ifdef WINDOWS
-    /* FIXME i#901: win8 x64 has ntdll too high for this */
-    request_region_be_heap_reachable(get_ntdll_base(),
-                                     get_allocation_size(get_ntdll_base(), NULL));
     request_region_be_heap_reachable(get_dynamorio_dll_start(),
                                      get_allocation_size(get_dynamorio_dll_start(), NULL));
+    /* i#774, i#901: we do not need to be near ntdll.dll */
 # else /* LINUX */
     /* FIXME - On Linux we compile core with -fpic and samples Makefile uses it as
      * well (comments suggest problems if we don't).  But without our own loader
@@ -4481,7 +4479,7 @@ special_heap_delete_lock(void *special)
  *
  * A landing pad will have nothing more than a jump (5-byte rel for 32-bit DR
  * and 64-bit abs ind jmp for 64-bit DR) to the trampoline and a 5-byte rel jmp
- * back to the next instruction after the hook.
+ * back to the next instruction after the hook, plus the displaced app instrs.
  *
  * To handle hook chaining landing pads won't be released till process exit
  * (not on a detach), their first jump will just be nop'ed.  As landing pads
