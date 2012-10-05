@@ -6064,7 +6064,7 @@ update_all_memory_areas(app_pc start, app_pc end_in, uint prot, int type)
                     shareable = false;
                 }
                 vmvector_remove(all_memory_areas, pc, overlap_end);
-                add_all_memory_area(pc, overlap_end, prot, info_type, false);
+                add_all_memory_area(pc, overlap_end, prot, info_type, shareable);
             }
             pc = sub_end;
         }
