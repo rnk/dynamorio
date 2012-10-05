@@ -210,26 +210,21 @@ dr_inject_process_inject(void *data, bool force_injection,
             towrite -= nwrote;
             written += nwrote;
         }
-        close(info->pipe_fd);
-        info->pipe_fd = 0;
     }
     return true;
 }
 
-/* Run the app natively.
- */
 DR_EXPORT
 bool
 dr_inject_process_run(void *data)
 {
     dr_inject_info_t *info = (dr_inject_info_t *) data;
     if (info->exec_self) {
+        /* Let the app run natively if we haven't already injected. */
         execv(info->image_name, (char **) info->argv);
         return false;  /* if execv returns, there was an error */
     } else {
-        /* Close the pipe without writing anything.  This will cause the app to run
-         * natively.
-         */
+        /* Close the pipe. */
         close(info->pipe_fd);
         info->pipe_fd = 0;
     }
