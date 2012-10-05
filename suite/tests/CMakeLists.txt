@@ -1740,7 +1740,6 @@ if (NOT X64)
 endif (NOT X64)
 tobuild(security-common.selfmod security-common/selfmod.c)
 tochcon(security-common.selfmod textrel_shlib_t)
-tobuild(security-common.selfmod_cross_page security-common/selfmod_cross_page.c)
 
 tobuild("security-common.TestAllocWE" security-common/TestAllocWE.c)
 
