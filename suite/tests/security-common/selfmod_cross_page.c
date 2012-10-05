@@ -103,7 +103,6 @@ GLOBAL_LABEL(FUNCNAME:)
         push   REG_XBP
         push   REG_XDX
         push   REG_XDI  /* for 16-alignment on x64 */
-        xchg   REG_XDI, REG_XDI  /* NOCHECKIN */
 
 #if defined(ASSEMBLE_WITH_GAS)
         .align 4096
