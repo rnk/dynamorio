@@ -207,7 +207,6 @@ typedef struct {
     app_pc checked_end;       /* end of current vmarea checked */
     cache_pc exit_target;     /* fall-through target of final instr */
     uint exit_type;           /* indirect branch type  */
-    bool do_over;
 #ifdef LINUX
     bool invalid_instr_hack;
 #endif
@@ -2501,7 +2500,6 @@ client_process_bb(dcontext_t *dcontext, build_bb_t *bb)
     /* we set to NULL to have a default of fall-through */
     bb->exit_target = NULL;
     bb->exit_type = 0;
-    print_file(STDERR, "exit_type = 0: %s:%d\n", __FILE__, __LINE__);
 
     /* N.B.: we're walking backward */
     for (inst = instrlist_last(bb->ilist); inst != NULL; inst = instr_get_prev(inst)) {
@@ -2597,7 +2595,6 @@ client_process_bb(dcontext_t *dcontext, build_bb_t *bb)
                     /* A null exit target specifies a cbr (see below). */
                     bb->exit_target = NULL;
                     bb->exit_type = 0;
-                    print_file(STDERR, "exit_type = 0: %s:%d\n", __FILE__, __LINE__);
                     instr_exit_branch_set_type(bb->instr,
                                                instr_branch_type(inst));
                 }
@@ -2905,9 +2902,6 @@ build_bb_ilist(dcontext_t *dcontext, build_bb_t *bb)
                 disassemble_with_bytes(dcontext, bb->instr_start, THREAD);
             });
 
-            if (bb->do_over) {
-                disassemble_with_bytes(dcontext, bb->instr_start, STDERR);
-            }
 #if defined(INTERNAL) || defined(CLIENT_INTERFACE)
             if (bb->outf != INVALID_FILE)
                 disassemble_with_bytes(dcontext, bb->instr_start, bb->outf);
@@ -3027,10 +3021,6 @@ build_bb_ilist(dcontext_t *dcontext, build_bb_t *bb)
                             DYNAMO_OPTION(selfmod_max_writes));
                     STATS_INC(num_max_selfmod_writes_enforced);
                     bb_stop_prior_to_instr(dcontext, bb, false/*not added to bb->ilist*/);
-                    if (bb->do_over) {
-                        print_file(STDERR, "%s:%d: bb_stop_prior_to_instr\n",
-                                   __FILE__, __LINE__, bb->exit_type);
-                    }
                     break;
                 }
             }
@@ -3156,11 +3146,6 @@ build_bb_ilist(dcontext_t *dcontext, build_bb_t *bb)
             bool normal_indirect_processing = true;
             bool elide_and_continue_if_converted = true;
 
-            if (bb->do_over) {
-                print_file(STDERR, "%s:%d: instr_is_mbr after do_over\n",
-                           __FILE__, __LINE__, bb->exit_type);
-            }
-
             if (instr_is_return(bb->instr)) {
                 ibl_branch_type = IBL_RETURN;
                 STATS_INC(num_returns);
@@ -3241,10 +3226,6 @@ build_bb_ilist(dcontext_t *dcontext, build_bb_t *bb)
 #endif
             /* set exit type since this instruction will get mangled */
             if (normal_indirect_processing) {
-                if (bb->do_over) {
-                    print_file(STDERR, "%s:%d: normal_indirect_processing after do_over\n",
-                               __FILE__, __LINE__, bb->exit_type);
-                }
                 bb->exit_type |= instr_branch_type(bb->instr);
                 bb->exit_target = get_ibl_routine(dcontext,
                                                   get_ibl_entry_type(bb->exit_type),
@@ -3262,14 +3243,7 @@ build_bb_ilist(dcontext_t *dcontext, build_bb_t *bb)
             total_branches++;
             if (total_branches >= BRANCH_LIMIT) {
                 /* set type of 1st exit cti for cbr (bb->exit_type is for fall-through) */
-                if (bb->do_over) {
-                    print_file(STDERR, "%s:%d: instr_is_cti, calling "
-                               "instr_exit_branch_set_type\n",
-                               __FILE__, __LINE__, bb->exit_type);
-                }
                 instr_exit_branch_set_type(bb->instr, instr_branch_type(bb->instr));
-                // NOCHECKIN: THIS IS THE BUG FIX!
-                bb->exit_type |= instr_branch_type(bb->instr);
                 break;
             }
         }
@@ -3400,25 +3374,12 @@ build_bb_ilist(dcontext_t *dcontext, build_bb_t *bb)
         }
         bb->flags = FRAG_SELFMOD_SANDBOXED; /* lose all other flags */
         bb->full_decode = true; /* full decode -- see comment at top of routine */
-        bb->follow_direct = false; 
+        bb->follow_direct = false;
         bb->exit_type = 0; /* i#577 */
         bb->exit_target = NULL; /* i#928 */
-        bb->do_over = true;
-        print_file(STDERR, "%s:%d: re-doing build_bb_ilist with full_decode\n",
-                   __FILE__, __LINE__);
         /* overlap info will be reset by check_new_page_start */
         build_bb_ilist(dcontext, bb);
-        //ASSERT(bb->exit_type != 0 && "re-build_bb_ilist didn't set exit_type");
-        if (bb->exit_type == 0) {
-            print_file(STDERR, "%s:%d: re-build_bb_ilist didn't set exit_type\n",
-                       __FILE__, __LINE__);
-        }
         return;
-    }
-
-    if (bb->do_over) {
-        print_file(STDERR, "%s:%d: passed do_over check\n",
-                   __FILE__, __LINE__);
     }
 
 #ifdef HOT_PATCHING_INTERFACE
@@ -3596,11 +3557,8 @@ build_bb_ilist(dcontext_t *dcontext, build_bb_t *bb)
         (bb->instr == NULL || !instr_opcode_valid(bb->instr) ||
          !instr_is_near_ubr(bb->instr) || !instr_ok_to_mangle(bb->instr))) {
         instr_t *exit_instr = INSTR_CREATE_jmp(dcontext, opnd_create_pc(bb->exit_target));
-        app_pc translation = NULL;
-        if (bb->do_over && bb->exit_type == 0) {
-            bb->record_translation = true;
-        }
         if (bb->record_translation) {
+            app_pc translation = NULL;
             if (bb->instr == NULL) {
                 /* we removed (or mangle will remove) the last instruction
                  * for special handling (invalid/syscall/int 2b) or there were
@@ -3625,15 +3583,9 @@ build_bb_ilist(dcontext_t *dcontext, build_bb_t *bb)
          * we won't relocate a thread there and re-do a ret pop or call push
          */
         instr_set_our_mangling(exit_instr, true);
-        if (bb->do_over && bb->exit_type == 0) {
-            print_file(STDERR, "exit_type: %04x for instr\n", bb->exit_type);
-            disassemble_with_bytes(dcontext, translation, STDERR);
-            print_file(STDERR, "%s:%d: re-build_bb_ilist didn't set exit_type\n",
-                       __FILE__, __LINE__);
-        }
+        /* here we need to set exit_type */
         LOG(THREAD, LOG_EMIT, 3, "exit_branch_type=0x%x bb->exit_target="PFX"\n",
             bb->exit_type, bb->exit_target);
-        /* NOCHECKIN: BUG? exit_type seems to be zero pretty often... */
         instr_exit_branch_set_type(exit_instr, bb->exit_type);
 
         instrlist_append(bb->ilist, exit_instr);
@@ -3783,10 +3735,9 @@ mangle_bb_ilist(dcontext_t *dcontext, build_bb_t *bb)
             }
             bb->flags = FRAG_SELFMOD_SANDBOXED; /* lose all other flags */
             bb->full_decode = true; /* full decode this time! */
-            bb->follow_direct = false; 
+            bb->follow_direct = false;
             bb->exit_type = 0; /* i#577 */
             bb->exit_target = NULL; /* i#928 */
-            print_file(STDERR, "exit_type = 0: %s:%d\n", __FILE__, __LINE__);
             /* overlap info will be reset by check_new_page_start */
             return false;
         }
