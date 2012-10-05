@@ -161,25 +161,25 @@ int
 get_os_prot_word(int prot)
 {
 #ifdef LINUX
-    return (((prot & ALLOW_READ) != 0) ? PROT_READ : 0) |
-        (((prot & ALLOW_WRITE) != 0) ? PROT_WRITE : 0) |
-        (((prot & ALLOW_EXEC) != 0) ? PROT_EXEC : 0);
+    return ((TEST(ALLOW_READ, prot)  ? PROT_READ  : 0) |
+            (TEST(ALLOW_WRITE, prot) ? PROT_WRITE : 0) |
+            (TEST(ALLOW_EXEC, prot)  ? PROT_EXEC  : 0));
 #else
-    if ((prot & ALLOW_WRITE) != 0) {
-        if ((prot & ALLOW_EXEC) != 0) {
+    if (TEST(ALLOW_WRITE, prot)) {
+        if (TEST(ALLOW_EXEC, prot)) {
             return PAGE_EXECUTE_READWRITE;
         } else {
             return PAGE_READWRITE;
         }
     } else {
-        if ((prot & ALLOW_READ) != 0) {
-            if ((prot & ALLOW_EXEC) != 0) {
+        if (TEST(ALLOW_READ, prot)) {
+            if (TEST(ALLOW_EXEC, prot)) {
                 return PAGE_EXECUTE_READ;
             } else {
                 return PAGE_READONLY;
             }
         } else {
-            if ((prot & ALLOW_EXEC) != 0) {
+            if (TEST(ALLOW_EXEC, prot)) {
                 return PAGE_EXECUTE;
             } else {
                 return PAGE_NOACCESS;
@@ -193,7 +193,8 @@ char *
 allocate_mem(int size, int prot)
 {
 #ifdef LINUX
-    return (char *) mmap((void *)0, size, get_os_prot_word(prot), MAP_PRIVATE|MAP_ANON, 0, 0);
+    return (char *) mmap((void *)0, size, get_os_prot_word(prot),
+                         MAP_PRIVATE|MAP_ANON, 0, 0);
 #else
     return (char *) VirtualAlloc(NULL, size, MEM_COMMIT, get_os_prot_word(prot));
 #endif
@@ -220,10 +221,10 @@ protect_mem(void *start, size_t len, int prot)
 void
 protect_mem_check(void *start, size_t len, int prot, int expected)
 {
-#ifdef LINUX 
+#ifdef LINUX
     /* FIXME : add check */
     protect_mem(start, len, prot);
-#else 
+#else
     DWORD old;
     if (VirtualProtect(start, len, get_os_prot_word(prot), &old) == 0) {
         print("Error on VirtualProtect\n");
