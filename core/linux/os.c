@@ -6027,12 +6027,12 @@ update_all_memory_areas(app_pc start, app_pc end_in, uint prot, int type)
          * merge images into data
          */
         app_pc pc, sub_start, sub_end, next_add = start;
-        bool shareable = false;
         pc = start;
         while (pc < end && pc >= start/*overflow*/ &&
                vmvector_lookup_data(all_memory_areas, pc, &sub_start, &sub_end,
                                     (void **) &info)) {
             if (info->type == DR_MEMTYPE_IMAGE) {
+                bool shareable = false;
                 app_pc overlap_end;
                 dr_mem_type_t info_type = info->type;
                 /* process prior to image */
@@ -6042,8 +6042,6 @@ update_all_memory_areas(app_pc start, app_pc end_in, uint prot, int type)
                 }
                 next_add = sub_end;
                 /* change image prot */
-                ASSERT(pc == start || sub_start == pc ||
-                       shareable /* i#933: in case the last update merged */);
                 overlap_end = (sub_end > end) ? end : sub_end;
                 if (sub_start == pc && sub_end == overlap_end) {
                     /* XXX: we should read maps to fully handle COW but for
