@@ -6041,7 +6041,6 @@ update_all_memory_areas(app_pc start, app_pc end_in, uint prot, int type)
                 }
                 next_add = sub_end;
                 /* change image prot */
-                ASSERT(pc == start || sub_start == pc);
                 overlap_end = (sub_end > end) ? end : sub_end;
                 if (sub_start == pc && sub_end == overlap_end) {
                     /* XXX: we should read maps to fully handle COW but for
