@@ -93,9 +93,10 @@ test_mov_abs(void)
 static void
 test_code_self_mod(void)
 {
-    /* make foo code writable */
+    /* Make the code writable.  Note that main and the exception handler
+     * __except_handler3 are on this page too.
+     */
     protect_mem(code_self_mod, 1024, ALLOW_READ|ALLOW_WRITE|ALLOW_EXEC);
-    // Note that main and the exception handler __except_handler3 are on this page too
     print("Executed 0x%x iters\n", code_self_mod(0xabcd));
     print("Executed 0x%x iters\n", code_self_mod(0x1234));
     print("Executed 0x%x iters\n", code_self_mod(0xef01));
