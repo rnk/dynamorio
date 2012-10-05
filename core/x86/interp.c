@@ -3402,6 +3402,7 @@ build_bb_ilist(dcontext_t *dcontext, build_bb_t *bb)
         bb->full_decode = true; /* full decode -- see comment at top of routine */
         bb->follow_direct = false; 
         bb->exit_type = 0; /* i#577 */
+        bb->exit_target = NULL; /* i#928 */
         bb->do_over = true;
         print_file(STDERR, "%s:%d: re-doing build_bb_ilist with full_decode\n",
                    __FILE__, __LINE__);
@@ -3784,6 +3785,7 @@ mangle_bb_ilist(dcontext_t *dcontext, build_bb_t *bb)
             bb->full_decode = true; /* full decode this time! */
             bb->follow_direct = false; 
             bb->exit_type = 0; /* i#577 */
+            bb->exit_target = NULL; /* i#928 */
             print_file(STDERR, "exit_type = 0: %s:%d\n", __FILE__, __LINE__);
             /* overlap info will be reset by check_new_page_start */
             return false;
