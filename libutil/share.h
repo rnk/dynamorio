@@ -41,13 +41,15 @@
 
 #include "configure.h"
 
+#ifdef WINDOWS
 /* 
 C:\PROGRAM FILES\MICROSOFT VISUAL STUDIO\VC98\INCLUDE\rpcasync.h(45) : 
 warning C4115: '_RPC_ASYNC_STATE' : named type definition in parentheses
 */
-#pragma warning(disable : 4115)
+# pragma warning(disable : 4115)
 
-#include "mfapi.h"
+# include "mfapi.h"
+#endif /* WINDOWS */
 
 #ifdef __cplusplus
 extern "C"{

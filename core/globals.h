@@ -530,6 +530,7 @@ int dynamo_process_exit(void);
 #ifdef LINUX
 void dynamorio_fork_init(dcontext_t *dcontext);
 #endif
+void dynamorio_take_over_threads(dcontext_t *dcontext);
 dr_statistics_t * get_dr_stats(void);
 
 /* functions needed by detach */
@@ -900,6 +901,10 @@ struct _dcontext_t {
     /* If free_app_stack is set, we free the application stack during thread exit
      * cleanup.  Used for nudge threads. */
     bool           free_app_stack;
+
+    /* used when a nudge invokes dr_exit_process() */
+    bool           nudge_terminate_process;
+    uint           nudge_exit_code;
 #endif /* WINDOWS */
 
     /* we keep an absolute address pointer to our tls state so that we
@@ -954,11 +959,30 @@ enum {
     DUMP_NOT_XML=false
 };
 
+/* io.c */
+/* to avoid transparency problems we must have our own vnsprintf */
+#include <stdarg.h> /* for va_list */
+int our_snprintf(char *s, size_t max, const char *fmt, ...);
+int our_vsnprintf(char *s, size_t max, const char *fmt, va_list ap);
+int our_snprintf_wide(wchar_t *s, size_t max, const wchar_t *fmt, ...);
+int our_vsnprintf_wide(wchar_t *s, size_t max, const wchar_t *fmt, va_list ap);
+#define snprintf our_snprintf
+#define _snprintf our_snprintf
+#define vsnprintf our_vsnprintf
+#define snwprintf  our_snprintf_wide
+#define _snwprintf our_snprintf_wide
+#ifdef LINUX
+int our_sscanf(const char *str, const char *format, ...);
+const char * parse_int(const char *sp, uint64 *res_out, int base, int width,
+                       bool is_signed);
+# define sscanf our_sscanf
+#endif
+
+/* string.c */
+int tolower(int c);
+
 /* Code cleanliness rules */
 #ifdef WINDOWS
-#  define snprintf   _snprintf
-#  define snwprintf  _snwprintf
-#  define vsnprintf  _vsnprintf
 #  define strcasecmp _stricmp
 #  define strncasecmp _strnicmp
 #  define wcscasecmp _wcsicmp

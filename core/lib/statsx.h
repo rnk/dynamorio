@@ -276,6 +276,8 @@
               num_shared_ibt_entries_examined)
     STATS_DEF("Flush queue marked nonempty: relink shared_sys",
               num_flushq_relink_syscall)
+    STATS_DEF("Flush queue marked nonempty: relink client ibl xfer",
+              num_flushq_relink_client_ibl)
     STATS_DEF("Flush queue marked nonempty, yet empty", num_flushq_actually_empty)
     STATS_DEF("Fragments added to lazy deletion list", num_lazy_deletion_appends)
     STATS_DEF("Fragments freed from lazy deletion list at exit",
@@ -384,6 +386,11 @@
     STATS_DEF("Fragments generated, bb and trace", num_fragments)
     RSTATS_DEF("Basic block fragments generated", num_bbs)
     RSTATS_DEF("Trace fragments generated", num_traces)
+#ifdef X64
+    STATS_DEF("32-bit basic block fragments generated", num_32bit_bbs)
+    STATS_DEF("32-bit trace fragments generated", num_32bit_traces)
+    STATS_DEF("32-bit instructions translated to 64-bit", num_32bit_instrs_translated)
+#endif
     STATS_DEF("Trace fragments aborted for any reason", num_aborted_traces)
     STATS_DEF("Trace fragments aborted: shared race", num_aborted_traces_race)
     STATS_DEF("Trace fragments aborted: client bad mod", num_aborted_traces_client)

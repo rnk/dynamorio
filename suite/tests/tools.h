@@ -1,5 +1,5 @@
 /* **********************************************************
- * Copyright (c) 2011 Google, Inc.  All rights reserved.
+ * Copyright (c) 2011-2012 Google, Inc.  All rights reserved.
  * Copyright (c) 2003-2010 VMware, Inc.  All rights reserved.
  * **********************************************************/
 
@@ -96,9 +96,11 @@ typedef __int64 int64;
 /* Function attributes. */
 #ifdef WINDOWS
 # define EXPORT __declspec(dllexport)
+# define IMPORT __declspec(dllimport)
 # define NOINLINE __declspec(noinline)
 #else /* LINUX */
 # define EXPORT __attribute__((visibility("default")))
+# define IMPORT extern
 # define NOINLINE __attribute__((noinline))
 #endif
 
@@ -151,9 +153,11 @@ typedef enum {
 #define ALIGN_FORWARD(x, alignment) ((((uint)x) + ((alignment)-1)) & (~((alignment)-1)))
 #define ALIGN_BACKWARD(x, alignment) (((uint)x) & (~((alignment)-1)))
 
-#ifndef true
-# define true  (1)
-# define false (0)
+#ifndef __cplusplus
+# ifndef true
+#  define true  (1)
+#  define false (0)
+# endif
 #endif
 
 #if VERBOSE
@@ -192,16 +196,11 @@ static void VERBOSE_PRINT(char *fmt, ...) {}
 
 /* DynamoRIO prints directly by syscall to stderr, so we need to too to get
  * right output, esp. with ctest -j where fprintf(stderr) is buffered.
+ * Likely to crash if the stack is unaligned due to possible floating point args
+ * in XMM registers.
  */
-static void
-print(const char *fmt, ...)
-{
-    va_list ap;
-    va_start(ap, fmt);
-    vfprintf(stderr, fmt, ap);
-    fflush(stderr);
-    va_end(ap);
-}
+void
+print(const char *fmt, ...);
 
 /* just to be sure */
 #define printf do_not_use_printf__use_print
@@ -212,6 +211,23 @@ int code_self_mod(int iters);
 int code_inc(int foo);
 int code_dec(int foo);
 int dummy(void);
+
+/* This function implements a trampoline that portably gets its return address
+ * and tail calls to its first argument, which is a function pointer.  All
+ * other parameters are untouched.  It can be used like so:
+ *
+ * void bar(void);
+ * void foo(void **myretaddr, void *otherfunc) {
+ *     *myretaddr = (void*)otherfunc;
+ * }
+ * int main(void) {
+ *     call_with_retaddr((void*)foo, bar);
+ * }
+ *
+ * Which will cause foo to return to bar.  This is useful in security tests
+ * that want to overwrite their return address.
+ */
+int call_with_retaddr(void *func, ...);
 
 static size_t
 size(Code_Snippet func)
@@ -293,6 +309,10 @@ copy_to_buf_normal(char *buf, size_t buf_len, size_t *copied_len, Code_Snippet f
         break;
     default:
         print("Failed to copy func\n");
+    }
+    if (*(unsigned char*)start == 0xe9/*jmp*/) {
+        /* handle ILT indirection by resolving jmp target */
+        start = (unsigned char*)start + 5 + *(int*)((unsigned char*)start+1);
     }
     if (len > buf_len) {
         print("Insufficient buffer for copy, have %d need %d\n", buf_len, len);
@@ -601,6 +621,8 @@ intercept_signal(int sig, handler_t handler)
 
 #  define INIT() set_global_filter()
 
+/* XXX: when updating here, update core/os_exports.h too */
+# define WINDOWS_VERSION_8      62
 # define WINDOWS_VERSION_7      61
 # define WINDOWS_VERSION_VISTA  60
 # define WINDOWS_VERSION_2003   52

@@ -32,8 +32,33 @@ if (DR_EXT_DRWRAP_STATIC)
 else()
   set(libtype SHARED)
 endif ()
+
+##################################################
+# we rely on DR proper's asm setup so we don't need to include cpp2asm_support.cmake)
+
+# for cpp2asm_defines.h
+include_directories(${DynamoRIO_DIR})
+
+# we aren't using DR's configure.h so we have to set defines:
+if (UNIX)
+  set(asm_defs ${asm_defs} -DASSEMBLE_WITH_GAS)
+else (UNIX)
+  set(asm_defs ${asm_defs} -DASSEMBLE_WITH_MASM)
+endif (UNIX)
+get_DynamoRIO_defines(DR_DEFINES OFF)
+# We need defines to be a list to pass as separate args to custom command.
+# We assume none have spaces inside them which seems reasonable.
+string(REPLACE " " ";" DR_DEFINES "${DR_DEFINES}")
+set(asm_flags ${asm_defs} ${DR_DEFINES} -I "${DynamoRIO_DIR}")
+set(asm_deps "${DynamoRIO_DIR}/cpp2asm_defines.h")
+add_asm_target(drwrap_asm.asm drwrap_asm_src drwrap_asm_tgt ""
+  "${asm_flags}" "${asm_deps}")
+#
+##################################################
+
 add_library(drwrap ${libtype}
   drwrap.c
+  ${drwrap_asm_src}
   # add more here
   )
 # while private loader means preferred base is not required, more efficient
@@ -45,18 +70,32 @@ use_DynamoRIO_extension(drwrap drcontainers)
 if (UNIX)
   # static containers must be PIC to be linked into clients: else requires
   # relocations that run afoul of security policies, etc.
-  get_target_property(cur_flags drwrap COMPILE_FLAGS)
-  set_target_properties(drwrap PROPERTIES COMPILE_FLAGS "${cur_flags} -fPIC")
+  append_property_string(TARGET drwrap COMPILE_FLAGS "-fPIC")
 endif (UNIX)
+
+if (NOT "${CMAKE_GENERATOR}" MATCHES "Visual Studio")
+  # we need to add asm_defs to target b/c add_asm_target() is not able to set flags
+  # for non-VS generators
+  append_property_string(TARGET drwrap COMPILE_FLAGS "${asm_defs}")
+endif ()
+
 # ensure we rebuild if includes change
 add_dependencies(drwrap api_headers)
+
+if ("${CMAKE_GENERATOR}" MATCHES "Visual Studio")
+  # ensure race-free parallel builds
+  add_dependencies(drwrap ${drwrap_asm_tgt})
+endif ("${CMAKE_GENERATOR}" MATCHES "Visual Studio")
 
 if (WIN32 AND GENERATE_PDBS)
   # I believe it's the lack of CMAKE_BUILD_TYPE that's eliminating this?
   # In any case we make sure to add it (for release and debug, to get pdb):
-  get_target_property(cur_flags drwrap LINK_FLAGS)
-  set_target_properties(drwrap PROPERTIES LINK_FLAGS "${cur_flags} /debug")
+  append_property_string(TARGET drwrap LINK_FLAGS "/debug")
 endif (WIN32 AND GENERATE_PDBS)
+if (WIN32)
+  # XXX i#893: our asm isn't seh complient
+  append_property_string(TARGET drwrap LINK_FLAGS "/safeseh:no")
+endif (WIN32)
 
 # documentation is put into main DR docs/ dir
 

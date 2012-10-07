@@ -87,11 +87,19 @@ DECLARE_CXTSWPROT_VAR(static mutex_t debugbox_lock, INIT_LOCK_FREE(debugbox_lock
  * hang or worse.  we do not expect the syscall to return, so we can
  * use a global single-entry stack (the wow64 layer swaps to a
  * different stack: presumably for alignment and other reasons).
- */
-#define WOW64_SYSCALL_STACK_SIZE 16 /* presumably only needs to be 4, but just in case */
+ * We also use this for non-wow64, except on win8 wow64 where we need
+ * a per-thread stack and we use the TEB.
+ * We do leave room to store the 2 args to NtTerminateProcess for win8 wow64
+ * in case we can't get the target thread's TEB.
+  */
+#define WOW64_SYSCALL_SETUP_SIZE 3*XSP_SZ /* 2 args + retaddr of call to win8 wrapper */
+/* 1 for call + 1 extra + setup */
+#define WOW64_SYSCALL_STACK_SIZE 2*XSP_SZ + (WOW64_SYSCALL_SETUP_SIZE)
 DECLARE_NEVERPROT_VAR(static byte wow64_syscall_stack_array[WOW64_SYSCALL_STACK_SIZE],
                       {0});
-const byte *wow64_syscall_stack = &wow64_syscall_stack_array[WOW64_SYSCALL_STACK_SIZE];
+/* We point it several stack slots in for win8 setup */
+const byte *wow64_syscall_stack =
+    &wow64_syscall_stack_array[WOW64_SYSCALL_STACK_SIZE - WOW64_SYSCALL_SETUP_SIZE];
 
 /* globals */
 bool intercept_asynch = false;
@@ -504,7 +512,8 @@ bool
 os_supports_avx()
 {
     /* XXX: what about the WINDOWS Server 2008 R2? */
-    if (os_version == WINDOWS_VERSION_7 && os_service_pack_major >= 1)
+    if (os_version >= WINDOWS_VERSION_8 ||
+        (os_version == WINDOWS_VERSION_7 && os_service_pack_major >= 1))
         return true;
     return false;
 }
@@ -551,7 +560,19 @@ windows_version_init()
 
     if (peb->OSPlatformId == VER_PLATFORM_WIN32_NT) {
         /* WinNT or descendents */
-        if (peb->OSMajorVersion == 6 && peb->OSMinorVersion == 1) {
+        if (peb->OSMajorVersion == 6 && peb->OSMinorVersion == 2) {
+            if (module_is_64bit(get_ntdll_base())) {
+                syscalls = (int *) windows_8_x64_syscalls;
+                os_name = "Microsoft Windows 8 x64";
+            } else if (is_wow64_process(NT_CURRENT_PROCESS)) {
+                syscalls = (int *) windows_8_wow64_syscalls;
+                os_name = "Microsoft Windows 8 x64";
+            } else {
+                syscalls = (int *) windows_8_x86_syscalls;
+                os_name = "Microsoft Windows 8";
+            }
+            os_version = WINDOWS_VERSION_8;
+        } else if (peb->OSMajorVersion == 6 && peb->OSMinorVersion == 1) {
             module_handle_t ntdllh = get_ntdll_base();
             /* i#437: ymm/avx is supported after Win-7 SP1 */
             if (os_service_pack_major >= 1) {
@@ -759,6 +780,18 @@ os_init(void)
     peb_ptr = (void *) get_own_peb();
     LOG(GLOBAL, LOG_TOP, 1, "PEB: "PFX"\n", peb_ptr);
     ASSERT((PEB *)peb_ptr == get_own_teb()->ProcessEnvironmentBlock);
+#ifndef X64
+    if (is_wow64_process(NT_CURRENT_PROCESS)) {
+        ptr_uint_t peb64 = (ptr_uint_t) get_own_x64_peb();
+        LOG(GLOBAL, LOG_TOP, 1, "x64 PEB: "PFX"\n", peb64);
+        /* i#816: let's find out whether the assumption used in
+         * is_first_thread_in_new_process() holds that x86 PEB
+         * is always one page below x64 PEB.  Is there any PEB ASLR
+         * for WOW64 btw?  I have yet to see any.
+         */
+        ASSERT_CURIOSITY((ptr_uint_t)peb_ptr + PAGE_SIZE == peb64);
+    }
+#endif
 
     /* match enums in os_exports.h with TEB definition from ntdll.h */
     ASSERT(EXCEPTION_LIST_TIB_OFFSET == offsetof(TEB, ExceptionList));
@@ -893,7 +926,7 @@ os_init(void)
     }
 #endif
 
-    if (!dr_early_injected)
+    if (!dr_early_injected && !dr_earliest_injected)
         inject_init();
 
     get_dynamorio_library_path(); 
@@ -1055,12 +1088,63 @@ os_slow_exit(void)
     eventlog_slow_exit();
 }
 
+
+/* Win8 WOW64 does not point edx at the param base so we must
+ * put the args on the actual stack.  We could have multiple threads
+ * writing to these same slots so we use the TEB which should be dead
+ * (unless the syscall fails and the app continues: which we do not handle).
+ * Xref i#565.
+ */
+/* Pass INVALID_HANDLE_VALUE for process exit */
+byte *
+os_terminate_wow64_stack(HANDLE thread_handle)
+{
+#ifdef X64
+    return (byte *) wow64_syscall_stack;
+#else
+    if (syscall_uses_edx_param_base())
+        return (byte *) wow64_syscall_stack;
+    else {
+        TEB *teb;
+        if (thread_handle == INVALID_HANDLE_VALUE)
+            teb = get_own_teb();
+        else
+            teb = get_teb(thread_handle);
+        if (teb == NULL) /* app may have passed bogus handle */
+            return (byte *) wow64_syscall_stack;
+        /* Use the TLS slots.  Leave room for syscall call*'s retaddr plus 1
+         * extra.  There's still plenty of room at higher addresses for 2 args
+         * for os_terminate_wow64_write_args().
+         */
+        return (byte *)teb + offsetof(TEB, TlsSlots) + 2*XSP_SZ;        
+    }
+#endif
+}
+
+/* Only takes action when edx is not the param base */
+void
+os_terminate_wow64_write_args(bool exit_process, HANDLE proc_or_thread_handle,
+                              int exit_status)
+{
+#ifndef X64
+    if (!syscall_uses_edx_param_base()) {
+        byte *xsp = os_terminate_wow64_stack(exit_process ? INVALID_HANDLE_VALUE :
+                                             proc_or_thread_handle);
+        ASSERT(ALIGNED(xsp, sizeof(reg_t))); /* => atomic writes */
+        /* skip a slot (natively it's the retaddr from the call to the wrapper) */
+        *(((reg_t*)xsp)+1) = (reg_t) proc_or_thread_handle;
+        *(((reg_t*)xsp)+2) = (reg_t) exit_status;
+    }
+#endif
+}
+
 /* FIXME: what are good values here? */
 #define KILL_PROC_EXIT_STATUS -1
 #define KILL_THREAD_EXIT_STATUS -1
 
-byte *
-os_terminate_static_arguments(bool exit_process)
+/* custom_code only honored if exit_process == true */
+static byte *
+os_terminate_static_arguments(bool exit_process, bool custom_code, int exit_code)
 {
     byte *arguments;
         
@@ -1103,11 +1187,22 @@ os_terminate_static_arguments(bool exit_process)
         0, /* will be set to sysenter_ret_address */
         {NT_CURRENT_PROCESS, KILL_PROC_EXIT_STATUS}
     };
+    /* for variable exit code */
+    static terminate_args_t custom_term_proc_args = {
+        IF_DEBUG_ELSE_0((byte *)debug_infinite_loop), /* 0 -> NULL for release */
+        {NT_CURRENT_PROCESS, KILL_PROC_EXIT_STATUS}
+    };
     
     /* for LOG statement just pick proc vs. thread here, will adjust for
      * offset below */
     if (exit_process) {
-        if (DYNAMO_OPTION(sygate_sysenter) && 
+        if (custom_code) {
+            SELF_UNPROTECT_DATASEC(DATASEC_RARELY_PROT);
+            ATOMIC_4BYTE_WRITE((byte *)&custom_term_proc_args.args.ExitStatus,
+                               exit_code, false);
+            SELF_PROTECT_DATASEC(DATASEC_RARELY_PROT);
+            arguments = (byte *)&custom_term_proc_args;
+        } else if (DYNAMO_OPTION(sygate_sysenter) && 
             get_syscall_method() == SYSCALL_METHOD_SYSENTER) {
             byte *tgt = (byte *)&sygate_term_proc_args;
             /* Note we overwrite every time we use this, but is ATOMIC and
@@ -1139,7 +1234,12 @@ os_terminate_static_arguments(bool exit_process)
     LOG(THREAD_GET, LOG_SYSCALLS, 2,
         "Placing terminate arguments tombstone at "PFX" offset=0x%x\n", 
         arguments, SYSCALL_PARAM_OFFSET());
-    
+
+    os_terminate_wow64_write_args
+        (exit_process,
+         ((terminate_args_t*)arguments)->args.ProcessOrThreadHandle,
+         ((terminate_args_t*)arguments)->args.ExitStatus);
+
     arguments += offsetof(terminate_args_t, args) - SYSCALL_PARAM_OFFSET();
     return arguments;
 }
@@ -1147,7 +1247,8 @@ os_terminate_static_arguments(bool exit_process)
 /* dcontext is not needed for TERMINATE_PROCESS, so can pass NULL in
  */
 void
-os_terminate(dcontext_t *dcontext, terminate_flags_t terminate_type)
+os_terminate_common(dcontext_t *dcontext, terminate_flags_t terminate_type,
+                    bool custom_code, int exit_code)
 {
     HANDLE currentThreadOrProcess = NT_CURRENT_PROCESS;
     bool exit_process = true;
@@ -1209,7 +1310,8 @@ os_terminate(dcontext_t *dcontext, terminate_flags_t terminate_type)
     
     STATS_INC(num_threads_killed);
     if (TEST(TERMINATE_CLEANUP, terminate_type)) {
-        byte *arguments = os_terminate_static_arguments(exit_process);
+        byte *arguments = os_terminate_static_arguments(exit_process,
+                                                        custom_code, exit_code);
 
         /* Make sure debug loop pointer is in expected place since this makes
          * assumptions about offsets.  We don't use the debug loop pointer for
@@ -1241,7 +1343,9 @@ os_terminate(dcontext_t *dcontext, terminate_flags_t terminate_type)
              IF_X64_ELSE((exit_process ? NT_CURRENT_PROCESS : NT_CURRENT_THREAD),
                          arguments),
              (ptr_uint_t)
-             IF_X64_ELSE((exit_process ? KILL_PROC_EXIT_STATUS:KILL_THREAD_EXIT_STATUS),
+             IF_X64_ELSE((exit_process ?
+                          (custom_code ? exit_code : KILL_PROC_EXIT_STATUS) :
+                          KILL_THREAD_EXIT_STATUS),
                          arguments /* no 2nd arg, just a filler */),
              exit_process);
     } else {
@@ -1267,6 +1371,19 @@ os_terminate(dcontext_t *dcontext, terminate_flags_t terminate_type)
            waiting on the thread object, hopefully someone will do it */
     }
     ASSERT_NOT_REACHED();
+}
+
+void
+os_terminate_with_code(dcontext_t *dcontext, terminate_flags_t terminate_type,
+                       int exit_code)
+{
+    os_terminate_common(dcontext, terminate_type, true, exit_code);
+}
+
+void
+os_terminate(dcontext_t *dcontext, terminate_flags_t terminate_type)
+{
+    os_terminate_common(dcontext, terminate_type, false, 0);
 }
 
 void
@@ -1371,7 +1488,8 @@ os_thread_stack_exit(dcontext_t *dcontext)
              * (no current uses) or a race with detach resuming a translated thread
              * before cleaning it up.  The detach race is harmless so we allow it. */
             ASSERT(doing_detach ||
-                   ((size == (size_t)(ostd->stack_top - ostd->stack_base) ||
+                   ((size == (size_t) ALIGN_FORWARD
+                     (ostd->stack_top - (ptr_int_t)ostd->stack_base, PAGE_SIZE) ||
                      /* PR 252008: for WOW64 nudges we allocate an extra page. */
                      (size == PAGE_SIZE + (size_t)(ostd->stack_top - ostd->stack_base) &&
                       is_wow64_process(NT_CURRENT_PROCESS) &&
@@ -1414,6 +1532,8 @@ void
 os_thread_under_dynamo(dcontext_t *dcontext)
 {
     /* add cur thread to callback list */
+    ASSERT_MESSAGE(CHKLVL_ASSERTS+1/*expensive*/, "can only act on executing thread",
+                   dcontext == get_thread_private_dcontext());
     set_asynch_interception(get_thread_id(), true);
 }
 
@@ -1421,7 +1541,16 @@ void
 os_thread_not_under_dynamo(dcontext_t *dcontext)
 {
     /* remove cur thread from callback list */
+    ASSERT_MESSAGE(CHKLVL_ASSERTS+1/*expensive*/, "can only act on executing thread",
+                   dcontext == get_thread_private_dcontext());
     set_asynch_interception(get_thread_id(), false);
+}
+
+bool
+os_take_over_all_unknown_threads(dcontext_t *dcontext)
+{
+    /* FIXME NYI i#725: Part of Windows attach. */
+    return false;  /* Means there were no other threads. */
 }
 
 #ifdef CLIENT_SIDELINE /* PR 222812: tied to sideline usage */
@@ -1912,8 +2041,12 @@ inject_into_process(dcontext_t *dcontext, HANDLE process_handle, CONTEXT *cxt,
 
     /* Can't early inject 32-bit DR into a wow64 process as there is no
      * ntdll32.dll at early inject point, so thread injection only.  PR 215423.
+     * This is only true for xp64/2003. It happens to work on vista+ because
+     * it turns out ntdll32 is mapped in by the kernel. (xref i#381)
      */
-    if (DYNAMO_OPTION(early_inject) && !is_wow64_process(process_handle)) {
+    if (DYNAMO_OPTION(early_inject) &&
+        (get_os_version() >= WINDOWS_VERSION_VISTA ||
+         !is_wow64_process(process_handle))) {
         ASSERT(early_inject_address != NULL ||
                !INJECT_LOCATION_IS_LDR(early_inject_location));
         /* FIXME if early_inject_address == NULL then early_inject_init failed
@@ -1957,12 +2090,23 @@ is_first_thread_in_new_process(HANDLE process_handle, CONTEXT *cxt)
      * but no easy way to do either here.  FIXME 
      */
     process_id_t pid = process_id_from_handle(process_handle);
+    ptr_uint_t peb = (ptr_uint_t) get_peb(process_handle);
     LOG(THREAD_GET, LOG_SYSCALLS|LOG_THREADS, 2,
-        "%s: pid="PIFX" vs me="PIFX", xbx="PFX" vs peb="PFX"\n",
-        __FUNCTION__, pid, get_process_id(), cxt->THREAD_START_ARG,
-        get_peb(process_handle));
-    return (pid == 0 || (!is_pid_me(pid) &&
-                         cxt->THREAD_START_ARG == (ptr_uint_t)get_peb(process_handle)));
+        "%s: pid="PIFX" vs me="PIFX", arg="PFX" vs peb="PFX"\n",
+        __FUNCTION__, pid, get_process_id(), cxt->THREAD_START_ARG, peb);
+    return (pid == 0 ||
+            (!is_pid_me(pid) &&
+             (cxt->THREAD_START_ARG == peb ||
+              /* i#816: for wow64 process PEB query will be x64 while thread addr
+               * will be the x86 PEB.  For now we assume they are one page apart.
+               *
+               * XXX: verify that the two PEB's are always a page apart even in
+               * presence of PEB ASLR.  Spot-checking shows it holds, and there's
+               * a curiosity in os_init() to alert us if the assumption fails.
+               */
+              (is_wow64_process(process_handle) &&
+               get_os_version() >= WINDOWS_VERSION_VISTA &&
+               cxt->THREAD_START_ARG == peb - PAGE_SIZE))));
 }
 
 /* Depending on registry and options maybe inject into child process with
@@ -1979,12 +2123,15 @@ maybe_inject_into_process(dcontext_t *dcontext, HANDLE process_handle,
      * value in peb field except in Vista.  Could pass it in. */
     /* Can't early inject 32-bit DR into a wow64 process as there is no
      * ntdll32.dll at early inject point, so thread injection only.  PR 215423.
+     * This is only true for xp64/2003. It happens to work on vista+ because
+     * it turns out ntdll32 is mapped in by the kernel. (xref i#381)
      */
     bool injected = false;
     if ((cxt == NULL && (DYNAMO_OPTION(inject_at_create_process) ||
                          (get_os_version() >= WINDOWS_VERSION_VISTA &&
                           DYNAMO_OPTION(vista_inject_at_create_process)))
-         && !is_wow64_process(process_handle)) ||
+         && (!is_wow64_process(process_handle) ||
+             get_os_version() >= WINDOWS_VERSION_VISTA)) ||
         (cxt != NULL && is_first_thread_in_new_process(process_handle, cxt))) {
         int rununder_mask;
         inject_setting_mask_t should_inject;
@@ -2474,6 +2621,7 @@ process_image(app_pc base, size_t size, uint prot, bool add, bool rewalking,
 {
     const char *name = NULL;
     bool module_is_native_exec = false;
+    bool already_added_native_exec = false;
     /* ensure header is readable */
     ASSERT(prot_is_readable(prot));
     ASSERT(!rewalking || add);  /* when rewalking can only add */
@@ -2508,7 +2656,12 @@ process_image(app_pc base, size_t size, uint prot, bool add, bool rewalking,
             LOG(GLOBAL, LOG_VMAREAS, 1,
                 "image "PFX"-"PFX" is 32-bit dll (wow64 process?)\n",
                 base, base+size);
-            ASSERT(is_wow64_process(NT_CURRENT_PROCESS));
+            /* This happens in a 64-bit process when creating a 32-bit
+             * child: CreateProcess maps in the child executable in
+             * this process first (i#817)
+             */
+            ASSERT_CURIOSITY(is_wow64_process(NT_CURRENT_PROCESS) ||
+                             !TEST(IMAGE_FILE_DLL, get_module_characteristics(base)));
         }
     });
 #else
@@ -2536,11 +2689,15 @@ process_image(app_pc base, size_t size, uint prot, bool add, bool rewalking,
     LOG(GLOBAL, LOG_VMAREAS, 1, "image %-15s %smapped @ "PFX"-"PFX"\n",
         name == NULL ? "<no name>" : name, add ? "" : "un", base, base+size);
 
-    if (DYNAMO_OPTION(native_exec) && name != NULL &&
-        on_native_exec_list(base, name)) {
+    /* Check if module_list_add added the module to native_exec_areas.  If we're
+     * removing the module, it will also be there from the load earlier.
+     */
+    if (DYNAMO_OPTION(native_exec) &&
+        vmvector_overlap(native_exec_areas, base, base+size)) {
         LOG(GLOBAL, LOG_INTERP|LOG_VMAREAS, 1,
             "module %s is on native_exec list\n", name);
         module_is_native_exec = true;
+        already_added_native_exec = true;
 
 #ifdef GBOP
         /* FIXME: if some one just loads a vm, our gbop would become useless;
@@ -2596,10 +2753,10 @@ process_image(app_pc base, size_t size, uint prot, bool add, bool rewalking,
         });
         module_is_native_exec = true;
     }
-    if (module_is_native_exec && add) {
+    if (module_is_native_exec && add && !already_added_native_exec) {
         RSTATS_INC(num_native_module_loads);
         vmvector_add(native_exec_areas, base, base+size, NULL);
-    } else {
+    } else if (!already_added_native_exec) {
         /* For safety we'll just always remove the region (even if add==true) to avoid
          * any possibility of having stale entries in the vector overlap into new 
          * non-native regions. Also see case 7628. */
@@ -2761,6 +2918,16 @@ process_image(app_pc base, size_t size, uint prot, bool add, bool rewalking,
 static void
 process_image_post_vmarea(app_pc base, size_t size, uint prot, bool add, bool rewalking)
 {
+    /* Our WOW64 design for 32-bit DR involves ignoring all 64-bit dlls
+     * (several are visible: wow64cpu.dll, wow64win.dll, wow64.dll, and ntdll.dll)
+     * This includes a 64-bit child process (i#838).
+     * For 64-bit DR both should be handled.
+     */
+#ifndef X64
+    if (module_is_64bit(base))
+        return;
+#endif
+
 #ifdef CLIENT_INTERFACE
     if (dynamo_initialized && add)
         instrument_module_load_trigger(base);
@@ -2778,15 +2945,6 @@ process_image_post_vmarea(app_pc base, size_t size, uint prot, bool add, bool re
         /* see comments in process_image() where we SYSLOG */
         return;
     }
-    /* Our WOW64 design for 32-bit DR involves ignoring all 64-bit dlls
-     * (several are visible: wow64cpu.dll, wow64win.dll, wow64.dll, and ntdll.dll)
-     * For 64-bit DR both should be handled.
-     */
-#ifndef X64
-    if (module_is_64bit(base))
-        return;
-#endif
-
 #ifdef RCT_IND_BRANCH
     if (TEST(OPTION_ENABLED, DYNAMO_OPTION(rct_ind_call)) ||
         TEST(OPTION_ENABLED, DYNAMO_OPTION(rct_ind_jump))) {
@@ -3887,7 +4045,7 @@ get_stack_bounds(dcontext_t *dcontext, byte **base, byte **top)
              * about possibly handling this differently. */
             return false;
         }
-        if (IS_CLIENT_THREAD(dcontext)) {
+        if (IS_CLIENT_THREAD(dcontext) && dcontext->nudge_target == NULL) {
             ostd->stack_base = dcontext->dstack - DYNAMORIO_STACK_SIZE;
             ostd->stack_top = dcontext->dstack;
         }
@@ -3998,13 +4156,28 @@ is_readable_without_exception_query_os(byte *pc, size_t size)
  * however this is still much slower then a structured exception handling 
  * solution since we expect this to succeed most of the time.  Ref PR 206278 
  * and 208562 on using the faster TRY/EXCEPT. */
-bool
-safe_read_ex(const void *base, size_t size, void *out_buf, size_t *bytes_read)
+static bool
+safe_read_syscall(const void *base, size_t size, void *out_buf, size_t *bytes_read)
 {
     if (bytes_read != NULL)
         *bytes_read = 0;
-    STATS_INC(num_safe_reads);
     return nt_read_virtual_memory(NT_CURRENT_PROCESS, base, out_buf, size, bytes_read);
+}
+
+bool
+safe_read_ex(const void *base, size_t size, void *out_buf, size_t *bytes_read)
+{
+    STATS_INC(num_safe_reads);
+    /* XXX i#350: we'd like to always use safe_read_fast() and remove this extra
+     * call layer, but safe_read_fast() requires fault handling to be set up.
+     * There are complications with moving windows fault handling earlier in
+     * the init process, so we just fall back to the syscall during init.
+     */
+    if (!dynamo_initialized) {
+        return safe_read_syscall(base, size, out_buf, bytes_read);
+    } else {
+        return safe_read_fast(base, size, out_buf, bytes_read);
+    }
 }
 
 /* FIXME - fold this together with safe_read_ex() (is a lot of places to update) */
@@ -4122,6 +4295,14 @@ internal_change_protection(byte *start, size_t requested_size, bool set,
     size_t remaining_size = requested_size;
     bool changed_permissions = false;
     bool subregions_failed = false;
+    /* i#936: prevent cl v16 (VS2010) from combining the two
+     * stats incs into one prior to the actual protection change.
+     * Though note that code movement was not sufficient for i#936.
+     * Fortunately here it's only debug-build stats and our debug build
+     * shouldn't hit that high-optimization: but if we make these RSTATS
+     * we should be careful.
+     */
+    volatile bool writable_volatile = writable;
 
     /* while this routine may allow crossing allocation bases 
      * it is supposed to be in error, a MEM_FREE block would terminate it */
@@ -4264,7 +4445,7 @@ internal_change_protection(byte *start, size_t requested_size, bool set,
 
         DOSTATS({
             /* once on each side of prot, to get on right side of writability */
-            if (!writable) {
+            if (!writable_volatile) {
                 STATS_INC(protection_change_calls);
                 STATS_ADD(protection_change_pages, subregion_size / PAGE_SIZE);
             }
@@ -4285,7 +4466,7 @@ internal_change_protection(byte *start, size_t requested_size, bool set,
         ASSERT_CURIOSITY(res && "protect_virtual_memory failed");
         DOSTATS({
             /* once on each side of prot, to get on right side of writability */
-            if (writable) {
+            if (writable_volatile) {
                 STATS_INC(protection_change_calls);
                 STATS_ADD(protection_change_pages, subregion_size / PAGE_SIZE);
             }
@@ -4453,6 +4634,9 @@ convert_NT_to_Dos_path(OUT wchar_t *buf, IN const wchar_t *fname,
             drive[0] = L'A' + (wchar_t)i;
             res = nt_get_symlink_target(objdir, drive, &ustr, &len);
             if (NT_SUCCESS(res)) {
+                /* i#845: ustr.Buffer might not be null-terminated */
+                ustr.Buffer[MIN(ustr.Length / sizeof(ustr.Buffer[0]),
+                                ustr.MaximumLength / sizeof(ustr.Buffer[0]) - 1)] = L'\0';
                 LOG(THREAD_GET, LOG_NT, 3, "%s: drive %d=%c: type=%d => %S\n",
                     __FUNCTION__, i, 'A'+(wchar_t)i, map.Query.DriveType[i], ustr.Buffer);
             } else {
@@ -4512,7 +4696,8 @@ convert_to_NT_file_path(OUT wchar_t *buf, IN const char *fname,
             } else if (name[1] == '?') {
                 /* is \\?\UNC\server or \\?\c:\ type,
                  * chop off the \\?\ and we'll check for the UNC later */
-                ASSERT_CURIOSITY(name[2] == '\\' && "create file invalid name");
+                ASSERT_CURIOSITY(CLIENT_OR_STANDALONE() ||
+                                 (name[2] == '\\' && "create file invalid name"));
                 /* safety check, don't go beyond end of string */
                 if (name[2] != '\0') {
                     name += 3;
@@ -4526,8 +4711,9 @@ convert_to_NT_file_path(OUT wchar_t *buf, IN const char *fname,
         } else {
             /* is \??\UNC\server for \??\c:\ type
              * chop off the \??\ and we'll check for the UNC later */
-            ASSERT_CURIOSITY(name[0] == '?' && name[1] == '?' && name[2] == '\\' &&
-                             "create file invalid name");
+            ASSERT_CURIOSITY(CLIENT_OR_STANDALONE() ||
+                             (name[0] == '?' && name[1] == '?' &&
+                              name[2] == '\\' && "create file invalid name"));
             /* safety check, don't go beyond end of string */
             if (name[0] != '\0' && name[1] != '\0' && name[2] != '\0') {
                 name += 3;
@@ -4543,20 +4729,23 @@ convert_to_NT_file_path(OUT wchar_t *buf, IN const char *fname,
                 /* is \??\UNC\server or \\?\UNC\server type, chop of the UNC 
                  * (we'll re-add below)
                  * NOTE '/' is not a legal separator for a \??\ or \\?\ path */
-                ASSERT_CURIOSITY(name[3] == '\\' && "create file invalid name");
+                ASSERT_CURIOSITY(CLIENT_OR_STANDALONE() ||
+                                 (name[3] == '\\' && "create file invalid name"));
                 is_UNC = true;
                 name += 3;
             } else {
                 /* is \??\c:\ or \\?\c:\ type,
                  * NOTE '/' is not a legal separator for a \??\ or \\?\ path */
-                ASSERT_CURIOSITY(name[1] == ':' && name[2] == '\\' &&
-                                 "create file invalid name");
+                ASSERT_CURIOSITY(CLIENT_OR_STANDALONE() ||
+                                 (name[1] == ':' && name[2] == '\\' &&
+                                  "create file invalid name"));
             }
         }
     } else {
         /* is c:\ type, NOTE case 9329 c:/ is also legal */
-        ASSERT_CURIOSITY(name[1] == ':' && (name[2] == '/' || name[2] == '\\') &&
-                         "create file invalid name");
+        ASSERT_CURIOSITY(CLIENT_OR_STANDALONE() ||
+                         (name[1] == ':' && (name[2] == '/' || name[2] == '\\') &&
+                          "create file invalid name"));
     }
 
     /* should now have either ("c:\" and !is_UNC) or ("\server" and is_UNC) */ 
@@ -4601,7 +4790,13 @@ os_internal_create_file_test(const char *fname, bool is_dir, ACCESS_MASK rights,
 bool
 os_file_exists(const char *fname, bool is_dir)
 {
-    return os_internal_create_file_test(fname, is_dir, 0, FILE_SHARE_READ, FILE_OPEN);
+    /* Perhaps we should use the simpler NtQueryAttributesFile? */
+    return os_internal_create_file_test(fname, is_dir, 0,
+                                        /* We can get sharing violations if we don't
+                                         * include write (drmem i#1025)
+                                         */
+                                        FILE_SHARE_READ|FILE_SHARE_WRITE,
+                                        FILE_OPEN);
 }
 
 /* Returns true and sets 'size' of file on success; returns false on failure.
@@ -4835,7 +5030,7 @@ os_open(const char *fname, int os_open_flags)
 
     /* clients are allowed to open the file however they want, xref PR 227737 */
     ASSERT_CURIOSITY_ONCE((TEST(OS_OPEN_REQUIRE_NEW, os_open_flags)
-                           IF_CLIENT_INTERFACE( ||
+                           IF_CLIENT_INTERFACE( || standalone_library ||
                              !IS_INTERNAL_STRING_OPTION_EMPTY(client_lib))) &&
                           "symlink risk PR 213492");
     
@@ -5314,14 +5509,18 @@ translate_context(thread_record_t *trec, CONTEXT *cxt, bool restore_memory)
 }
 
 /* be careful about args: for windows different versions have different offsets
- * see SYSCALL_PARAM_OFFSET in win32/os.c
+ * see SYSCALL_PARAM_OFFSET in win32/os.c.
+ *
+ * This routine is assumed to only be used for NtRaiseException, where changes
+ * to regs or even the stack will be unrolled or else the app will exit:
+ * i.e., there is no need to restore the changes ourselves.
  */
 static void
 set_mcontext_for_syscall(dcontext_t *dcontext, int sys_enum,
 #ifdef X64
                          reg_t arg1, reg_t arg2, reg_t arg3
 #else
-                         reg_t sys_arg
+                         reg_t sys_arg, size_t args_size
 #endif
                          )
 {
@@ -5336,7 +5535,7 @@ set_mcontext_for_syscall(dcontext_t *dcontext, int sys_enum,
 #endif
 
     mc->xax = syscalls[sys_enum];
-    if (get_syscall_method() == SYSCALL_METHOD_WOW64) {
+    if (get_syscall_method() == SYSCALL_METHOD_WOW64 && syscall_uses_wow64_index()) {
         mc->xcx = wow64_index[sys_enum];
     }
 #ifdef X64
@@ -5344,7 +5543,19 @@ set_mcontext_for_syscall(dcontext_t *dcontext, int sys_enum,
     mc->xdx = arg2;
     mc->r8 = arg3;
 #else
-    mc->xdx = sys_arg;
+    if (syscall_uses_edx_param_base())
+        mc->xdx = sys_arg;
+    else {
+        /* The syscall itself is going to write to the stack for its call
+         * so go ahead and push the args.  See comment up top about not
+         * needing to restore the stack.
+         */
+        mc->xsp -= args_size;
+        if (!safe_write((byte *)mc->xsp, args_size, (const void *)sys_arg)) {
+            SYSLOG_INTERNAL_WARNING("failed to store args for NtRaiseException");
+            /* just keep going I suppose: going to crash though w/ uninit args */
+        }
+    }
 #endif
 }
 
@@ -5372,7 +5583,8 @@ os_raise_exception(dcontext_t *dcontext,
     reg_t arg_pointer = (reg_t)
         ((ptr_uint_t)&raise_exception_arguments) - SYSCALL_PARAM_OFFSET();
 
-    set_mcontext_for_syscall(dcontext, SYS_RaiseException, arg_pointer),
+    set_mcontext_for_syscall(dcontext, SYS_RaiseException, arg_pointer,
+                             sizeof(raise_exception_arguments) + SYSCALL_PARAM_OFFSET()),
 #endif
     issue_last_system_call_from_app(dcontext);
     ASSERT_NOT_REACHED();
@@ -6378,7 +6590,7 @@ detach_internal()
     /* we go ahead and re-protect though detach thread will soon un-prot */
     SELF_PROTECT_DATASEC(DATASEC_RARELY_PROT);
     LOG(GLOBAL, LOG_ALL, 1, "Starting detach\n");
-    nudge_internal(NUDGE_GENERIC(detach), NULL, 0 /* ignored */);
+    nudge_internal(get_process_id(), NUDGE_GENERIC(detach), NULL, 0 /* ignored */, 0);
     LOG(GLOBAL, LOG_ALL, 1, "Created detach thread\n");
 }
 
@@ -6514,6 +6726,20 @@ os_wait_event(event_t e _IF_CLIENT_INTERFACE(bool set_safe_for_synch)
         SYSLOG_INTERNAL_WARNING("WARNING - Final wait after reporting deadlock timeout expired succeeded! Not really deadlocked.");
     }
     KSTOP(wait_event);
+}
+
+wait_status_t
+os_wait_handle(HANDLE h, uint timeout_ms)
+{
+    LARGE_INTEGER li;
+    LARGE_INTEGER *timeout;
+    if (timeout_ms == INFINITE)
+        timeout = INFINITE_WAIT;
+    else {
+        li.QuadPart = - (int64)timeout_ms * TIMER_UNITS_PER_MILLISECOND;
+        timeout = &li;
+    }
+    return nt_wait_event_with_timeout(h, timeout);
 }
 
 void
@@ -6970,7 +7196,12 @@ earliest_inject_cleanup(byte *arg_ptr)
     byte *tofree = args->tofree_base;
     NTSTATUS res;
 
-    /* Free tofree (which contains args) */
+    /* Free tofree (which contains args).
+     * We could free this in earliest_inject_init() via adding
+     * bootstrap_free_virtual_memory() but in case we need to add
+     * more cleanup later, going this route.
+     */
+    LOG(GLOBAL, LOG_ALL, 1, "freeing early inject args @"PFX"\n", tofree);
     res = nt_remote_free_virtual_memory(NT_CURRENT_PROCESS, tofree);
     ASSERT(NT_SUCCESS(res));
 }

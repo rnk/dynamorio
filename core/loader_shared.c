@@ -39,6 +39,9 @@
 
 #include "globals.h"
 #include "module_shared.h"
+#ifdef CLIENT_INTERFACE
+# include "instrument.h" /* for instrument_client_lib_unloaded */
+#endif
 
 #include <string.h>
 
@@ -175,10 +178,16 @@ loader_thread_init(dcontext_t *dcontext)
         os_loader_thread_init_prologue(dcontext);
         if (privload_has_thread_entry()) {
             /* We rely on lock isolation to prevent deadlock while we're here
-             * holding privload_lock and thread_initexit_lock and the priv lib
+             * holding privload_lock and the priv lib
              * DllMain may acquire the same lock that another thread acquired
-             * in its app code before requesting a synchall (flush, exit)
+             * in its app code before requesting a synchall (flush, exit).
+             * FIXME i#875: we do not have ntdll!RtlpFlsLock isolated.
+             * Living w/ it for now.  It should be unlikely for the app to
+             * hold RtlpFlsLock and then acquire privload_lock: privload_lock
+             * is used for import redirection but those don't apply within
+             * ntdll.
              */
+            ASSERT_OWN_NO_LOCKS();
             acquire_recursive_lock(&privload_lock);
             /* Walk forward and call independent libs last.
              * We do notify priv libs of client threads.
@@ -340,6 +349,7 @@ privload_insert(privmod_t *after, app_pc base, size_t size, const char *name,
     mod->size = size;
     mod->name = name;
     strncpy(mod->path, path, BUFFER_SIZE_ELEMENTS(mod->path));
+    mod->os_privmod_data = NULL; /* filled in later */
     NULL_TERMINATE_BUFFER(mod->path);
     /* i#489 DT_SONAME is optional and name passed in could be NULL.
      * If so, we get libname from path instead.
@@ -351,6 +361,9 @@ privload_insert(privmod_t *after, app_pc base, size_t size, const char *name,
     }
     mod->ref_count = 1;
     mod->externally_loaded = false;
+#ifdef CLIENT_INTERFACE
+    mod->is_client = false; /* up to caller to set later */
+#endif
     /* do not add non-heap struct to list: in init() we'll move array to list */
     if (privload_modlist_initialized()) {
         if (after == NULL) {
@@ -432,6 +445,10 @@ privload_load(const char *filename, privmod_t *dependent)
         if (!privload_load_finalize(privmod))
             return NULL;
     }
+#ifdef CLIENT_INTERFACE
+    if (privmod->is_client)
+        instrument_client_lib_loaded(privmod->base, privmod->base + privmod->size);
+#endif
     return privmod;
 }
 
@@ -447,6 +464,10 @@ privload_unload(privmod_t *privmod)
     if (privmod->ref_count == 0) {
         LOG(GLOBAL, LOG_LOADER, 1, "%s: unloading %s @ "PFX"\n", __FUNCTION__,
             privmod->name, privmod->base);
+#ifdef CLIENT_INTERFACE
+        if (privmod->is_client)
+            instrument_client_lib_unloaded(privmod->base, privmod->base + privmod->size);
+#endif
         if (privmod->prev == NULL) {
             ASSERT(!DATASEC_PROTECTED(DATASEC_RARELY_PROT));
             modlist = privmod->next;

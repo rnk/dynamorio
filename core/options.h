@@ -109,6 +109,9 @@ enum {
 #define uint_time uint
 /* So far all addr_t are external so we don't have a 64-bit problem */
 #define uint_addr ptr_uint_t
+/* XXX: For signed integer options, we'll need to correctly sign-extend in
+ * dr_get_integer_option.
+ */
 
 /* to dispatch on string default values, kept in struct not enum */
 #define ISSTRING_bool 0
@@ -340,6 +343,13 @@ set_dynamo_options(options_t *options, char *optstr);
 
 #define RUNNING_WITHOUT_CODE_CACHE()        \
     (IF_HOTP(DYNAMO_OPTION(hotp_only) ||) DYNAMO_OPTION(thin_client))
+
+#if defined(CLIENT_INTERFACE) && !defined(NOT_DYNAMORIO_CORE_PROPER)
+# define CLIENT_OR_STANDALONE() \
+    (standalone_library || !IS_INTERNAL_STRING_OPTION_EMPTY(client_lib))
+#else
+# define CLIENT_OR_STANDALONE() false
+#endif
 
 extern char option_string[];
 extern options_t dynamo_options;

@@ -1,5 +1,5 @@
 /* **********************************************************
- * Copyright (c) 2011 Google, Inc.  All rights reserved.
+ * Copyright (c) 2011-2012 Google, Inc.  All rights reserved.
  * Copyright (c) 2000-2010 VMware, Inc.  All rights reserved.
  * **********************************************************/
 
@@ -92,7 +92,6 @@ ushort os_get_app_seg_base_offset(unsigned char seg);
 ushort os_get_app_seg_offset(unsigned char seg);
 void *os_get_dr_seg_base(dcontext_t *dcontext, unsigned char seg);
 void *os_get_app_seg_base(dcontext_t *dcontext, unsigned char seg);
-bool  os_set_tls_seg_base(unsigned char seg, app_pc base);
 bool os_file_has_elf_so_header(const char *filename);
 
 /* We do NOT want our libc routines wrapped by pthreads, so we use
@@ -107,15 +106,6 @@ void exit_process_syscall(long status);
 void exit_thread_syscall(long status);
 process_id_t get_parent_id(void);
 
-/* to avoid transparency problems we must have our own vnsprintf */
-#include <stdarg.h> /* for va_list */
-int our_snprintf(char *s, size_t max, const char *fmt, ...);
-int our_vsnprintf(char *s, size_t max, const char *fmt, va_list ap);
-int our_sscanf(const char *str, const char *format, ...);
-#define snprintf our_snprintf
-#define vsnprintf our_vsnprintf
-#define sscanf our_sscanf
-
 /* i#238/PR 499179: our __errno_location isn't affecting libc so until
  * we have libc independence or our own private isolated libc we need
  * to preserve the app's libc's errno
@@ -123,14 +113,14 @@ int our_sscanf(const char *str, const char *format, ...);
 int get_libc_errno(void);
 void set_libc_errno(int val);
 
-/* Use our own getenv for libc independence. */
-#define getenv our_getenv
-char *our_getenv(const char *name);
+/* i#46: Our env manipulation routines. */
+extern char **our_environ;
+void dynamorio_set_envp(char **envp);
+char *getenv(const char *name);
 
 /* to avoid unsetenv problems we have our own unsetenv */
 #define unsetenv our_unsetenv
 int our_unsetenv(const char *name);
-
 
 /* new segment support
  * name is a string
@@ -285,5 +275,11 @@ void glibc_stackdump(int fd);
 void *privload_tls_init(void *app_tp);
 void  privload_tls_exit(void *dr_tp);
 void  privload_switch_lib_tls(dcontext_t *dcontext, bool to_app);
+void  privload_setup_app_mc(priv_mcontext_t *mc);
+
+/* nudgesig.c */
+bool
+send_nudge_signal(process_id_t pid, uint action_mask,
+                  client_id_t client_id, uint64 client_arg);
 
 #endif /* _OS_EXPORTS_H_ */

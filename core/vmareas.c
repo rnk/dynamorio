@@ -1859,6 +1859,26 @@ vmvector_add(vm_area_vector_t *v, app_pc start, app_pc end, void *data)
     UNLOCK_VECTOR(v, release_lock, write);
 }
 
+void *
+vmvector_add_replace(vm_area_vector_t *v, app_pc start, app_pc end, void *data)
+{
+    bool overlap;
+    vm_area_t *area = NULL;
+    void *old_data = NULL;
+    bool release_lock; /* 'true' means this routine needs to unlock */
+
+    LOCK_VECTOR(v, release_lock, write);
+    ASSERT_OWN_WRITE_LOCK(SHOULD_LOCK_VECTOR(v), &v->lock);
+    overlap = lookup_addr(v, start, &area);
+    if (overlap && start == area->start && end == area->end) {
+        old_data = area->custom.client;
+        area->custom.client = data;
+    } else
+        add_vm_area(v, start, end, 0, 0, data _IF_DEBUG(""));
+    UNLOCK_VECTOR(v, release_lock, write);
+    return old_data;
+}
+
 bool
 vmvector_remove(vm_area_vector_t *v, app_pc start, app_pc end)
 {
@@ -4792,7 +4812,7 @@ check_origins_bb_pattern(dcontext_t *dcontext, app_pc addr, app_pc *base, size_t
              * cases where source is unknown are fairly pathological
              * (another thread flushing and deleting the fragment, etc.)
              */
-            ok = TEST(LINK_CALL, dcontext->last_exit->flags);
+            ok = EXIT_IS_CALL(dcontext->last_exit->flags);
         }
         if (ok) {
             LOG(GLOBAL, LOG_INTERP|LOG_VMAREAS, 2,
@@ -5981,7 +6001,6 @@ void
 app_memory_deallocation(dcontext_t *dcontext, app_pc base, size_t size,
                         bool own_initexit_lock, bool image)
 {
-    ASSERT(dcontext != NULL);
     ASSERT(!dynamo_vm_area_overlap(base, base + size));
     /* we check for overlap regardless of memory protections, to allow flexible
      * policies that are independent of rwx bits -- if any overlap we remove,
@@ -7205,7 +7224,7 @@ check_thread_vm_area(dcontext_t *dcontext, app_pc pc, app_pc tag, void **vmlist,
 #ifdef CLIENT_INTERFACE
             /* clients are allowed to use DR-allocated memory as app code:
              * we give up some robustness by allowing any DR-allocated memory.
-             * XXX: should we instead have some dr_appcode_alloc() or
+             * XXX i#852: should we instead have some dr_appcode_alloc() or
              * dr_appcode_mark() API?
              */
             if (is_in_dr && INTERNAL_OPTION(code_api))
@@ -8762,7 +8781,7 @@ check_lazy_deletion_list(dcontext_t *dcontext, uint flushtime)
                 ASSERT(todelete->lazy_delete_list == NULL);
                 todelete->lazy_delete_tail = NULL;
             }
-            fragment_delete(GLOBAL_DCONTEXT, f,
+            fragment_delete(dcontext, f,
                             FRAGDEL_NO_OUTPUT | FRAGDEL_NO_UNLINK |
                             FRAGDEL_NO_HTABLE | FRAGDEL_NO_VMAREA);
         } else {
@@ -9218,7 +9237,7 @@ vm_area_check_shared_pending(dcontext_t *dcontext, fragment_t *was_I_flushed)
             /* do NOT call vm_area_remove_fragment, as it will freak out trying
              * to look up the area this fragment is in
              */
-            fragment_delete(GLOBAL_DCONTEXT, FRAG_FRAG(entry),
+            fragment_delete(dcontext, FRAG_FRAG(entry),
                             FRAGDEL_NO_OUTPUT | FRAGDEL_NO_UNLINK |
                             FRAGDEL_NO_HTABLE | FRAGDEL_NO_VMAREA);
             STATS_INC(num_fragments_deleted_consistency);
@@ -9343,6 +9362,12 @@ vm_area_flush_fragments(dcontext_t *dcontext, fragment_t *was_I_flushed)
         !IS_SHARED_SYSCALL_THREAD_SHARED) {
         /* re-link shared syscall */
         link_shared_syscall(dcontext);
+    }
+#endif
+#ifdef CLIENT_INTERFACE
+    if (dcontext != GLOBAL_DCONTEXT && client_ibl_xfer_is_thread_private()) {
+        /* i#849: re-link private xfer */
+        link_client_ibl_xfer(dcontext);
     }
 #endif
 
@@ -11038,7 +11063,7 @@ aslr_report_violation(app_pc execution_fault_pc,
 }
 #endif /* PROGRAM_SHEPHERDING */
 
-#ifdef VMAREAS_UNIT_TEST
+#ifdef STANDALONE_UNIT_TEST
 # define INT_TO_PC(x) ((app_pc)(ptr_uint_t)(x))
 
 static void
@@ -11066,7 +11091,7 @@ vmvector_tests()
     vm_area_vector_t v = {0, 0, 0, VECTOR_SHARED | VECTOR_NEVER_MERGE, 
                         INIT_READWRITE_LOCK(thread_vm_areas)};
     bool res;
-    app_pc start, end;
+    app_pc start = NULL, end = NULL;
     /* FIXME: not tested */
     vmvector_add(&v, INT_TO_PC(0x100), INT_TO_PC(0x103), NULL);
     vmvector_add(&v, INT_TO_PC(0x200), INT_TO_PC(0x203), NULL);
@@ -11102,11 +11127,11 @@ vmvector_tests()
  * FIXME: should add a lot more, esp. wrt other flags -- these only
  * test no flags or interactions w/ selfmod flag
  */
-int
-main() {
+void
+unit_test_vmareas(void)
+{
     vm_area_vector_t v = {0,0,0,false};
     /* not needed yet: dcontext_t *dcontext = */
-    standalone_init();
     ASSIGN_INIT_READWRITE_LOCK_FREE(v.lock, thread_vm_areas);
 
     /* TEST 1: merge a bunch of areas
@@ -11197,7 +11222,5 @@ main() {
     check_vec(&v, 0, INT_TO_PC(1), INT_TO_PC(5), 0, FRAG_SELFMOD_SANDBOXED, NULL);
 
     vmvector_tests();
-
-    return 0;
 }
-#endif
+#endif  /* STANDALONE_UNIT_TEST */

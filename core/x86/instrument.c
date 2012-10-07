@@ -264,6 +264,7 @@ static kernel32_WriteFile_t kernel32_WriteFile;
 #ifdef WINDOWS
 /* used for nudge support */
 static bool block_client_nudge_threads = false;
+static bool client_requested_exit;
 DECLARE_CXTSWPROT_VAR(static int num_client_nudge_threads, 0);
 #endif
 #ifdef CLIENT_SIDELINE
@@ -521,13 +522,21 @@ instrument_load_client_libs(void)
     }
 }
 
+static void
+init_client_aux_libs(void)
+{
+    if (client_aux_libs == NULL) {
+        VMVECTOR_ALLOC_VECTOR(client_aux_libs, GLOBAL_DCONTEXT,
+                              VECTOR_SHARED, client_aux_libs);
+    }
+}
+
 void
 instrument_init(void)
 {
     size_t i;
 
-    VMVECTOR_ALLOC_VECTOR(client_aux_libs, GLOBAL_DCONTEXT,
-                          VECTOR_SHARED, client_aux_libs);
+    init_client_aux_libs();
 
     /* Iterate over the client libs and call each dr_init */
     for (i=0; i<num_client_libs; i++) {
@@ -646,6 +655,11 @@ instrument_exit(void)
     DEBUG_DECLARE(size_t i);
     /* Note - currently own initexit lock when this is called (see PR 227619). */
 
+    /* we guarantee we're in DR state at all callbacks and clean calls */
+    CLIENT_ASSERT(IF_WINDOWS(!should_swap_peb_pointer() ||)
+                  IF_LINUX(!INTERNAL_OPTION(mangle_app_seg) ||)
+                  !dr_using_app_state(get_thread_private_dcontext()), "state error");
+
     /* support dr_get_mcontext() from the exit event */
     if (!standalone_library)
         get_thread_private_dcontext()->client_data->mcontext_in_dcontext = true;
@@ -665,6 +679,7 @@ instrument_exit(void)
 #endif
 
     vmvector_delete_vector(GLOBAL_DCONTEXT, client_aux_libs);
+    client_aux_libs = NULL;
 #if defined(WINDOWS) || defined(CLIENT_SIDELINE)
     DELETE_LOCK(client_thread_count_lock);
 #endif
@@ -1050,22 +1065,33 @@ dr_unregister_nudge_event(void (*func)(void *drcontext, uint64 argument), client
     return false;
 }
 
+dr_config_status_t
+dr_nudge_client_ex(process_id_t process_id, client_id_t client_id,
+                   uint64 argument, uint timeout_ms)
+{
+    if (process_id == get_process_id()) {
+        size_t i;
+        for (i=0; i<num_client_libs; i++) {
+            if (client_libs[i].id == client_id) {
+                if (client_libs[i].nudge_callbacks.num == 0) {
+                    CLIENT_ASSERT(false, "dr_nudge_client: no nudge handler registered");
+                    return false;
+                }
+                return nudge_internal(process_id, NUDGE_GENERIC(client), argument,
+                                      client_id, timeout_ms);
+            }
+        }
+        return false;
+    } else {
+        return nudge_internal(process_id, NUDGE_GENERIC(client), argument,
+                              client_id, timeout_ms);
+    }
+}
+
 bool
 dr_nudge_client(client_id_t client_id, uint64 argument)
 {
-    size_t i;
-
-    for (i=0; i<num_client_libs; i++) {
-        if (client_libs[i].id == client_id) {
-            if (client_libs[i].nudge_callbacks.num == 0) {
-                CLIENT_ASSERT(false, "dr_nudge_client: no nudge handler registered");
-                return false;
-            }
-            return nudge_internal(NUDGE_GENERIC(client), argument, client_id);
-        }
-    }
-
-    return false;
+    return dr_nudge_client_ex(get_process_id(), client_id, argument, 0) == DR_SUCCESS;
 }
 
 void
@@ -1124,7 +1150,11 @@ void
 instrument_thread_exit_event(dcontext_t *dcontext)
 {
 #ifdef CLIENT_SIDELINE
-    if (IS_CLIENT_THREAD(dcontext)) {
+    if (IS_CLIENT_THREAD(dcontext)
+        /* if nudge thread calls dr_exit_process() it will be marked as a client
+         * thread: rule it out here so we properly clean it up
+         */
+        IF_WINDOWS(&& dcontext->nudge_target == NULL)) {
         ATOMIC_DEC(int, num_client_sideline_threads);
         /* no exit event */
         return;
@@ -1250,7 +1280,7 @@ hide_tag_from_client(app_pc tag)
          * mechanism for other hook jmp-outs: so we just suppress and the
          * client next sees the post-syscall bb.  It already saw a gap.
          */
-        is_syscall_trampoline(tag))
+        is_syscall_trampoline(tag, NULL))
         return true;
 #endif
     return false;
@@ -1966,7 +1996,12 @@ instrument_nudge(dcontext_t *dcontext, client_id_t id, uint64 arg)
 
     /* We need to mark this as a client controlled thread for synch_with_all_threads
      * and otherwise treat it as native.  Xref PR 230836 on what to do if this
-     * thread hits native_exec_syscalls hooks. */
+     * thread hits native_exec_syscalls hooks.
+     * XXX: this requires extra checks for "not a nudge thread" after IS_CLIENT_THREAD
+     * in get_stack_bounds() and instrument_thread_exit_event(): maybe better
+     * to have synchall checks do extra checks and have IS_CLIENT_THREAD be
+     * false for nudge threads at exit time?
+     */
     dcontext->client_data->is_client_thread = true;
     dcontext->thread_record->under_dynamo_control = false;
 #else
@@ -2023,6 +2058,16 @@ wait_for_outstanding_nudges()
         }
     });
 
+    /* don't wait if the client requested exit: after all the client might
+     * have done so from a nudge, and if the client does want to exit it's
+     * its own problem if it misses nudges (and external nudgers should use
+     * a finite timeout)
+     */
+    if (client_requested_exit) {
+        mutex_unlock(&client_thread_count_lock);
+        return;
+    }
+
     while (num_client_nudge_threads > 0) {
         /* yield with lock released to allow nudges to finish */
         mutex_unlock(&client_thread_count_lock);
@@ -2060,7 +2105,39 @@ dr_abort(void)
 }
 
 DR_API
-/* Returns true if all \DynamoRIO caches are thread private. */
+void
+dr_exit_process(int exit_code)
+{
+    dcontext_t *dcontext = get_thread_private_dcontext();
+#ifdef WINDOWS
+    SELF_UNPROTECT_DATASEC(DATASEC_RARELY_PROT);
+    /* prevent cleanup from waiting for nudges as this may be called
+     * from a nudge!
+     */
+    client_requested_exit = true;
+    SELF_PROTECT_DATASEC(DATASEC_RARELY_PROT);
+    if (dcontext != NULL && dcontext->nudge_target != NULL) {
+        /* we need to free the nudge thread stack which may involved
+         * switching stacks so we have the nudge thread invoke
+         * os_terminate for us
+         */
+        nudge_thread_cleanup(dcontext, true/*kill process*/, exit_code);
+        CLIENT_ASSERT(false, "shouldn't get here");
+    }
+#endif
+    if (!is_currently_on_dstack(dcontext)) {
+        /* if on app stack, avoid incorrect leak assert at exit */
+        SELF_UNPROTECT_DATASEC(DATASEC_RARELY_PROT);
+        dr_api_exit = true;
+        SELF_PROTECT_DATASEC(DATASEC_RARELY_PROT); /* to keep properly nested */
+    }
+    os_terminate_with_code(dcontext, /* dcontext is required */
+                           TERMINATE_CLEANUP|TERMINATE_PROCESS, exit_code);
+    CLIENT_ASSERT(false, "shouldn't get here");
+}
+
+DR_API
+/* Returns true if all DynamoRIO caches are thread private. */
 bool
 dr_using_all_private_caches(void)
 {
@@ -2148,7 +2225,7 @@ DR_API const char *
 dr_get_application_name(void)
 {
 #ifdef LINUX
-    return get_application_name();
+    return get_application_short_name();
 #else
     return get_application_short_unqualified_name();
 #endif
@@ -2171,6 +2248,14 @@ dr_get_parent_id(void)
 
 #ifdef WINDOWS
 DR_API
+process_id_t
+dr_convert_handle_to_pid(HANDLE process_handle)
+{
+    ASSERT(POINTER_MAX == INVALID_PROCESS_ID);
+    return process_id_from_handle(process_handle);
+}
+
+DR_API
 /** 
  * Returns information about the version of the operating system.
  * Returns whether successful.
@@ -2183,6 +2268,7 @@ dr_get_os_version(dr_os_version_info_t *info)
     get_os_version_ex(&ver, &sp_major, &sp_minor);
     if (info->size > offsetof(dr_os_version_info_t, version)) {
         switch (ver) {
+        case WINDOWS_VERSION_8:     info->version = DR_WINDOWS_VERSION_8;     break;
         case WINDOWS_VERSION_7:     info->version = DR_WINDOWS_VERSION_7;     break;
         case WINDOWS_VERSION_VISTA: info->version = DR_WINDOWS_VERSION_VISTA; break;
         case WINDOWS_VERSION_2003:  info->version = DR_WINDOWS_VERSION_2003;  break;
@@ -2226,7 +2312,6 @@ dr_get_time(dr_time_t *time)
 }
 
 DR_API
-/* Returns the number of milliseconds since the Epoch (Jan 1, 1970). */
 uint64
 dr_get_milliseconds(void)
 {
@@ -2418,7 +2503,10 @@ dr_query_memory(const byte *pc, byte **base_pc, size_t *size, uint *prot)
     /* xref PR 246897 - the cached all memory list can have problems when
      * out-of-process entities change the mapings. For now we use the from
      * os version instead (even though it's slower, and only if we have
-     * HAVE_PROC_MAPS support). FIXME */
+     * HAVE_PROC_MAPS support). FIXME
+     * XXX i#853: We could decide allmem vs os with the use_all_memory_areas
+     * option.
+     */
     return get_memory_info_from_os(pc, base_pc, size, prot);
 #else 
     return get_memory_info(pc, base_pc, size, prot);
@@ -2522,6 +2610,28 @@ dr_memory_is_in_client(const byte *pc)
     return is_in_client_lib((app_pc)pc);
 }
 
+void
+instrument_client_lib_loaded(byte *start, byte *end)
+{
+    /* i#852: include Extensions as they are really part of the clients and
+     * aren't like other private libs.
+     * XXX: we only avoid having the client libs on here b/c they're specified via
+     * full path and don't go through the loaders' locate routines.
+     * Not a big deal if they do end up on here: if they always did we could
+     * remove the linear walk in is_in_client_lib().
+     */
+    /* called prior to instrument_init() */
+    init_client_aux_libs();
+    vmvector_add(client_aux_libs, start, end, NULL/*not an auxlib*/);
+}
+
+void
+instrument_client_lib_unloaded(byte *start, byte *end)
+{
+    /* called after instrument_exit() */
+    if (client_aux_libs != NULL)
+        vmvector_remove(client_aux_libs, start, end);
+}
 
 /**************************************************
  * CLIENT AUXILIARY LIBRARIES
@@ -2536,7 +2646,8 @@ dr_load_aux_library(const char *name,
     byte *start, *end;
     dr_auxlib_handle_t lib = load_shared_library(name);
     if (shared_library_bounds(lib, NULL, name, &start, &end)) {
-        vmvector_add(client_aux_libs, start, end, (void*)lib);
+        /* be sure to replace b/c i#852 now adds during load w/ empty data */
+        vmvector_add_replace(client_aux_libs, start, end, (void*)lib);
         if (lib_start != NULL)
             *lib_start = start;
         if (lib_end != NULL)
@@ -2671,7 +2782,24 @@ DR_API
 bool
 dr_mutex_trylock(void *mutex)
 {
-    return mutex_trylock((mutex_t *) mutex);
+    bool success = false;
+    dcontext_t *dcontext = get_thread_private_dcontext();
+    /* set client_grab_mutex so that we know to set client_thread_safe_for_synch
+     * around the actual wait for the lock */
+    if (IS_CLIENT_THREAD(dcontext)) {
+        dcontext->client_data->client_grab_mutex = mutex;
+        /* We do this on the outside so that we're conservative wrt races
+         * in the direction of not killing the thread while it has a lock
+         */
+        dcontext->client_data->mutex_count++;
+    }
+    success = mutex_trylock((mutex_t *) mutex);
+    if (IS_CLIENT_THREAD(dcontext)) {
+        if (!success)
+            dcontext->client_data->mutex_count--;
+        dcontext->client_data->client_grab_mutex = NULL;
+    }
+    return success;
 }
 
 DR_API
@@ -2679,6 +2807,15 @@ bool
 dr_mutex_self_owns(void *mutex)
 {
     return IF_DEBUG_ELSE(OWN_MUTEX((mutex_t *)mutex), true);
+}
+
+DR_API
+bool
+dr_mutex_mark_as_app(void *mutex)
+{
+    mutex_t *lock = (mutex_t *) mutex;
+    mutex_mark_as_app(lock);
+    return true;
 }
 
 DR_API
@@ -2743,6 +2880,15 @@ dr_rwlock_self_owns_write_lock(void *rwlock)
 }
 
 DR_API
+bool
+dr_rwlock_mark_as_app(void *rwlock)
+{
+    read_write_lock_t *lock = (read_write_lock_t *) rwlock;
+    mutex_mark_as_app(&lock->lock);
+    return true;
+}
+
+DR_API
 void *
 dr_recurlock_create(void)
 {
@@ -2789,6 +2935,31 @@ dr_recurlock_self_owns(void *reclock)
     return self_owns_recursive_lock((recursive_lock_t *)reclock);
 }
 
+DR_API
+bool
+dr_recurlock_mark_as_app(void *reclock)
+{
+    recursive_lock_t *lock = (recursive_lock_t *) reclock;
+    mutex_mark_as_app(&lock->lock);
+    return true;
+}
+
+DR_API
+bool
+dr_mark_safe_to_suspend(void *drcontext, bool enter)
+{
+    dcontext_t *dcontext = (dcontext_t *) drcontext;
+    ASSERT_OWN_NO_LOCKS();
+    /* We need to return so we can't call check_wait_at_safe_spot().
+     * We don't set mcontext b/c noone should examine it.
+     */
+    if (enter)
+        set_synch_state(dcontext, THREAD_SYNCH_NO_LOCKS_NO_XFER);
+    else
+        set_synch_state(dcontext, THREAD_SYNCH_NONE);
+    return true;
+}
+
 /***************************************************************************
  * MODULES
  */
@@ -2806,6 +2977,13 @@ dr_lookup_module(byte *pc)
     client_data = copy_module_area_to_module_data(area);
     os_get_module_info_unlock();
     return client_data;
+}
+
+DR_API
+module_data_t *
+dr_get_main_module(void)
+{
+    return dr_lookup_module(get_image_entry());
 }
 
 DR_API
@@ -2950,6 +3128,57 @@ dr_lookup_module_section(module_handle_t lib, byte *pc, IMAGE_SECTION_HEADER *se
     return module_pc_section_lookup((app_pc)lib, pc, section_out);
 }
 #endif
+
+/* i#805: Instead of exposing multiple instruction levels, we expose a way for
+ * clients to turn off instrumentation.  Then DR can avoid a full decode and we
+ * can save some time on modules that are not interesting.
+ * XXX: This breaks other clients and extensions, in particular drwrap, which
+ * can miss call and return sites in the uninstrumented module.
+ */
+DR_API
+bool
+dr_module_set_should_instrument(module_handle_t handle, bool should_instrument)
+{
+    module_area_t *ma;
+    DEBUG_DECLARE(dcontext_t *dcontext = get_thread_private_dcontext());
+    IF_DEBUG(executable_areas_lock());
+    os_get_module_info_write_lock();
+    ma = module_pc_lookup((byte*)handle);
+    if (ma != NULL) {
+        /* This kind of obviates the need for handle, but it makes the API more
+         * explicit.
+         */
+        CLIENT_ASSERT(dcontext->client_data->no_delete_mod_data->handle == handle,
+                      "Do not call dr_module_set_should_instrument() outside "
+                      "of the module's own load event");
+        ASSERT(!executable_vm_area_executed_from(ma->start, ma->end));
+        if (should_instrument) {
+            ma->flags &= ~MODULE_NULL_INSTRUMENT;
+        } else {
+            ma->flags |= MODULE_NULL_INSTRUMENT;
+        }
+    }
+    os_get_module_info_write_unlock();
+    IF_DEBUG(executable_areas_unlock());
+    return (ma != NULL);
+}
+
+DR_API
+bool
+dr_module_should_instrument(module_handle_t handle)
+{
+    bool should_instrument = true;
+    module_area_t *ma;
+    os_get_module_info_lock();
+    ma = module_pc_lookup((byte*)handle);
+    CLIENT_ASSERT(ma != NULL, "invalid module handle");
+    if (ma != NULL) {
+        should_instrument = !TEST(MODULE_NULL_INSTRUMENT, ma->flags);
+    }
+    os_get_module_info_unlock();
+    return should_instrument;
+}
+
 
 DR_API
 /* Returns the entry point of the function with the given name in the module
@@ -3422,14 +3651,11 @@ dr_fprintf(file_t f, const char *fmt, ...)
 DR_API int
 dr_snprintf(char *buf, size_t max, const char *fmt, ...)
 {
-    /* in io.c */
-    extern int our_vsnprintf(char *s, size_t max, const char *fmt, va_list ap);
     int res;
     va_list ap;
     va_start(ap, fmt);
     /* PR 219380: we use our_vsnprintf instead of ntdll._vsnprintf b/c the
-     * latter does not support floating point (while ours does not support
-     * wide chars: but we also forward _snprintf to ntdll for clients).
+     * latter does not support floating point.
      * Plus, our_vsnprintf returns -1 for > max chars (matching Windows
      * behavior, but which Linux libc version does not do).
      */
@@ -3441,9 +3667,24 @@ dr_snprintf(char *buf, size_t max, const char *fmt, ...)
 DR_API int
 dr_vsnprintf(char *buf, size_t max, const char *fmt, va_list ap)
 {
-    /* in io.c */
-    extern int our_vsnprintf(char *s, size_t max, const char *fmt, va_list ap);
     return our_vsnprintf(buf, max, fmt, ap);
+}
+
+DR_API int
+dr_snwprintf(wchar_t *buf, size_t max, const wchar_t *fmt, ...)
+{
+    int res;
+    va_list ap;
+    va_start(ap, fmt);
+    res = our_vsnprintf_wide(buf, max, fmt, ap);
+    va_end(ap);
+    return res;
+}
+
+DR_API int
+dr_vsnwprintf(wchar_t *buf, size_t max, const wchar_t *fmt, va_list ap)
+{
+    return our_vsnprintf_wide(buf, max, fmt, ap);
 }
 
 DR_API void 
@@ -3451,7 +3692,7 @@ dr_print_instr(void *drcontext, file_t f, instr_t *instr, const char *msg)
 {
     dcontext_t *dcontext = (dcontext_t *) drcontext;
     CLIENT_ASSERT(drcontext != NULL, "dr_print_instr: drcontext cannot be NULL");
-    CLIENT_ASSERT(drcontext != GLOBAL_DCONTEXT,
+    CLIENT_ASSERT(drcontext != GLOBAL_DCONTEXT || standalone_library,
                   "dr_print_instr: drcontext is invalid");
     dr_fprintf(f, "%s "PFX" ", msg, instr_get_translation(instr));
     instr_disassemble(dcontext, instr, f);
@@ -3463,7 +3704,7 @@ dr_print_opnd(void *drcontext, file_t f, opnd_t opnd, const char *msg)
 {
     dcontext_t *dcontext = (dcontext_t *) drcontext;
     CLIENT_ASSERT(drcontext != NULL, "dr_print_opnd: drcontext cannot be NULL");
-    CLIENT_ASSERT(drcontext != GLOBAL_DCONTEXT,
+    CLIENT_ASSERT(drcontext != GLOBAL_DCONTEXT || standalone_library,
                   "dr_print_opnd: drcontext is invalid");
     dr_fprintf(f, "%s ", msg);
     opnd_disassemble(dcontext, opnd, f);
@@ -4239,16 +4480,8 @@ dr_max_opnd_accessible_spill_slot()
 /* creates an opnd to access spill slot slot, slot must be <=
  * dr_max_opnd_accessible_spill_slot() */
 opnd_t
-dr_reg_spill_slot_opnd(void *drcontext, dr_spill_slot_t slot)
+reg_spill_slot_opnd(dcontext_t *dcontext, dr_spill_slot_t slot)
 {
-    dcontext_t *dcontext = (dcontext_t *) drcontext;
-    CLIENT_ASSERT(drcontext != NULL, "dr_reg_spill_slot_opnd: drcontext cannot be NULL");
-    CLIENT_ASSERT(drcontext != GLOBAL_DCONTEXT,
-                  "dr_reg_spill_slot_opnd: drcontext is invalid");
-    CLIENT_ASSERT(slot <= dr_max_opnd_accessible_spill_slot(),
-                  "dr_reg_spill_slot_opnd: slot must be less than "
-                  "dr_max_opnd_accessible_spill_slot()");
-
     if (slot <= SPILL_SLOT_TLS_MAX) {
         ushort offs = os_tls_offset(SPILL_SLOT_TLS_OFFS[slot]);
         return opnd_create_tls_slot(offs);
@@ -4258,6 +4491,20 @@ dr_reg_spill_slot_opnd(void *drcontext, dr_spill_slot_t slot)
         ASSERT(!SCRATCH_ALWAYS_TLS()); /* client assert above should catch */
         return opnd_create_dcontext_field(dcontext, offs);
     }
+}
+
+DR_API
+opnd_t
+dr_reg_spill_slot_opnd(void *drcontext, dr_spill_slot_t slot)
+{
+    dcontext_t *dcontext = (dcontext_t *) drcontext;
+    CLIENT_ASSERT(drcontext != NULL, "dr_reg_spill_slot_opnd: drcontext cannot be NULL");
+    CLIENT_ASSERT(drcontext != GLOBAL_DCONTEXT,
+                  "dr_reg_spill_slot_opnd: drcontext is invalid");
+    CLIENT_ASSERT(slot <= dr_max_opnd_accessible_spill_slot(),
+                  "dr_reg_spill_slot_opnd: slot must be less than "
+                  "dr_max_opnd_accessible_spill_slot()");
+    return reg_spill_slot_opnd(dcontext, slot);
 }
 
 DR_API
@@ -4747,6 +4994,37 @@ dr_insert_ubr_instrumentation(void *drcontext, instrlist_t *ilist, instr_t *inst
     dr_insert_call_instrumentation(drcontext, ilist, instr, callee);
 }
 
+/* This may seem like a pretty targeted API function, but there's no
+ * clean way for a client to do this on its own due to DR's
+ * restrictions on bb instrumentation (i#782).
+ */
+DR_API
+bool 
+dr_clobber_retaddr_after_read(void *drcontext, instrlist_t *ilist, instr_t *instr,
+                              ptr_uint_t value)
+{
+    /* the client could be using note fields so we use a label and xfer to
+     * a note field during the mangling pass
+     */
+    if (instr_is_return(instr)) {
+        instr_t *label = INSTR_CREATE_label(drcontext);
+        dr_instr_label_data_t *data = instr_get_label_data_area(label);
+        /* we could coordinate w/ drmgr and use some reserved note label value
+         * but only if we run out of instr flags.  so we set to 0 to not
+         * overlap w/ any client uses (DRMGR_NOTE_NONE == 0).
+         */
+        label->note = 0;
+        /* these values are read back in mangle() */
+        data->data[0] = (ptr_uint_t) instr;
+        data->data[1] = value;
+        label->flags |= INSTR_CLOBBER_RETADDR;
+        instr->flags |= INSTR_CLOBBER_RETADDR;
+        instrlist_meta_preinsert(ilist, instr, label);
+        return true;
+    }
+    return false;
+}
+
 DR_API bool
 dr_mcontext_xmm_fields_valid(void)
 {
@@ -4904,6 +5182,21 @@ dr_redirect_execution(dr_mcontext_t *mcontext)
                          true/*full_DR_state*/);
     /* on success we won't get here */
     return false;
+}
+
+DR_API
+byte *
+dr_redirect_native_target(void *drcontext)
+{
+#ifdef PROGRAM_SHEPHERDING
+    /* This feature is unavail for prog shep b/c of the cross-ib-type pollution. */
+    return NULL;
+#else
+    dcontext_t *dcontext = (dcontext_t *) drcontext;
+    CLIENT_ASSERT(drcontext != NULL,
+                  "dr_redirect_native_target(): drcontext cannot be NULL");
+    return get_client_ibl_xfer_entry(dcontext);
+#endif
 }
 
 /***************************************************************************
@@ -5285,20 +5578,7 @@ app_pc
 dr_fragment_app_pc(void *tag)
 {
 #ifdef WINDOWS
-    /* Only the returning (second) jump in a landing pad is interpreted, thus
-     * visible to a client.  The first jump is filtered out by
-     * must_not_be_elided().  The second jump will always be a 32-bit rel
-     * returning after the hook point (i.e., not the interception buffer).
-     */
-    if (vmvector_overlap(landing_pad_areas, (app_pc)tag, (app_pc)tag + 1)) {
-        ASSERT(*((byte *)tag) == JMP_REL32_OPCODE);
-        /* End of jump + relative address. */
-        tag = ((app_pc)tag + 5) + *(int *)((app_pc)tag + 1);
-        ASSERT(!is_in_interception_buffer(tag));
-    }
-
-    if (is_in_interception_buffer(tag))
-        tag = get_app_pc_from_intercept_pc(tag);
+    tag = get_app_pc_from_intercept_pc_if_necessary((app_pc)tag);
     CLIENT_ASSERT(tag != NULL, "dr_fragment_app_pc shouldn't be NULL");
 
     DODEBUG({
@@ -5354,39 +5634,24 @@ DR_API
 bool
 dr_using_app_state(void *drcontext)
 {
-#if defined(WINDOWS) && defined(CLIENT_INTERFACE)
     dcontext_t *dcontext = (dcontext_t *) drcontext;
-    if (INTERNAL_OPTION(private_peb) && should_swap_peb_pointer())
-        return is_using_app_peb(dcontext);
-#endif
-    return true;
+    return os_using_app_state(dcontext);
 }
 
 DR_API
 void
 dr_switch_to_app_state(void *drcontext)
 {
-#if defined(WINDOWS) && defined(CLIENT_INTERFACE)
     dcontext_t *dcontext = (dcontext_t *) drcontext;
-    /* i#249: swap PEB pointers */
-    if (INTERNAL_OPTION(private_peb) && should_swap_peb_pointer())
-        swap_peb_pointer(dcontext, false/*to app*/);
-#endif
+    os_swap_context(dcontext, true/*to app*/);
 }
 
 DR_API
 void
 dr_switch_to_dr_state(void *drcontext)
 {
-#if defined(WINDOWS) && defined(CLIENT_INTERFACE)
     dcontext_t *dcontext = (dcontext_t *) drcontext;
-    /* i#249: swap PEB pointers */
-    /* XXX: could add flag to ensure only called after dr_switch_to_app_state().
-     * swap_peb_pointer() can handle non-properly-paired.
-     */
-    if (INTERNAL_OPTION(private_peb) && should_swap_peb_pointer())
-        swap_peb_pointer(dcontext, true/*to priv*/);
-#endif
+    os_swap_context(dcontext, false/*to dr*/);
 }
 
 /***************************************************************************
@@ -5619,7 +5884,10 @@ dr_insert_get_seg_base(void *drcontext, instrlist_t *ilist, instr_t *instr,
     if (seg == SEG_TLS) {
         instrlist_meta_preinsert
             (ilist, instr,
-             instr_create_restore_from_tls(drcontext, reg, SELF_TIB_OFFSET));
+             INSTR_CREATE_mov_ld(drcontext,
+                                 opnd_create_reg(reg),
+                                 opnd_create_far_base_disp(SEG_TLS, REG_NULL, REG_NULL,
+                                                           0, SELF_TIB_OFFSET, OPSZ_PTR)));
     } else if (seg == SEG_CS || seg == SEG_DS || seg == SEG_ES) {
         /* XXX: we assume flat address space */
         instrlist_meta_preinsert

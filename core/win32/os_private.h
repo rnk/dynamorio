@@ -127,6 +127,13 @@ client_thread_target(void *param);
 bool os_delete_file_w(const wchar_t *file_name,
                       file_t directory_handle);
 
+byte *
+os_terminate_wow64_stack(HANDLE thread_handle);
+
+void
+os_terminate_wow64_write_args(bool exit_process, HANDLE proc_or_thread_handle,
+                              int exit_status);
+
 /* in syscall.c *********************************************************/
 
 /* this points to a windows-version-specific syscall array */
@@ -135,6 +142,9 @@ extern int *syscalls;
 /* this points to a windows-version-specific WOW table index array */
 extern int *wow64_index;
 
+extern const int windows_8_x64_syscalls[];
+extern const int windows_8_wow64_syscalls[];
+extern const int windows_8_x86_syscalls[];
 extern const int windows_7_x64_syscalls[];
 extern const int windows_7_syscalls[];
 extern const int windows_vista_sp1_x64_syscalls[];
@@ -143,7 +153,7 @@ extern const int windows_vista_sp0_x64_syscalls[];
 extern const int windows_vista_sp0_syscalls[];
 extern const int windows_2003_syscalls[];
 extern const int windows_XP_x64_syscalls[];
-extern const int windows_XP_wow64_index[];
+extern const int windows_XP_wow64_index[]; /* for XP through Win7 */
 extern const int windows_XP_syscalls[];
 extern const int windows_2000_syscalls[];
 extern const int windows_NT_sp3_syscalls[];
@@ -166,8 +176,9 @@ void
 windows_version_init(void);
 
 enum {
-#define SYSCALL(name, act, nargs, arg32, w7x64, w7, vista_sp1_x64, vista_sp1, \
-                vista_sp0_x64, vista_sp0, tk3, xp64, wow64, xp, tk, ntsp4, ntsp3, ntsp0) \
+#define SYSCALL(name, act, nargs, arg32, ntsp0, ntsp3, ntsp4, w2k, xp, wow64, xp64,\
+                w2k3, vista0, vista0_x64, vista1, vista1_x64, w7x86, w7x64,        \
+                w8x86, w8w64, w8x64)                                               \
     SYS_##name,
 #include "syscallx.h"
 #undef SYSCALL
@@ -193,10 +204,15 @@ enum {
 /* edx is 4 less than on 2000, plus there's an extra call to provide
  * return address for sysenter, so we have to skip 2 slots:
  */
+/* On Win8, wow64 syscalls do not point edx at the params and
+ * instead simply use esp and thus must skip the retaddr.
+ */
 # define SYSCALL_PARAM_OFFSET()                          \
     ((get_syscall_method() == SYSCALL_METHOD_SYSCALL || \
       get_syscall_method() == SYSCALL_METHOD_SYSENTER)  \
-     ? SYSCALL_PARAM_MAX_OFFSET : 0)
+     ? SYSCALL_PARAM_MAX_OFFSET :                       \
+     ((get_syscall_method() == SYSCALL_METHOD_WOW64 &&  \
+       !syscall_uses_wow64_index()) ? XSP_SZ : 0))
 #endif
 
 static inline reg_t *
@@ -497,9 +513,11 @@ typedef union _unwind_code_t {
     USHORT FrameOffset;
 } unwind_code_t;
 
-#define UNW_FLAG_EHANDLER  0x01
-#define UNW_FLAG_UHANDLER  0x02
-#define UNW_FLAG_CHAININFO 0x04
+#ifndef UNW_FLAG_EHANDLER
+# define UNW_FLAG_EHANDLER  0x01
+# define UNW_FLAG_UHANDLER  0x02
+# define UNW_FLAG_CHAININFO 0x04
+#endif
 
 typedef struct _unwind_info_t {
     byte Version      :3;

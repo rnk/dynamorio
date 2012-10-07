@@ -444,12 +444,24 @@ drsym_unix_lookup_symbol(void *mod_in, const char *symbol, size_t *modoffs OUT,
     }
 
     *modoffs = 0;
-    params.search_sym = sym_no_mod;
-    params.search_sym_len = strlen(sym_no_mod);
-    params.modoffs = modoffs;
-    r = drsym_unix_enumerate_symbols(mod, sym_lookup_cb, &params, flags);
-    if (r != DRSYM_SUCCESS)
-        return r;
+
+    if (!TEST(DRSYM_SYMBOLS, mod->debug_kind)) {
+        /* XXX i#883: we have no symbols and we're just looking at exports so we
+         * should do a fast hashtable lookup instead of a linear walk.
+         * DR already has the code for this, accessible via dr_get_proc_address(),
+         * except that interface will only work for online (i.e., non-standalone)
+         * use.
+         */
+    }
+
+    if (*modoffs == 0) {
+        params.search_sym = sym_no_mod;
+        params.search_sym_len = strlen(sym_no_mod);
+        params.modoffs = modoffs;
+        r = drsym_unix_enumerate_symbols(mod, sym_lookup_cb, &params, flags);
+        if (r != DRSYM_SUCCESS)
+            return r;
+    }
     if (*modoffs == 0)
         return DRSYM_ERROR_SYMBOL_NOT_FOUND;
     return DRSYM_SUCCESS;
@@ -486,8 +498,23 @@ drsym_unix_lookup_address(void *mod_in, size_t modoffs,
 }
 
 drsym_error_t
+drsym_unix_get_type(void *mod_in, size_t modoffs, uint levels_to_expand,
+                    char *buf, size_t buf_sz, drsym_type_t **type OUT)
+{
+    return DRSYM_ERROR_NOT_IMPLEMENTED;
+}
+
+drsym_error_t
 drsym_unix_get_func_type(void *mod_in, size_t modoffs, char *buf,
                          size_t buf_sz, drsym_func_type_t **func_type OUT)
+{
+    return DRSYM_ERROR_NOT_IMPLEMENTED;
+}
+
+drsym_error_t
+drsym_unix_expand_type(const char *modpath, uint type_id, uint levels_to_expand,
+                  char *buf, size_t buf_sz,
+                  drsym_type_t **expanded_type OUT)
 {
     return DRSYM_ERROR_NOT_IMPLEMENTED;
 }
@@ -513,7 +540,15 @@ drsym_unix_demangle_symbol(char *dst OUT, size_t dst_sz, const char *mangled,
          * libelftc demangler which is slower, but can properly demangle
          * template arguments.
          */
+
+        /* libelftc code use fp ops so we have to save fp state (i#756) */
+        byte fp_raw[512 + 16]; /* 512 and 16 are specified by DR but not named consts */
+        byte *fp_align = (byte *) ALIGN_FORWARD(fp_raw, 16);
+
+        proc_save_fpstate(fp_align);
         status = elftc_demangle(mangled, dst, dst_sz, ELFTC_DEM_GNU3);
+        proc_restore_fpstate(fp_align);
+
 #ifdef WINDOWS
         /* our libelftc returns the # of chars needed, and copies the truncated
          * unmangeld name

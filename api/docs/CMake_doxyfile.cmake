@@ -1,4 +1,5 @@
 # **********************************************************
+# Copyright (c) 2012 Google, Inc.    All rights reserved.
 # Copyright (c) 2009-2010 VMware, Inc.    All rights reserved.
 # **********************************************************
 
@@ -36,10 +37,11 @@
 # * header_dir
 # * gendox_dir
 # * DOXYGEN_EXECUTABLE
+# * doxygen_ver
 
 set(outdir "${CMAKE_CURRENT_BINARY_DIR}")
-
-file(READ "${srcdir}/API.doxy" string)
+set(srcdir_orig "${srcdir}")
+set(outdir_orig "${outdir}")
 
 # Support docs for Extensions (i#277/PR 540817)
 file(GLOB dirs "${proj_srcdir}/ext/*/CMakeLists.txt")
@@ -48,58 +50,26 @@ foreach (dir ${dirs})
   set(ext_dirs ${ext_dirs} ${dir})
 endforeach (dir)
 
-string(REGEX MATCH "cygwin" is_cygwin "${DOXYGEN_EXECUTABLE}")
-if (is_cygwin)
-  # cygwin doxygen cannot handle mixed paths!
-  #    *** E:/cygwin/bin/doxygen.exe failed: ***
-  #    Failed to open temporary file
-  #    /d/derek/opensource/dynamorio/build/api/docs/D:/derek/opensource/dynamorio/build/api/docs/doxygen_objdb_3156.tmp
-  # we're using native windows cmake, so
-  #   file(TO_CMAKE_PATH) => mixed, file(TO_NATIVE_PATH) => windows
-  # thus we invoke cygpath, but after we've read in API.doxy so we can
-  # now clobber srcdir w/ a cygwin path.
-  find_program(CYGPATH cygpath)
-  if (NOT CYGPATH)
-    message(FATAL_ERROR "cannot find cygpath: thus cannot use cygwin doxygen")
-  endif (NOT CYGPATH)
-  set(input_paths srcdir proj_srcdir header_dir gendox_dir outdir)
-  foreach (var ${input_paths})
-    execute_process(COMMAND
-      ${CYGPATH} -u "${${var}}"
-      RESULT_VARIABLE cygpath_result
-      ERROR_VARIABLE cygpath_err
-      OUTPUT_VARIABLE ${var}
-      )
-    if (cygpath_result OR cygpath_err)
-      message(FATAL_ERROR "*** ${CYGPATH} failed: ***\n${cygpath_err}")
-    endif (cygpath_result OR cygpath_err)
-    string(REGEX REPLACE "[\r\n]" "" ${var} "${${var}}")
-  endforeach (var)
-  foreach (dir ${ext_dirs})
-    execute_process(COMMAND
-      ${CYGPATH} -u "${dir}"
-      RESULT_VARIABLE cygpath_result
-      ERROR_VARIABLE cygpath_err
-      OUTPUT_VARIABLE tmp
-      )
-    if (cygpath_result OR cygpath_err)
-      message(FATAL_ERROR "*** ${CYGPATH} failed: ***\n${cygpath_err}")
-    endif (cygpath_result OR cygpath_err)
-    string(REGEX REPLACE "[\r\n]" "" tmp "${tmp}")
-    set(ext_input_dirs "${ext_input_dirs} \"${tmp}\"")
-  endforeach (dir)
-else (is_cygwin)
-  foreach (dir ${ext_dirs})
-    set(ext_input_dirs "${ext_input_dirs} \"${dir}\"")
-  endforeach (dir)
-endif (is_cygwin)
+include("${srcdir}/CMake_doxyutils.cmake")
+set(input_paths srcdir proj_srcdir header_dir gendox_dir outdir)
+doxygen_path_xform(${DOXYGEN_EXECUTABLE} "${input_paths}")
+
+foreach (dir ${ext_dirs})
+  doxygen_path_xform(${DOXYGEN_EXECUTABLE} dir)
+  set(ext_input_dirs "${ext_input_dirs} \"${dir}\"")
+endforeach (dir)
+
+configure_file(${srcdir_orig}/API.doxy ${outfile} COPY_ONLY)
+process_doxyfile(${outfile} ${DOXYGEN_EXECUTABLE} ${doxygen_ver})
+
+file(READ "${outfile}" string)
 
 # Be sure to quote ${string} to avoid interpretation (semicolons removed, etc.)
 # i#113: be sure to quote all paths to handle spaces
 
 # FIXME i#59: if epstopdf and latex are available, set "GENERATE_LATEX" to "YES"
 
-# Executed inside build dir, so we leave genimages and footer.html alone
+# Executed inside build dir, so we leave genimages alone
 # and have to fix up refs to source dir and subdirs
 string(REGEX REPLACE
   "(INPUT[ \t]*=) *\\."
@@ -111,10 +81,17 @@ string(REGEX REPLACE
   "\\1\"${srcdir}/images\"" string "${string}")
 string(REGEX REPLACE
   "(header.html)"
-  "\"${srcdir}/\\1\"" string "${string}")
+  "\"${gendox_dir}/\\1\"" string "${string}")
 string(REGEX REPLACE
-  "(htmlstyle.css)"
-  "\"${srcdir}/\\1\"" string "${string}")
+  "(footer.html)"
+  "\"${gendox_dir}/\\1\"" string "${string}")
+
+if (doxygen_ver STRGREATER "1.7.2")
+  # For 1.7.3+ we use xml file to tweak treeview contents
+  string(REGEX REPLACE
+    "(TREEVIEW_WIDTH[^\n]*)"
+    "\\1\nLAYOUT_FILE = \"${gendox_dir}/DoxygenLayout.xml\"" string "${string}")
+endif ()
 
 string(REGEX REPLACE
   # if I don't quote ${string}, then this works: [^$]*$

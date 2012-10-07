@@ -56,17 +56,6 @@ if (UNIX)
   set(install_build_args "install")
   set(install_path_cache "CMAKE_INSTALL_PREFIX:PATH=${installpath}
     ")
-  # Each individual 64-bit build should also set TEST_32BIT_PATH and one of
-  # these.  Note that we put BOTH dirs on the path, so we can run the other test
-  # (loader will bypass name match if wrong elf class).
-  # FIXME i#145: should we use this dual path as a solution for cross-arch execve?
-  # Only if we verify it works on all versions of ld.
-  set(use_lib64_debug_cache
-    "TEST_LIB_PATH:PATH=${installpath}/lib64/debug:${installpath}/lib32/debug
-    ")
-  set(use_lib64_release_cache
-    "TEST_LIB_PATH:PATH=${installpath}/lib64/release:${installpath}/lib64/release
-    ")
 else (UNIX)
   set(install_build_args "")
 endif (UNIX)
@@ -87,19 +76,8 @@ testbuild_ex("debug-internal-64" ON "
   INTERNAL:BOOL=ON
   BUILD_TESTS:BOOL=ON
   ${install_path_cache}
-  ${use_lib64_debug_cache}
   TEST_32BIT_PATH:PATH=${last_build_dir}/suite/tests/bin
   " OFF ON "${install_build_args}")
-testbuild("debug-unit-tests-32" OFF "
-  DEBUG:BOOL=ON
-  INTERNAL:BOOL=ON
-  STANDALONE_UNIT_TEST:BOOL=ON
-  ")
-testbuild("debug-unit-tests-64" ON "
-  DEBUG:BOOL=ON
-  INTERNAL:BOOL=ON
-  STANDALONE_UNIT_TEST:BOOL=ON
-  ")
 # ensure extensions built as static libraries work
 # no tests needed: we ensure instrcalls and drsyms_bench build
 testbuild("debug-i32-static-ext" OFF "
@@ -131,7 +109,6 @@ testbuild_ex("release-external-64" ON "
   DEBUG:BOOL=OFF
   INTERNAL:BOOL=OFF
   ${install_path_cache}
-  ${use_lib64_release_cache}
   TEST_32BIT_PATH:PATH=${last_build_dir}/suite/tests/bin
   " OFF OFF "${install_build_args}")
 if (DO_ALL_BUILDS)

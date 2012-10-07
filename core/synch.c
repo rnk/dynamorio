@@ -260,8 +260,7 @@ is_native_thread_state_valid(dcontext_t *dcontext, app_pc pc, byte *esp)
     ASSERT(esp != NULL);
     ASSERT(is_thread_currently_native(dcontext->thread_record));
     return (!is_in_dynamo_dll(pc) &&
-            IF_WINDOWS(!is_in_interception_buffer(pc) &&)
-            IF_WINDOWS(!vmvector_overlap(landing_pad_areas, pc, pc + 1) &&)
+            IF_WINDOWS(!is_part_of_interception(pc) &&)
             (!in_generated_routine(dcontext, pc) ||
              /* we allow native thread to be at do_syscall - for int syscalls the pc
               * (syscall return point) will be in do_syscall (so in generated routine)
@@ -517,6 +516,16 @@ should_wait_at_safe_spot(dcontext_t *dcontext)
 {
     thread_synch_data_t *tsd = (thread_synch_data_t *) dcontext->synch_field;
     return (tsd->pending_synch_count != 0);
+}
+
+/* use with care!  normally check_wait_at_safe_spot() should be called instead */
+void
+set_synch_state(dcontext_t *dcontext, thread_synch_permission_t state)
+{
+    thread_synch_data_t *tsd = (thread_synch_data_t *) dcontext->synch_field;
+    spinmutex_lock(tsd->synch_lock);
+    tsd->synch_perm = state;
+    spinmutex_unlock(tsd->synch_lock);
 }
 
 /* checks to see if any threads are waiting to synch with this one and waits 

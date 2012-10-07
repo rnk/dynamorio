@@ -1,5 +1,5 @@
 /* **********************************************************
- * Copyright (c) 2011 Google, Inc.  All rights reserved.
+ * Copyright (c) 2011-2012 Google, Inc.  All rights reserved.
  * Copyright (c) 2008-2010 VMware, Inc.  All rights reserved.
  * **********************************************************/
 
@@ -194,6 +194,9 @@ enum {
 #ifdef WINDOWS
     /* do not created a persistent cache from this module */
     MODULE_DO_NOT_PERSIST  = 0x00000040,
+#endif
+#ifdef CLIENT_INTERFACE
+    MODULE_NULL_INSTRUMENT = 0x00000080,
 #endif
 };
 
@@ -430,11 +433,12 @@ typedef struct _privmod_t {
     char path[MAXIMUM_PATH];
     uint ref_count;
     bool externally_loaded;
+#ifdef CLIENT_INTERFACE
+    bool is_client; /* or Extension */
+#endif
     struct _privmod_t *next;
     struct _privmod_t *prev;
-#ifdef LINUX
-    os_privmod_data_t *os_privmod_data;
-#endif
+    void *os_privmod_data;
 } privmod_t;
 
 

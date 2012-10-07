@@ -41,6 +41,10 @@
 
 #include "configure.h"
 
+#if defined(X86_64) && !defined(X64)
+# define X64
+#endif
+
 /****************************************************/
 #if defined(ASSEMBLE_WITH_GAS)
 # define START_FILE .text
@@ -104,9 +108,11 @@ ASSUME fs:_DATA @N@\
 # define DECLARE_FUNC(symbol) symbol PROC
 # define DECLARE_EXPORTED_FUNC(symbol) symbol PROC
 # define END_FUNC(symbol) symbol ENDP
-# define DECLARE_GLOBAL(symbol) 
-# define GLOBAL_LABEL(label) 
-# define ADDRTAKEN_LABEL(label) label
+# define DECLARE_GLOBAL(symbol) PUBLIC symbol
+/* XXX: this should be renamed FUNC_ENTRY_LABEL */
+# define GLOBAL_LABEL(label)
+/* use double colon (param always has its own colon) to make label visible outside proc */
+# define ADDRTAKEN_LABEL(label) label:
 # define BYTE byte ptr
 # define WORD word ptr
 # define DWORD dword ptr
@@ -157,7 +163,7 @@ ASSUME fs:_DATA @N@\
 # define END_PROLOG /* nothing */
 /****************************************************/
 #else
-# error Unknown assembler
+# error Unknown assembler: set one of the ASSEMBLE_WITH_{GAS,MASM,NASM} defines
 #endif
 
 /****************************************************/
@@ -222,6 +228,9 @@ ASSUME fs:_DATA @N@\
 # define ARG6 DWORD [24 + esp]
 # define ARG7 DWORD [28 + esp]
 #endif
+
+/* Keep in sync with arch_exports.h. */
+#define FRAME_ALIGNMENT 16
 
 #ifdef X64
 #  define PUSHF   pushfq

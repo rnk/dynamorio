@@ -88,6 +88,10 @@ typedef DWORD cxt_seg_t;
 #include "aslr.h"               /* for aslr_context */
 
 /* you can rely on these increasing with later versions */
+/* XXX: when updating, also update DR_WINDOWS_VERSION_* in instrument.h
+ * and get_windows_version() in suite/tests/tools.h
+ */
+#define WINDOWS_VERSION_8      62
 #define WINDOWS_VERSION_7      61
 #define WINDOWS_VERSION_VISTA  60
 #define WINDOWS_VERSION_2003   52
@@ -382,6 +386,9 @@ void early_inject_init(void);
 void earliest_inject_init(byte *arg_ptr);
 void earliest_inject_cleanup(byte *arg_ptr);
 
+wait_status_t
+os_wait_handle(HANDLE h, uint timeout_ms);
+
 /* in module.c */
 app_pc get_module_preferred_base_safe(app_pc pc);
 app_pc get_module_preferred_base(app_pc pc);
@@ -423,12 +430,29 @@ void callback_interception_exit(void);
 void set_asynch_interception(thread_id_t tid, bool intercept);
 bool intercept_asynch_for_thread(thread_id_t tid, bool intercept_unknown);
 bool intercept_asynch_for_self(bool intercept_unknown);
+
 bool
 is_in_interception_buffer(byte *pc);
+
 bool
-is_syscall_trampoline(byte *pc);
-app_pc get_app_pc_from_intercept_pc(byte *pc);
-bool is_intercepted_app_pc(app_pc pc, byte **interception_pc);
+is_part_of_interception(byte *pc);
+
+bool
+is_syscall_trampoline(byte *pc, byte **tgt);
+
+app_pc
+get_app_pc_from_intercept_pc(byte *pc);
+
+static inline app_pc
+get_app_pc_from_intercept_pc_if_necessary(app_pc pc)
+{
+    if (is_part_of_interception(pc))
+        return get_app_pc_from_intercept_pc(pc);
+    return pc;
+}
+
+bool
+is_intercepted_app_pc(app_pc pc, byte **interception_pc);
 
 /* in inject_shared.c */
 #include "inject_shared.h"
@@ -447,6 +471,13 @@ bool use_ki_syscall_routines(void);
 wchar_t *get_application_cmdline(void);
 const char *
 get_application_short_unqualified_name(void);
+
+/* in syscall.c */
+bool
+syscall_uses_wow64_index();
+
+bool
+syscall_uses_edx_param_base();
 
 /* in loader.c */
 /* Handles a private-library FLS callback called from interpreted app code */

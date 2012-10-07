@@ -168,7 +168,9 @@ static enum {
     (nt_wrappers_intercepted ?                       \
       Nt##name(arg1, __VA_ARGS__) :                  \
       ((dr_which_syscall_t == DR_SYSCALL_WOW64) ?                                    \
-       (((name##_type *) dynamorio_syscall_wow64) (SYS_##name, arg1, __VA_ARGS__)) : \
+       (!syscall_uses_edx_param_base() ?                                             \
+        ((name##_type *) dynamorio_syscall_wow64_noedx)(SYS_##name, arg1, __VA_ARGS__):\
+        (((name##_type *) dynamorio_syscall_wow64) (SYS_##name, arg1, __VA_ARGS__))):\
        ((IF_X64_ELSE(dr_which_syscall_t == DR_SYSCALL_SYSCALL, false)) ?             \
         ((name##_dr_type *) IF_X64_ELSE(dynamorio_syscall_syscall, NULL))            \
          (SYS_##name, __VA_ARGS__, arg1) :                                           \
@@ -513,6 +515,7 @@ syscalls_init()
     app_pc pc = (app_pc) NtYieldExecution;
     app_pc int_target = pc + 9;
     ushort check = *((ushort *)(int_target));
+    HMODULE ntdllh = get_ntdll_base();
 
     windows_version_init();
     ASSERT(syscalls != NULL);
@@ -542,11 +545,22 @@ syscalls_init()
      *    7d61ce49 8d542404         lea     edx,[esp+0x4]
      *    7d61ce4d 64ff15c0000000   call    dword ptr fs:[000000c0]
      *    7d61ce54 c3               ret
-     * x64 syscall (PR 215398):
+     *  x64 syscall (PR 215398):
      *    00000000`78ef16c0 4c8bd1          mov     r10,rcx
      *    00000000`78ef16c3 b843000000      mov     eax,43h
      *    00000000`78ef16c8 0f05            syscall
      *    00000000`78ef16ca c3              ret
+     *  win8 sysenter w/ co-located "inlined" callee:
+     *    77d7422c b801000000      mov     eax,1
+     *    77d74231 e801000000      call    ntdll!NtYieldExecution+0xb (77d74237)
+     *    77d74236 c3              ret
+     *    77d74237 8bd4            mov     edx,esp
+     *    77d74239 0f34            sysenter
+     *    77d7423b c3              ret
+     *  win8 wow64 syscall (has no ecx):
+     *    777311bc b844000100      mov     eax,10044h
+     *    777311c1 64ff15c0000000  call    dword ptr fs:[0C0h]
+     *    777311c8 c3              ret
      */
     if (check == 0x2ecd) {
         dr_which_syscall_t = DR_SYSCALL_INT2E;
@@ -554,14 +568,18 @@ syscalls_init()
         int_syscall_address = int_target;
         /* ASSERT is simple ret (i.e. 0 args) */
         ASSERT(*(byte *)(int_target + 2) == 0xc3 /* ret 0 */);
-    } else if (check == 0x8d00) {
+    } else if (check == 0x8d00 ||
+               check == 0x0000/* win8 */) {
         ASSERT(is_wow64_process(NT_CURRENT_PROCESS));
         dr_which_syscall_t = DR_SYSCALL_WOW64;
         set_syscall_method(SYSCALL_METHOD_WOW64);
-        /* FIXME: check for and support other platforms */
-        wow64_index = (int *) windows_XP_wow64_index;
-        ASSERT(*((uint *)(int_target+5)) == 0xc015ff64);
-        ASSERT(*((uint *)(int_target+8)) == WOW64_TIB_OFFSET);
+        if (check == 0x8d00) /* xp through win7 */
+            wow64_index = (int *) windows_XP_wow64_index;
+        DOCHECK(1, {
+            int call_start_offs = (check == 0x8d00) ? 5 : -4;
+            ASSERT(*((uint *)(int_target+call_start_offs)) == 0xc015ff64);
+            ASSERT(*((uint *)(int_target+call_start_offs+3)) == WOW64_TIB_OFFSET);
+        });
         DOCHECK(1, {
             /* We assume syscalls go through teb->WOW32Reserved */
             TEB *teb = get_own_teb();
@@ -574,8 +592,7 @@ syscalls_init()
         /* ASSERT is syscall */
         ASSERT(*(byte *)(int_target - 1) == 0x0f);
 #endif
-    } else {
-        ASSERT(check == 0xff7f);
+    } else if (check == 0xff7f) {
         /* verifiy is call %edx or call [%edx] followed by ret 0 [0xc3] */
         ASSERT(*((ushort *)(int_target+2)) == 0xc3d2 ||
                *((ushort *)(int_target+2)) == 0xc312);
@@ -588,6 +605,15 @@ syscalls_init()
         sysenter_ret_address = (app_pc)int_target+3; /* save addr of ret */
         set_syscall_method(SYSCALL_METHOD_SYSENTER);
         dr_which_syscall_t = DR_SYSCALL_SYSENTER;
+    } else {
+        /* win8: call followed by ret */
+        ASSERT(check == 0xc300 || check == 0xc200);
+        IF_X64(ASSERT_NOT_IMPLEMENTED(false));
+        /* kernel returns control to KiFastSystemCallRet, not local sysenter, of course */
+        sysenter_ret_address = (app_pc) get_proc_address(ntdllh, "KiFastSystemCallRet");
+        ASSERT(sysenter_ret_address != NULL);
+        set_syscall_method(SYSCALL_METHOD_SYSENTER);
+        dr_which_syscall_t = DR_SYSCALL_SYSENTER;
     }
     
     /* Prime use_ki_syscall_routines() */
@@ -598,21 +624,25 @@ syscalls_init()
      */
     DOCHECK(1, {
         int i;
-        HMODULE h = get_ntdll_base();
-        ASSERT(h != NULL);
+        ASSERT(ntdllh != NULL);
         for (i = 0; i < SYS_MAX; i++) {
             if (syscalls[i] == SYSCALL_NOT_PRESENT)
                 continue;
             /* note that this check allows a hooker so we'll need a
              * better way of determining syscall numbers 
              */
-            CHECK_SYSNUM_AT((byte *) get_proc_address(h, syscall_names[i]), i);
+            CHECK_SYSNUM_AT((byte *) get_proc_address(ntdllh, syscall_names[i]), i);
         }
     });
 }
 
 /* Returns true if machine is using the Ki*SysCall routines (indirection via vsyscall
- * page), false otherwise. */
+ * page), false otherwise.
+ *
+ * XXX: on win8, KiFastSystemCallRet is used, but KiFastSystemCall is never
+ * executed even though it exists.  This routine returns true there (we have not
+ * yet set up the versions so can't just call get_os_version()).
+ */
 bool
 use_ki_syscall_routines()
 {
@@ -1345,6 +1375,8 @@ tls_alloc_helper(int synch, uint *teb_offs /* OUT */, int num_slots,
 {
     PEB *peb = get_own_peb();
     uint start;
+    RTL_BITMAP local_bitmap;
+    bool using_local_bitmap = false;
 
     NTSTATUS res;
     GET_NTDLL(RtlEnterCriticalSection, (IN OUT RTL_CRITICAL_SECTION *crit));
@@ -1378,7 +1410,17 @@ tls_alloc_helper(int synch, uint *teb_offs /* OUT */, int num_slots,
      * into the TlsExpansionBitMap 
      */
 
-    ASSERT(peb->TlsBitmap != NULL);
+    if (peb->TlsBitmap == NULL) {
+        /* Not initialized yet so use a temp struct to point at the real bits.
+         * FIXME i#812: ensure our bits here don't get zeroed when ntdll is initialized
+         */
+        ASSERT(dr_earliest_injected);
+        using_local_bitmap = true;
+        peb->TlsBitmap = &local_bitmap;
+        local_bitmap.SizeOfBitMap = 64;
+        local_bitmap.BitMapBuffer = (void *) &peb->TlsBitmapBits;
+    } else
+        ASSERT(peb->TlsBitmap != NULL);
     /* TlsBitmap always points to next field, TlsBitmapBits, but we'll only
      * use the pointer for generality
      */
@@ -1533,6 +1575,9 @@ tls_alloc_helper(int synch, uint *teb_offs /* OUT */, int num_slots,
     });
     
  tls_alloc_exit:
+    if (using_local_bitmap)
+        peb->TlsBitmap = NULL;
+
     if (synch) {
         res = RtlLeaveCriticalSection(peb->FastPebLock);
         if (!NT_SUCCESS(res))
@@ -1883,6 +1928,16 @@ nt_remote_protect_virtual_memory(HANDLE process,
     return NT_SUCCESS(res);
 }
 
+NTSTATUS
+nt_remote_query_virtual_memory(HANDLE process, const byte *pc,
+                               MEMORY_BASIC_INFORMATION *mbi, size_t mbilen, size_t *got)
+{
+    ASSERT(mbilen == sizeof(MEMORY_BASIC_INFORMATION));
+    memset(mbi, 0, sizeof(MEMORY_BASIC_INFORMATION));
+    return NT_SYSCALL(QueryVirtualMemory, process, pc, MemoryBasicInformation,
+                      mbi, mbilen, (PSIZE_T)got);
+}
+
 /* We use this instead of VirtualQuery b/c there are problems using
  * win32 API routines inside of the app using them
  */
@@ -1891,11 +1946,8 @@ size_t
 query_virtual_memory(const byte *pc, MEMORY_BASIC_INFORMATION *mbi, size_t mbilen)
 {
     NTSTATUS res;
-    SIZE_T got;
-    ASSERT(mbilen == sizeof(MEMORY_BASIC_INFORMATION));
-    memset(mbi, 0, sizeof(MEMORY_BASIC_INFORMATION));
-    res = NT_SYSCALL(QueryVirtualMemory, NT_CURRENT_PROCESS, pc, MemoryBasicInformation,
-                        mbi, mbilen, &got);
+    size_t got;
+    res = nt_remote_query_virtual_memory(NT_CURRENT_PROCESS, pc, mbi, mbilen, &got);
     ASSERT(!NT_SUCCESS(res) || got == sizeof(MEMORY_BASIC_INFORMATION));
     /* only 0 and sizeof(MEMORY_BASIC_INFORMATION) should be expected by callers */
     if (!NT_SUCCESS(res))
@@ -2585,7 +2637,8 @@ bool
 env_get_value(PCWSTR var, wchar_t *val, size_t valsz)
 {
     PEB *peb = get_own_peb();
-    PWSTR env = (PWSTR) peb->ProcessParameters->Environment;
+    PWSTR env = (PWSTR)
+        get_process_param_buf(peb->ProcessParameters, peb->ProcessParameters->Environment);
     NTSTATUS res;
     UNICODE_STRING var_us, val_us;
     GET_NTDLL(RtlQueryEnvironmentVariable_U, (PWSTR Environment,
@@ -2882,10 +2935,6 @@ get_application_name()
 {
     static char exename[MAXIMUM_PATH];
     if (!exename[0]) {
-        /* FIXME i#234: for earliest injection wchart_t-to-char conversion
-         * via ntdll _snprintf crashes b/c locale or sthg not init: need to
-         * have our_snprintf handle %ls
-         */
         snprintf(exename, BUFFER_SIZE_ELEMENTS(exename), "%ls",
                  get_own_qualified_name());
         NULL_TERMINATE_BUFFER(exename);
@@ -2932,10 +2981,39 @@ get_application_pid()
 }
 #endif /* NOT_DYNAMORIO_CORE */
 
-wchar_t *get_application_cmdline()
+wchar_t *
+get_process_param_buf(RTL_USER_PROCESS_PARAMETERS *params, wchar_t *buf)
+{
+#if !defined(NOT_DYNAMORIO_CORE_PROPER) && !defined(NOT_DYNAMORIO_CORE)
+    /* Many of the UNICODE_STRING.Buffer fields contain a relative offset
+     * from the start of ProcessParameters as set by the parent process,
+     * until the child's init updates it, on pre-Vista.
+     * Xref the adjustments done inside the routines here that read
+     * a child's params.
+     */
+    if (dr_earliest_injected && get_os_version() < WINDOWS_VERSION_VISTA &&
+        /* sanity check: some may be real ptrs, such as Environment which
+         * we replaced from parent.  the offsets should all be small, laid
+         * out after the param struct.
+         */
+        (ptr_uint_t)buf < 64*1024) {
+        return (wchar_t *) ((ptr_uint_t)buf + (ptr_uint_t)params);
+    } else
+        return buf;
+#else
+    /* Shouldn't need this routine since shouldn't be reading own params, but
+     * rather than ifdef-ing out all callers we just make it work
+     */
+    return buf;
+#endif
+}
+
+wchar_t *
+get_application_cmdline(void)
 {
     PEB *peb = get_own_peb();
-    return peb->ProcessParameters->CommandLine.Buffer;
+    return get_process_param_buf(peb->ProcessParameters,
+                                 peb->ProcessParameters->CommandLine.Buffer);
 }
 
 static LONGLONG
@@ -2963,19 +3041,11 @@ query_time_millis()
 uint
 query_time_seconds()
 {
-    /* see query_time_100ns comments on KUSER_SHARED_DATA */
-    LARGE_INTEGER systime;
-    GET_NTDLL(NtQuerySystemTime, (IN PLARGE_INTEGER SystemTime));
-    
-    NtQuerySystemTime(&systime);
-    {
-        ULONG sec;
-        GET_NTDLL (RtlTimeToSecondsSince1970, (IN PLARGE_INTEGER SystemTime,
-                                               OUT PULONG Seconds));
-        /* we ignore result, it is not NT_SUCCESS */
-        RtlTimeToSecondsSince1970(&systime, &sec);
-        return sec;
-    }
+    /* ntdll provides RtlTimeToSecondsSince1970 but we've standardized on
+     * UTC so we just divide ourselves
+     */
+    uint64 ms = query_time_millis();
+    return (uint) (ms / 1000);
 }
 
 /* uses convert_millis_to_date() in utils.c so core-only for simpler linking */
@@ -3949,7 +4019,9 @@ static wchar_t *
 copy_environment(HANDLE hProcess)
 {
     /* this is precisely what KERNEL32!GetEnvironmentStringsW returns: */
-    wchar_t *env = (wchar_t *) get_own_peb()->ProcessParameters->Environment;
+    wchar_t *env = (wchar_t *)
+        get_process_param_buf(get_own_peb()->ProcessParameters,
+                              get_own_peb()->ProcessParameters->Environment);
     SIZE_T n;
     SIZE_T m;
     void *p;

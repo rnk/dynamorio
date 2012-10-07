@@ -1,5 +1,5 @@
 /* **********************************************************
- * Copyright (c) 2011 Google, Inc.  All rights reserved.
+ * Copyright (c) 2011-2012 Google, Inc.  All rights reserved.
  * Copyright (c) 2008-2010 VMware, Inc.  All rights reserved.
  * **********************************************************/
 
@@ -59,6 +59,12 @@
 /* PR 212090: the signal we use to suspend threads */
 #define SUSPEND_SIGNAL SIGUSR2
 
+/* Clone flags use by pthreads on Linux 2.6.38.  May need updating over time.
+ */
+#define PTHREAD_CLONE_FLAGS (CLONE_VM|CLONE_FS|CLONE_FILES|CLONE_SIGHAND| \
+                             CLONE_THREAD|CLONE_SYSVSEM|CLONE_SETTLS| \
+                             CLONE_PARENT_SETTID|CLONE_CHILD_CLEARTID)
+
 /* thread-local data that's os-private, for modularity */
 typedef struct _os_thread_data_t {
     /* store stack info at thread startup, since stack can get fragmented in
@@ -80,6 +86,11 @@ typedef struct _os_thread_data_t {
      */
     mutex_t suspend_lock;
     int suspend_count;
+
+    /* Thread synchronization data held across a fork. */
+    thread_record_t **fork_threads;
+    int fork_num_threads;
+
     /* We would use event_t's here except we can't use mutexes in
      * our signal handler 
      */
@@ -105,16 +116,20 @@ typedef struct _os_thread_data_t {
     /* PR 450670: for re-entrant suspend signals */
     int processing_signal;
 
-    /* i#107: mangle segment register usage conflicts between app and dr. */
+    /* i#107: If -mangle_app_seg is on, these hold the bases for both SEG_TLS
+     * and LIB_SEG_TLS.  If -mangle_app_seg is off, the base for LIB_SEG_TLS
+     * will be NULL, but the base for SEG_TLS will still be present.
+     */
     void *dr_fs_base;
     void *dr_gs_base;
     void *app_thread_areas; /* data structure for app's thread area info */
 } os_thread_data_t;
 
 /* in os.c */
-uint memprot_to_osprot(uint prot);
+void os_thread_take_over(priv_mcontext_t *mc);
 
-void os_inject_init(app_pc dll_start, app_pc dll_end, const char *dll_path);
+void
+set_executable_path(const char *);
 
 /* in signal.c */
 struct _kernel_sigaction_t;
@@ -148,6 +163,9 @@ mcontext_to_sigcontext(struct sigcontext *sc, priv_mcontext_t *mc);
 
 bool
 set_default_signal_action(int sig);
+
+void
+share_siginfo_after_take_over(dcontext_t *dcontext, dcontext_t *takeover_dc);
 
 void start_itimer(dcontext_t *dcontext);
 void stop_itimer(dcontext_t *dcontext);
@@ -208,5 +226,10 @@ extern bool kernel_futex_support;
 #ifdef VMX86_SERVER
 #  include "vmkuw.h"
 #endif
+
+/* in nudgesig.c */
+bool
+create_nudge_signal_payload(siginfo_t *info OUT, uint action_mask,
+                            client_id_t client_id, uint64 client_arg);
 
 #endif /* _OS_PRIVATE_H_ */

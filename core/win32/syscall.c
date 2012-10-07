@@ -76,108 +76,148 @@ app_pc sysenter_ret_address = NULL;
 /*******************************************************/
 
 const char * const syscall_names[] = {
-#define SYSCALL(name, act, nargs, arg32, w7x64, w7, vista_sp1_x64, vista_sp1, \
-                vista_sp0_x64, vista_sp0, tk3, xp64, wow64, xp, tk, ntsp4, ntsp3, ntsp0) \
+#define SYSCALL(name, act, nargs, arg32, ntsp0, ntsp3, ntsp4, w2k, xp, wow64, xp64,\
+                w2k3, vista0, vista0_x64, vista1, vista1_x64, w7x86, w7x64,        \
+                w8x86, w8w64, w8x64)                                               \
     "Nt"#name,
 #include "syscallx.h"
 #undef SYSCALL
 };
+const int windows_8_x64_syscalls[] = {
+#define SYSCALL(name, act, nargs, arg32, ntsp0, ntsp3, ntsp4, w2k, xp, wow64, xp64,\
+                w2k3, vista0, vista0_x64, vista1, vista1_x64, w7x86, w7x64,        \
+                w8x86, w8w64, w8x64)                                               \
+    w8x64,
+#include "syscallx.h"
+#undef SYSCALL
+};
+const int windows_8_wow64_syscalls[] = {
+#define SYSCALL(name, act, nargs, arg32, ntsp0, ntsp3, ntsp4, w2k, xp, wow64, xp64,\
+                w2k3, vista0, vista0_x64, vista1, vista1_x64, w7x86, w7x64,        \
+                w8x86, w8w64, w8x64)                                               \
+    w8w64,
+#include "syscallx.h"
+#undef SYSCALL
+};
+const int windows_8_x86_syscalls[] = {
+#define SYSCALL(name, act, nargs, arg32, ntsp0, ntsp3, ntsp4, w2k, xp, wow64, xp64,\
+                w2k3, vista0, vista0_x64, vista1, vista1_x64, w7x86, w7x64,        \
+                w8x86, w8w64, w8x64)                                               \
+    w8x86,
+#include "syscallx.h"
+#undef SYSCALL
+};
 const int windows_7_x64_syscalls[] = {
-#define SYSCALL(name, act, nargs, arg32, w7x64, w7, vista_sp1_x64, vista_sp1, \
-                vista_sp0_x64, vista_sp0, tk3, xp64, wow64, xp, tk, ntsp4, ntsp3, ntsp0) \
+#define SYSCALL(name, act, nargs, arg32, ntsp0, ntsp3, ntsp4, w2k, xp, wow64, xp64,\
+                w2k3, vista0, vista0_x64, vista1, vista1_x64, w7x86, w7x64,        \
+                w8x86, w8w64, w8x64)                                               \
     w7x64,
 #include "syscallx.h"
 #undef SYSCALL
 };
 const int windows_7_syscalls[] = {
-#define SYSCALL(name, act, nargs, arg32, w7x64, w7, vista_sp1_x64, vista_sp1, \
-                vista_sp0_x64, vista_sp0, tk3, xp64, wow64, xp, tk, ntsp4, ntsp3, ntsp0) \
-    w7,
+#define SYSCALL(name, act, nargs, arg32, ntsp0, ntsp3, ntsp4, w2k, xp, wow64, xp64,\
+                w2k3, vista0, vista0_x64, vista1, vista1_x64, w7x86, w7x64,        \
+                w8x86, w8w64, w8x64)                                               \
+    w7x86,
 #include "syscallx.h"
 #undef SYSCALL
 };
 const int windows_vista_sp1_x64_syscalls[] = {
-#define SYSCALL(name, act, nargs, arg32, w7x64, w7, vista_sp1_x64, vista_sp1, \
-                vista_sp0_x64, vista_sp0, tk3, xp64, wow64, xp, tk, ntsp4, ntsp3, ntsp0) \
-    vista_sp1_x64,
+#define SYSCALL(name, act, nargs, arg32, ntsp0, ntsp3, ntsp4, w2k, xp, wow64, xp64,\
+                w2k3, vista0, vista0_x64, vista1, vista1_x64, w7x86, w7x64,        \
+                w8x86, w8w64, w8x64)                                               \
+    vista1_x64,
 #include "syscallx.h"
 #undef SYSCALL
 };
 const int windows_vista_sp1_syscalls[] = {
-#define SYSCALL(name, act, nargs, arg32, w7x64, w7, vista_sp1_x64, vista_sp1, \
-                vista_sp0_x64, vista_sp0, tk3, xp64, wow64, xp, tk, ntsp4, ntsp3, ntsp0) \
-    vista_sp1,
+#define SYSCALL(name, act, nargs, arg32, ntsp0, ntsp3, ntsp4, w2k, xp, wow64, xp64,\
+                w2k3, vista0, vista0_x64, vista1, vista1_x64, w7x86, w7x64,        \
+                w8x86, w8w64, w8x64)                                               \
+    vista1,
 #include "syscallx.h"
 #undef SYSCALL
 };
 const int windows_vista_sp0_x64_syscalls[] = {
-#define SYSCALL(name, act, nargs, arg32, w7x64, w7, vista_sp1_x64, vista_sp1, \
-                vista_sp0_x64, vista_sp0, tk3, xp64, wow64, xp, tk, ntsp4, ntsp3, ntsp0) \
-    vista_sp0_x64,
+#define SYSCALL(name, act, nargs, arg32, ntsp0, ntsp3, ntsp4, w2k, xp, wow64, xp64,\
+                w2k3, vista0, vista0_x64, vista1, vista1_x64, w7x86, w7x64,        \
+                w8x86, w8w64, w8x64)                                               \
+    vista0_x64,
 #include "syscallx.h"
 #undef SYSCALL
 };
 const int windows_vista_sp0_syscalls[] = {
-#define SYSCALL(name, act, nargs, arg32, w7x64, w7, vista_sp1_x64, vista_sp1, \
-                vista_sp0_x64, vista_sp0, tk3, xp64, wow64, xp, tk, ntsp4, ntsp3, ntsp0) \
-    vista_sp0,
+#define SYSCALL(name, act, nargs, arg32, ntsp0, ntsp3, ntsp4, w2k, xp, wow64, xp64,\
+                w2k3, vista0, vista0_x64, vista1, vista1_x64, w7x86, w7x64,        \
+                w8x86, w8w64, w8x64)                                               \
+    vista0,
 #include "syscallx.h"
 #undef SYSCALL
 };
 const int windows_2003_syscalls[] = {
-#define SYSCALL(name, act, nargs, arg32, w7x64, w7, vista_sp1_x64, vista_sp1, \
-                vista_sp0_x64, vista_sp0, tk3, xp64, wow64, xp, tk, ntsp4, ntsp3, ntsp0) \
-    tk3,
+#define SYSCALL(name, act, nargs, arg32, ntsp0, ntsp3, ntsp4, w2k, xp, wow64, xp64,\
+                w2k3, vista0, vista0_x64, vista1, vista1_x64, w7x86, w7x64,        \
+                w8x86, w8w64, w8x64)                                               \
+    w2k3,
 #include "syscallx.h"
 #undef SYSCALL
 };
 const int windows_XP_x64_syscalls[] = {
-#define SYSCALL(name, act, nargs, arg32, w7x64, w7, vista_sp1_x64, vista_sp1, \
-                vista_sp0_x64, vista_sp0, tk3, xp64, wow64, xp, tk, ntsp4, ntsp3, ntsp0) \
+#define SYSCALL(name, act, nargs, arg32, ntsp0, ntsp3, ntsp4, w2k, xp, wow64, xp64,\
+                w2k3, vista0, vista0_x64, vista1, vista1_x64, w7x86, w7x64,        \
+                w8x86, w8w64, w8x64)                                               \
     xp64,
 #include "syscallx.h"
 #undef SYSCALL
 };
+/* This is the index for XP through Win7. */
 const int windows_XP_wow64_index[] = {
-#define SYSCALL(name, act, nargs, arg32, w7x64, w7, vista_sp1_x64, vista_sp1, \
-                vista_sp0_x64, vista_sp0, tk3, xp64, wow64, xp, tk, ntsp4, ntsp3, ntsp0) \
+#define SYSCALL(name, act, nargs, arg32, ntsp0, ntsp3, ntsp4, w2k, xp, wow64, xp64,\
+                w2k3, vista0, vista0_x64, vista1, vista1_x64, w7x86, w7x64,        \
+                w8x86, w8w64, w8x64)                                               \
     wow64,
 #include "syscallx.h"
 #undef SYSCALL
 };
 const int windows_XP_syscalls[] = {
-#define SYSCALL(name, act, nargs, arg32, w7x64, w7, vista_sp1_x64, vista_sp1, \
-                vista_sp0_x64, vista_sp0, tk3, xp64, wow64, xp, tk, ntsp4, ntsp3, ntsp0) \
+#define SYSCALL(name, act, nargs, arg32, ntsp0, ntsp3, ntsp4, w2k, xp, wow64, xp64,\
+                w2k3, vista0, vista0_x64, vista1, vista1_x64, w7x86, w7x64,        \
+                w8x86, w8w64, w8x64)                                               \
     xp,
 #include "syscallx.h"
 #undef SYSCALL
 };
 const int windows_2000_syscalls[] = {
-#define SYSCALL(name, act, nargs, arg32, w7x64, w7, vista_sp1_x64, vista_sp1, \
-                vista_sp0_x64, vista_sp0, tk3, xp64, wow64, xp, tk, ntsp4, ntsp3, ntsp0) \
-    tk,
+#define SYSCALL(name, act, nargs, arg32, ntsp0, ntsp3, ntsp4, w2k, xp, wow64, xp64,\
+                w2k3, vista0, vista0_x64, vista1, vista1_x64, w7x86, w7x64,        \
+                w8x86, w8w64, w8x64)                                               \
+    w2k,
 #include "syscallx.h"
 #undef SYSCALL
 };
 const int windows_NT_sp4_syscalls[] = {
-#define SYSCALL(name, act, nargs, arg32, w7x64, w7, vista_sp1_x64, vista_sp1, \
-                vista_sp0_x64, vista_sp0, tk3, xp64, wow64, xp, tk, ntsp4, ntsp3, ntsp0) \
+#define SYSCALL(name, act, nargs, arg32, ntsp0, ntsp3, ntsp4, w2k, xp, wow64, xp64,\
+                w2k3, vista0, vista0_x64, vista1, vista1_x64, w7x86, w7x64,        \
+                w8x86, w8w64, w8x64)                                               \
     ntsp4,
 #include "syscallx.h"
 #undef SYSCALL
 };
 /* for SP3 (and maybe SP2 or SP1 -- haven't checked those) */
 const int windows_NT_sp3_syscalls[] = {
-#define SYSCALL(name, act, nargs, arg32, w7x64, w7, vista_sp1_x64, vista_sp1, \
-                vista_sp0_x64, vista_sp0, tk3, xp64, wow64, xp, tk, ntsp4, ntsp3, ntsp0) \
+#define SYSCALL(name, act, nargs, arg32, ntsp0, ntsp3, ntsp4, w2k, xp, wow64, xp64,\
+                w2k3, vista0, vista0_x64, vista1, vista1_x64, w7x86, w7x64,        \
+                w8x86, w8w64, w8x64)                                               \
     ntsp3,
 #include "syscallx.h"
 #undef SYSCALL
 };
 /* for SP0 (and maybe SP2 or SP1 -- haven't checked those) */
 const int windows_NT_sp0_syscalls[] = {
-#define SYSCALL(name, act, nargs, arg32, w7x64, w7, vista_sp1_x64, vista_sp1, \
-                vista_sp0_x64, vista_sp0, tk3, xp64, wow64, xp, tk, ntsp4, ntsp3, ntsp0) \
+#define SYSCALL(name, act, nargs, arg32, ntsp0, ntsp3, ntsp4, w2k, xp, wow64, xp64,\
+                w2k3, vista0, vista0_x64, vista1, vista1_x64, w7x86, w7x64,        \
+                w8x86, w8w64, w8x64)                                               \
     ntsp0,
 #include "syscallx.h"
 #undef SYSCALL
@@ -186,12 +226,14 @@ const int windows_NT_sp0_syscalls[] = {
 /* for x64 this is the # of args */
 const uint syscall_argsz[] = {
 #ifdef X64
-# define SYSCALL(name, act, nargs, arg32, w7x64, w7, vista_sp1_x64, vista_sp1, \
-                 vista_sp0_x64, vista_sp0, tk3, xp64, wow64, xp, tk, ntsp4, ntsp3, ntsp0) \
+# define SYSCALL(name, act, nargs, arg32, ntsp0, ntsp3, ntsp4, w2k, xp, wow64, xp64,\
+                 w2k3, vista0, vista0_x64, vista1, vista1_x64, w7x86, w7x64,        \
+                 w8x86, w8w64, w8x64)                                               \
     nargs,
 #else
-# define SYSCALL(name, act, nargs, arg32, w7x64, w7, vista_sp1_x64, vista_sp1, \
-                 vista_sp0_x64, vista_sp0, tk3, xp64, wow64, xp, tk, ntsp4, ntsp3, ntsp0) \
+# define SYSCALL(name, act, nargs, arg32, ntsp0, ntsp3, ntsp4, w2k, xp, wow64, xp64,\
+                 w2k3, vista0, vista0_x64, vista1, vista1_x64, w7x86, w7x64,        \
+                 w8x86, w8w64, w8x64)                                               \
     arg32,
 #endif
 #include "syscallx.h"
@@ -202,8 +244,9 @@ const uint syscall_argsz[] = {
  * dynamically changed since this flag is used early on by
  * intercept_native_syscall() */
 static const int syscall_requires_action[] = {
-#define SYSCALL(name, act, nargs, arg32, w7x64, w7, vista_sp1_x64, vista_sp1, \
-                vista_sp0_x64, vista_sp0, tk3, xp64, wow64, xp, tk, ntsp4, ntsp3, ntsp0) \
+#define SYSCALL(name, act, nargs, arg32, ntsp0, ntsp3, ntsp4, w2k, xp, wow64, xp64,\
+                w2k3, vista0, vista0_x64, vista1, vista1_x64, w7x86, w7x64,        \
+                w8x86, w8w64, w8x64)                                               \
     act,
 #include "syscallx.h"
 #undef SYSCALL
@@ -476,8 +519,11 @@ syscall_while_native(app_state_at_intercept_t *state)
          * of the currently used ones are problematic). Also calling
          * through Sygate hooks may reach here.
          */
-        SYSLOG_INTERNAL_WARNING_ONCE("syscall_while_native: using %s - maybe hooked?",
-                                     syscall_names[sysnum]);
+        /* i#924: this happens at exit during os_loader_exit() */
+        if (IF_CLIENT_INTERFACE_ELSE(!dynamo_exited, true)) {
+            SYSLOG_INTERNAL_WARNING_ONCE("syscall_while_native: using %s - maybe hooked?",
+                                         syscall_names[sysnum]);
+        }
     });
     STATS_INC(num_syscall_trampolines_DR);
     LOG(THREAD, LOG_SYSCALLS, 1,
@@ -740,6 +786,23 @@ is_newly_created_process(HANDLE process_handle)
     return false;
 }
 
+/* Rather than split up get_syscall_method() we have routines like these
+ * to query variations
+ */
+bool
+syscall_uses_wow64_index()
+{
+    ASSERT(get_syscall_method() == SYSCALL_METHOD_WOW64);
+    return (get_os_version() < WINDOWS_VERSION_8);
+}
+
+bool
+syscall_uses_edx_param_base()
+{
+    return (get_syscall_method() != SYSCALL_METHOD_WOW64 ||
+            get_os_version() < WINDOWS_VERSION_8);
+}
+
 /* FIXME : For int/syscall we can just subtract 2 from the post syscall pc but for
  * sysenter we do the post-syscall ret native and therefore we've lost the 
  * address of the actual syscall, but we are only going to use this for 
@@ -775,7 +838,11 @@ pre_system_call_param_base(priv_mcontext_t *mc)
 #ifdef X64
     reg_t *param_base = (reg_t *) mc->xsp;
 #else
-    reg_t *param_base = (reg_t *) mc->xdx;
+    /* On Win8, wow64 syscalls do not point edx at the params and
+     * instead simply use esp.
+     */
+    reg_t *param_base = (reg_t *)
+        (syscall_uses_edx_param_base() ? mc->xdx : mc->xsp);
 #endif
     param_base += (SYSCALL_PARAM_OFFSET() / sizeof(reg_t));
     return param_base;
@@ -1373,6 +1440,7 @@ presys_TerminateProcess(dcontext_t *dcontext, reg_t *param_base)
         KSTOP(pre_syscall);
         KSTOP(num_exits_dir_syscall);
         /* FIXME: what if syscall returns w/ STATUS_PROCESS_IS_TERMINATING? */
+        os_terminate_wow64_write_args(true/*process*/, process_handle, exit_status);
         cleanup_and_terminate(dcontext, syscalls[SYS_TerminateProcess],
                               IF_X64_ELSE(mc->xcx, mc->xdx),
                               mc->xdx, true /* entire process */);
@@ -1385,7 +1453,9 @@ static void
 presys_TerminateThread(dcontext_t *dcontext, reg_t *param_base)
 {
     priv_mcontext_t *mc = get_mcontext(dcontext);
+    /* NtTerminateThread(IN HANDLE ThreadHandle OPTIONAL, IN NTSTATUS ExitStatus) */
     HANDLE thread_handle = (HANDLE) sys_param(dcontext, param_base, 0);
+    NTSTATUS exit_status = (NTSTATUS) sys_param(dcontext, param_base, 1);
     /* need to determine which thread is being terminated
      * it's harder than you'd think -- we can get its handle but
      * the handle may have been duplicated, no way to test
@@ -1448,6 +1518,7 @@ presys_TerminateThread(dcontext_t *dcontext, reg_t *param_base)
 
         KSTOP(pre_syscall);
         KSTOP(num_exits_dir_syscall);
+        os_terminate_wow64_write_args(false/*thread*/, thread_handle, exit_status);
         cleanup_and_terminate(dcontext, syscalls[SYS_TerminateThread],
                               IF_X64_ELSE(mc->xcx, mc->xdx),
                               mc->xdx, exitproc);
@@ -1670,13 +1741,18 @@ check_for_stack_free(dcontext_t *dcontext, byte *base, size_t size)
 #ifdef PROGRAM_SHEPHERDING
 /* NtAllocateVirtualMemory */
 static void
-presys_AllocateVirtualMemory(dcontext_t *dcontext, reg_t *param_base)
+presys_AllocateVirtualMemory(dcontext_t *dcontext, reg_t *param_base, int sysnum)
 {
     priv_mcontext_t *mc = get_mcontext(dcontext);
     HANDLE process_handle = (HANDLE) sys_param(dcontext, param_base, 0);
     void **pbase = (void **) sys_param(dcontext, param_base, 1);
-    uint type = (uint) sys_param(dcontext, param_base, 4);
-    uint prot = (uint) sys_param(dcontext, param_base, 5);
+    /* XXX i#899: NtWow64AllocateVirtualMemory64 has an extra arg after ZeroBits but
+     * it's ignored in wow64!whNtWow64AllocateVirtualMemory64.  We should keep an eye
+     * out: maybe a future service pack or win9 will use it.
+     */
+    int arg_shift = (sysnum == syscalls[SYS_Wow64AllocateVirtualMemory64] ? 1 : 0);
+    uint type = (uint) sys_param(dcontext, param_base, 4 + arg_shift);
+    uint prot = (uint) sys_param(dcontext, param_base, 5 + arg_shift);
     app_pc base;
     if (is_phandle_me(process_handle) && TEST(MEM_COMMIT, type) &&
         TESTALL(PAGE_EXECUTE_READWRITE, prot)) {
@@ -2061,9 +2137,9 @@ presys_MapViewOfSection(dcontext_t *dcontext, reg_t *param_base)
     }
 }
 
-/* NtUnmapViewOfSection */
+/* NtUnmapViewOfSection{,Ex} */
 static void
-presys_UnmapViewOfSection(dcontext_t *dcontext, reg_t *param_base)
+presys_UnmapViewOfSection(dcontext_t *dcontext, reg_t *param_base, int sysnum)
 {
     /* This is what actually removes a dll from memory */
     priv_mcontext_t *mc = get_mcontext(dcontext);
@@ -2072,6 +2148,13 @@ presys_UnmapViewOfSection(dcontext_t *dcontext, reg_t *param_base)
     app_pc real_base;
     size_t size = get_allocation_size(base, &real_base);
     MEMORY_BASIC_INFORMATION mbi;
+    if (sysnum == syscalls[SYS_UnmapViewOfSectionEx]) {
+        ptr_int_t arg3 = (ptr_int_t) sys_param(dcontext, param_base, 2);
+        /* FIXME i#899: new Win8 syscall w/ 3rd arg that's 0 by default.
+         * We want to know when we see non-zero so we have some code to study.
+         */
+        ASSERT_CURIOSITY(arg3 == 0 && "i#899: unknown new param");
+    }
     LOG(THREAD, LOG_SYSCALLS|LOG_VMAREAS, 1,
         "syscall: NtUnmapViewOfSection "PFX" size="PIFX"\n", base, size);
         
@@ -2233,7 +2316,10 @@ presys_OpenFile(dcontext_t *dcontext, reg_t *param_base)
         /* convert name from unicode to ansi */
         char buf[MAXIMUM_PATH];
         wchar_t *name = obj->ObjectName->Buffer;
-        _snprintf(buf, BUFFER_SIZE_ELEMENTS(buf), "%S", name);
+        /* not always null-terminated */
+        _snprintf(buf, MIN(obj->ObjectName->Length/sizeof(obj->ObjectName->Buffer[0]),
+                           BUFFER_SIZE_ELEMENTS(buf)),
+                  "%S", name);
         NULL_TERMINATE_BUFFER(buf);
         LOG(THREAD, LOG_SYSCALLS|LOG_VMAREAS, 2,
             "syscall: NtOpenFile %s\n", buf);
@@ -2378,8 +2464,10 @@ pre_system_call(dcontext_t *dcontext)
         presys_TerminateThread(dcontext, param_base);
     }
 #ifdef PROGRAM_SHEPHERDING
-    else if (sysnum == syscalls[SYS_AllocateVirtualMemory]) {
-        presys_AllocateVirtualMemory(dcontext, param_base);
+    else if (sysnum == syscalls[SYS_AllocateVirtualMemory] ||
+             /* i#899: new win8 syscall w/ similar params to NtAllocateVirtualMemory */
+             sysnum == syscalls[SYS_Wow64AllocateVirtualMemory64]) {
+        presys_AllocateVirtualMemory(dcontext, param_base, sysnum);
     }
 #endif
     else if (sysnum == syscalls[SYS_FreeVirtualMemory]) {
@@ -2400,9 +2488,10 @@ pre_system_call(dcontext_t *dcontext)
     else if (sysnum == syscalls[SYS_MapViewOfSection]) {
         presys_MapViewOfSection(dcontext, param_base);
     }
-    else if (sysnum == syscalls[SYS_UnmapViewOfSection]) {
+    else if (sysnum == syscalls[SYS_UnmapViewOfSection] ||
+             sysnum == syscalls[SYS_UnmapViewOfSectionEx]) {
         KSTART(pre_syscall_unmap);
-        presys_UnmapViewOfSection(dcontext, param_base);
+        presys_UnmapViewOfSection(dcontext, param_base, sysnum);
         KSTOP(pre_syscall_unmap);
     }
     else if (sysnum == syscalls[SYS_FlushInstructionCache]) {
@@ -2455,6 +2544,12 @@ pre_system_call(dcontext_t *dcontext)
             DODEBUG(dcontext->expect_last_syscall_to_fail = true;);
             goto exit_pre_system_call;
         }
+    }
+    else if (sysnum == syscalls[SYS_SetInformationVirtualMemory]) {
+        /* FIXME i#899: new Win8 syscall NYI.
+         * We want to know when we see it so we have some code to study.
+         */
+        ASSERT_NOT_IMPLEMENTED(false);
     }
 
  exit_pre_system_call:
@@ -2511,11 +2606,13 @@ postsys_CreateUserProcess(dcontext_t *dcontext, reg_t *param_base, bool success)
                 CONTEXT *context;
                 CONTEXT *cxt = NULL;
                 int res;
-                if (get_os_version() >= WINDOWS_VERSION_VISTA &&
-                    is_wow64_process(proc_handle)) {
-                    /* We can't early inject 32-bit DR into a wow64 process as
-                     * there is no ntdll32.dll at early inject point, so we have
-                     * to do thread injection.  On Vista+ we don't see the
+                /* Since this syscall is vista+ only, whether a wow64 process
+                 * has no bearing (xref i#381)
+                 */
+                ASSERT(get_os_version() >= WINDOWS_VERSION_VISTA);
+                if (!DYNAMO_OPTION(early_inject)) {
+                    /* If no early injection we have to do thread injection, and
+                     * on Vista+ we don't see the
                      * NtCreateThread so we do it here.  PR 215423.
                      */
                     context = nt_initialize_context(buf, CONTEXT_DR_STATE);
@@ -2523,19 +2620,32 @@ postsys_CreateUserProcess(dcontext_t *dcontext, reg_t *param_base, bool success)
                     if (NT_SUCCESS(res))
                         cxt = context;
                     else {
+                        /* FIXME i#49: cross-arch injection can end up here w/
+                         * STATUS_INVALID_PARAMETER.  Need to use proper platform's
+                         * CONTEXT for target.
+                         */
+                        DODEBUG({
+                            if (is_wow64_process(NT_CURRENT_PROCESS) &&
+                                !is_wow64_process(proc_handle)) {
+                                SYSLOG_INTERNAL_WARNING_ONCE
+                                    ("Injecting from 32-bit into 64-bit process is not "
+                                     "yet supported.");
+                            }
+                        });
                         LOG(THREAD, LOG_SYSCALLS, 1,
                             "syscall: NtCreateUserProcess: WARNING: failed to get cxt of "
-                            "thread ("PIFX") so can't follow children on WOW64.\n");
+                            "thread ("PIFX") so can't follow children on WOW64.\n", res);
                     }
                 }
-                if (maybe_inject_into_process(dcontext, proc_handle, cxt) &&
+                if ((cxt != NULL || DYNAMO_OPTION(early_inject)) &&
+                    maybe_inject_into_process(dcontext, proc_handle, cxt) &&
                     cxt != NULL) {
                     /* injection routine is assuming doesn't have to install cxt */
                     res = nt_set_context(thread_handle, cxt);
                     if (!NT_SUCCESS(res)) {
                         LOG(THREAD, LOG_SYSCALLS, 1,
                             "syscall: NtCreateUserProcess: WARNING: failed to set cxt of "
-                            "thread ("PIFX") so can't follow children on WOW64.\n");
+                            "thread ("PIFX") so can't follow children on WOW64.\n", res);
                     }
                 }
             } else {
@@ -2854,23 +2964,31 @@ postsys_SuspendThread(dcontext_t *dcontext, reg_t *param_base, bool success)
 
 /* NtAllocateVirtualMemory */
 static void
-postsys_AllocateVirtualMemory(dcontext_t *dcontext, reg_t *param_base, bool success)
+postsys_AllocateVirtualMemory(dcontext_t *dcontext, reg_t *param_base, bool success,
+                              int sysnum)
 {
     priv_mcontext_t *mc = get_mcontext(dcontext);
     HANDLE process_handle = (HANDLE) postsys_param(dcontext, param_base, 0);
     void **pbase = (void **) postsys_param(dcontext, param_base, 1);
     uint zerobits = (uint) postsys_param(dcontext, param_base, 2);
-    size_t *psize = (size_t *) postsys_param(dcontext, param_base, 3);
-    uint type = (uint) postsys_param(dcontext, param_base, 4);
-    uint prot = (uint) postsys_param(dcontext, param_base, 5);
+    /* XXX i#899: NtWow64AllocateVirtualMemory64 has an extra arg after ZeroBits but
+     * it's ignored in wow64!whNtWow64AllocateVirtualMemory64.  We should keep an eye
+     * out: maybe a future service pack or win9 will use it.
+     */
+    int arg_shift = (sysnum == syscalls[SYS_Wow64AllocateVirtualMemory64] ? 1 : 0);
+    size_t *psize = (size_t *) postsys_param(dcontext, param_base, 3 + arg_shift);
+    uint type = (uint) postsys_param(dcontext, param_base, 4 + arg_shift);
+    uint prot = (uint) postsys_param(dcontext, param_base, 5 + arg_shift);
     app_pc base;
     size_t size;
     if (!success)
         return;
-    /* we assume that since syscall succeeded these dereferences are safe 
-     * FIXME : could be multi-thread races though */
-    base = *((app_pc *)pbase);
-    size = *psize;
+    if (!safe_read(pbase, sizeof(base), &base) || !safe_read(psize, sizeof(size), &size)) {
+        LOG(THREAD, LOG_SYSCALLS|LOG_VMAREAS, 1,
+            "syscall: NtAllocateVirtualMemory: failed to read params "PFX" "PFX"\n",
+            pbase, psize);
+        return;
+    }
     LOG(THREAD, LOG_SYSCALLS|LOG_VMAREAS, prot_is_executable(prot) ? 1U : 2U,
         "syscall: NtAllocateVirtualMemory%s%s%s@"PFX" sz="PIFX" prot=%s 0x%x => 0x%x\n",
         is_phandle_me(process_handle) ? "" : " IPC",
@@ -3536,9 +3654,11 @@ void post_system_call(dcontext_t *dcontext)
         }
         mutex_unlock(&thread_initexit_lock); /* need lock to lookup thread */
     }
-    else if (sysnum == syscalls[SYS_AllocateVirtualMemory]) {
+    else if (sysnum == syscalls[SYS_AllocateVirtualMemory] ||
+             /* i#899: new win8 syscall w/ similar params to NtAllocateVirtualMemory */
+             sysnum == syscalls[SYS_Wow64AllocateVirtualMemory64]) {
         KSTART(post_syscall_alloc);
-        postsys_AllocateVirtualMemory(dcontext, param_base, success);
+        postsys_AllocateVirtualMemory(dcontext, param_base, success, sysnum);
         KSTOP(post_syscall_alloc);
     } 
     else if (sysnum == syscalls[SYS_QueryVirtualMemory]) {
@@ -3812,12 +3932,14 @@ dr_syscall_invoke_another(void *drcontext)
         mc->xdx = mc->xsp;
     }
     else if (get_syscall_method() == SYSCALL_METHOD_WOW64) {
-        if (get_os_version() >= WINDOWS_VERSION_7) {
+        if (get_os_version() == WINDOWS_VERSION_7) {
             /* emulate win7's add 4,esp after the call* in the syscall wrapper */
             mc->xsp += XSP_SZ;
         }
-        /* perform: lea edx,[esp+0x4] */
-        mc->xdx = mc->xsp + XSP_SZ;
+        if (syscall_uses_edx_param_base()) {
+            /* perform: lea edx,[esp+0x4] */
+            mc->xdx = mc->xsp + XSP_SZ;
+        }
     }
 # ifdef X64
     else if (get_syscall_method() == SYSCALL_METHOD_SYSCALL) {

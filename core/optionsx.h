@@ -245,6 +245,9 @@
     OPTION_INTERNAL(bool, gendump, "dump generated code")
     OPTION_DEFAULT(bool, global_rstats, true, "enable global release-build statistics")
 
+    /* this takes precedence over the DYNAMORIO_VAR_LOGDIR config var */
+    OPTION_DEFAULT(pathstring_t, logdir, EMPTY_STRING,
+        "directory for log files")
 #ifdef DEBUG /* options that only work for debug build */
     /* we do allow logging for customers for forensics/diagnostics that requires
      * debug build for more information.
@@ -330,7 +333,6 @@
      * don't want to mess up any legacy tools that rely on hotp libs in
      * regular loader list
      */
-    /* i#157: Linux private loader is not stable enough yet, so disabled by default. */
     OPTION_DEFAULT_INTERNAL(bool, private_loader, true,
                             "use private loader for clients and dependents")
 # ifdef LINUX
@@ -404,18 +406,15 @@
              */
             options->inline_ignored_syscalls = false;
 
-            /* We want to see all code, performance and bugs be darned! 
+            /* Clients usually want to see all the code, regardless of bugs and
+             * perf issues, so we empty the default native exec list when using
+             * -code_api.  The user can override this behavior by passing their
+             * own -native_exec_list.
              * However the .pexe section thing on Vista is too dangerous so we
              * leave that on. */
-            options->native_exec = false;
-            IF_WINDOWS_AND_CORE({
-                if (get_os_version() >= WINDOWS_VERSION_VISTA) {
-                    /* turn native exec on, but limit it to just the pexe option */
-                    options->native_exec = true;
-                    options->native_exec_managed_code = false;
-                    memset(options->native_exec_default_list, 0,
-                           sizeof(options->native_exec_default_list));
-                }})
+            memset(options->native_exec_default_list, 0,
+                   sizeof(options->native_exec_default_list));
+            options->native_exec_managed_code = false;
 
             /* Don't randomize dynamorio.dll */
             IF_WINDOWS(options->aslr_dr = false;)
@@ -509,6 +508,11 @@
     OPTION_DEFAULT_INTERNAL(bool, mangle_app_seg, IF_WINDOWS_ELSE(false, true),
                             "mangle application's segment usage.")
 
+#ifdef X64
+    OPTION_DEFAULT(bool, x86_to_x64, false,
+                   "translate x86 code to x64 when on a 64-bit kernel.")
+#endif
+
 #ifdef WINDOWS_PC_SAMPLE
      OPTION_DEFAULT(uint, prof_pcs_DR, 2, "PC profile dynamorio.dll, value is bit shift to use, < 2 or > 32 disables, requires -prof_pcs")
      OPTION_DEFAULT(uint, prof_pcs_gencode, 2, "PC profile generated code, value is bit shift to use, < 2 or > 32 disables, requires -prof_pcs")
@@ -579,7 +583,11 @@
                    "or client usage if app tries to close it.")
     OPTION_DEFAULT(bool, dup_stdin_on_close, true, "Duplicate stdin for DynamoRIO "
                    "or client usage if app tries to close it.")
-    OPTION_DEFAULT(uint, steal_fds, 12,
+    /* Clients using drsyms can easily load dozens of files (i#879).
+     * No downside to raising since we'll let the app have ours if it
+     * runs out.
+     */
+    OPTION_DEFAULT(uint, steal_fds, IF_CLIENT_INTERFACE_ELSE(96, 12),
                    "number of fds to steal from the app outside the app's reach")
 
     /* Xref PR 308654 where calling dlclose on the client lib at exit time can lead
@@ -588,14 +596,22 @@
 
     /* PR 304708: we intercept all signals for a better client interface */
     OPTION_DEFAULT(bool, intercept_all_signals, true, "intercept all signals")
+
+    /* i#853: Use our all_memory_areas address space cache when possible.  This
+     * avoids expensive reads of /proc/pid/maps, but if the cache becomes stale,
+     * we may have incorrect results.
+     */
+    OPTION_DEFAULT(bool, use_all_memory_areas, true, "Use all_memory_areas "
+                   "address space cache to query page protections.")
 #endif /* LINUX */
 
     /* Disable diagnostics by default. -security turns it on */
     DYNAMIC_OPTION_DEFAULT(bool, diagnostics, false, "enable diagnostic reporting")
 
-    OPTION_DEFAULT(uint, max_supported_os_version, 61, 
+    OPTION_DEFAULT(uint, max_supported_os_version, 61,
         /* case 447, defaults to supporting NT, 2000, XP, 2003, and Vista.
          * Windows 7 added with i#218
+         * Windows 8 added with i#565
          */
         "Warn on unsupported (but workable) operating system versions greater than max_supported_os_version")
 
@@ -716,6 +732,9 @@
                    "thread_private", {
         options->shared_bbs = !options->thread_private;
         options->shared_traces = !options->thread_private;
+        /* i#871: set code cache infinite for thread private as primary cache */
+        options->finite_bb_cache = !options->thread_private;
+        options->finite_trace_cache = !options->thread_private;
         if (options->thread_private && options->indirect_stubs)
             options->coarse_units = true;
         IF_NOT_X64(options->private_ib_in_tls = !options->thread_private;)
@@ -1250,9 +1269,11 @@
 
     /* We hardcode an address in the mmap_text region here, but verify via
      * in vmk_init().
+     * For Linux we start higher to avoid limiting the brk (i#766).
      */
     OPTION_DEFAULT(uint_addr, vm_base,
-                   IF_VMX86_ELSE(IF_X64_ELSE(0x40000000,0x10800000), 0x16000000),
+                   IF_VMX86_ELSE(IF_X64_ELSE(0x40000000,0x10800000),
+                                 IF_WINDOWS_ELSE(0x16000000, 0x46000000)),
                    "preferred base address hint (ignored for 64-bit linux)")
      /* FIXME: we need to find a good location with no conflict with DLLs or apps allocations */
     OPTION_DEFAULT(uint_addr, vm_max_offset, 
@@ -1317,7 +1338,11 @@
 
     /* FIXME - do we want to make any of the -early_inject* options dynamic?
      * if so be sure we update os.c:early_inject_location on change etc. */
-    OPTION_DEFAULT(bool, early_inject, true, "inject early")
+    /* i#47: experimental support for early_inject in Linux
+     * XXX: this option can only be turned on by drrun via "-early" so that
+     * cmdline args can be arranged appropriately.
+     */
+    OPTION_DEFAULT(bool, early_inject, IF_WINDOWS_ELSE(true, false), "inject early")
 #if 0 /* FIXME i#234 NYI: not ready to enable just yet */
     OPTION_DEFAULT(bool, early_inject_map, true, "inject earliest via map")
     /* see enum definition is os_shared.h for notes on what works with which

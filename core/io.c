@@ -1,5 +1,5 @@
 /* **********************************************************
- * Copyright (c) 2011 Google, Inc.  All rights reserved.
+ * Copyright (c) 2011-2012 Google, Inc.  All rights reserved.
  * Copyright (c) 2002-2010 VMware, Inc.  All rights reserved.
  * **********************************************************/
 
@@ -35,31 +35,21 @@
 /* Copyright (c) 2002-2003 Massachusetts Institute of Technology */
 
 /*
- * io.c - Linux specific routines for i/o that will not
- * trigger problematic pthread calls.
- * For PR 219380 we also export this routine to clients on Windows.
+ * io.c - routines for i/o to avoid library dependencies
  */
 
-/* FIXME: failure modes should be more gracefull then failing asserts in most places */
-
-/* avoid depending on __isoc99_vsscanf which requires glibc >= 2.7 */
-#define _GNU_SOURCE 1
-#include <stdio.h>
-#undef _GNU_SOURCE
+/* FIXME: failure modes should be more graceful than failing asserts in most places */
 
 #include "globals.h"
 #include <string.h>
 #include <stdarg.h> /* for varargs */
 
+#ifdef LINUX
+# include <wchar.h>
+#endif
+
 #define VA_ARG_CHAR2INT
 #define BUF_SIZE 64
-
-const static char base_letters[] = {
-    '0','1','2','3','4','5','6','7','8','9','a','b','c','d','e','f'
-};
-const static char base_letters_cap[] = {
-    '0','1','2','3','4','5','6','7','8','9','A','B','C','D','E','F'
-};
 
 #ifdef LINUX
 const static double pos_inf = 1.0/0.0;
@@ -74,50 +64,17 @@ const static double zerof = 0.0;
 # define neg_inf (-1.0/zerof)
 #endif
 
-/* convert uint64 to a string */
-static char *
-uint64_to_str(uint64 num, int base, char * buf, int decimal, bool caps)
+/* assumes that d > 0 */
+static long
+double2int_trunc(double d)
 {
-    int    cnt;
-    char   *p = buf;
-    int    end = (43 > decimal ? 43 : decimal);
-    ASSERT(decimal < BUF_SIZE - 1); /* so don't overflow buf */
-
-    buf[end] = '\0';
-    for (cnt = end - 1; cnt >= 0; cnt--) {
-        buf[cnt] = caps ? base_letters_cap[(num %base)] : base_letters[(num % base)];
-        num /= base;
-    }
-
-    while (*p && *p == '0' && end - decimal > 0) {
-        p++;
-        decimal++;
-    }
-    
-    return p;
-}
-
-/* convert ulong to a string */
-static char *
-ulong_to_str(ulong num, int base, char *buf, int decimal, bool caps)
-{
-    int    cnt;
-    char   *p = buf;
-    int    end = (22 > decimal ? 22 : decimal); /* room for 64 bits octal */
-    ASSERT(decimal < BUF_SIZE - 1); /* so don't overflow buf */
-
-    buf[end] = '\0';
-    for (cnt = end - 1; cnt >= 0; cnt--) {
-        buf[cnt] = caps ? base_letters_cap[(num %base)] : base_letters[(num % base)];
-        num /= base;
-    }
-
-    while (*p && *p == '0' && end - decimal> 0) {
-        p++;
-        decimal++;
-    }
-
-    return p;
+    long i = (long)d;
+    double id = (double)i;
+    /* when building with /QIfist casting rounds instead of truncating (i#763) */
+    if (id > d)
+        return i-1;
+    else
+        return i;
 }
 
 /* assumes that d > 0 */
@@ -125,551 +82,636 @@ static long
 double2int(double d)
 {
     long i = (long)d;
-    if ((d - (double)i) >= 0.5)
+    double id = (double)i;
+    /* when building with /QIfist casting rounds instead of truncating (i#763) */
+    if (id < d && d - id >= 0.5)
         return i+1;
+    else if (id > d && id - d >= 0.5)
+        return i-1;
     else
         return i;
 }
 
-static char *
-double_to_str(double d, int decimal, char *buf, bool force_dot, bool suppress_zeros)
-{
-    /* support really big numbers with %f? */
-    char tmpbuf[BUF_SIZE];
-    char *pre, *post, *c;
-    long predot, postdot, sub, i;
+/* we generate from a template to get wide and narrow versions */
+#undef IOX_WIDE_CHAR
+#include "iox.h"
 
-    /* get pre and post dot sections as integers */
-    if (d < 0)
-        d = -d;
-    if (decimal > 0)
-        predot = (long)d;
-    else
-        predot = double2int(d);
-    sub = 1;
-    for (i=0; i<decimal; i++)
-        sub *= 10;
-    postdot = double2int((d - (long)d) * (double)sub);
-    if (postdot == sub) {
-        /* we had a .9* that rounded up! */
-        postdot = 0;
-        predot++;
-    }
-
-    pre = ulong_to_str((ulong)predot, 10, tmpbuf, 1, false);
-    for (i=0, c = pre; *c; c++)
-        buf[i++] = *c;
-    if (force_dot || !(decimal == 0 || (suppress_zeros && postdot == 0))) {
-        buf[i++] = '.';
-        post = ulong_to_str((ulong)postdot, 10, tmpbuf, decimal, false);
-        for (c = post; *c; c++)
-            buf[i++] = *c;
-        /* remove trailing zeros */
-        if (suppress_zeros) {
-            while (buf[i-1] == '0')
-                i--; 
-        }
-    }
-
-    buf[i] = '\0';
-    ASSERT(i<BUF_SIZE);  /* make sure don't overflow buffer */
-    return buf;
-}
-
-static char *
-double_to_exp_str(double d, int exp, int decimal, char * buf, bool force_dot, bool suppress_zeros, bool caps)
-{
-    char tmp_buf[BUF_SIZE];
-    char *tc;
-    int i = 0;
-    uint abval;
-    
-    tc = double_to_str(d, decimal, tmp_buf, force_dot, suppress_zeros);
-    while (*tc) {
-        buf[i++] = *tc++;
-    }
-    if (caps)
-        buf[i++] = 'E';
-    else
-        buf[i++] = 'e';
-    if (exp < 0) {
-        buf[i++] = '-';
-        abval = -exp;
-    } else {
-        buf[i++] = '+';
-        abval = exp;
-    }
-    /* exp value always printed as at least 2 characters */
-    tc = ulong_to_str((ulong)abval, 10, tmp_buf, 2, false);
-    while (*tc) {
-        buf[i++] = *tc++;
-    }
-    buf[i] = '\0';
-    ASSERT(i < BUF_SIZE); /* make sure don't overflow buffer */
-    return buf;
-}
-
-/* i#386: separated out to avoid floating-point instrs in our_vsnprintf */
-static char *
-our_vsnprintf_float(double val, const char *c, char prefixbuf[3], char buf[BUF_SIZE],
-                    int decimal, bool space_flag, bool plus_flag, bool pound_flag)
-{
-    char *str;
-    bool caps = (*c == 'E') || (*c == 'G');
-    double d = val;
-    int exp = 0;
-    bool is_g = (*c == 'g' || *c == 'G'); 
-    /* check for NaN */
-    if (val != val) {
-        if (caps)
-            str = "NAN";
-        else
-            str = "nan";
-        if (space_flag)
-            prefixbuf[0] = ' ';
-        return str;
-    }
-    if (decimal == -1)
-        decimal = 6; /* default */
-    if (val >= 0 && space_flag)
-        prefixbuf[0] = ' '; /* get prefix */
-    if (val >= 0 && plus_flag)
-        prefixbuf[0] = '+';
-    if (val < 0)
-        prefixbuf[0] = '-';
-    /* check for inf */
-    if (val == pos_inf || val == neg_inf) {
-        if (caps)
-            str = "INF";
-        else
-            str = "inf";
-        return str;
-    }
-    if (*c == 'f') { /* ready to generate string now for f */
-        str = double_to_str(val, decimal, buf, pound_flag, false);
-        return str;
-    }
-    /* get exponent value */
-    while (d >= 10.0 || d <= -10.0) {
-        exp++;
-        d = d / 10.0;
-    }
-    while (d < 1.0 && d > -1.0 && d != 0.0) {
-        exp--;
-        d = d * 10.0;
-    }
-    
-    if (is_g)
-        decimal--; /* g/G precision is number of signifigant digits */
-    if (is_g && exp >= -4 && exp <= decimal) {
-        /* exp is small enough for f, print without exponent */
-        str = double_to_str(val, decimal, buf, pound_flag, !pound_flag);
-    } else {
-        /* print with exponent */
-        str = double_to_exp_str(d, exp, decimal, buf, pound_flag,
-                                is_g && !pound_flag, caps);
-    }
-    return str;
-}
-
-/* Returns number of chars printed.  If number is larger than max,
- * prints max (without null) and returns -1.
- * (Thus, matches Windows snprintf, not Linux.)
- */
-int
-our_vsnprintf(char *s, size_t max, const char *fmt, va_list ap)
-{
-    const char *c;
-    char     *str = NULL;
-    char     *start = s;
-    char     buf[BUF_SIZE];
-    
-    if (fmt == NULL)
-        return 0;
-    
-    c = fmt;
-    while (*c) {
-        if (*c == '%') {
-            int  fill = 0;
-            char filler = ' ';
-            int decimal = -1; /* codes defaults (6 int, 1 float, all string) */
-            char charbuf[2] = {'\0','\0'};
-            char prefixbuf[3] = {'\0','\0','\0'};
-            char *prefix;
-            bool minus_flag = false;
-            bool plus_flag = false;
-            bool pound_flag = false;
-            bool space_flag = false;
-            bool h_type = false;
-            bool l_type = false;
-            bool ll_type = false;
-            prefix = prefixbuf;
-            c++;
-            ASSERT(*c);
-
-            /* Collect flags -, +, #, 0,  */
-            while (*c == '0' || *c == '-' || *c == '#' || *c == '+' || *c == ' ') {
-                if (*c == '0') 
-                    filler = '0';
-                if (*c == '-') 
-                    minus_flag = true;
-                if (*c == '+') 
-                    plus_flag = true;
-                if (*c == '#') 
-                    pound_flag = true;
-                if (*c == ' ') 
-                    space_flag = true;
-                c++;
-                ASSERT(*c);
-            }
-            if (minus_flag) 
-                filler = ' ';
-            if (plus_flag) 
-                space_flag = false;
-        
-            /* get field width */
-            if (*c == '*') {
-                fill = va_arg(ap, int);
-                if (fill < 0) {
-                    minus_flag = true;
-                    fill = -fill;
-                }
-                c++;
-                ASSERT(*c);
-            } else {
-                while (*c >= '0' && *c <= '9') {
-                    fill *= 10;
-                    fill += *c - '0';
-                    c++;
-                    ASSERT(*c);
-                }
-            }
-
-            /* get precision */
-            if (*c == '.') {
-                c++;
-                ASSERT(*c);
-                decimal = 0;
-                if (*c == '*') {
-                    decimal = va_arg(ap, int);
-                    c++;
-                    ASSERT(*c);
-                } else {
-                    while (*c >= '0' && *c <= '9') {
-                        decimal *= 10;
-                        decimal += *c - '0';
-                        c++;
-                        ASSERT(*c);
-                    }
-                }
-            }
-
-            /* get size modifiers l, h, ll/L */
-            if (*c == 'l' || *c == 'L' || *c == 'h') {
-                if (*c == 'L') 
-                    ll_type = true;
-                if (*c == 'h') 
-                    h_type = true;
-                if (*c == 'l') {
-                    c++;
-                    ASSERT(*c);
-                    if (*c == 'l') {
-                        ll_type = true;
-                        c++;
-                        ASSERT(*c);
-                    } else {
-                        l_type = true;
-                    }
-                } else {
-                    c++;
-                    ASSERT(*c);
-                }
-            } else if (*c == 'I') { /* %I64 or %I32, to match Win32 */
-                if (*(c+1)=='6' && *(c+2)=='4') {
-                    ll_type = true;
-                    c += 3;
-                    ASSERT(*c);
-                } else if (*(c+1)=='3' && *(c+2)=='2') {
-                    l_type = true;
-                    c += 3;
-                    ASSERT(*c);
-                } else
-                    ASSERT(false && "unsupported printf code");
-            }
-
-            /* dispatch */
-            switch (*c) {
-            case '%':
-                charbuf[0] = '%';
-                str = charbuf;
-                break;
-            case 'd':
-            case 'i':
-                {
-                    long val;
-                    ulong abval;
-                    if (decimal == -1) 
-                        decimal = 1;  /* defaults */
-                    else
-                        filler = ' ';
-                    if (l_type) 
-                        val = va_arg(ap, long);  /* get arg */
-                    else if (h_type) 
-                        val = (long)va_arg(ap, int); /* short is promoted to int */
-                    else
-                        val = (long)va_arg(ap, int);
-                    if (val >= 0 && space_flag) 
-                        prefixbuf[0] = ' ';  /* set prefix */
-                    if (val >= 0 && plus_flag) 
-                        prefixbuf[0] = '+';
-                    if (val < 0) {
-                        prefixbuf[0] = '-';
-                        abval = -val;
-                    } else {
-                        abval = val;
-                    }
-                    str = ulong_to_str(abval, 10, buf, decimal, false); /* generate string */
-                    break;
-                }
-            case 'u':
-                /* handle long long u type */
-                if (decimal == -1)
-                    decimal = 1;
-                else
-                    filler = ' ';
-                if (ll_type) {
-                    str = uint64_to_str((uint64)va_arg(ap, uint64), 10, buf, decimal, false);
-                    break;
-                }
-                /* note no break */
-            case 'x':
-            case 'X':
-            case 'o':
-            case 'p':
-                {
-                    ptr_uint_t val;
-                    bool caps = *c == 'X';
-                    int base = 10;
-                    if (decimal == -1)
-                        decimal = 1; /* defaults */
-                    else
-                        filler = ' ';
-                    if (*c == 'p')
-                        decimal = 2 * sizeof(void *); /* pointer precision */
-                    if ((pound_flag && *c != 'u') || (*c == 'p')) {  /* generate prefix */
-                        prefixbuf[0] = '0';
-                        if (*c == 'x' || *c == 'p')
-                            prefixbuf[1] = 'x';
-                        if (*c == 'X')
-                            prefixbuf[1] = 'X';
-                    }
-                    if (*c == 'o')
-                        base = 8;    /* determine base */
-                    if (*c == 'x' || *c == 'X' || *c == 'p')
-                        base = 16;
-                    ASSERT(sizeof(void *) == sizeof(val));
-                    if (*c == 'p') {
-                        val = (ptr_uint_t) va_arg(ap, void *);  /* get val */
-#ifdef X64
-                        str = uint64_to_str((uint64)val, base, buf, decimal, caps);
-                        break;
-#endif
-                    } else if (l_type)
-                        val = (ptr_uint_t) va_arg(ap, ulong);
-                    else if (h_type)
-                        val = (ptr_uint_t) va_arg(ap, uint); /* ushort promoted */
-                    else if (ll_type) {
-                        str = uint64_to_str((uint64)va_arg(ap, uint64), base, buf,
-                                            decimal, caps);
-                        break;
-                    } else
-                        val = (ptr_uint_t) va_arg(ap, uint);
-                    /* generate string */
-                    ASSERT(sizeof(val) >= sizeof(ulong));
-                    str = ulong_to_str((ulong)val, base, buf, decimal, caps);
-                    break;
-                }
-            case 'c':
-                /* FIXME: using int instead of char seems to work for RH7.2 as
-                 * well as 8.0, but using char crashes 8.0 but not 7.2
-                 */
-#ifdef VA_ARG_CHAR2INT
-                charbuf[0] = (char) va_arg(ap, int); /* char -> int in va_list */
-#else
-                charbuf[0] = va_arg(ap, char);
-#endif
-                str = charbuf;
-                break;
-            case 's':
-                str = va_arg(ap, char*);
-                break;
-            case 'g':
-            case 'G':
-                if (decimal == 0 || decimal == -1)
-                    decimal = 1; /* default */
-                /* no break */
-            case 'e':
-            case 'E':
-            case 'f':
-                {
-                    /* pretty sure will always be promoted to a double in arg list */
-                    double val = va_arg(ap, double);
-                    str = our_vsnprintf_float(val, c, prefixbuf, buf, decimal,
-                                              space_flag, plus_flag, pound_flag);
-                    break;
-                }
-            case 'n':
-                {
-                    /* save num of chars printed so far in address specified */
-                    uint num_char = (uint) (s - start);
-                    /* yes, snprintf on all platforms returns int, not ssize_t */
-                    IF_X64(ASSERT(CHECK_TRUNCATE_TYPE_int(s - start)));
-                    if (l_type) {
-                        long * val = va_arg(ap, long *);
-                        *val = (long) num_char;
-                    } else if (h_type) {
-                        short * val = va_arg(ap, short *);
-                        *val = (short) num_char;
-                    } else {
-                        int * val = va_arg(ap, int *);
-                        *val = num_char;
-                    }
-                    buf[0] = '\0';
-                    str = buf;
-                    break;
-                }
-                /* FIXME : support the following? */
-            case 'a':
-            case 'A':
-            default:
-                ASSERT_NOT_REACHED();
-            }
-
-            /* if filler is 0 fill after prefix, else fill before prefix */
-            /* if - flag then fill after str and ignore filler type */
-
-            /* calculate number of fill characters */
-            if (fill > 0) {
-                IF_X64(ASSERT(CHECK_TRUNCATE_TYPE_uint(strlen(str) + strlen(prefix))));
-                fill -= (uint) (strlen(str) + strlen(prefix));
-            }
-            /* insert prefix if filler is 0, filler won't be 0 if - flag is set */
-            if (filler == '0') {
-                while (*prefix) {
-                    if (max > 0 && (size_t)(s - start) >= max)
-                        goto max_reached;
-                    *s = *prefix;
-                    s++;
-                    prefix++;
-                }
-            }
-            /* fill now if not left justified */
-            if (fill > 0 && !minus_flag) {
-                int i;
-                for (i = 0; i < fill; i++) {
-                    if (max > 0 && (size_t)(s - start) >= max)
-                        goto max_reached;
-                    *s = filler;
-                    s++;
-                }
-            }
-            /* insert prefix if not 0 filling */
-            if (filler != '0') {
-                while (*prefix) {
-                    if (max > 0 && (size_t)(s - start) >= max)
-                        goto max_reached;
-                    *s = *prefix;
-                    s++;
-                    prefix++;
-                }
-            }
-            /* insert the actual str representation */
-            while (*str) {
-                if (max > 0 && (size_t)(s - start) >= max)
-                    goto max_reached;
-                if (*c == 's' && decimal == 0)
-                    break;  /* check string precision */
-                decimal--;
-                *s = *str;
-                s++;
-                str++;
-            }
-            /* if left justified do the fill now after the actual string */
-            if (fill > 0 && minus_flag) {
-                int i;
-                for (i = 0; i < fill; i++) {
-                    if (max > 0 && (size_t)(s - start) >= max)
-                        goto max_reached;
-                    *s = filler;
-                    s++;
-                }
-            }
-            c++;
-        }
-        else {
-            const char *cstart = c;
-            int  nbytes = 0;
-            while (*c && *c != '%') {
-                nbytes++;
-                c++;
-            }
-            while (cstart < c) {
-                if (max > 0 && (size_t)(s - start) >= max)
-                    goto max_reached;
-                *s = *cstart;
-                s++;
-                cstart++;
-            }
-        }
-    }
-
-    if (max == 0 || (size_t)(s - start) < max)
-      *s = '\0';
-
-    /* yes, snprintf on all platforms returns int, not ssize_t */
-    IF_X64(ASSERT(CHECK_TRUNCATE_TYPE_int(s - start)));
-    return (int) (s - start);
-
- max_reached:
-    return -1;
-}
-
-/* Returns number of chars printed.  If number is larger than max,
- * prints max (without null) and returns -1.
- * (Thus, matches Windows snprintf, not Linux.)
- */
-int
-our_snprintf(char *s, size_t max, const char *fmt, ...)
-{
-    int res;
-    va_list ap;
-    ASSERT(s);
-    va_start(ap, fmt);
-    res = our_vsnprintf(s, max, fmt, ap);
-    va_end(ap);
-    return res;
-}
+#define IOX_WIDE_CHAR
+#include "iox.h"
 
 #ifdef LINUX
-/* i#238/PR 499179: avoid touching errno: our __errno_location doesn't
- * affect libc and we're using libc's sscanf.
- *
- * If we do have a private loader (i#157) and isolation of a private
- * libc then there's no need to write our own complete sscanf: if we
- * don't have that though we'll want our own for libc independence
- * (i#46/PR 206369) for earlier injection and to solve errno issues.
+/*****************************************************************************
+ * Stand alone sscanf implementation.
  */
+
+typedef enum _specifier_t {
+    SPEC_INT,
+    SPEC_CHAR,
+    SPEC_STRING
+} specifer_t;
+
+typedef enum _int_sz_t {
+    SZ_SHORT,
+    SZ_INT,
+    SZ_LONG,
+    SZ_LONGLONG,
+#if defined(X64) && defined(WINDOWS)
+    SZ_PTR = SZ_LONGLONG
+#else
+    SZ_PTR = SZ_LONG
+#endif
+} int_sz_t;
+
+/* The isspace() from ctype.h is actually a macro that calls __ctype_b_loc(),
+ * which tries to look something up in the library TLS.  This doesn't work
+ * without the private loader, so we roll our own isspace().
+ */
+static bool inline
+our_isspace(int c)
+{
+    return (c == ' ' || c == '\f' || c == '\n' || c == '\r' || c == '\t' ||
+            c == '\v');
+}
+
+const char *
+parse_int(const char *sp, uint64 *res_out, int base, int width, bool is_signed)
+{
+    bool negative = false;
+    uint64 res = 0;
+    int i;  /* Use an index rather than pointer to compare with width. */
+
+    /* Check for invalid base. */
+    if (base < 0 || base > 36 || base == 1) {
+        *res_out = (uint64) -1LL;
+        return NULL;
+    }
+
+    /* Check for negative sign if signed. */
+    if (is_signed) {
+        if (*sp == '-') {
+            negative = true;
+            sp++;
+        }
+    }
+
+    /* Ignore leading +. */
+    if (!negative && *sp == '+')
+        sp++;
+
+    /* 0x prefix for hex is optional. */
+    if ((base == 0 || base == 16) && sp[0] == '0' && sp[1] == 'x') {
+        sp += 2;
+        if (base == 0)
+            base = 16;
+    }
+
+    /* Leading '0' with 0 base means octal. */
+    if (base == 0 && *sp == '0') {
+        base = 8;
+        sp++;
+    }
+
+    /* If we didn't find leading '0' or "0x", base is 10. */
+    if (base == 0)
+        base = 10;
+
+    /* XXX: For efficiency we could do a couple things:
+     * - Specialize the loop on base
+     * - Use a lookup table
+     */
+    for (i = 0; width == 0 || i < width; i++) {
+        uint d = sp[i];
+        if (d >= '0' && d <= '9') {
+            d -= '0';
+        } else if (d >= 'a' && d <= 'z') {
+            d = d - 'a' + 10;
+        } else if (d >= 'A' && d <= 'Z') {
+            d = d - 'A' + 10;
+        } else {
+            break;  /* Non-digit character.  Could be \0. */
+        }
+        /* Stop the parse here if this digit was not valid for the current base,
+         * (e.g. 9 for octal of g for hex).
+         */
+        if (d >= base)
+            break;
+        /* FIXME: Check for overflow. */
+        /* XXX: int64 multiply is inefficient on 32-bit. */
+        res = res * base + d;
+    }
+
+    /* No digits found, return failure. */
+    if (i == 0)
+        return NULL;
+
+    if (negative)
+        res = -(int64)res;
+
+    *res_out = res;
+    return sp + i;
+}
+
+/* Stand alone implementation of sscanf.  We used to call libc's vsscanf while
+ * trying to isolate errno (i#238), but these days sscanf calls malloc (i#762).
+ * Therefore, we roll our own.
+ */
+int
+our_vsscanf(const char *str, const char *fmt, va_list ap)
+{
+    int num_parsed = 0;
+    const char *fp = fmt;
+    const char *sp = str;
+    int c;
+
+    while (*fp != '\0' && *sp != '\0') {
+        specifer_t spec = SPEC_INT;
+        int_sz_t int_size = SZ_INT;
+        uint base = 10;
+        bool is_signed = false;
+        bool is_ignored = false;
+        uint width = 0;
+
+        /* Handle literal characters and spaces up front. */
+        c = *fp++;
+        if (our_isspace(c)) {
+            /* Space means consume any number of spaces. */
+            while (our_isspace(*sp)) {
+                sp++;
+            }
+            continue;
+        } else if (c != '%') {
+            /* Literal, so check mismatch. */
+            if (c != *sp)
+                return num_parsed;
+            sp++;
+            continue;
+        }
+
+        /* Parse the format specifier. */
+        ASSERT(c == '%');
+        while (true) {
+            c = *fp++;
+            switch (c) {
+            /* Modifiers, should all continue the loop. */
+            case 'l':
+                ASSERT(int_size != SZ_LONGLONG && "too many longs");
+                if (int_size == SZ_LONG)
+                    int_size = SZ_LONGLONG;
+                else
+                    int_size = SZ_LONG;
+                continue;
+            case 'h':
+                int_size = SZ_SHORT;
+                continue;
+            case '*':
+                is_ignored = true;
+                continue;
+            case '0': case '1': case '2': case '3': case '4':
+            case '5': case '6': case '7': case '8': case '9':
+                /* We honor the specified width for strings to prevent buffer
+                 * overruns, but we don't honor it for integers.  Honoring the
+                 * width for integers would require our own integer parser.
+                 */
+                width = width * 10 + c - '0';
+                continue;
+
+            /* Specifiers, should all break the loop. */
+            case 'u':
+                spec = SPEC_INT;
+                is_signed = false;
+                goto spec_done;
+            case 'd':
+                spec = SPEC_INT;
+                is_signed = true;
+                goto spec_done;
+            case 'x':
+                spec = SPEC_INT;
+                is_signed = false;
+                base = 16;
+                goto spec_done;
+            case 'p':
+                int_size = SZ_PTR;
+                spec = SPEC_INT;
+                is_signed = false;
+                base = 16;
+                goto spec_done;
+            case 'c':
+                spec = SPEC_CHAR;
+                goto spec_done;
+            case 's':
+                spec = SPEC_STRING;
+                goto spec_done;
+            default:
+                ASSERT(false && "unknown specifier");
+                return num_parsed;
+            }
+        }
+spec_done:
+
+        /* Parse the string. */
+        switch (spec) {
+        case SPEC_CHAR:
+            if (!is_ignored) {
+                *va_arg(ap, char*) = *sp;
+            }
+            sp++;
+            break;
+        case SPEC_STRING:
+            if (is_ignored) {
+                while (*sp != '\0' && !our_isspace(*sp)) {
+                    sp++;
+                }
+            } else {
+                char *str_out = va_arg(ap, char*);
+                if (width > 0) {
+                    int i = 0;
+                    while (i < width && *sp != '\0' && !our_isspace(*sp)) {
+                        *str_out++ = *sp++;
+                        i++;
+                    }
+                    /* Spec says only null terminate if we hit width. */
+                    if (i < width)
+                        *str_out = '\0';
+                } else {
+                    while (*sp != '\0' && !our_isspace(*sp)) {
+                        *str_out++ = *sp++;
+                    }
+                    *str_out = '\0';
+                }
+            }
+            break;
+        case SPEC_INT: {
+            uint64 res;
+            sp = parse_int(sp, &res, base, width, is_signed);
+            if (sp == NULL)
+                return num_parsed;
+
+            if (!is_ignored) {
+                if (int_size == SZ_SHORT)
+                    *va_arg(ap, short *) = (short)res;
+                else if (int_size == SZ_INT)
+                    *va_arg(ap, int *) = (int)res;
+                else if (int_size == SZ_LONG)
+                    *va_arg(ap, long *) = (long)res;
+                else if (int_size == SZ_LONGLONG)
+                    *va_arg(ap, long long *) = (long long)res;
+                else
+                    ASSERT_NOT_REACHED();
+            }
+            break;
+        }
+        default:
+            /* Format parsing code above should return an error earlier. */
+            ASSERT_NOT_REACHED();
+        }
+
+        if (!is_ignored)
+            num_parsed++;
+    }
+    return num_parsed;
+}
+
 int
 our_sscanf(const char *str, const char *fmt, ...)
 {
-    int res, saved_errno;
+    /* No need to save errno, we don't call libc anymore. */
+    int res;
     va_list ap;
     va_start(ap, fmt);
-    saved_errno = get_libc_errno();
-    res = vsscanf(str, fmt, ap);
-    set_libc_errno(saved_errno);
+    res = our_vsscanf(str, fmt, ap);
     va_end(ap);
     return res;
 }
-#endif
 
+#endif /* LINUX */
+
+#ifdef STANDALONE_UNIT_TEST
+# ifdef LINUX
+#  include <errno.h>
+#  include <dlfcn.h>  /* for dlsym for libc routines */
+
+/* From dlfcn.h, but we'd have to define _GNU_SOURCE 1 before globals.h. */
+#  define RTLD_NEXT     ((void *) -1l)
+
+typedef void (*memcpy_t)(void *dst, const void *src, size_t n);
+
+/* Copied from core/linux/os.c and modified so that they work when run
+ * cross-arch.  We need %ll to parse 64-bit ints on 32-bit and drop the %l to
+ * parse 32-bit ints on x64.
+ */
+#  define UI64 UINT64_FORMAT_CODE
+#  define HEX64 INT64_FORMAT"x"
+#  define MAPS_LINE_FORMAT4 "%08x-%08x %s %08x %*s %"UI64" %4096s"
+#  define MAPS_LINE_FORMAT8 "%016"HEX64"-%016"HEX64" %s %016"HEX64" %*s %"UI64" %4096s"
+
+static void
+test_sscanf_maps_x86(void)
+{
+    char line_copy[1024];
+    uint start, end;
+    uint offset;
+    uint64 inode;
+    char perm[16];
+    char comment[4096];
+    int len;
+    const char *maps_line =
+        "f75c3000-f75c4000 rw-p 00155000 fc:00 1840387"
+        "                            /lib32/libc-2.11.1.so";
+
+    strcpy(line_copy, maps_line);
+    len = our_sscanf(line_copy, MAPS_LINE_FORMAT4,
+                     &start, &end, perm, &offset, &inode, comment);
+    EXPECT(len, 6);
+    /* Do int64 comparisons directly.  EXPECT casts to ptr_uint_t. */
+    EXPECT(start, 0xf75c3000UL);
+    EXPECT(end, 0xf75c4000UL);
+    EXPECT(offset, 0x00155000UL);
+    EXPECT((inode == 1840387ULL), 1);
+    EXPECT(strcmp(perm, "rw-p"), 0);
+    EXPECT(strcmp(comment, "/lib32/libc-2.11.1.so"), 0);
+    /* sscanf should not modify it's input. */
+    EXPECT(strcmp(line_copy, maps_line), 0);
+}
+
+static void
+test_sscanf_maps_x64(void)
+{
+    char line_copy[1024];
+    uint64 start, end;
+    uint64 offset;
+    uint64 inode;
+    char perm[16];
+    char comment[4096];
+    int len;
+    const char *maps_line =
+        "7f94a6757000-7f94a6758000 rw-p 0017d000 fc:00 "
+        "1839331                     /lib/libc-2.11.1.so";
+
+    strcpy(line_copy, maps_line);
+    len = our_sscanf(line_copy, MAPS_LINE_FORMAT8,
+                     &start, &end, perm, &offset, &inode, comment);
+    EXPECT(len, 6);
+    /* Do int64 comparisons directly.  EXPECT casts to ptr_uint_t. */
+    EXPECT((start == 0x7f94a6757000ULL), 1);
+    EXPECT((end == 0x7f94a6758000ULL), 1);
+    EXPECT((offset == 0x00017d000ULL), 1);
+    EXPECT((inode == 1839331ULL), 1);
+    EXPECT(strcmp(perm, "rw-p"), 0);
+    EXPECT(strcmp(comment, "/lib/libc-2.11.1.so"), 0);
+    /* sscanf should not modify it's input. */
+    EXPECT(strcmp(line_copy, maps_line), 0);
+}
+
+static void
+test_sscanf_all_specs(void)
+{
+    int res;
+    char ch;
+    char str[16];
+    int signed_int;
+    int signed_int_2;
+    uint unsigned_int;
+    uint hex_num;
+    unsigned long long ull_num;
+
+    /* ULLONG_MAX is a corner case. */
+    res = our_sscanf("c str -123 +456 0x789 0xffffffffffffffff",
+                     "%c %s %d %u %x %llx", &ch, str, &signed_int,
+                     &unsigned_int, &hex_num, &ull_num);
+    EXPECT(res, 6);
+    EXPECT(ch, 'c');
+    EXPECT(strcmp(str, "str"), 0);
+    EXPECT(signed_int, -123);
+    EXPECT(unsigned_int, 456);
+    EXPECT(hex_num, 0x789);
+    EXPECT((ull_num == ULLONG_MAX), true);
+
+    /* A variety of ways to say negative one. */
+    res = our_sscanf("-1-1", "%d%d", &signed_int, &signed_int_2);
+    EXPECT(res, 2);
+    EXPECT(signed_int, -1);
+    EXPECT(signed_int_2, -1);
+
+    /* Test ignores. */
+    res = our_sscanf("c str -123 +456 0x789 0xffffffffffffffff 1",
+                     "%*c %*s %*d %*u %*x %*llx %d", &signed_int);
+    EXPECT(res, 1);
+    EXPECT(signed_int, 1);
+
+    /* Test width specifications on strings. */
+    memset(str, '*', sizeof(str));  /* Fill string with garbage. */
+    res = our_sscanf("abcdefghijklmnopqrstuvwxyz",
+                     "%13s", str);
+    EXPECT(res, 1);
+    /* our_sscanf should read 13 chars without null termination. */
+    EXPECT(memcmp(str, "abcdefghijklm", 13), 0);
+    EXPECT(str[13], '*');  /* Asterisk should still be there. */
+
+    /* Test width specifications for integers. */
+    res = our_sscanf("123456 0x9abc", "%03d%03d %03xc",
+                     &signed_int, &signed_int_2, &unsigned_int);
+    EXPECT(res, 3);
+    EXPECT(signed_int, 123);
+    EXPECT(signed_int_2, 456);
+    EXPECT(unsigned_int, 0x9ab);
+
+    /* FIXME: When parse_int has range checking, we should add tests for parsing
+     * integers that overflow their requested integer sizes.
+     */
+}
+
+static void
+test_memcpy_offset_size(size_t src_offset, size_t dst_offset, size_t size)
+{
+    /* These can be aligned to whatever, we'll try a few different offsets. */
+    byte src[1024];
+    byte dst[1024];
+    int i;
+    for (i = 0; i < sizeof(src); i++) {
+        src[i] = 0xcc;
+        dst[i] = 0;
+    }
+    EXPECT(src_offset + size <= sizeof(src), 1);
+    EXPECT(dst_offset + size <= sizeof(dst), 1);
+    memcpy(dst + dst_offset, src + src_offset, size);
+    EXPECT(memcmp(dst + dst_offset, src + src_offset, size), 0);
+    /* Check the bytes just out of bounds, which should still be zero. */
+    if (dst_offset > 0)
+        EXPECT(dst[dst_offset-1], 0);
+    if (dst_offset+size < sizeof(dst))
+        EXPECT(dst[dst_offset+size], 0);
+}
+
+static void
+test_our_memcpy(void)
+{
+    int i, j;
+    void *ret;
+    /* Basic, copy the whole buffer. */
+    test_memcpy_offset_size(0, 0, 1024);
+    /* Test misalignment less than copy size. */
+    test_memcpy_offset_size(1, 1, 2);
+    test_memcpy_offset_size(2, 2, 2);
+    test_memcpy_offset_size(1, 1, 3);
+    test_memcpy_offset_size(2, 2, 3);
+    /* Test a variety of offsets. */
+    for (i = 0; i < 16; i++) {
+        for (j = 0; j < 16; j++) {
+            test_memcpy_offset_size(i, j, 512);
+        }
+    }
+    /* Check that memcpy returns dst. */
+    ret = memcpy(&i, &j, sizeof(i));
+    EXPECT(ret == &i, 1);
+}
+
+static void
+test_memset_offset_size(int val, int start_offs, int end_offs)
+{
+    byte buf[512];
+    int i;
+    int end = sizeof(buf) - start_offs - end_offs;
+    /* Zero without memset. */
+    for (i = 0; i < sizeof(buf); i++)
+        buf[i] = 0;
+    memset(buf + start_offs, val, end);
+    EXPECT(is_region_memset_to_char(buf + start_offs, end, val), 1);
+    if (start_offs > 0)
+        EXPECT(buf[start_offs-1], 0);
+    if (end_offs > 0)
+        EXPECT(buf[sizeof(buf)-end_offs], 0);
+}
+
+static void
+test_our_memset(void)
+{
+    int val;
+    int i, j;
+    void *ret;
+    /* Test a variety of values. */
+    for (val = 0; val < 0xff; val++) {
+        for (i = 0; i < 16; i++) {
+            for (j = 0; j < 16; j++) {
+                test_memset_offset_size(val, i, j);
+            }
+        }
+    }
+    /* Check that memset returns dst. */
+    ret = memset(&i, -1, sizeof(i));
+    EXPECT(ret == &i, 1);
+}
+
+static void
+our_memcpy_vs_libc(void)
+{
+    /* Compare our memcpy with libc memcpy.
+     * XXX: Should compare on more sizes, especially small ones.
+     */
+    size_t alloc_size = 20 * 1024;
+    int loop_count = 100 * 1000;
+    void *src = global_heap_alloc(alloc_size HEAPACCT(ACCT_OTHER));
+    void *dst = global_heap_alloc(alloc_size HEAPACCT(ACCT_OTHER));
+    int i;
+    memcpy_t glibc_memcpy = (memcpy_t) dlsym(RTLD_NEXT, "memcpy");
+    uint64 our_memcpy_start, our_memcpy_end, our_memcpy_time;
+    uint64 libc_memcpy_start, libc_memcpy_end, libc_memcpy_time;
+    memset(src, -1, alloc_size);
+    memset(dst, 0, alloc_size);
+
+    our_memcpy_start = query_time_millis();
+    for (i = 0; i < loop_count; i++) {
+        memcpy(src, dst, alloc_size);
+    }
+    our_memcpy_end = query_time_millis();
+
+    libc_memcpy_start = query_time_millis();
+    for (i = 0; i < loop_count; i++) {
+        glibc_memcpy(src, dst, alloc_size);
+    }
+    libc_memcpy_end = query_time_millis();
+
+    global_heap_free(src, alloc_size HEAPACCT(ACCT_OTHER));
+    global_heap_free(dst, alloc_size HEAPACCT(ACCT_OTHER));
+    our_memcpy_time = our_memcpy_end - our_memcpy_start;
+    libc_memcpy_time = libc_memcpy_end - libc_memcpy_start;
+    print_file(STDERR, "our_memcpy_time: "UINT64_FORMAT_STRING"\n",
+               our_memcpy_time);
+    print_file(STDERR, "libc_memcpy_time: "UINT64_FORMAT_STRING"\n",
+               libc_memcpy_time);
+    /* We could assert that we're not too much slower, but that's a recipe for
+     * flaky failures when the suite is run on shared VMs or in parallel.
+     */
+}
+# endif /* LINUX */
+
+void
+unit_test_io(void)
+{
+    char buf[512];
+    wchar_t wbuf[512];
+    ssize_t res;
+
+    /* test wide char conversion */
+    res = our_snprintf(buf, BUFFER_SIZE_ELEMENTS(buf), "%S", L"wide string");
+    EXPECT(res == (ssize_t) strlen("wide string"), true);
+    EXPECT(strcmp(buf, "wide string"), 0);
+    res = our_snprintf(buf, BUFFER_SIZE_ELEMENTS(buf), "%ls", L"wide string");
+    EXPECT(res == (ssize_t) strlen("wide string"), true);
+    EXPECT(strcmp(buf, "wide string"), 0);
+    res = our_snprintf(buf, BUFFER_SIZE_ELEMENTS(buf), "%.3S", L"wide string");
+    EXPECT(res == (ssize_t) strlen("wid"), true);
+    EXPECT(strcmp(buf, "wid"), 0);
+    res = our_snprintf(buf, 4, "%S", L"wide string");
+    EXPECT(res == -1, true);
+    EXPECT(buf[4], ' '); /* ' ' from prior calls: no NULL written since hit max */
+    buf[4] = '\0';
+    EXPECT(strcmp(buf, "wide"), 0);
+
+    /* test float */
+    res = our_snprintf(buf, BUFFER_SIZE_ELEMENTS(buf), "%3.1f", 42.9f);
+    EXPECT(res == (ssize_t) strlen("42.9"), true);
+    EXPECT(strcmp(buf, "42.9"), 0);
+    /* XXX: add more */
+
+    /* test all-wide */
+    res = our_snprintf_wide(wbuf, BUFFER_SIZE_ELEMENTS(wbuf), L"%d%s%3.1f",
+                            -42, L"wide string", 42.9f);
+    EXPECT(res == (ssize_t) wcslen(L"-42wide string42.9"), true);
+    EXPECT(wcscmp(wbuf, L"-42wide string42.9"), 0);
+
+    /* test all-wide conversion */
+    res = our_snprintf_wide(wbuf, BUFFER_SIZE_ELEMENTS(wbuf), L"%S", "narrow string");
+    EXPECT(res == (ssize_t) wcslen(L"narrow string"), true);
+    EXPECT(wcscmp(wbuf, L"narrow string"), 0);
+    res = our_snprintf_wide(wbuf, BUFFER_SIZE_ELEMENTS(wbuf), L"%hs", "narrow string");
+    EXPECT(res == (ssize_t) wcslen(L"narrow string"), true);
+    EXPECT(wcscmp(wbuf, L"narrow string"), 0);
+    res = our_snprintf_wide(wbuf, BUFFER_SIZE_ELEMENTS(wbuf), L"%.3S", "narrow string");
+    EXPECT(res == (ssize_t) wcslen(L"nar"), true);
+    EXPECT(wcscmp(wbuf, L"nar"), 0);
+    res = our_snprintf_wide(wbuf, 6, L"%S", "narrow string");
+    EXPECT(res == -1, true);
+    EXPECT(wbuf[6], L' '); /* ' ' from prior calls: no NULL written since hit max */
+    wbuf[6] = L'\0';
+    EXPECT(wcscmp(wbuf, L"narrow"), 0);
+
+#ifdef LINUX
+    /* sscanf tests */
+    test_sscanf_maps_x86();
+    test_sscanf_maps_x64();
+    test_sscanf_all_specs();
+
+    /* memcpy tests */
+    test_our_memcpy();
+    our_memcpy_vs_libc();
+
+    /* memset tests */
+    test_our_memset();
+#endif /* LINUX */
+
+    /* XXX: add more tests */
+
+    print_file(STDERR, "io all done\n");
+}
+
+#endif /* STANDALONE_UNIT_TEST */

@@ -1,4 +1,5 @@
 /* **********************************************************
+ * Copyright (c) 2012 Google, Inc.  All rights reserved.
  * Copyright (c) 2008 VMware, Inc.  All rights reserved.
  * **********************************************************/
 
@@ -41,6 +42,14 @@ static reg_t buf[] = { 0xcafebabe, 0xfeedadad, 0xeeeeeeee, 0xbadcabee };
 #endif
 
 static void
+ind_call(reg_t a1, reg_t a2)
+{
+    dr_fprintf(STDERR, "bar "PFX" "PFX"\n", a1, a2);
+}
+
+static void (*ind_call_ptr)(reg_t a1, reg_t a2) = ind_call;
+
+static void
 foo(reg_t a1, reg_t a2, reg_t a3, reg_t a4, reg_t a5, reg_t a6, reg_t a7, reg_t a8)
 {
     dr_fprintf(STDERR, "foo "PFX" "PFX" "PFX" "PFX"\n    "PFX" "PFX" "PFX" "PFX"\n",
@@ -53,7 +62,8 @@ foo(reg_t a1, reg_t a2, reg_t a3, reg_t a4, reg_t a5, reg_t a6, reg_t a7, reg_t 
 static void
 bar(reg_t a1, reg_t a2)
 {
-    dr_fprintf(STDERR, "bar "PFX" "PFX"\n", a1, a2);
+    /* test indirect call handling in clean call analysis */
+    ind_call_ptr(a1, a2);
 }
 
 static void
@@ -94,6 +104,19 @@ restore_state_event(void *drcontext, void *tag, dr_mcontext_t *mcontext,
     }
 }
 
+static void
+cleancall_aflags_save(void)
+{
+    dr_fprintf(STDERR, "cleancall_aflags_save\n");
+}
+
+static void
+cleancall_no_aflags_save(void)
+{
+    dr_fprintf(STDERR, "cleancall_no_aflags_save\n");
+}
+
+static bool first_bb = true;
 static dr_emit_flags_t
 bb_event(void *drcontext, void* tag, instrlist_t *bb, bool for_trace, bool translating)
 {
@@ -104,6 +127,28 @@ bb_event(void *drcontext, void* tag, instrlist_t *bb, bool for_trace, bool trans
     instrlist_preinsert(bb, instr, INSTR_XL8(i, dr_fragment_app_pc(tag)))
 # define PREM(bb, i) \
     instrlist_meta_preinsert(bb, instr, INSTR_XL8(i, dr_fragment_app_pc(tag)))
+
+    if (first_bb) {
+        instr_t *add, *cmp;
+        /* test cleancall with/without aflags save
+         *   cleancall_aflags_save
+         *   cmp # fake cmp app instr
+         *   cleancall_no_aflags_save
+         *   add # fake add app instr
+         */
+        first_bb = false;
+        instr = instrlist_first(bb);
+        cmp = INSTR_CREATE_cmp(drcontext, opnd_create_reg(DR_REG_XAX),
+                               opnd_create_reg(DR_REG_XAX));
+        PRE(bb, cmp);
+        add = INSTR_CREATE_add(drcontext, opnd_create_reg(DR_REG_XAX),
+                               OPND_CREATE_INT32(0));
+        PRE(bb, add);
+        dr_insert_clean_call(drcontext, bb, add,
+                             (void*) cleancall_no_aflags_save, false, 0);
+        dr_insert_clean_call(drcontext, bb, cmp,
+                             (void*) cleancall_aflags_save, false, 0);
+    }
 
     /* Look for 3 nops to indicate handler is set up */
     for (instr = instrlist_first(bb); instr != NULL; instr = next_instr) {
@@ -166,6 +211,12 @@ bb_event(void *drcontext, void* tag, instrlist_t *bb, bool for_trace, bool trans
                                      /* test conflicting w/ scratch reg */
                                      opnd_create_base_disp(REG_XSP, scratch, 1,
                                                            0, OPSZ_PTR));
+                /* Even though we'll be doing a longjmp, building w/ VS2010 results
+                 * in silent failure on handling the exception so we restore xsp.
+                 */
+                PRE(bb, INSTR_CREATE_lea(drcontext, opnd_create_reg(REG_XSP),
+                                         OPND_CREATE_MEM_lea(REG_XSP, REG_NULL, 0,
+                                                             2*sizeof(reg_t))));
                 PRE(bb, INSTR_CREATE_mov_ld(drcontext, opnd_create_reg(REG_XAX),
                                             OPND_CREATE_ABSMEM(NULL, OPSZ_PTR)));
                 post_crash++;

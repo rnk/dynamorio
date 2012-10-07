@@ -305,10 +305,11 @@ dispatch_enter_fcache_stats(dcontext_t *dcontext, fragment_t *targetf)
         LOG(THREAD, LOG_DISPATCH, 3, "\tCall depth is %d\n",
             dcontext->call_depth);
 # endif
-        LOG(THREAD, LOG_DISPATCH, 2, "Entry into F%d("PFX")."PFX" %s%s", 
+        LOG(THREAD, LOG_DISPATCH, 2, "Entry into F%d("PFX")."PFX" %s%s%s", 
             targetf->id,
             targetf->tag,
             FCACHE_ENTRY_PC(targetf),
+            IF_X64_ELSE(FRAG_IS_32(targetf->flags) ? "(32-bit)" : "", ""),
             TEST(FRAG_COARSE_GRAIN, targetf->flags) ? "(coarse)" : "",
             ((targetf->flags & FRAG_IS_TRACE_HEAD)!=0)? 
             "(trace head)" : "",
@@ -434,6 +435,8 @@ dispatch_enter_fcache(dcontext_t *dcontext, fragment_t *targetf)
      * routines that need it and wrap just those.
      */
     ASSERT(get_libc_errno() == dcontext->libc_errno ||
+           /* w/ private loader, our errno is disjoint from app's */
+           IF_CLIENT_INTERFACE_ELSE(INTERNAL_OPTION(private_loader), false) ||
            /* only when pthreads is loaded does libc switch to a per-thread
             * errno, so our raw thread tests end up using the same errno
             * for each thread!
@@ -453,7 +456,9 @@ dispatch_enter_fcache(dcontext_t *dcontext, fragment_t *targetf)
     }
 #endif
 
-    IF_X64(ASSERT(get_x86_mode(dcontext) == TEST(FRAG_32_BIT, targetf->flags)));
+    IF_X64(ASSERT((get_x86_mode(dcontext) == TEST(FRAG_32_BIT, targetf->flags)) ||
+                  (get_x86_mode(dcontext) && !FRAG_IS_32(targetf->flags) &&
+                   DYNAMO_OPTION(x86_to_x64))));
     if (TEST(FRAG_SHARED, targetf->flags))
         fcache_enter = get_fcache_enter_shared_routine(dcontext);
     else
@@ -567,6 +572,7 @@ dispatch_enter_native(dcontext_t *dcontext)
      * entering native execution as well as the fcache.
      */
     fcache_enter_func_t go_native = get_fcache_enter_private_routine(dcontext);
+    set_last_exit(dcontext, (linkstub_t *) get_native_exec_linkstub());
     ASSERT_OWN_NO_LOCKS();
     if (dcontext->next_tag == BACK_TO_NATIVE_AFTER_SYSCALL) {
         /* we're simply going native again after an intercepted syscall,
@@ -594,7 +600,6 @@ dispatch_enter_native(dcontext_t *dcontext)
         dcontext->native_exec_postsyscall = NULL;
         LOG(THREAD, LOG_DISPATCH, 2, "Entry into native_exec after intercepted syscall\n");
         /* restore state as though never came out for syscall */
-        set_last_exit(dcontext, (linkstub_t *) get_native_exec_linkstub());
         KSTART(fcache_default);
         enter_nolinking(dcontext, NULL, true);
     } 
@@ -653,7 +658,9 @@ dispatch_enter_dynamorio(dcontext_t *dcontext)
 
 #if defined(LINUX) && defined(DEBUG)
     /* i#238/PR 499179: check that libc errno hasn't changed */
-    dcontext->libc_errno = get_libc_errno();
+    /* w/ private loader, our errno is disjoint from app's */
+    if (IF_CLIENT_INTERFACE_ELSE(!INTERNAL_OPTION(private_loader), true))
+        dcontext->libc_errno = get_libc_errno();
 #endif
 
     DOLOG(2, LOG_INTERP, { 
@@ -674,9 +681,11 @@ dispatch_enter_dynamorio(dcontext_t *dcontext)
      */
 
     if (wherewasi == WHERE_APP) { /* first entrance */
-        ASSERT(dcontext->last_exit == get_starting_linkstub()
+        ASSERT(dcontext->last_exit == get_starting_linkstub() ||
+               /* The start/stop API will set this linkstub. */
+               IF_APP_EXPORTS(dcontext->last_exit == get_native_exec_linkstub() ||)
                /* new thread */
-               || IF_WINDOWS_ELSE_0(dcontext->last_exit == get_asynch_linkstub()));
+               IF_WINDOWS_ELSE_0(dcontext->last_exit == get_asynch_linkstub()));
     } else {
         ASSERT(dcontext->last_exit != NULL); /* MUST be set, if only to a fake linkstub_t */
         /* cache last_exit's fragment */
@@ -885,9 +894,9 @@ dispatch_exit_fcache(dcontext_t *dcontext)
          */
         if (TESTANY(OPTION_REPORT|OPTION_BLOCK, DYNAMO_OPTION(rct_ind_call)) ||
             TESTANY(OPTION_REPORT|OPTION_BLOCK, DYNAMO_OPTION(rct_ind_jump))) {
-            if ((TEST(LINK_CALL, dcontext->last_exit->flags)
+            if ((EXIT_IS_CALL(dcontext->last_exit->flags)
                  && TESTANY(OPTION_REPORT|OPTION_BLOCK, DYNAMO_OPTION(rct_ind_call))) || 
-                (TEST(LINK_JMP, dcontext->last_exit->flags) 
+                (EXIT_IS_JMP(dcontext->last_exit->flags) 
                  && TESTANY(OPTION_REPORT|OPTION_BLOCK, DYNAMO_OPTION(rct_ind_jump)))
                 ) {
                 /* case 4995: current shared syscalls implementation
@@ -897,7 +906,7 @@ dispatch_exit_fcache(dcontext_t *dcontext)
                 if (LINKSTUB_FAKE(dcontext->last_exit) /* quick check */ &&
                     IS_SHARED_SYSCALLS_LINKSTUB(dcontext->last_exit)) {
                     ASSERT(IF_WINDOWS_ELSE(DYNAMO_OPTION(shared_syscalls), false));
-                    ASSERT(TEST(LINK_JMP, dcontext->last_exit->flags)); 
+                    ASSERT(EXIT_IS_JMP(dcontext->last_exit->flags)); 
                 } else {
                     /* rct_ind_branch_check will raise a security violation on failure */
                     rct_ind_branch_check(dcontext, dcontext->next_tag, src_tag);
@@ -1228,13 +1237,13 @@ dispatch_exit_fcache_stats(dcontext_t *dcontext)
                 dcontext->coarse_exit.src_tag,
                 TEST(FRAG_IS_TRACE, last_f->flags) ? "trace" : "bb",
                 TEST(LINK_RETURN, dcontext->last_exit->flags) ? "ret" :
-                TEST(LINK_CALL, dcontext->last_exit->flags) ? "call*" : "jmp*");
+                EXIT_IS_CALL(dcontext->last_exit->flags) ? "call*" : "jmp*");
         } else {
             ASSERT(!DYNAMO_OPTION(indirect_stubs));
             LOG(THREAD, LOG_DISPATCH, 2, "Exit from sourceless ibl: %s %s",
                 TEST(FRAG_IS_TRACE, last_f->flags) ? "trace" : "bb",
                 TEST(LINK_RETURN, dcontext->last_exit->flags) ? "ret" :
-                TEST(LINK_CALL, dcontext->last_exit->flags) ? "call*" : "jmp*");
+                EXIT_IS_CALL(dcontext->last_exit->flags) ? "call*" : "jmp*");
         }
     } else if (dcontext->last_exit == get_coarse_exit_linkstub()) {
         DOLOG(2, LOG_DISPATCH, {
@@ -1266,7 +1275,8 @@ dispatch_exit_fcache_stats(dcontext_t *dcontext)
             STATS_INC(num_bb_exits);
     });
 
-    LOG(THREAD, LOG_DISPATCH, 2, "%s",
+    LOG(THREAD, LOG_DISPATCH, 2, "%s%s",
+        IF_X64_ELSE(FRAG_IS_32(last_f->flags) ? " (32-bit)" : "", ""),
         TEST(FRAG_SHARED, last_f->flags) ? " (shared)":"");
     DOLOG(2, LOG_SYMBOLS, { 
         char symbuf[MAXIMUM_SYMBOL_LENGTH];
@@ -1377,13 +1387,13 @@ dispatch_exit_fcache_stats(dcontext_t *dcontext)
         }
         else if (TESTANY(LINK_CALL|LINK_JMP, dcontext->last_exit->flags)) {
             LOG(THREAD, LOG_DISPATCH, 2, " (ind %s from "PFX" non-trace tgt "PFX")",
-                TEST(LINK_CALL, dcontext->last_exit->flags) ? "call" : "jmp",
+                EXIT_IS_CALL(dcontext->last_exit->flags) ? "call" : "jmp",
                 EXIT_CTI_PC(dcontext->last_fragment, dcontext->last_exit),
                 dcontext->next_tag);
             DOSTATS({
-                if (TEST(LINK_CALL, dcontext->last_exit->flags)) {
+                if (EXIT_IS_CALL(dcontext->last_exit->flags)) {
                     STATS_INC(num_exits_ind_call);
-                } else if (TEST(LINK_JMP, dcontext->last_exit->flags)) {
+                } else if (EXIT_IS_JMP(dcontext->last_exit->flags)) {
                     STATS_INC(num_exits_ind_jmp);
                 } else
                     ASSERT_NOT_REACHED();
@@ -1832,7 +1842,7 @@ handle_system_call(dcontext_t *dcontext)
             }
             set_fcache_target(dcontext, dcontext->asynch_target);
         } else if (get_syscall_method() == SYSCALL_METHOD_WOW64 &&
-                   get_os_version() >= WINDOWS_VERSION_7) {
+                   get_os_version() == WINDOWS_VERSION_7) {
             /* win7 has an add 4,esp after the call* in the syscall wrapper,
              * so we need to negate it since not making the call*
              */

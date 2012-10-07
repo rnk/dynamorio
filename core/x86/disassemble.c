@@ -459,7 +459,7 @@ internal_opnd_disassemble(char *buf, size_t bufsz, size_t *sofar INOUT,
             break;
         }
     case FAR_PC_kind:
-        /* constant is selector and not a SEG_constant */
+        /* constant is selector and not a SEG_ constant */
         print_to_buffer(buf, bufsz, sofar, "0x%04x:"PFX"%s",
                         (ushort)opnd_get_segment_selector(opnd), opnd_get_pc(opnd),
                         postop_suffix());
@@ -469,11 +469,14 @@ internal_opnd_disassemble(char *buf, size_t bufsz, size_t *sofar INOUT,
                         postop_suffix());
         break;
     case FAR_INSTR_kind:
-        /* constant is selector and not a SEG_constant */
-        print_to_buffer(buf, bufsz, sofar, "0x%04x:"PFX"%s",
-                        (ushort)opnd_get_segment_selector(opnd), opnd_get_pc(opnd),
+        /* constant is selector and not a SEG_ constant */
+        print_to_buffer(buf, bufsz, sofar, "0x%04x:@"PFX"%s",
+                        (ushort)opnd_get_segment_selector(opnd), opnd_get_instr(opnd),
                         postop_suffix());
-        print_to_buffer(buf, bufsz, sofar, "@"PFX"%s", opnd_get_instr(opnd),
+        break;
+    case MEM_INSTR_kind:
+        print_to_buffer(buf, bufsz, sofar, IF_X64("<re> ")"@"PFX"+%d%s",
+                        opnd_get_instr(opnd), opnd_get_mem_instr_disp(opnd),
                         postop_suffix());
         break;
     case REG_kind:
@@ -1156,9 +1159,9 @@ static inline char*
 exit_stub_type_desc(dcontext_t *dcontext, fragment_t *f, linkstub_t *l)
 {
     if (LINKSTUB_DIRECT(l->flags)) {
-        if (TEST(LINK_CALL, l->flags))
+        if (EXIT_IS_CALL(l->flags))
             return "call";
-        if (TEST(LINK_JMP, l->flags))
+        if (EXIT_IS_JMP(l->flags))
             return "jmp/jcc";
         return "fall-through/speculated/IAT";
         /* FIXME: mark these appropriately */
@@ -1166,9 +1169,9 @@ exit_stub_type_desc(dcontext_t *dcontext, fragment_t *f, linkstub_t *l)
         CLIENT_ASSERT(LINKSTUB_INDIRECT(l->flags), "invalid exit stub");
         if (TEST(LINK_RETURN, l->flags))
             return "ret";
-        if (TEST(LINK_CALL, l->flags))
+        if (EXIT_IS_CALL(l->flags))
             return "indcall";
-        if (TEST(LINK_JMP, l->flags))
+        if (TEST(LINK_JMP, l->flags)) /* JMP or IND_JMP_PLT */
             return "indjmp";
 #ifdef WINDOWS
         if (is_shared_syscall_routine(dcontext, EXIT_TARGET_TAG(dcontext, f, l)))
@@ -1200,12 +1203,13 @@ common_disassemble_fragment(dcontext_t *dcontext,
 
     if (header) {
 #ifdef DEBUG
-        print_file(outfile, "Fragment %d, tag "PFX", flags 0x%x, %s%s%ssize %d%s%s:\n",
+        print_file(outfile, "Fragment %d, tag "PFX", flags 0x%x, %s%s%s%ssize %d%s%s:\n",
                    f->id,
 #else
-        print_file(outfile, "Fragment tag "PFX", flags 0x%x, %s%s%ssize %d%s%s:\n",
+        print_file(outfile, "Fragment tag "PFX", flags 0x%x, %s%s%s%ssize %d%s%s:\n",
 #endif
                    f->tag, f->flags,
+                   IF_X64_ELSE(FRAG_IS_32(f->flags) ? "32-bit, " : "", ""),
                    TEST(FRAG_COARSE_GRAIN, f->flags) ? "coarse, " : "",
                    (TEST(FRAG_SHARED, f->flags) ? "shared, " : 
                     (SHARED_FRAGMENTS_ENABLED() ?
@@ -1450,7 +1454,8 @@ instrlist_disassemble(dcontext_t *dcontext,
              * as much about raw bytes
              */
             int extra_sz;
-            print_file(outfile, " +%-4d L%d @"PFX" ", offs, level, instr);
+            print_file(outfile, " +%-4d %c%d @"PFX" ",
+                       offs, instr_ok_to_mangle(instr) ? 'L' : 'm', level, instr);
             extra_sz = print_bytes_to_file(outfile, addr, addr+len, instr_valid(instr));
             instr_disassemble(dcontext, instr, outfile);
             print_file(outfile, "\n");
@@ -1462,8 +1467,8 @@ instrlist_disassemble(dcontext_t *dcontext,
             len = 0; /* skip loop */
         }
         while (len) {
-            print_file(outfile, " +%-4d L%d "IF_X64_ELSE("%20s","%12s"),
-                       offs, level, " ");
+            print_file(outfile, " +%-4d %c%d "IF_X64_ELSE("%20s","%12s"),
+                       offs, instr_ok_to_mangle(instr) ? 'L' : 'm', level, " ");
             next_addr = internal_disassemble_to_file
                 (dcontext, addr, addr, outfile, false, true,
                  IF_X64_ELSE("                               ","                       "));

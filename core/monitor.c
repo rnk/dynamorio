@@ -1,4 +1,5 @@
 /* **********************************************************
+ * Copyright (c) 2012 Google, Inc.  All rights reserved.
  * Copyright (c) 2000-2010 VMware, Inc.  All rights reserved.
  * **********************************************************/
 
@@ -160,7 +161,9 @@ create_private_copy(dcontext_t *dcontext, fragment_t *f)
         "Creating private copy of F%d ("PFX") for trace creation\n", f->id, f->tag);
 
     IF_X64(ASSERT((get_x86_mode(dcontext) && FRAG_IS_32(f->flags)) ||
-                  (!get_x86_mode(dcontext) && !FRAG_IS_32(f->flags))));
+                  (!get_x86_mode(dcontext) && !FRAG_IS_32(f->flags)) ||
+                  (get_x86_mode(dcontext) && !FRAG_IS_32(f->flags) &&
+                   DYNAMO_OPTION(x86_to_x64))));
 
     /* only keep one private copy around at a time
      * we delete here, when we add a new copy, and not in internal_restore_last
@@ -296,6 +299,12 @@ monitor_thread_reset_init(dcontext_t *dcontext)
 /* frees all non-persistent memory */
 void
 monitor_thread_reset_free(dcontext_t *dcontext)
+{
+    trace_abort_and_delete(dcontext);
+}
+
+void
+trace_abort_and_delete(dcontext_t *dcontext)
 {
     /* remove any MultiEntries */
     trace_abort(dcontext);
@@ -1199,7 +1208,7 @@ get_and_check_add_size(dcontext_t *dcontext, fragment_t *f, uint *res_add_size,
 static inline uint
 trace_flags_from_component_flags(uint flags)
 {
-    return (flags & (FRAG_HAS_SYSCALL | FRAG_HAS_DIRECT_CTI));
+    return (flags & (FRAG_HAS_SYSCALL | FRAG_HAS_DIRECT_CTI IF_X64(| FRAG_32_BIT)));
 }
 
 static inline uint
@@ -1247,9 +1256,9 @@ end_and_emit_trace(dcontext_t *dcontext, fragment_t *cur_f)
         /* static count last_exit statistics case 4817 */
         if (LINKSTUB_INDIRECT(dcontext->last_exit->flags)) {
             STATS_INC(num_traces_end_at_ibl);
-            if (TEST(LINK_CALL, dcontext->last_exit->flags)) {
+            if (EXIT_IS_CALL(dcontext->last_exit->flags)) {
                 STATS_INC(num_traces_end_at_ibl_ind_call);
-            } else if (TEST(LINK_JMP, dcontext->last_exit->flags)) {
+            } else if (EXIT_IS_JMP(dcontext->last_exit->flags)) {
                 /* shared system call (case 4995) */
                 if (IS_SHARED_SYSCALLS_LINKSTUB(dcontext->last_exit))
                     STATS_INC(num_traces_end_at_ibl_syscall);
@@ -1581,6 +1590,7 @@ end_and_emit_trace(dcontext_t *dcontext, fragment_t *cur_f)
         mutex_unlock(&trace_building_lock);
 
     RSTATS_INC(num_traces);
+    DOSTATS({ IF_X64(if (FRAG_IS_32(trace_f->flags)) STATS_INC(num_32bit_traces);) });
     STATS_ADD(num_bbs_in_all_traces, md->num_blks);
     STATS_TRACK_MAX(max_bbs_in_a_trace, md->num_blks);
     DOLOG(2, LOG_MONITOR, {
@@ -2448,11 +2458,11 @@ trace_abort(dcontext_t *dcontext)
         internal_restore_last(dcontext);
     }
 
-    /* moved here primarily to delete prior to fragment_thread_exit but
-     * let monitor_thread_exit remain later
+    /* i#791: We can't delete last copy yet because we could still be executing
+     * in that fragment.  For example, a client could have a clean call that
+     * flushes.  We'll delete the last_copy when we start the next trace or at
+     * thread exit instead.
      */
-    if (md->last_copy != NULL)
-        delete_private_copy(dcontext);
 
     /* free the instrlist_t elements */
     trace = &md->trace;

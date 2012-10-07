@@ -203,6 +203,62 @@ modules_exit(void)
 
 /**************** module_list updating routines *****************/
 
+static bool
+on_native_exec_list(const char *modname)
+{
+    bool onlist = false;
+
+    if (!DYNAMO_OPTION(native_exec))
+        return false;
+
+    if (!IS_STRING_OPTION_EMPTY(native_exec_default_list)) {
+        string_option_read_lock();
+        LOG(THREAD_GET, LOG_INTERP|LOG_VMAREAS, 4,
+            "on_native_exec_list: module %s vs default list %s\n",
+            modname==NULL?"null":modname,
+            DYNAMO_OPTION(native_exec_default_list));
+        onlist = check_filter(DYNAMO_OPTION(native_exec_default_list), modname);
+        string_option_read_unlock();
+    }
+    if (!onlist &&
+        !IS_STRING_OPTION_EMPTY(native_exec_list)) {
+        string_option_read_lock();
+        LOG(THREAD_GET, LOG_INTERP|LOG_VMAREAS, 4,
+            "on_native_exec_list: module %s vs append list %s\n",
+            modname==NULL?"null":modname, DYNAMO_OPTION(native_exec_list));
+        onlist = check_filter(DYNAMO_OPTION(native_exec_list), modname);
+        string_option_read_unlock();
+    }
+    return onlist;
+}
+
+static void
+check_and_mark_native_exec(module_area_t *ma, bool add)
+{
+    bool is_native = false;
+    const char *name = GET_MODULE_NAME(&ma->names);
+    ASSERT(os_get_module_info_locked());
+    if (DYNAMO_OPTION(native_exec) && name != NULL &&
+        on_native_exec_list(name)) {
+        LOG(GLOBAL, LOG_INTERP|LOG_VMAREAS, 1,
+            "module %s is on native_exec list\n", name);
+        is_native = true;
+    }
+
+    if (add && is_native) {
+        RSTATS_INC(num_native_module_loads);
+        vmvector_add(native_exec_areas, ma->start, ma->end, NULL);
+    } else if (!add) {
+        /* If we're removing and it's native, it should be on there already.  If
+         * it's not native, then it shouldn't be present, but we'll remove
+         * whatever is there.
+         */
+        DEBUG_DECLARE(bool present =)
+            vmvector_remove(native_exec_areas, ma->start, ma->end);
+        ASSERT_CURIOSITY((is_native && present) || (!is_native && !present));
+    }
+}
+
 /* Can only be called from os_module_area_init() called from module_list_add(),
  * which holds the module lock
  */
@@ -250,7 +306,7 @@ module_list_add(app_pc base, size_t view_size, bool at_map, const char *filepath
          * the loaded_module_areas vector, to support non-contiguous
          * modules (i#160/PR 562667)
          */
-        DEBUG_DECLARE(module_area_t *ma =)
+        module_area_t *ma =
             module_area_create(base, view_size, at_map, filepath _IF_LINUX(inode));
         ASSERT(ma != NULL);
         
@@ -265,6 +321,8 @@ module_list_add(app_pc base, size_t view_size, bool at_map, const char *filepath
          * or other routines: so we delay and invoke the client event only
          * when DR's module state is consistent
          */
+
+        check_and_mark_native_exec(ma, true/*add*/);
     } else {
         /* already added! */
         /* only possible for manual NtMapViewOfSection, loader 
@@ -317,6 +375,8 @@ module_list_remove(app_pc base, size_t view_size)
     ma = (module_area_t *) vmvector_lookup(loaded_module_areas, base);
     ASSERT_CURIOSITY(ma != NULL); /* loader can't have a race */
 #endif
+
+    check_and_mark_native_exec(ma, false/*!add*/);
 
     /* defensively checking */
     if (ma != NULL) {

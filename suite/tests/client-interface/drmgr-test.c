@@ -32,6 +32,7 @@
 
 #include "tools.h"
 
+static char table[2] = {'A', 'B'};
 #ifdef WINDOWS
 /* based on suite/tests/win32/callback.c */
 
@@ -129,7 +130,7 @@ run_func(void * arg)
     WNDCLASS wndclass = {0, wnd_callback, 0, 0, NULL/* WinMain hwnd would be here */,
                          NULL, NULL,
                          NULL, NULL, winName};
-    
+
     if (!RegisterClass(&wndclass)) {
         print("Unable to create window class\n");
         return 0;
@@ -282,8 +283,22 @@ main(int argc, char **argv)
 {
     pthread_t thread0, thread1;
     void * retval;
-    intervals = 10;
+    char ch;
+    /* test xlat for drutil_insert_get_mem_addr,
+     * we do not bother to run this test on Windows side.
+     */
+    __asm("mov %1, %%ebx\n\t"
+          "mov $0x1, %%eax\n\t"
+          "xlat\n\t"
+          "movb %%al, %0\n\t"
+          : "=m"(ch) : "g"(&table) : "%eax", "%ebx");
+    print("%c\n", ch);
+    /* XXX: should come up w/ some clever way to ensure
+     * this gets the right address: for now just making sure
+     * it doesn't crash.
+     */
 
+    intervals = 10;
     /* Initialize the lock on pi */
     pthread_mutex_init(&pi_lock, NULL);
 

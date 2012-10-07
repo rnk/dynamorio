@@ -51,10 +51,7 @@ option(TEST_LONG "run long set of tests")
 option(TEST_SUITE "running series of builds so skip some overlapping tests; also, include racy/flaky tests (eventually they should be fixed) for better coverage")
 set(TEST_SECONDS "60" CACHE STRING "Test time limit in seconds")
 set(TEST_OPTIONS "" CACHE STRING "Extra DynamoRIO options when running tests")
-set(TEST_LIB_PATH "" CACHE STRING "DynamoRIO library path (if empty, uses local build)")
-if (UNIX)
-  set(TEST_32BIT_PATH "" CACHE STRING "32-bit test bin dir for cross-arch tests")
-endif (UNIX)
+set(TEST_32BIT_PATH "" CACHE STRING "32-bit test bin dir for cross-arch tests")
 
 # FIXME: i#120: .runall support
 # FIXME: i#65: run samples like runregression does
@@ -100,11 +97,13 @@ set(vmap_run_list
   "SHORT::ONLY::client.events$::-code_api -thread_private"
   "SHORT::ONLY::client.events$::-code_api -disable_traces"
   "SHORT::ONLY::client.events$::-code_api -thread_private -disable_traces"
+  "SHORT::LIN::ONLY::client.events$::-code_api -early_inject"
   # maybe this should be SHORT as -coarse_units will eventually be the default?
   "-code_api -opt_memory"
   "-code_api -thread_private"
   "-code_api -disable_traces"
   "-code_api -thread_private -disable_traces"
+  "LIN::-code_api -early_inject"
   "DEBUG::ONLY::^common::-code_api -loglevel 1"
   "ONLY::^common::-code_api -stack_size 120k"
   "WIN::ONLY::^(runall|client)::-enable_full_api"
@@ -226,10 +225,11 @@ endif (LINKCOUNT AND TEST_SUITE)
 
 if (WIN32)
   find_program(BIND_EXECUTABLE bind.exe DOC "path to bind.exe")
-  if (NOT BIND_EXECUTABLE)
-    message(FATAL_ERROR "bind.exe not found: required to build Windows tests")
-  endif (NOT BIND_EXECUTABLE)
-  message(STATUS "Found bind.exe: ${BIND_EXECUTABLE}")
+  if (BIND_EXECUTABLE)
+    message(STATUS "Found bind.exe: ${BIND_EXECUTABLE}")
+  else (BIND_EXECUTABLE)
+    # else we'll use editbin via link.exe
+  endif (BIND_EXECUTABLE)
   mark_as_advanced(BIND_EXECUTABLE)
 
   # if cygwin or mingw gcc is available, we do some extra tests
@@ -255,11 +255,7 @@ endif (WIN32)
 
 # put libs in same dir for tests that need to load them
 set(MAIN_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}")
-if (NOT TEST_LIB_PATH)
-  set(MAIN_LIBRARY_OUTPUT_DIRECTORY "${DR_LIBRARY_OUTPUT_DIRECTORY}")
-else (NOT TEST_LIB_PATH)
-  set(MAIN_LIBRARY_OUTPUT_DIRECTORY "${TEST_LIB_PATH}")
-endif (NOT TEST_LIB_PATH)
+set(MAIN_LIBRARY_OUTPUT_DIRECTORY "${DR_LIBRARY_OUTPUT_DIRECTORY}")
 string(REGEX REPLACE "/lib([36])" "/ext/lib\\1"
   EXT_LIBRARY_OUTPUT_DIRECTORY "${MAIN_LIBRARY_OUTPUT_DIRECTORY}")
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/bin")
@@ -277,9 +273,25 @@ if (UNIX)
   # some tests rely on specific "nop;nop" patterns that optimization ruins
   # we should probably move the -O from top level into core/CMakeLists.txt
   string(REGEX REPLACE "-O[0-9]? " " " CMAKE_C_FLAGS "${CMAKE_C_FLAGS}")
+  # i#720: cmake fails to find 32-bit libraries in Ubuntu 11.10.
+  # This is because cmake uses CMAKE_LIBRARY_ARCHITECTURE to handle 
+  # multi-arch compilation, whose value is x86_64-linux-gnu or i386-linux-gnu
+  # for 64/32-bit. However, in Ubuntu 11.10, some of the 32-bit libraries
+  # like libm.so, libdl.so, and libpthread.so are in /usr/lib32 or /lib32
+  # instead of /lib/i386-linux-gnu, so cmake cannot to find them.
+  # solution: add explicit paths for lookup.
   find_library(libmath m)
+  if (NOT libmath AND NOT X64)
+    find_library(libmath m PATHS /usr/lib32 /lib32)
+  endif ()
   find_library(libdl dl)
+  if (NOT libdl AND NOT X64)
+    find_library(libdl dl PATHS /usr/lib32 /lib32)
+  endif ()
   find_library(libpthread pthread)
+  if (NOT libpthread AND NOT X64)
+    find_library(libpthread pthread PATHS /usr/lib32 /lib32)
+  endif ()
   if (NOT libmath OR NOT libdl OR NOT libpthread)
     message(FATAL_ERROR "cannot find required libs m, dl, and/or pthread")
   endif ()
@@ -319,7 +331,8 @@ if (UNIX)
 else (UNIX)
   set(ARCH_CFLAGS "")
   # we don't add /debug here (=> SHARED_LINKER flags) since can't remove
-  set(ARCH_LDFLAGS "")
+  # XXX i#893: VS2012 won't build any tools_asm test w/ safeseh
+  set(ARCH_LDFLAGS "/safeseh:no")
   if (RUNNING_OVER_SSH)
     set(ARCH_DEBUG "")
   else (RUNNING_OVER_SSH)
@@ -374,61 +387,29 @@ endif (UNIX)
 
 ##################################################
 
+set(asm_deps
+  "${PROJECT_SOURCE_DIR}/core/x86/asm_defines.asm"
+  "${PROJECT_BINARY_DIR}/configure.h")
+set(asm_defs
+  -I "${CMAKE_CURRENT_SOURCE_DIR}" # tools.h
+  -I "${PROJECT_SOURCE_DIR}/core/x86") # asm_defines.asm
+
 # some tests need to link with tools.c and its embedded asm code
 set(tools_c ${CMAKE_CURRENT_SOURCE_DIR}/tools.c)
 set_source_files_properties(${tools_c} PROPERTIES
   COMPILE_FLAGS "${ORIG_CMAKE_C_FLAGS}")
+add_split_asm_target("${tools_c}" tools_asm generate_tools_asm "_asm"
+  "${asm_defs}" "${asm_deps}")
 
-# name should be .obj for VS, .asm for makefiles
-function (add_test_asm_tgt source name)
-  if ("${CMAKE_GENERATOR}" MATCHES "Visual Studio")
-    # our CMAKE_ASM_COMPILE_OBJECT rule only applies to makefiles so we use
-    # a custom command.
-    set_source_files_properties(${name} PROPERTIES GENERATED true)
-    get_filename_component(namebase ${name} NAME_WE)
-    get_filename_component(namepath ${name} PATH)
-    set(namebase "${namepath}/${namebase}")
-    # we don't need ${defines} (=> list) b/c we include configure.h
-    add_custom_command(OUTPUT "${name}"
-      DEPENDS "${source}"
-        "${PROJECT_SOURCE_DIR}/make/CMake_asm.cmake"
-        "${PROJECT_BINARY_DIR}/configure.h)"
-      COMMAND ${CMAKE_COMMAND}
-        ARGS -E copy "${source}" "${namebase}.asm"
-      COMMAND "${CMAKE_C_COMPILER}" ARGS ${CMAKE_CPP_FLAGS}
-        /I "${PROJECT_BINARY_DIR}" /I "${PROJECT_SOURCE_DIR}/core/x86"
-        "-DASM_CODE_ONLY"
-        -E ${CPP_NO_LINENUM} "${namebase}.asm" ">" "${namebase}.s"
-      COMMAND "${CMAKE_COMMAND}" ARGS
-        -Dfile=${namebase}.s
-        -P "${PROJECT_SOURCE_DIR}/make/CMake_asm.cmake"
-      COMMAND "${CMAKE_ASM_COMPILER}" ARGS ${ASM_FLAGS} /c
-        /Fo "${name}" "${namebase}.s"
-      WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
-      VERBATIM # recommended: p260
-      )
-  else ("${CMAKE_GENERATOR}" MATCHES "Visual Studio")
-    set_source_files_properties(${name} PROPERTIES
-      GENERATED ON COMPILE_FLAGS "-DASM_CODE_ONLY")
-    add_custom_command(
-      OUTPUT ${name}
-      DEPENDS ${source}
-      COMMAND ${CMAKE_COMMAND}
-      ARGS -E copy ${source} ${name}
-      VERBATIM # recommended: p260
-      )
-  endif ("${CMAKE_GENERATOR}" MATCHES "Visual Studio")
-endfunction(add_test_asm_tgt)
-
+add_library(tools STATIC ${tools_c} ${tools_asm})
+if (UNIX)
+  # We link tools into shared libraries, so it has to be PIC.
+  append_property_string(SOURCE ${tools_c} COMPILE_FLAGS "-fPIC")
+endif ()
 if ("${CMAKE_GENERATOR}" MATCHES "Visual Studio")
-  set(tools_asm "${CMAKE_CURRENT_BINARY_DIR}/tools_asm.obj")
-  # for correct parallel builds we need a target to avoid
-  # duplicate and racy VS per-project rules
-  add_custom_target(generate_tools_asm DEPENDS "${tools_asm}")
-else ("${CMAKE_GENERATOR}" MATCHES "Visual Studio")
-  set(tools_asm ${CMAKE_CURRENT_BINARY_DIR}/tools_asm.asm)
-endif ("${CMAKE_GENERATOR}" MATCHES "Visual Studio")
-add_test_asm_tgt("${tools_c}" "${tools_asm}")
+  # for correct parallel builds we need a target
+  add_dependencies(tools ${generate_tools_asm})
+endif ()
 
 if (WIN32)
   set_source_files_properties(${PROJECT_SOURCE_DIR}/core/win32/resources.rc
@@ -474,6 +455,13 @@ function (set_cflags source)
   endif ()
 endfunction (set_cflags)
 
+function(append_link_flags target newflags)
+  get_target_property(cur_ldflags ${target} LINK_FLAGS)
+  # cmake should add an APPEND option
+  set_target_properties(${target} PROPERTIES
+    LINK_FLAGS "${cur_ldflags} ${newflags}")
+endfunction(append_link_flags)
+
 function(add_exe test source)
   get_filename_component(srcbase ${source} NAME_WE)
   get_filename_component(srcpath ${source} PATH)
@@ -497,21 +485,13 @@ function(add_exe test source)
   set(test_srcs ${source} ${rc_srcs})
   set_cflags(${source}) # sets srccode var
 
-  if ("${srccode}" MATCHES "include \"tools\\.h\"")
-    set(test_srcs ${test_srcs} ${tools_c} ${tools_asm})
-  endif ()
-
   # Some files use asm code, which must be separate for x64, but it's much
   # more convenient to have it in the same source file and auto-split.
   if ("${srccode}" MATCHES "ifndef ASM_CODE_ONLY")
     # we rely on the asm rule doing preprocessing for us, so we just make
     # a copy and set the ASM_CODE_ONLY define
-    if ("${CMAKE_GENERATOR}" MATCHES "Visual Studio")
-      set(asm_source "${CMAKE_CURRENT_BINARY_DIR}/${srcpath}/${srcbase}_asm.obj")
-    else ("${CMAKE_GENERATOR}" MATCHES "Visual Studio")
-      set(asm_source "${CMAKE_CURRENT_BINARY_DIR}/${srcpath}/${srcbase}_asm.asm")
-    endif ("${CMAKE_GENERATOR}" MATCHES "Visual Studio")
-    add_test_asm_tgt("${CMAKE_CURRENT_SOURCE_DIR}/${source}" "${asm_source}")
+    add_split_asm_target("${CMAKE_CURRENT_SOURCE_DIR}/${source}" asm_source gen_asm_tgt
+      "_asm" "${asm_defs}" "${asm_deps}")
     set(test_srcs ${test_srcs} ${asm_source})
   endif ("${srccode}" MATCHES "ifndef ASM_CODE_ONLY")
 
@@ -524,14 +504,18 @@ function(add_exe test source)
     SKIP_BUILD_RPATH ON)
   if (UNIX)
     target_link_libraries(${test} ${libmath} ${libdl})
-    if ("${test}" MATCHES "^pthread")
+    if ("${test}" MATCHES "^pthread|startstop")
       target_link_libraries(${test} ${libpthread})
-    endif ("${test}" MATCHES "^pthread")
+    endif ("${test}" MATCHES "^pthread|startstop")
+  else (UNIX)
+    append_link_flags(${test} "${ARCH_LDFLAGS}")
   endif (UNIX)
-  if ("${srccode}" MATCHES "include \"tools\\.h\"" AND
+  if ("${srccode}" MATCHES "include \"tools\\.h\"")
+    target_link_libraries(${test} tools)
+  endif ()
+  if ("${srccode}" MATCHES "ifndef ASM_CODE_ONLY" AND
       "${CMAKE_GENERATOR}" MATCHES "Visual Studio")
-    # for correct parallel builds we need a target
-    add_dependencies(${test} generate_tools_asm)
+    add_dependencies(${test} ${gen_asm_tgt})
   endif ()
 endfunction(add_exe)
 
@@ -556,19 +540,16 @@ function(tobuild_dll test source dr_ops)
   string(REGEX REPLACE "\\.(c|cpp)$" ".dll.c" dll_source "${source}")
 
   add_exe(${test} ${source})
+  # On Linux, we need the rpath to load ${test}.dll at initialization.
+  set_target_properties(${test} PROPERTIES SKIP_BUILD_RPATH OFF)
 
   set(lib_srcs ${dll_source})
   set_cflags(${dll_source}) # sets srccode var
-  if ("${srccode}" MATCHES "include \"tools\\.h\"")
-    set(lib_srcs ${lib_srcs} ${tools_c} ${tools_asm})
-  endif ()
   add_library(${test}.dll SHARED ${lib_srcs})
   set_target_properties(${test}.dll PROPERTIES LINK_FLAGS "${ARCH_DEBUG}")
   target_link_libraries(${test} ${test}.dll)
-  if ("${srccode}" MATCHES "include \"tools\\.h\"" AND
-      "${CMAKE_GENERATOR}" MATCHES "Visual Studio")
-    # for correct parallel builds we need a target
-    add_dependencies(${test}.dll generate_tools_asm)
+  if ("${srccode}" MATCHES "include \"tools\\.h\"")
+    target_link_libraries(${test}.dll tools)
   endif ()
 
   set(testlist_normal ${testlist_normal} ${test} PARENT_SCOPE)
@@ -606,7 +587,7 @@ function(tobuild_ci test source client_ops dr_ops exe_ops)
   set(${test}_client_path ${client_path} PARENT_SCOPE)
 endfunction(tobuild_ci)
 
-# adds a library target ${test}.appdll built from ${source}.appdll.c
+# adds a library target ${test}.appdll built from ${source-without-extension}.appdll.c
 function(tobuild_appdll test source)
   # support a test with a library
   get_filename_component(srcpath ${source} ABSOLUTE)
@@ -615,9 +596,6 @@ function(tobuild_appdll test source)
     string(REGEX REPLACE "\\.(c|cpp)$" ".appdll.\\1" dll_source "${source}")
     set(lib_srcs ${dll_source})
     set_cflags(${dll_source}) # sets srccode var
-    if ("${srccode}" MATCHES "include \"tools\\.h\"")
-      set(lib_srcs ${lib_srcs} ${tools_c} ${tools_asm})
-    endif ()
     
     if ("${srccode}" MATCHES "ifndef ASM_CODE_ONLY")
       # we rely on the asm rule doing preprocessing for us, so we just make
@@ -625,12 +603,8 @@ function(tobuild_appdll test source)
       get_filename_component(srcbase ${dll_srcpath} NAME_WE)
       set(srcbase "${srcbase}.appdll") # NAME_WE took this off
       get_filename_component(srcpath_rel ${source} PATH)
-      if ("${CMAKE_GENERATOR}" MATCHES "Visual Studio")
-        set(asm_source "${CMAKE_CURRENT_BINARY_DIR}/${srcpath_rel}/${srcbase}_asm.obj")
-      else ("${CMAKE_GENERATOR}" MATCHES "Visual Studio")
-        set(asm_source "${CMAKE_CURRENT_BINARY_DIR}/${srcpath_rel}/${srcbase}_asm.asm")
-      endif ("${CMAKE_GENERATOR}" MATCHES "Visual Studio")
-      add_test_asm_tgt("${dll_srcpath}" "${asm_source}")
+      add_split_asm_target("${dll_srcpath}" asm_source gen_asm_tgt
+        "_asm" "${asm_defs}" "${asm_deps}")
       set(lib_srcs ${lib_srcs} ${asm_source})
     endif ("${srccode}" MATCHES "ifndef ASM_CODE_ONLY")
     
@@ -638,10 +612,12 @@ function(tobuild_appdll test source)
     set_target_properties(${test}.appdll PROPERTIES LINK_FLAGS "${ARCH_DEBUG}")
     # so far these are all dynamically loaded so we don't bother
     # with "target_link_libraries(${test} ${test}.appdll)"
-    if ("${srccode}" MATCHES "include \"tools\\.h\"" AND
+    if ("${srccode}" MATCHES "include \"tools\\.h\"")
+      target_link_libraries(${test}.appdll tools)
+    endif ()
+    if ("${srccode}" MATCHES "ifndef ASM_CODE_ONLY" AND
         "${CMAKE_GENERATOR}" MATCHES "Visual Studio")
-      # for correct parallel builds we need a target
-      add_dependencies(${test}.appdll generate_tools_asm)
+      add_dependencies(${test}.appdll ${gen_asm_tgt})
     endif ()
   endif (EXISTS "${dll_srcpath}")
 endfunction(tobuild_appdll)
@@ -714,16 +690,28 @@ function(tobuild_api test source dr_ops exe_ops decoder)
     COMPILE_FLAGS "${prop_cflags}"
     LINK_FLAGS "${pre_lflags} ${prop_lflags}")
   add_dependencies(${test} api_headers)
-  if (WIN32)
+  if (WIN32 AND NOT decoder)
     # Since we can't set the working dir w/o making an external script,
-    # we copy dynamorio.dll into the default dir.  Yes, we're wasteful
-    # by re-copying for each test.
-    add_custom_command(TARGET ${test} POST_BUILD
-      COMMAND ${CMAKE_COMMAND}
-      ARGS -E copy ${MAIN_LIBRARY_OUTPUT_DIRECTORY}/dynamorio.dll
-        ${CMAKE_CURRENT_BINARY_DIR}/dynamorio.dll
-      VERBATIM)
-  endif (WIN32)
+    # we copy dynamorio.dll into the default dir.  If we just do a POST_BUILD
+    # custom command we have races (i#810) so we use a globally unique
+    # custom target (alternative of just adding POST_BUILD once has the downside
+    # that building just one target will not work if it's not the one w/ the
+    # POST_BUILD).
+    if (NOT created_drcopy_target)
+      set(drcopy_stamp "${CMAKE_CURRENT_BINARY_DIR}/DRcopy.stamp")
+      add_custom_command(OUTPUT "${drcopy_stamp}"
+        DEPENDS dynamorio
+        COMMAND ${CMAKE_COMMAND} ARGS
+          -E touch "${drcopy_stamp}"
+        COMMAND ${CMAKE_COMMAND} ARGS
+          -E copy ${MAIN_LIBRARY_OUTPUT_DIRECTORY}/dynamorio.dll
+          ${CMAKE_CURRENT_BINARY_DIR}/dynamorio.dll
+        VERBATIM)
+      add_custom_target(drcopy DEPENDS "${drcopy_stamp}")
+      set(created_drcopy_target ON PARENT_SCOPE)
+    endif ()
+    add_dependencies(${test} drcopy)
+  endif (WIN32 AND NOT decoder)
   set(testlist_api ${testlist_api} ${test} PARENT_SCOPE)
   set(${test}_source ${source} PARENT_SCOPE)
   set(${test}_dr_ops ${dr_ops} PARENT_SCOPE)
@@ -741,12 +729,21 @@ endfunction(torunonly)
 
 function(tobind target)
   get_target_property(binary ${target} LOCATION${location_suffix})
-  add_custom_command(TARGET ${target}
-    POST_BUILD
-    COMMAND ${BIND_EXECUTABLE}
-    ARGS -u ${binary}
-    VERBATIM # recommended: p260
-  )
+  if (BIND_EXECUTABLE)
+    add_custom_command(TARGET ${target}
+      POST_BUILD
+      COMMAND ${BIND_EXECUTABLE}
+      ARGS -u ${binary}
+      VERBATIM # recommended: p260
+      )
+  else (BIND_EXECUTABLE)
+    add_custom_command(TARGET ${target}
+      POST_BUILD
+      COMMAND ${CMAKE_LINKER}
+      ARGS /edit /bind ${binary}
+      VERBATIM # recommended: p260
+      )
+  endif (BIND_EXECUTABLE)
 endfunction(tobind)
 
 # i#215: mark tests w/ text relocations to avoid violating selinux policies:
@@ -774,24 +771,6 @@ function(mark_execstack target)
       "-Wl,-z,execstack ${existing_flags}")
   endif (UNIX)
 endfunction(mark_execstack)
-
-function(append_link_flags target newflags)
-  get_target_property(cur_ldflags ${target} LINK_FLAGS)
-  # cmake should add an APPEND option
-  set_target_properties(${target} PROPERTIES
-    LINK_FLAGS "${cur_ldflags} ${newflags}")
-endfunction(append_link_flags)
-
-function(remove_debug_flag target)
-  if (WIN32)
-    # for years we had no /debug.  we added it recently in i#567 and it broke
-    # a few tests.  removing it from those to get them passing until we can
-    # take a deeper look.
-    get_target_property(cur_ldflags ${target} LINK_FLAGS)
-    string(REGEX REPLACE "/debug" "" cur_ldflags ${cur_ldflags})
-    set_target_properties(${target} PROPERTIES LINK_FLAGS "${cur_ldflags}")
-  endif (WIN32)
-endfunction(remove_debug_flag)
 
 ###########################################################################
 # RUNNING
@@ -938,21 +917,28 @@ function(rundr_cmd outcmd outops native dr_ops_aux is_runall)
     endif (is_runall)
     # Since the creation of CTestTestfile.cmake ends up replacing \ with / we
     # can't escape quotes, so we have to use a list variable
-    set(cmd ${MAIN_RUNTIME_OUTPUT_DIRECTORY}/runstats -s ${TEST_SECONDS} -silent)
-    # We set LD_LIBRARY_PATH even for native api/ apps since we're not setting
-    # rpath (to make it easier to try different trees)
-    set(cmd ${cmd}
-      -env LD_LIBRARY_PATH "${MAIN_LIBRARY_OUTPUT_DIRECTORY}:${EXT_LIBRARY_OUTPUT_DIRECTORY}:$ENV{LD_LIBRARY_PATH}")
+    set(cmd ${MAIN_RUNTIME_OUTPUT_DIRECTORY}/runstats -s ${TEST_SECONDS} -killpg -silent)
     if (NOT native)
-      # FIXME: should really use drrun to override any existing config file
-      set(cmd ${cmd}
-        -env DYNAMORIO_RUNUNDER 1
-        -env LD_PRELOAD "libdrpreload.so libdynamorio.so"
-        -env DYNAMORIO_CACHE_ROOT "${PCACHE_DIR}"
-        -env DYNAMORIO_CACHE_SHARED "${PCACHE_SHARED_DIR}")
-    endif (NOT native)
-    # add dr_ops last to avoid needing extra \ on ;
-    set(${outcmd} ${cmd} -env DYNAMORIO_OPTIONS "${dr_ops}" PARENT_SCOPE)
+      set(cmd ${cmd} ${MAIN_RUNTIME_OUTPUT_DIRECTORY}/drrun)
+      if (TEST_SUITE)  # Use install dir in the suite for cross-arch execve.
+        set(cmd ${cmd} -dr_home "${CMAKE_INSTALL_PREFIX}")
+      endif ()
+      if (DEBUG)
+        set(cmd ${cmd} -debug)
+      endif ()
+      if (LINUX AND "${dr_ops}" MATCHES "-early_inject")
+        set(cmd ${cmd} -early)
+      endif()
+      # add dr_ops last to avoid needing extra \ on ;
+      set(${outcmd} ${cmd} -ops "${dr_ops}" PARENT_SCOPE)
+    else ()
+      # We set LD_LIBRARY_PATH for native api/ apps since we're not setting
+      # rpath (to make it easier to try different trees)
+      set(cmd ${cmd} -env LD_LIBRARY_PATH
+        "${MAIN_LIBRARY_OUTPUT_DIRECTORY}:${EXT_LIBRARY_OUTPUT_DIRECTORY}:$ENV{LD_LIBRARY_PATH}")
+      # add dr_ops last to avoid needing extra \ on ;
+      set(${outcmd} ${cmd} -env DYNAMORIO_OPTIONS "${dr_ops}" PARENT_SCOPE)
+    endif ()
   else (UNIX)
     set(dr_ops "-stderr_mask 0xC -msgbox_mask 0 -dumpcore_mask 0xfd -staged ${dr_ops_aux} ${TEST_OPTIONS}")
     if (is_runall)
@@ -967,11 +953,11 @@ function(rundr_cmd outcmd outops native dr_ops_aux is_runall)
     # but we take advantage of the new drrun tool
     # we pass -exit0 to avoid ctest from considering our segfault and other tests
     # to have failed (also xref PR 548997).
-    if (VPS AND VMAP)
+    if (VPS AND VMAP OR VMSAFE)
       set(MODE -mode code)
-    else (VPS AND VMAP)
+    else (VPS AND VMAP OR VMSAFE)
       set(MODE "")
-    endif (VPS AND VMAP)
+    endif (VPS AND VMAP OR VMSAFE)
     set(cmd ${MAIN_RUNTIME_OUTPUT_DIRECTORY}/drrun.exe -s ${TEST_SECONDS} -quiet -exit0 ${MODE})
     if (native)
       set(${outcmd} ${cmd} -ops "${dr_ops}" -noinject PARENT_SCOPE)
@@ -988,6 +974,17 @@ endfunction(rundr_cmd)
 # if test != exe we assume exe is already added as a build target
 # key is the test name without the options, and is used to look up ${key}_expectbase
 function(torun test key source native dr_ops exe_ops)
+  # Avoid running some tests with invalid option combinations.  For example,
+  # coarse fragments are incompatible with thread private code caches.
+  if ("${dr_ops}" MATCHES "-thread_private" AND
+      "${dr_ops}" MATCHES "-opt_memory")
+    return()
+  endif ()
+  if ("${dr_ops}" MATCHES "-early_inject" AND
+      "${dr_ops}" MATCHES "-no_private_loader")
+    return()
+  endif ()
+
   if (DEFINED ${key}_realtest)
     set(exe ${${key}_realtest})
   else (DEFINED ${key}_realtest)
@@ -1016,14 +1013,22 @@ function(torun test key source native dr_ops exe_ops)
     set(exepath ${exe})
   endif (NOT exepath)
 
+  if (${test} MATCHES "linux.execve32")
+    # We're an x64 build, but we need to launch a 32-bit app under DR.  The
+    # suite sets -dr_home to the full install dir with both archs, but we're
+    # invoking bin64/drrun.  Ideally drrun would detect which ELF class we're
+    # about to exec, but until then we have to add -32 for 32-bit apps.
+    string(REGEX REPLACE "/drrun;" "/drrun;-32;" rundr "${rundr}")
+  endif ()
+
   if (is_runall)
     # to run the test we use a series of commands in runall.cmake.
     file(READ "${CMAKE_CURRENT_SOURCE_DIR}/${srcpath}/${srcbase}.runall" runall)
     if (UNIX)
       # swap from runstats to run_in_bg to run the test in the background
       set(tmpfile "${CMAKE_CURRENT_BINARY_DIR}/${test}-out")
-      string(REGEX REPLACE "^.*-env;LD_L" 
-        "${MAIN_RUNTIME_OUTPUT_DIRECTORY}/run_in_bg;-out;${tmpfile};-env;LD_L"
+      string(REGEX REPLACE "^.*(-env;LD_L|${MAIN_RUNTIME_OUTPUT_DIRECTORY}/drrun)" 
+        "${MAIN_RUNTIME_OUTPUT_DIRECTORY}/run_in_bg;-out;${tmpfile};\\1"
         rundr "${rundr}")
       set(clear_arg "")
       if ("${runall}" MATCHES "<reset>")
@@ -1217,6 +1222,13 @@ endif (WIN32)
 tobuild(common.eflags common/eflags.c)
 tobuild(common.fib common/fib.c)
 tobuild(common.getretaddr common/getretaddr.c)
+if (WIN32)
+  set(native_dll_name "common.nativeexec.dll.dll")
+else ()
+  set(native_dll_name "libcommon.nativeexec.dll.so")
+endif ()
+tobuild_dll(common.nativeexec common/nativeexec.c
+  "-native_exec_list ${native_dll_name}")
 
 # app seg mangling makes dstack test fail so we disable such mangling
 if (UNIX)
@@ -1245,20 +1257,24 @@ if (CLIENT_INTERFACE)
   tobuild_ci(client.count-bbs client-interface/count-bbs.c "" "" "")
   tobuild_ci(client.syscall client-interface/syscall.c "" "-no_follow_children" "")
   tobuild_ci(client.modules client-interface/modules.c "" "" "")
+  tobuild_appdll(client.events client-interface/events.c)
+  get_target_property(events_appdll_path client.events.appdll LOCATION${location_suffix})
   if (UNIX)
-    # just happens to not make as many traces.  also needs path for events*.so.
-    tobuild_ci(client.events client-interface/events.c 
-      "" "-trace_threshold 5" "${CMAKE_CURRENT_SOURCE_DIR}/client-interface/")
+    # Just happens to not make as many traces.
+    tobuild_ci(client.events client-interface/events.c
+      "" "-trace_threshold 5" "${events_appdll_path}")
     tobuild_ci(client.events_cpp client-interface/events_cpp.cpp
-      "" "-trace_threshold 5" "${CMAKE_CURRENT_SOURCE_DIR}/client-interface/")
+      "" "-trace_threshold 5" "${events_appdll_path}")
     tobuild_ci(client.signal client-interface/signal.c "" "" "")
     tobuild_ci(client.syscall-mod client-interface/syscall-mod.c "" "" "")
     tobuild_ci(client.nudge_test client-interface/nudge_test.runall "" "" "")
     tobuild_ci(client.timer client-interface/timer.c "" "" "")
     tobuild_ci(client.cbr-retarget client-interface/cbr-retarget.c "" "" "")
   else (UNIX)
-    tobuild_ci(client.events client-interface/events.c "" "" "")
-    tobuild_ci(client.events_cpp client-interface/events_cpp.cpp "" "" "")
+    tobuild_ci(client.events client-interface/events.c
+      "" "" "${events_appdll_path}")
+    tobuild_ci(client.events_cpp client-interface/events_cpp.cpp
+      "" "" "${events_appdll_path}")
     tobuild_ci(client.cbr3 client-interface/cbr3.c "" "" "")
     tobuild_ci(client.cbr4 client-interface/cbr4.c "" "-thread_private" "")
     # FIXME i#120: enable these .runall tests once have .runall support
@@ -1290,6 +1306,14 @@ if (CLIENT_INTERFACE)
   tobuild_ci(client.truncate client-interface/truncate.c "" "" "")
   tobuild_ci(client.unregister client-interface/unregister.c "" "" "")
   tobuild_ci(client.inline client-interface/inline.c "" "-opt_cleancall 3" "")
+  tobuild_ci(client.dr_options client-interface/dr_options.c
+    "" "-native_exec_list foo.dll,bar.dll -opt_cleancall 3 -thread_private" "")
+
+  tobuild_ci(client.null_instrument client-interface/null_instrument.c "" "" "")
+  tobuild_appdll(client.null_instrument client-interface/null_instrument.c)
+  target_link_libraries(client.null_instrument client.null_instrument.appdll)
+  # We want rpath on Linux so we can load the appdll.
+  set_target_properties(client.null_instrument PROPERTIES SKIP_BUILD_RPATH OFF)
 
   # Test passing a really long (600 chars) client option string.
   tobuild_ci(client.large_options client-interface/large_options.c
@@ -1386,6 +1410,11 @@ if (CLIENT_INTERFACE)
     tobuild_ci(client.fcache_shift client-interface/fcache_shift.c
       "" "-thread_private -cache_bb_unit_init 4K" "")
   endif ()
+
+  tobuild_ci(client.nudge_ex client-interface/nudge_ex.c "" "" "")
+  use_DynamoRIO_extension(client.nudge_ex.dll drmgr)
+
+  tobuild_ci(client.retaddr client-interface/retaddr.c "" "" "")
 endif (CLIENT_INTERFACE)
 
 if (UNIX)
@@ -1394,7 +1423,7 @@ if (UNIX)
   # Cross-arch execve test: can only be done via a suite of tests that
   # build both 32-bit and 64-bit.  We have 32-bit just build, and
   # 64-bit then builds and runs both directions.
-  if (TEST_SUITE)
+  if (TEST_SUITE OR TEST_32BIT_PATH)
     if (X64)
       add_exe(linux.execve-sub64 linux/execve-sub.c)
       tobuild_ops(linux.execve64 linux/execve.c ""
@@ -1405,7 +1434,7 @@ if (UNIX)
       add_exe(linux.execve-sub32 linux/execve-sub.c)
       add_exe(linux.execve32 linux/execve.c)
     endif (X64)
-  endif (TEST_SUITE)
+  endif (TEST_SUITE OR TEST_32BIT_PATH)
     
   # helper app for execve-null
   add_exe(linux.execve-sub linux/execve-sub.c)
@@ -1417,6 +1446,7 @@ if (UNIX)
   tobuild(linux.fork linux/fork.c)
   tobuild(linux.infinite linux/infinite.c)
   tobuild(linux.longjmp linux/longjmp.c)
+  tobuild(linux.prctl linux/prctl.c)
   # FIXME TOFILE: suddently seeing non-det curiosities/asserts in module list on mmap
   tobuild(linux.mmap linux/mmap.c)
   tobuild(linux.signal0000 linux/signal0000.c)
@@ -1448,6 +1478,10 @@ if (UNIX)
   tobuild(linux.threadexit linux/threadexit.c)
   tobuild(linux.threadexit2 linux/threadexit2.c)
 
+  # We pass -native_exec_list which causes us to call strcasecmp in libc,
+  # thereby exercising on our ability to copy libc's TLS data.
+  tobuild_ops(linux.app_tls linux/app_tls.c "-native_exec_list libfoo.so" "")
+
   # FIXME i#125: bugs in these, were disabled in the past
   tobuild_ops(linux.vfork linux/vfork.c ""
     "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/linux.execve-sub")
@@ -1462,16 +1496,17 @@ if (UNIX)
   tobuild(pthreads.pthreads pthreads/pthreads.c)
   tobuild(pthreads.pthreads_exit pthreads/pthreads_exit.c)
   tobuild(pthreads.ptsig_FLAKY pthreads/ptsig.c)
+  tobuild(pthreads.pthreads_fork pthreads/pthreads_fork.c)
 
-  if (NOT X64)
-    # FIXME i#16: these tests need to be fixed to compile for x64
-    tobuild(security-linux.stacktest security-linux/stacktest.c)
-    tochcon(security-linux.stacktest execmem_exec_t)
-    mark_execstack(security-linux.stacktest)
-  endif (NOT X64)
   # Clang will likely never support gcc nested functions:
   # http://llvm.org/PR9206
   if (NOT CMAKE_COMPILER_IS_CLANG)
+    if (NOT X64)
+      # FIXME i#16: these tests need to be fixed to compile for x64
+      tobuild(security-linux.stacktest security-linux/stacktest.c)
+      tochcon(security-linux.stacktest execmem_exec_t)
+      mark_execstack(security-linux.stacktest)
+    endif (NOT X64)
     tobuild(security-linux.trampoline security-linux/trampoline.c)
   endif (NOT CMAKE_COMPILER_IS_CLANG)
 
@@ -1506,6 +1541,12 @@ else (UNIX)
   endif (VPS)
   tobuild(win32.callback win32/callback.c)
   tobuild(win32.crtprcs win32/crtprcs.c)
+  if (X64)
+    # regression test for in-progress earliest injection feature
+    # XXX i#234: once have wow64 support run on 32-bit
+    torunonly(win32.crtprcs-earliest win32.crtprcs win32/crtprcs.c
+      "-early_inject_map -early_inject_location 5" "")
+  endif (X64)
 
   tobuild_dll(win32.delaybind win32/delaybind.c "")
   append_link_flags(win32.delaybind "/delayload:win32.delaybind.dll.dll /delay:unload")
@@ -1535,7 +1576,6 @@ else (UNIX)
   #tobuild_dll(win32.reload-race win32/reload-race.c "")
 
   tobuild_dll(win32.section-max win32/section-max.c "")
-  remove_debug_flag(win32.section-max.dll) # i#567: breaks w/ /debug
 
   tobuild(win32.suspend win32/suspend.c)
   tobuild(win32.threadchurn win32/threadchurn.c)
@@ -1569,8 +1609,6 @@ else (UNIX)
     tobuild(win32.getthreadcontext win32/getthreadcontext.c)
     tobuild_dll(win32.hookerfirst win32/hookerfirst.c "")
     tobuild(win32.hooker-secur32 win32/hooker-secur32.c)
-    tobuild_dll(win32.nativeexec win32/nativeexec.c
-      "-native_exec_list nativeexec.dll.dll")
     tobuild(win32.rsbtest win32/rsbtest.c)
     tobuild(win32.setcxtsyscall win32/setcxtsyscall.c)
     tobuild(win32.setthreadcontext win32/setthreadcontext.c)
@@ -1601,7 +1639,6 @@ else (UNIX)
 
   tobuild(security-win32.sd_tester security-win32/sd_tester.c)
   tobuild(security-win32.sec-adata security-win32/sec-adata.c)
-  remove_debug_flag(security-win32.sec-adata) # i#567: breaks w/ /debug
 
   # FIXME: getting warnings from pragmas in src code:
   #   secalign-fixed.dll.c.obj : warning LNK4229: invalid directive '/fixed' encountered; ignored
@@ -1617,13 +1654,10 @@ else (UNIX)
   append_link_flags(security-win32.sec-fixed.dll "/dynamicbase:no /fixed")
 
   tobuild_dll(security-win32.sec-xdata security-win32/sec-xdata.c "")
-  remove_debug_flag(security-win32.sec-xdata) # i#567: breaks w/ /debug
-  remove_debug_flag(security-win32.sec-xdata.dll) # i#567: breaks w/ /debug
 
   # PR 209235 covers re-enabling selfmod-threads
   #tobuild(security-win32.selfmod-threads security-win32/selfmod-threads.c)
   tobuild(security-win32.TestNTFlush security-win32/TestNTFlush.c)
-  remove_debug_flag(security-win32.TestNTFlush) # i#567: breaks w/ /debug
 
   # FIXME: enable once have .runall support
   #tobuild_runall(runall.calc-detach runall/calc-detach.runall "")
@@ -1647,6 +1681,41 @@ else (UNIX)
   #tobuild_runall(runall.notepad runall/notepad.runall "")
   #tobuild_runall(runall.preunload runall/preunload.runall "")
   #tobuild_runall(runall.processchain runall/processchain.runall "")
+
+  # Cross-arch mixedmode/x86_to_x64 test: can only be done via a suite of tests that
+  # build both 32-bit and 64-bit.  We have 32-bit just build, and
+  # 64-bit then builds and runs both directions.
+  #
+  # XXX: alternative of cmake cross-compilation support really
+  # requires a separate config anyway; to build 32-bit in 64-bit build
+  # dir would require manual build rules.  Not difficult, just a
+  # little messy.
+  #
+  # We support setting TEST_32BIT_PATH manually in a 64-bit build.
+  # We go ahead and build in any 32-bit build dir to make that easier.
+  #
+  # XXX: currently early injection doesn't work for pre-Vista WOW64, where
+  # w/ these options the child will end up native and the test will pass (!).
+  # For now we assume injection succeeds on Vista+ and that the test thus
+  # actually tests mixed-mode, until we've got early/earliest injection working
+  # everywhere (xref i#381, i#234, i#803).
+  if (TEST_SUITE OR TEST_32BIT_PATH OR NOT X64)
+    if (X64)
+      torunonly(win32.mixedmode
+        ${MAIN_RUNTIME_OUTPUT_DIRECTORY}/create_process.exe
+        win32/mixedmode.c
+        "-early_inject_map -early_inject_location 5"
+        "${TEST_32BIT_PATH}/win32.mixedmode.exe;mixedmode")
+      torunonly(win32.x86_to_x64
+        ${MAIN_RUNTIME_OUTPUT_DIRECTORY}/create_process.exe
+        win32/mixedmode.c
+        "-early_inject_map -early_inject_location 5 -x86_to_x64"
+        "${TEST_32BIT_PATH}/win32.mixedmode.exe;x86_to_x64")
+    else (X64)
+      add_exe(win32.mixedmode win32/mixedmode.c)
+    endif (X64)
+  endif (TEST_SUITE OR TEST_32BIT_PATH OR NOT X64)
+   
 endif (UNIX)
 
 tobuild(security-common.codemod security-common/codemod.c)
@@ -1662,10 +1731,9 @@ endif (TEST_SUITE)
 tobuild(security-common.retexisting security-common/retexisting.c)
 tobuild(security-common.ret_noncall_trace security-common/ret_noncall_trace.c)
 tobuild(security-common.retnonexisting security-common/retnonexisting.c)
+tobuild(security-common.selfmod2 security-common/selfmod2.c)
+tochcon(security-common.selfmod2 textrel_shlib_t)
 if (NOT X64)
-  # FIXME i#16: these tests need to be fixed to compile for x64
-  tobuild(security-common.selfmod2 security-common/selfmod2.c)
-  tochcon(security-common.selfmod2 textrel_shlib_t)
   # FIXME i#125: not building on 32-bit b/c protect_mem() from tools.h being stripped
   #tobuild(security-common.selfmod-big security-common/selfmod-big.c)
   tobuild(security-common.vbjmp-rac-test security-common/vbjmp-rac-test.c)
@@ -1674,12 +1742,14 @@ tobuild(security-common.selfmod security-common/selfmod.c)
 tochcon(security-common.selfmod textrel_shlib_t)
 
 tobuild("security-common.TestAllocWE" security-common/TestAllocWE.c)
-remove_debug_flag("security-common.TestAllocWE") # i#567: breaks w/ /debug
 
-tobuild("security-common.TestMemProtChg" security-common/TestMemProtChg.c)
-remove_debug_flag("security-common.TestMemProtChg") # i#567: breaks w/ /debug
-tochcon("security-common.TestMemProtChg" wine_exec_t)
-mark_execstack("security-common.TestMemProtChg")
+set (TestMemProtChg "security-common.TestMemProtChg")
+if (UNIX)  # i#387: Still has issues with proc maps on some kernels.
+  set (TestMemProtChg "${TestMemProtChg}_FLAKY")
+endif (UNIX)
+tobuild("${TestMemProtChg}" security-common/TestMemProtChg.c)
+tochcon("${TestMemProtChg}" wine_exec_t)
+mark_execstack("${TestMemProtChg}")
 
 ###########################################################################
 

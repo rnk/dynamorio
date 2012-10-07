@@ -35,6 +35,8 @@
 #include "../globals.h"
 #include "../module_shared.h"
 #include "os_private.h"
+#include "../utils.h"
+#include "../x86/instrument.h"
 #include <string.h>
 #include <stddef.h> /* offsetof */
 #include <link.h>   /* Elf_Symndx */
@@ -43,6 +45,25 @@ typedef union _elf_generic_header_t {
     Elf64_Ehdr elf64;
     Elf32_Ehdr elf32;
 } elf_generic_header_t;
+
+#ifdef CLIENT_INTERFACE
+typedef struct _elf_import_iterator_t {
+    dr_symbol_import_t symbol_import;   /* symbol import returned by next() */
+
+    /* This data is copied from os_module_data_t so we don't have to hold the
+     * module area lock while the client iterates.
+     */
+    ELF_SYM_TYPE *dynsym;               /* absolute addr of .dynsym */
+    size_t symentry_size;               /* size of a .dynsym entry */
+    const char *dynstr;                 /* absolute addr of .dynstr */
+    size_t dynstr_size;                 /* size of .dynstr */
+
+    ELF_SYM_TYPE *cur_sym;              /* pointer to next import in .dynsym */
+    ELF_SYM_TYPE safe_cur_sym;          /* safe_read() copy of cur_sym */
+    ELF_SYM_TYPE *import_end;           /* end of imports in .dynsym */
+    bool error_occurred;                /* error during iteration */
+} elf_import_iterator_t;
+#endif /* CLIENT_INTERFACE */
 
 /* In case want to build w/o gnu headers and use that to run recent gnu elf */
 #ifndef DT_GNU_HASH
@@ -533,11 +554,10 @@ module_hashtab_init(os_module_data_t *os_data)
         /* set up symbol lookup fields */
         if (os_data->hash_is_gnu) {
             /* .gnu.hash format.  can't find good docs for it. */
-            Elf32_Word symbias;
             Elf32_Word bitmask_nwords;
             Elf32_Word *htab = (Elf32_Word *) os_data->hashtab;
             os_data->num_buckets = (size_t) *htab++;
-            symbias = *htab++;
+            os_data->gnu_symbias = *htab++;
             bitmask_nwords = *htab++;
             os_data->gnu_bitidx = (ptr_uint_t) (bitmask_nwords - 1);
             os_data->gnu_shift = (ptr_uint_t) *htab++;
@@ -545,7 +565,7 @@ module_hashtab_init(os_module_data_t *os_data)
             htab += ELF_WORD_SIZE / 32 * bitmask_nwords;
             os_data->buckets = (app_pc) htab;
             htab += os_data->num_buckets;
-            os_data->chain = (app_pc) (htab - symbias);
+            os_data->chain = (app_pc) (htab - os_data->gnu_symbias);
         } else {
             /* sysv .hash format: nbuckets; nchain; buckets[]; chain[] */
             Elf_Symndx *htab = (Elf_Symndx *) os_data->hashtab;
@@ -1508,8 +1528,173 @@ module_lookup_symbol(ELF_SYM_TYPE *sym, os_privmod_data_t *pd)
 }
 
 static void
-module_relocate_symbol(app_pc modbase,
-                       ELF_REL_TYPE *rel,
+module_undef_symbols()
+{
+    FATAL_USAGE_ERROR(UNDEFINED_SYMBOL_REFERENCE, 0, "");
+}
+
+#ifdef CLIENT_INTERFACE
+/* XXX: We could implement import iteration of PE files in Wine, so we provide
+ * these stubs.
+ */
+dr_module_import_iterator_t *
+dr_module_import_iterator_start(module_handle_t handle)
+{
+    CLIENT_ASSERT(false, "No imports on Linux, use "
+                  "dr_symbol_import_iterator_t instead");
+    return NULL;
+}
+
+bool
+dr_module_import_iterator_hasnext(dr_module_import_iterator_t *iter)
+{
+    return false;
+}
+
+dr_module_import_t *
+dr_module_import_iterator_next(dr_module_import_iterator_t *iter)
+{
+    return NULL;
+}
+
+void
+dr_module_import_iterator_stop(dr_module_import_iterator_t *iter)
+{
+}
+
+static void
+dynsym_next(elf_import_iterator_t *iter)
+{
+    iter->cur_sym = (ELF_SYM_TYPE *) ((byte *) iter->cur_sym +
+                                      iter->symentry_size);
+}
+
+static void
+dynsym_next_import(elf_import_iterator_t *iter)
+{
+    /* Imports have zero st_value fields.  Anything else is something else, so
+     * we skip it.  Modules using .gnu.hash symbol lookup tend to have imports
+     * come first, but sysv hash tables don't have any such split.
+     */
+    do {
+        dynsym_next(iter);
+        if (iter->cur_sym >= iter->import_end)
+            return;
+        if (!SAFE_READ_VAL(iter->safe_cur_sym, iter->cur_sym)) {
+            memset(&iter->safe_cur_sym, 0, sizeof(iter->safe_cur_sym));
+            iter->error_occurred = true;
+            return;
+        }
+    } while (iter->safe_cur_sym.st_value != 0);
+
+    if (iter->safe_cur_sym.st_name >= iter->dynstr_size) {
+        ASSERT_CURIOSITY(false && "st_name out of .dynstr bounds");
+        iter->error_occurred = true;
+        return;
+    }
+}
+
+dr_symbol_import_iterator_t *
+dr_symbol_import_iterator_start(module_handle_t handle,
+                                dr_module_import_desc_t *from_module)
+{
+    module_area_t *ma;
+    elf_import_iterator_t *iter;
+    size_t max_imports;
+
+    if (from_module != NULL) {
+        CLIENT_ASSERT(false, "Cannot iterate imports from a given module on "
+                      "Linux");
+        return NULL;
+    }
+
+    iter = global_heap_alloc(sizeof(*iter) HEAPACCT(ACCT_CLIENT));
+    if (iter == NULL)
+        return NULL;
+    memset(iter, 0, sizeof(*iter));
+
+    os_get_module_info_lock();
+    ma = module_pc_lookup((byte *) handle);
+    if (ma != NULL) {
+        iter->dynsym = (ELF_SYM_TYPE *) ma->os_data.dynsym;
+        iter->symentry_size = ma->os_data.symentry_size;
+        iter->dynstr = (const char *) ma->os_data.dynstr;
+        iter->dynstr_size = ma->os_data.dynstr_size;
+        iter->cur_sym = iter->dynsym;
+
+        /* The length of .dynsym is not available in the mapped image, so we
+         * have to be creative.  The two export hashtables point into dynsym,
+         * though, so they have some info about the length.
+         */
+        if (ma->os_data.hash_is_gnu) {
+            /* See https://blogs.oracle.com/ali/entry/gnu_hash_elf_sections
+             * "With GNU hash, the dynamic symbol table is divided into two
+             * parts. The first part receives the symbols that can be omitted
+             * from the hash table."
+             * gnu_symbias is the index of the first symbol in the hash table,
+             * so all of the imports are before it.  If we ever want to iterate
+             * all of .dynsym, we will have to look at the contents of the hash
+             * table.
+             */
+            max_imports = ma->os_data.gnu_symbias;
+        } else {
+            /* See http://www.sco.com/developers/gabi/latest/ch5.dynamic.html#hash
+             * "The number of symbol table entries should equal nchain"
+             */
+            max_imports = ma->os_data.num_chain;
+        }
+        iter->import_end = (ELF_SYM_TYPE *)((app_pc)iter->dynsym +
+                                            (max_imports * iter->symentry_size));
+
+        /* Set up invariant that cur_sym and safe_cur_sym point to the next
+         * symbol to yield.  This skips the first entry, which is fake according
+         * to the spec.
+         */
+        ASSERT_CURIOSITY(iter->cur_sym->st_name == 0);
+        dynsym_next_import(iter);
+    } else {
+        global_heap_free(iter, sizeof(*iter) HEAPACCT(ACCT_CLIENT));
+        iter = NULL;
+    }
+    os_get_module_info_unlock();
+
+    return (dr_symbol_import_iterator_t *) iter;
+}
+
+bool
+dr_symbol_import_iterator_hasnext(dr_symbol_import_iterator_t *dr_iter)
+{
+    elf_import_iterator_t *iter = (elf_import_iterator_t *) dr_iter;
+    return (iter != NULL && !iter->error_occurred &&
+            iter->cur_sym < iter->import_end);
+}
+
+dr_symbol_import_t *
+dr_symbol_import_iterator_next(dr_symbol_import_iterator_t *dr_iter)
+{
+    elf_import_iterator_t *iter = (elf_import_iterator_t *) dr_iter;
+
+    CLIENT_ASSERT(iter != NULL, "invalid parameter");
+    iter->symbol_import.name = iter->dynstr + iter->safe_cur_sym.st_name;
+    iter->symbol_import.modname = NULL;  /* no module for ELFs */
+    iter->symbol_import.delay_load = false;
+
+    dynsym_next_import(iter);
+    return &iter->symbol_import;
+}
+
+void
+dr_symbol_import_iterator_stop(dr_symbol_import_iterator_t *dr_iter)
+{
+    elf_import_iterator_t *iter = (elf_import_iterator_t *) dr_iter;
+    if (iter == NULL)
+        return;
+    global_heap_free(iter, sizeof(*iter) HEAPACCT(ACCT_CLIENT));
+}
+#endif /* CLIENT_INTERFACE */
+
+static void
+module_relocate_symbol(ELF_REL_TYPE *rel,
                        os_privmod_data_t *pd,
                        bool is_rela)
 {
@@ -1588,7 +1773,7 @@ module_relocate_symbol(app_pc modbase,
         break;
 #endif
     case ELF_R_IRELATIVE:
-        res = modbase + (is_rela ? addend : *r_addr);
+        res = (byte *)pd->load_delta + (is_rela ? addend : *r_addr);
         *r_addr =  ((ELF_ADDR (*) (void)) res) ();
         break;
     default:
@@ -1599,6 +1784,23 @@ module_relocate_symbol(app_pc modbase,
 
     res = module_lookup_symbol(sym, pd);
     LOG(GLOBAL, LOG_LOADER, 3, "symbol lookup for %s %p\n", name, res);
+    if (res == NULL && ELF_ST_BIND(sym->st_info) != STB_WEAK) {
+        /* Warn up front on undefined symbols.  Don't warn for weak symbols,
+         * which should be resolved to NULL if they are not present.  Weak
+         * symbols are used in situations where libc needs to interact with a
+         * system that may not be present, such as pthreads or the profiler.
+         * Examples:
+         * libc.so.6: undefined symbol _dl_starting_up
+         * libempty.so: undefined symbol __gmon_start__
+         * libempty.so: undefined symbol _Jv_RegisterClasses
+         * libgcc_s.so.1: undefined symbol pthread_cancel
+         * libstdc++.so.6: undefined symbol pthread_cancel
+         */
+        SYSLOG(SYSLOG_WARNING, UNDEFINED_SYMBOL, 2, pd->soname, name);
+        if (r_type == ELF_R_JUMP_SLOT)
+            *r_addr = (reg_t)module_undef_symbols;
+        return;
+    }
     switch (r_type) {
     case ELF_R_GLOB_DAT:
     case ELF_R_JUMP_SLOT:
@@ -1637,7 +1839,7 @@ module_relocate_rel(app_pc modbase,
     ELF_REL_TYPE *rel;
 
     for (rel = start; rel < end; rel++)
-        module_relocate_symbol(modbase, rel, pd, false);
+        module_relocate_symbol(rel, pd, false);
 }
 
 void
@@ -1649,7 +1851,7 @@ module_relocate_rela(app_pc modbase,
     ELF_RELA_TYPE *rela;
 
     for (rela = start; rela < end; rela++)
-        module_relocate_symbol(modbase, (ELF_REL_TYPE *)rela, pd, true);
+        module_relocate_symbol((ELF_REL_TYPE *)rela, pd, true);
 }
 
 /* Get the module text section from the mapped image file, 

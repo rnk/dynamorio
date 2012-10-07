@@ -392,13 +392,16 @@ must_not_be_elided(app_pc pc)
      * interpret the return path from trampolines.  The forward jump leads to
      * the trampoline and shouldn't be elided. */
     if (vmvector_overlap(landing_pad_areas, pc, pc + 1)) {
-        /* Ok, is it the return jump, which is always 32-bit rel and the target
-         * is not in the interception buffer?  If so, elide. */
-        if (*pc == JMP_REL32_OPCODE &&
-            !is_in_interception_buffer(PC_RELATIVE_TARGET(pc + 1))) {
-            return false;
-        } else {
+        /* Look for the forward jump.  For x64, any ind jmp will do, as reverse
+         * jmp is direct.
+         */
+        if (IF_X64_ELSE(*pc == JMP_ABS_IND64_OPCODE &&
+                        *(pc + 1) == JMP_ABS_MEM_IND64_MODRM,
+                        *pc == JMP_REL32_OPCODE &&
+                        is_in_interception_buffer(PC_RELATIVE_TARGET(pc + 1)))) {
             return true;
+        } else {
+            return false;
         }
     }
 #endif
@@ -465,6 +468,69 @@ must_escape_from(app_pc pc)
 }
 #endif /* DR_APP_EXPORTS */
 
+/* Adds bb->instr, which must be a direct call or jmp, to bb->ilist for native
+ * execution.  Makes sure its target is reachable from the code cache, which
+ * is critical for jmps b/c they're native for our hooks of app code which may
+ * not be reachable from the code cache.  Also needed for calls b/c in the future
+ * (i#774) the DR lib (and thus our must_not_be_inlined() calls) won't be reachable
+ * from the cache.
+ */
+static void
+bb_add_native_direct_xfer(dcontext_t *dcontext, build_bb_t *bb, bool appended)
+{
+#ifdef X64
+    /* i#922: we're going to run this jmp from our code cache so we have to
+     * make sure it still reaches its target.  We could try to check
+     * reachability from the likely code cache slot, but these should be
+     * rare enough that making them indirect won't matter and then we have
+     * fewer reachability dependences.
+     * We do this here rather than in mangle() b/c we'd have a hard time
+     * distinguishing native jmp/call due to DR's own operations from a
+     * client's inserted meta jmp/call.
+     */
+    /* Strategy: write target into xax (DR-reserved) slot and jmp through it.
+     * Alternative would be to embed the target into the code stream.
+     * We don't need to set translation b/c these are meta instrs and they
+     * won't fault.
+     */
+    ptr_uint_t tgt = (ptr_uint_t) opnd_get_pc(instr_get_target(bb->instr));
+    opnd_t tls_slot = opnd_create_sized_tls_slot(os_tls_offset(TLS_XAX_SLOT), OPSZ_4);
+    instrlist_meta_append(bb->ilist, INSTR_CREATE_mov_imm
+                          (dcontext, tls_slot, OPND_CREATE_INT32((int)tgt)));
+    opnd_set_disp(&tls_slot, opnd_get_disp(tls_slot) + 4);
+    instrlist_meta_append(bb->ilist, INSTR_CREATE_mov_imm
+                          (dcontext, tls_slot, OPND_CREATE_INT32((int)(tgt >> 32))));
+    if (instr_is_ubr(bb->instr)) {
+        instrlist_meta_append(bb->ilist, INSTR_CREATE_jmp_ind
+                              (dcontext,
+                               opnd_create_tls_slot(os_tls_offset(TLS_XAX_SLOT))));
+        bb->exit_type |= instr_branch_type(bb->instr);
+    } else {
+        ASSERT(instr_is_call_direct(bb->instr));
+        instrlist_meta_append(bb->ilist, INSTR_CREATE_call_ind
+                              (dcontext,
+                               opnd_create_tls_slot(os_tls_offset(TLS_XAX_SLOT))));
+    }
+    if (appended)
+        instrlist_remove(bb->ilist, bb->instr);
+    instr_destroy(dcontext, bb->instr);
+    bb->instr = NULL;
+#else
+    if (appended) {
+        /* avoid assert about meta w/ translation but no restore_state callback */
+        instr_set_translation(bb->instr, NULL);
+    } else
+        instrlist_append(bb->ilist, bb->instr);
+    /* Indicate that relative target must be
+     * re-encoded, and that it is not an exit cti.
+     * However, we must mangle this to ensure it reaches (i#992)
+     * which we special-case in mangle().
+     */
+    instr_set_ok_to_mangle(bb->instr, false);
+    instr_set_raw_bits_valid(bb->instr, false);
+#endif
+}
+
 /* Perform checks such as looking for dynamo stopping points and bad places
  * to be.  We assume we only have to check after control transfer instructions,
  * i.e., we assume that all of these conditions are procedures that are only
@@ -490,7 +556,6 @@ check_for_stopping_point(dcontext_t *dcontext, build_bb_t *bb)
         instrlist_append(bb->ilist, INSTR_CREATE_ret(dcontext));
         /* should this be treated as a real return? */
         bb->exit_type |= LINK_INDIRECT | LINK_RETURN;
-        ASSERT_NOT_IMPLEMENTED(false);
         bb->exit_target = get_ibl_routine(dcontext, IBL_LINKED, DEFAULT_IBL_BB(), IBL_RETURN);
         return true;
     }
@@ -663,6 +728,14 @@ check_new_page_jmp(dcontext_t *dcontext, build_bb_t *bb, app_pc new_pc)
         !vmvector_empty(native_exec_areas) &&
         vmvector_overlap(native_exec_areas, new_pc, new_pc+1))
         return false;
+#ifdef CLIENT_INTERFACE
+    /* i#805: If we're crossing a module boundary between two modules that are
+     * and aren't on null_instrument_list, don't elide the jmp.
+     */
+    if ((!!os_module_get_flag(bb->cur_pc, MODULE_NULL_INSTRUMENT)) !=
+        (!!os_module_get_flag(new_pc, MODULE_NULL_INSTRUMENT)))
+        return false;
+#endif
     if (!bb->check_vm_area)
         return true;
     /* need to check this even if an intra-page jmp b/c we allow sub-page vm regions */
@@ -792,18 +865,19 @@ bb_process_ubr(dcontext_t *dcontext, build_bb_t *bb)
     BBPRINT(bb, 4, "interp: direct jump at "PFX"\n", bb->instr_start);
     if (must_not_be_elided(tgt)) {
 #ifdef WINDOWS
-        if (is_syscall_trampoline(tgt)) {
+        byte *wrapper_start;
+        if (is_syscall_trampoline(tgt, &wrapper_start)) {
             /* HACK to avoid entering the syscall trampoline that is meant
              * only for native syscalls -- we replace the jmp with the
              * original app mov immed that it replaced
              */
             BBPRINT(bb, 3,
                     "interp: replacing syscall trampoline @"PFX" w/ orig mov @"PFX"\n",
-                    bb->instr_start, tgt);
+                    bb->instr_start, wrapper_start);
             instr_reset(dcontext, bb->instr);
 
             /* leave bb->cur_pc unchanged */
-            decode(dcontext, tgt, bb->instr);
+            decode(dcontext, wrapper_start, bb->instr);
             /* ASSUMPTION: syscall trampoline puts hooked instruction
              * (usually mov_imm but can be lea if hooked_deeper) here */
             ASSERT(instr_get_opcode(bb->instr) == OP_mov_imm ||
@@ -838,12 +912,7 @@ bb_process_ubr(dcontext_t *dcontext, build_bb_t *bb)
 #endif 
         BBPRINT(bb, 3, "interp: NOT following jmp to "PFX"\n", tgt);
         /* add instruction to instruction list */
-        instrlist_append(bb->ilist, bb->instr);
-        /* indicate that relative target must be
-         * re-encoded, and that it is not an exit cti
-         */
-        instr_set_ok_to_mangle(bb->instr, false);
-        instr_set_raw_bits_valid(bb->instr, false);
+        bb_add_native_direct_xfer(dcontext, bb, false/*!appended*/);
         /* Case 8711: coarse-grain can't handle non-exit cti */
         bb->flags &= ~FRAG_COARSE_GRAIN;
         STATS_INC(coarse_prevent_cti);
@@ -942,6 +1011,7 @@ bb_process_call_direct(dcontext_t *dcontext, build_bb_t *bb)
          */
         bb->flags &= ~FRAG_COARSE_GRAIN;
         STATS_INC(coarse_prevent_cti);
+        bb_add_native_direct_xfer(dcontext, bb, true/*appended*/);
         return true; /* keep bb going, w/o inlining call */
     } else {
         if (DYNAMO_OPTION(coarse_split_calls) && DYNAMO_OPTION(coarse_units) && 
@@ -1465,11 +1535,15 @@ bb_process_mov_seg(dcontext_t *dcontext, build_bb_t *bb)
         bb->flags |= FRAG_HAS_MOV_SEG;
         return true; /* continue bb */
     }
+
     LOG(THREAD, LOG_INTERP, 3, "ending bb before mov_seg\n");
-    /* Set instr to NULL in order to get translation of exit cti correct. */
-    /* FIXME: should we free the memory allocated for bb->instr?
-     * It seems that bb_process_non_ignorable_syscall didn't. 
+    /* Set cur_pc back to the start of this instruction and delete this
+     * instruction from the bb ilist.
      */
+    bb->cur_pc = instr_get_raw_bits(bb->instr);
+    instrlist_remove(bb->ilist, bb->instr);
+    instr_destroy(dcontext, bb->instr);
+    /* Set instr to NULL in order to get translation of exit cti correct. */
     bb->instr = NULL;
     /* this block must be the last one in a trace 
      * breaking traces here shouldn't be a perf issue b/c this is so rare,
@@ -1912,6 +1986,7 @@ bb_process_convertible_indcall(dcontext_t *dcontext, build_bb_t *bb)
         bb->flags &= ~FRAG_COARSE_GRAIN;
         STATS_INC(coarse_prevent_cti);
         ASSERT_CURIOSITY_ONCE(!vsyscall && "leaving call* to vsyscall");
+        /* no need for bb_add_native_direct_xfer() b/c it's already indirect */
         return true; /* keep bb going, w/o inlining call */
     }
 
@@ -2088,7 +2163,7 @@ bb_process_IAT_convertible_indjmp(dcontext_t *dcontext, build_bb_t *bb,
     if (!is_targeting_convertible_IAT(dcontext, bb->instr, 
                                       &iat_reference)) {
         DOSTATS({
-            if (TEST(INSTR_IND_JMP_PLT_EXIT, bb->exit_type)) {
+            if (EXIT_IS_IND_JMP_PLT(bb->exit_type)) {
                 /* see how often we mark as likely a PLT a JMP which in
                  * fact is not going through IAT 
                  */
@@ -2113,7 +2188,7 @@ bb_process_IAT_convertible_indjmp(dcontext_t *dcontext, build_bb_t *bb,
 
     STATS_INC(num_indirect_jumps_IAT);
     DOSTATS({
-        if (!TEST(INSTR_IND_JMP_PLT_EXIT, bb->exit_type)) {
+        if (!EXIT_IS_IND_JMP_PLT(bb->exit_type)) {
             /* count any other known uses for an indirect jump to go
              * through the IAT other than PLT uses, although a block
              * reaching max_elide_call would prevent the above
@@ -2315,7 +2390,7 @@ instr_will_be_exit_cti(instr_t *inst)
     /* can't use instr_is_exit_cti() on pre-mangled instrs */
     return (instr_ok_to_mangle(inst) &&
             instr_is_cti(inst) &&
-            (!instr_is_call_direct(inst) ||
+            (!instr_is_near_call_direct(inst) ||
              !must_not_be_inlined(instr_get_branch_target_pc(inst)))
             /* PR 239470: ignore wow64 syscall, which is an ind call */
             IF_WINDOWS(&& !instr_is_wow64_syscall(inst)));
@@ -2489,22 +2564,23 @@ client_process_bb(dcontext_t *dcontext, build_bb_t *bb)
                  * special flags set above, even if the client doesn't change
                  * the exit target.  We undo such flags after this ilist walk
                  * to support client removal of syscalls/ints.
-                 * INSTR_IND_JMP_PLT_EXIT is used for indcall2direct, which
+                 * EXIT_IS_IND_JMP_PLT() is used for indcall2direct, which
                  * is off by default for CI; it's also used for native_exec,
                  * but we're not sure if we want to support that with CI.
-                 * xref case 10846
+                 * xref case 10846 and i#198
                  */
                 CLIENT_ASSERT(!TEST(~(LINK_DIRECT | LINK_INDIRECT | LINK_CALL |
                                       LINK_RETURN | LINK_JMP | LINK_NI_SYSCALL_ALL
                                       IF_WINDOWS(| LINK_CALLBACK_RETURN)),
-                                    bb->exit_type),
+                                    bb->exit_type) &&
+                              !EXIT_IS_IND_JMP_PLT(bb->exit_type),
                               "client unsupported block exit type internal error");
 
                 found_exit_cti = true;
                 bb->instr = inst;
 
-                if (instr_is_ubr(inst) || instr_is_call_direct(inst)) {
-                    CLIENT_ASSERT(instr_is_ubr(inst) ||
+                if (instr_is_near_ubr(inst) || instr_is_near_call_direct(inst)) {
+                    CLIENT_ASSERT(instr_is_near_ubr(inst) ||
                                   inst == instrlist_last(bb->ilist),
                                   "an exit call must terminate the block");
                     /* a ubr need not be the final instr */
@@ -2523,13 +2599,14 @@ client_process_bb(dcontext_t *dcontext, build_bb_t *bb)
                                                instr_branch_type(inst));
                 }
                 else {
-                    ASSERT(instr_is_mbr(inst));
+                    ASSERT(instr_is_mbr(inst) || instr_is_far_cti(inst));
                     CLIENT_ASSERT(inst == instrlist_last(bb->ilist),
-                                  "an exit mbr must terminate the block");
-                    bb->exit_target = get_ibl_routine(dcontext, IBL_LINKED,
+                                  "an exit mbr or far cti must terminate the block");
+                    bb->exit_type = instr_branch_type(inst);
+                    bb->exit_target = get_ibl_routine(dcontext,
+                                                      get_ibl_entry_type(bb->exit_type),
                                                       DEFAULT_IBL_BB(), 
                                                       get_ibl_branch_type(inst));
-                    bb->exit_type = instr_branch_type(inst);
                 }
 
                 /* since we're walking backward, at the first exit cti
@@ -2554,7 +2631,7 @@ client_process_bb(dcontext_t *dcontext, build_bb_t *bb)
              * reasons as well.
              */
             else {
-                CLIENT_ASSERT(instr_is_ubr(inst),
+                CLIENT_ASSERT(instr_is_near_ubr(inst),
                               "a second exit cti must be a ubr");
                 bb->flags |= FRAG_CANNOT_BE_TRACE;
                 /* our cti check above should have already turned off coarse */
@@ -2621,6 +2698,11 @@ client_process_bb(dcontext_t *dcontext, build_bb_t *bb)
             bb->flags &= ~FRAG_COARSE_GRAIN;
             STATS_INC(coarse_prevent_client);
         }
+    }
+
+    if (TEST(DR_EMIT_MUST_END_TRACE, emitflags)) {
+        /* i#848: let client terminate traces */
+        bb->flags |= FRAG_MUST_END_TRACE;
     }
 }
 #endif /* CLIENT_INTERFACE */
@@ -2711,7 +2793,8 @@ build_bb_ilist(dcontext_t *dcontext, build_bb_t *bb)
     
     if (bb->record_translation || !bb->for_cache
         /* to split riprel, need to decode every instr */
-        IF_X64(|| DYNAMO_OPTION(coarse_split_riprel))
+        /* in x86_to_x64, need to translate every x86 instr */
+        IF_X64(|| DYNAMO_OPTION(coarse_split_riprel) || DYNAMO_OPTION(x86_to_x64))
         IF_CLIENT_INTERFACE(|| INTERNAL_OPTION(full_decode)))
         bb->full_decode = true;
     else {
@@ -2720,7 +2803,8 @@ build_bb_ilist(dcontext_t *dcontext, build_bb_t *bb)
 #endif
     }
 
-    LOG(THREAD, LOG_INTERP, 3, "\ninterp: ");
+    LOG(THREAD, LOG_INTERP, 3, "\ninterp%s: ",
+        IF_X64_ELSE(X64_MODE_DC(dcontext) ? "" : " (x86 mode)", ""));
     BBPRINT(bb, 3, "start_pc = "PFX"\n", bb->start_pc);
 
     DOSTATS({
@@ -3006,11 +3090,15 @@ build_bb_ilist(dcontext_t *dcontext, build_bb_t *bb)
         }
 #endif
 
-        if (instr_is_ubr(bb->instr)) {
+        /* far direct is treated as indirect (i#823) */
+        if (instr_is_near_ubr(bb->instr)) {
             if (bb_process_ubr(dcontext, bb))
                 continue;
-            else
+            else {
+                if (bb->instr != NULL) /* else, bb_process_ubr() set exit_type */
+                    bb->exit_type |= instr_branch_type(bb->instr);
                 break;
+            }
         } else
             instrlist_append(bb->ilist, bb->instr);
 
@@ -3040,14 +3128,17 @@ build_bb_ilist(dcontext_t *dcontext, build_bb_t *bb)
         }
 #endif
 
-        if (instr_is_call_direct(bb->instr)) {
+        if (instr_is_near_call_direct(bb->instr)) {
             if (!bb_process_call_direct(dcontext, bb)) {
                 if (bb->instr != NULL)
                     bb->exit_type |= instr_branch_type(bb->instr);
                 break;
             }
         }
-        else if (instr_is_mbr(bb->instr)) { /* including indirect calls */
+        else if (instr_is_mbr(bb->instr) || /* including indirect calls */
+                 /* far direct is treated as indirect (i#823) */
+                 instr_get_opcode(bb->instr) == OP_jmp_far ||
+                 instr_get_opcode(bb->instr) == OP_call_far) {
 
             /* Manage the case where we don't need to perform 'normal'
              * indirect branch processing.
@@ -3093,6 +3184,12 @@ build_bb_ilist(dcontext_t *dcontext, build_bb_t *bb)
                 }
                 else
                     ibl_branch_type = IBL_INDCALL;
+            } else if (instr_get_opcode(bb->instr) == OP_jmp_far) {
+                 /* far direct is treated as indirect (i#823) */
+                ibl_branch_type = IBL_INDJMP;
+            } else if (instr_get_opcode(bb->instr) == OP_call_far) {
+                 /* far direct is treated as indirect (i#823) */
+                ibl_branch_type = IBL_INDCALL;
             } else {
                 /* indirect jump */
                 /* was prev instr a direct call? if so, this is a PLT-style ind call */
@@ -3115,7 +3212,7 @@ build_bb_ilist(dcontext_t *dcontext, build_bb_t *bb)
                      * the PLT to a direct transition (and possibly elided).
                      * Xref case 7867 for why leaving this flag in the eliding
                      * case can cause later failures. */
-                    bb->exit_type &= ~INSTR_IND_JMP_PLT_EXIT;
+                    bb->exit_type &= ~INSTR_CALL_EXIT; /* leave just JMP */
                     normal_indirect_processing = false;
                 } else          /* FIXME: this can always be set */
                     ibl_branch_type = IBL_INDJMP;
@@ -3130,8 +3227,10 @@ build_bb_ilist(dcontext_t *dcontext, build_bb_t *bb)
             /* set exit type since this instruction will get mangled */
             if (normal_indirect_processing) {
                 bb->exit_type |= instr_branch_type(bb->instr);
-                bb->exit_target = get_ibl_routine(dcontext, IBL_LINKED, DEFAULT_IBL_BB(),
-                                                  ibl_branch_type);
+                bb->exit_target = get_ibl_routine(dcontext,
+                                                  get_ibl_entry_type(bb->exit_type),
+                                                  DEFAULT_IBL_BB(), ibl_branch_type);
+                LOG(THREAD, LOG_INTERP, 4, "mbr exit target = "PFX"\n", bb->exit_target);
                 break;
             } else {
                 /* decide whether to stop bb here */
@@ -3203,7 +3302,7 @@ build_bb_ilist(dcontext_t *dcontext, build_bb_t *bb)
         DYNAMO_OPTION(native_exec_callcall) &&        
         !vmvector_empty(native_exec_areas) &&
         bb->app_interp && bb->instr != NULL && 
-        (instr_is_ubr(bb->instr) || instr_is_call_direct(bb->instr)) &&
+        (instr_is_near_ubr(bb->instr) || instr_is_near_call_direct(bb->instr)) &&
         instrlist_first(bb->ilist) == instrlist_last(bb->ilist)) {
         /* Case 4564/3558: handle .NET COM method table where a call* targets
          * a call to a native_exec dll -- we need to put the gateway at the
@@ -3322,6 +3421,17 @@ build_bb_ilist(dcontext_t *dcontext, build_bb_t *bb)
         *bb->unmangled_ilist = instrlist_clone(dcontext, bb->ilist);
 #endif
 
+    if (bb->instr != NULL && instr_opcode_valid(bb->instr) &&
+        instr_is_far_cti(bb->instr)) {
+        /* Simplify far_ibl (i#823) vs trace_cmp ibl as well as
+         * cross-mode direct stubs varying in a trace by disallowing
+         * far cti in middle of trace
+         */
+        bb->flags |= FRAG_MUST_END_TRACE;
+        /* Simplify coarse by not requiring extra prefix stubs */
+        bb->flags &= ~FRAG_COARSE_GRAIN;
+    }
+
     /* create a final instruction that will jump to the exit stub
      * corresponding to the fall-through of the conditional branch or
      * the target of the final indirect branch (the indirect branch itself
@@ -3435,15 +3545,16 @@ build_bb_ilist(dcontext_t *dcontext, build_bb_t *bb)
 
     /* now that we know whether shared, ensure we have the right ibl routine */
     if (!TEST(FRAG_SHARED, bb->flags) && TEST(LINK_INDIRECT, bb->exit_type)) {
-        ASSERT(bb->exit_target == get_ibl_routine(dcontext, IBL_LINKED, DEFAULT_IBL_BB(),
-                                                  ibl_branch_type));
-        bb->exit_target = get_ibl_routine(dcontext, IBL_LINKED, IBL_BB_PRIVATE,
-                                          ibl_branch_type);
+        ASSERT(bb->exit_target == get_ibl_routine(dcontext,
+                                                  get_ibl_entry_type(bb->exit_type),
+                                                  DEFAULT_IBL_BB(), ibl_branch_type));
+        bb->exit_target = get_ibl_routine(dcontext, get_ibl_entry_type(bb->exit_type),
+                                          IBL_BB_PRIVATE, ibl_branch_type);
     }
 
     if (bb->mangle_ilist &&
         (bb->instr == NULL || !instr_opcode_valid(bb->instr) ||
-         !instr_is_ubr(bb->instr) || !instr_ok_to_mangle(bb->instr))) {
+         !instr_is_near_ubr(bb->instr) || !instr_ok_to_mangle(bb->instr))) {
         instr_t *exit_instr = INSTR_CREATE_jmp(dcontext, opnd_create_pc(bb->exit_target));
         if (bb->record_translation) {
             app_pc translation = NULL;
@@ -3768,53 +3879,6 @@ app_bb_overlaps(dcontext_t *dcontext, byte *start_pc, uint flags,
     return info.overlap;
 }
 
-/* pass in name if you already have it, else this routine looks it up from modbase */
-bool
-on_native_exec_list(app_pc modbase, const char *name)
-{
-    const char *modname;
-    bool modlock = false;
-    bool onlist = false;
-
-    if (!DYNAMO_OPTION(native_exec))
-        return false;
-
-    if (name == NULL) {
-        /* acquire name, safely */
-        if (modbase == NULL)
-            return false;
-        os_get_module_info_lock();
-        modlock = true;
-        os_get_module_name(modbase, &modname);
-        if (modname == NULL) {
-            os_get_module_info_unlock();
-            return false;
-        }
-    } else
-        modname = name;
-
-    if (!IS_STRING_OPTION_EMPTY(native_exec_default_list)) {
-        string_option_read_lock();
-        LOG(THREAD_GET, LOG_INTERP|LOG_VMAREAS, 4,
-            "on_native_exec_list: module %s vs default list %s\n",
-            modname==NULL?"null":modname, dynamo_options.native_exec_default_list);
-        onlist = check_filter(dynamo_options.native_exec_default_list, modname);
-        string_option_read_unlock();
-    }
-    if (!onlist &&
-        !IS_STRING_OPTION_EMPTY(native_exec_list)) {
-        string_option_read_lock();
-        LOG(THREAD_GET, LOG_INTERP|LOG_VMAREAS, 4,
-            "on_native_exec_list: module %s vs append list %s\n",
-            modname==NULL?"null":modname, dynamo_options.native_exec_list);
-        onlist = check_filter(dynamo_options.native_exec_list, modname);
-        string_option_read_unlock();
-    }
-    if (modlock)
-        os_get_module_info_unlock();
-    return onlist;
-}
-
 #ifdef DEBUG
 static void
 report_native_module(dcontext_t *dcontext, app_pc modpc)
@@ -3926,10 +3990,16 @@ build_native_exec_bb(dcontext_t *dcontext, build_bb_t *bb)
         instrlist_append(bb->ilist, INSTR_CREATE_mov_imm
                          (dcontext, opnd_create_reg(REG_XAX),
                           OPND_CREATE_INTPTR((ptr_int_t)bb->start_pc)));
-        instrlist_append(bb->ilist, INSTR_CREATE_mov_st
-                         (dcontext, opnd_create_tls_slot(os_tls_offset
-                                                         (MANGLE_XCX_SPILL_SLOT)),
-                          opnd_create_reg(REG_XAX)));
+        if (X64_CACHE_MODE_DC(dcontext) && !X64_MODE_DC(dcontext)) {
+            instrlist_append(bb->ilist, INSTR_CREATE_mov_ld
+                             (dcontext, opnd_create_reg(REG_R9),
+                              opnd_create_reg(REG_XAX)));
+        } else {
+            instrlist_append(bb->ilist, INSTR_CREATE_mov_st
+                             (dcontext, opnd_create_tls_slot(os_tls_offset
+                                                             (MANGLE_XCX_SPILL_SLOT)),
+                              opnd_create_reg(REG_XAX)));
+        }
     }
 #else
     instrlist_append(bb->ilist, INSTR_CREATE_mov_st
@@ -3949,9 +4019,14 @@ build_native_exec_bb(dcontext_t *dcontext, build_bb_t *bb)
         instrlist_append(bb->ilist,
                          INSTR_CREATE_jmp(dcontext, opnd_create_pc(bb->start_pc)));
     } else {
-        instrlist_append(bb->ilist, INSTR_CREATE_jmp_ind
-                         (dcontext, opnd_create_tls_slot(os_tls_offset
-                                                         (MANGLE_XCX_SPILL_SLOT))));
+        if (X64_CACHE_MODE_DC(dcontext) && !X64_MODE_DC(dcontext)) {
+            instrlist_append(bb->ilist, INSTR_CREATE_jmp_ind
+                             (dcontext, opnd_create_reg(REG_R9)));
+        } else {
+            instrlist_append(bb->ilist, INSTR_CREATE_jmp_ind
+                             (dcontext, opnd_create_tls_slot(os_tls_offset
+                                                             (MANGLE_XCX_SPILL_SLOT))));
+        }
     }
 #else
     instrlist_append(bb->ilist, INSTR_CREATE_jmp(dcontext, opnd_create_pc(bb->start_pc)));
@@ -4024,7 +4099,7 @@ at_native_exec_gateway(dcontext_t *dcontext, app_pc start
     if (DYNAMO_OPTION(native_exec) &&
         !vmvector_empty(native_exec_areas)) {
         /* do we KNOW that we came from an indirect call? */
-        if (TESTANY(LINK_CALL|LINK_IND_JMP_PLT, dcontext->last_exit->flags) &&
+        if (TEST(LINK_CALL/*includes IND_JMP_PLT*/, dcontext->last_exit->flags) &&
             /* only check direct calls if native_exec_dircalls is on */
             (DYNAMO_OPTION(native_exec_dircalls) ||
              LINKSTUB_INDIRECT(dcontext->last_exit->flags))) {
@@ -4033,7 +4108,7 @@ at_native_exec_gateway(dcontext_t *dcontext, app_pc start
             if (vmvector_overlap(native_exec_areas, start, start+1)) {
                 native_exec_bb = true;
                 DOSTATS({
-                    if (TEST(LINK_CALL, dcontext->last_exit->flags)) {
+                    if (EXIT_IS_CALL(dcontext->last_exit->flags)) {
                         if (LINKSTUB_INDIRECT(dcontext->last_exit->flags))
                             STATS_INC(num_native_module_entrances_indcall);
                         else
@@ -4048,7 +4123,7 @@ at_native_exec_gateway(dcontext_t *dcontext, app_pc start
         else if (DYNAMO_OPTION(native_exec_guess_calls) &&
                  (/* FIXME: require jmp* be in separate module? */
                   (LINKSTUB_INDIRECT(dcontext->last_exit->flags) &&
-                   TEST(LINK_JMP, dcontext->last_exit->flags)) ||
+                   EXIT_IS_JMP(dcontext->last_exit->flags)) ||
                   LINKSTUB_FAKE(dcontext->last_exit))) {
             /* if unknown last exit, or last exit was jmp*, examine TOS and guess
              * whether it's a retaddr
@@ -4161,13 +4236,17 @@ init_interp_build_bb(dcontext_t *dcontext, build_bb_t *bb, app_pc start,
      * a hook when we're ready to call one by storing whether there is a
      * hook at translation/decode decision time: now.
      */
+    if (dr_bb_hook_exists() &&
+        /* i#805: Don't instrument code on the null instru list. */
+        !os_module_get_flag(bb->start_pc, MODULE_NULL_INSTRUMENT)) {
+        bb->pass_to_client = true;
+    }
     /* PR 299808: even if no bb hook, for a trace hook we need to
      * record translation and do full decode.  It's racy to check
      * dr_trace_hook_exists() here so we rely on trace building having
      * set unmangled_ilist.
      */
-    if (dr_bb_hook_exists() || unmangled_ilist != NULL) {
-        bb->pass_to_client = true;
+    if (bb->pass_to_client || unmangled_ilist != NULL) {
         /* case 10009/214444: For client interface builds, store the translation.
          * by default.  This ensures clients can get the correct app address
          * of any instruction.  We also rely on this for allowing the client
@@ -4347,7 +4426,13 @@ recreate_bb_ilist(dcontext_t *dcontext, byte *pc, uint flags, uint *res_flags,
      * DR_EMIT_STORE_TRANSLATIONS, in which case we shouldn't come here,
      * except for traces (see below):
      */
-    bb.pass_to_client = DYNAMO_OPTION(code_api) && call_client;
+    bb.pass_to_client = (DYNAMO_OPTION(code_api) && call_client &&
+                         /* i#843: This flag cannot be changed dynamically, so
+                          * its current value should match the value used at
+                          * ilist building time.  Alternatively, we could store
+                          * bb->pass_to_client in the fragment.
+                          */
+                         !os_module_get_flag(pc, MODULE_NULL_INSTRUMENT));
     /* PR 299808: we call bb hook again when translating a trace that
      * didn't have DR_EMIT_STORE_TRANSLATIONS on itself (or on any
      * for_trace bb if there was no trace hook).
@@ -4438,7 +4523,8 @@ recreate_fragment_ilist(dcontext_t *dcontext, byte *pc,
     }
 
     /* Recreate in same mode as original fragment */
-    IF_X64(old_mode = set_x86_mode(dcontext, FRAG_IS_32(f->flags)));
+    IF_X64(old_mode = set_x86_mode(dcontext, FRAG_IS_32(f->flags) ||
+                                             FRAG_IS_X86_TO_X64(f->flags)));
 
     if ((f->flags & FRAG_IS_TRACE) == 0) {
         /* easy case: just a bb */
@@ -4712,7 +4798,14 @@ tracelist_add(dcontext_t *dcontext, instrlist_t *ilist, instr_t *where, instr_t 
     /* when we emit the trace we're going to call instr_length() on all instrs
      * anyway, and we'll re-use any memory allocated here for an encoding
      */
-    int size = instr_length(dcontext, inst);
+    int size;
+#ifdef X64
+    if (!X64_CACHE_MODE_DC(dcontext)) {
+        instr_set_x86_mode(inst, true/*x86*/);
+        instr_shrink_to_32_bits(inst);
+    }
+#endif
+    size = instr_length(dcontext, inst);
     instrlist_preinsert(ilist, where, inst);
     return size;
 }
@@ -4724,7 +4817,14 @@ tracelist_add_after(dcontext_t *dcontext, instrlist_t *ilist, instr_t *where, in
     /* when we emit the trace we're going to call instr_length() on all instrs
      * anyway, and we'll re-use any memory allocated here for an encoding
      */
-    int size = instr_length(dcontext, inst);
+    int size;
+#ifdef X64
+    if (!X64_CACHE_MODE_DC(dcontext)) {
+        instr_set_x86_mode(inst, true/*x86*/);
+        instr_shrink_to_32_bits(inst);
+    }
+#endif
+    size = instr_length(dcontext, inst);
     instrlist_postinsert(ilist, where, inst);
     return size;
 }
@@ -4771,10 +4871,17 @@ insert_restore_spilled_xcx(dcontext_t *dcontext, instrlist_t *trace, instr_t *ne
     int added_size = 0;
 
     if (DYNAMO_OPTION(private_ib_in_tls)) {
-        added_size += tracelist_add(dcontext, trace, next, 
-            INSTR_CREATE_mov_ld(dcontext,
-                                opnd_create_reg(REG_XCX),
-                                opnd_create_tls_slot(os_tls_offset(MANGLE_XCX_SPILL_SLOT))));
+        if (X64_CACHE_MODE_DC(dcontext) && !X64_MODE_DC(dcontext)) {
+            added_size += tracelist_add(dcontext, trace, next,
+                INSTR_CREATE_mov_ld(dcontext, opnd_create_reg(REG_XCX),
+                                    opnd_create_reg(REG_R9)));
+        } else {
+            added_size += tracelist_add(dcontext, trace, next,
+                INSTR_CREATE_mov_ld(dcontext,
+                                    opnd_create_reg(REG_XCX),
+                                    opnd_create_tls_slot
+                                    (os_tls_offset(MANGLE_XCX_SPILL_SLOT))));
+        }
     } else {
         /* We need to restore XCX from TLS for shared fragments, but from
          * mcontext for private fragments, and all traces are private
@@ -4824,7 +4931,7 @@ insert_transparent_comparison(dcontext_t *dcontext, instrlist_t *trace,
     instr_set_ok_to_mangle(jecxz, false);
     added_size += tracelist_add(dcontext, trace, targeter, jecxz);
     /* need to recover address in ecx */
-    IF_X64(ASSERT_NOT_IMPLEMENTED(false));
+    IF_X64(ASSERT_NOT_IMPLEMENTED(!X64_MODE_DC(dcontext)));
     added_size += tracelist_add
         (dcontext, trace, targeter,
          INSTR_CREATE_lea
@@ -4834,6 +4941,85 @@ insert_transparent_comparison(dcontext_t *dcontext, instrlist_t *trace,
     added_size += tracelist_add_after(dcontext, trace, targeter, continue_label);
     return added_size;
 }
+
+#ifdef X64
+static int
+mangle_x64_ib_in_trace(dcontext_t *dcontext, instrlist_t *trace,
+                       instr_t *targeter, app_pc next_tag)
+{
+    int added_size = 0;
+    if (X64_MODE_DC(dcontext)) {
+        added_size += tracelist_add
+            (dcontext, trace, targeter, INSTR_CREATE_mov_st
+             (dcontext, opnd_create_tls_slot(os_tls_offset(PREFIX_XAX_SPILL_SLOT)),
+              opnd_create_reg(REG_XAX)));
+        added_size += tracelist_add
+            (dcontext, trace, targeter, INSTR_CREATE_mov_imm
+             (dcontext, opnd_create_reg(REG_XAX),
+              OPND_CREATE_INTPTR((ptr_int_t)next_tag)));
+    } else {
+        ASSERT(X64_CACHE_MODE_DC(dcontext));
+        added_size += tracelist_add
+            (dcontext, trace, targeter, INSTR_CREATE_mov_ld
+             (dcontext, opnd_create_reg(REG_R8), opnd_create_reg(REG_XAX)));
+        added_size += tracelist_add
+            (dcontext, trace, targeter, INSTR_CREATE_mov_imm
+             (dcontext, opnd_create_reg(REG_R10),
+              OPND_CREATE_INTPTR((ptr_int_t)next_tag)));
+    }
+    /* saving in the trace and restoring in ibl means that
+     * -unsafe_ignore_eflags_{trace,ibl} must be equivalent
+     */
+    if (!DYNAMO_OPTION(unsafe_ignore_eflags_trace)) {
+        if (X64_MODE_DC(dcontext)) {
+            added_size += tracelist_add
+                (dcontext, trace, targeter, INSTR_CREATE_mov_st
+                 (dcontext, opnd_create_tls_slot
+                  (os_tls_offset(INDIRECT_STUB_SPILL_SLOT)),
+                  opnd_create_reg(REG_XAX)));
+        }
+        /* FIXME: share w/ insert_save_eflags() */
+        added_size += tracelist_add
+            (dcontext, trace, targeter, INSTR_CREATE_lahf(dcontext));
+        if (!INTERNAL_OPTION(unsafe_ignore_overflow)) { /* OF needs saving */
+            /* Move OF flags into the OF flag spill slot. */
+            added_size += tracelist_add
+                (dcontext, trace, targeter,
+                 INSTR_CREATE_setcc(dcontext, OP_seto, opnd_create_reg(REG_AL)));
+        }
+        if (X64_MODE_DC(dcontext)) {
+            added_size += tracelist_add
+                (dcontext, trace, targeter,
+                 INSTR_CREATE_cmp(dcontext, opnd_create_reg(REG_XCX),
+                                  opnd_create_tls_slot(os_tls_offset
+                                                       (INDIRECT_STUB_SPILL_SLOT))));
+        } else {
+            added_size += tracelist_add
+                (dcontext, trace, targeter,
+                 INSTR_CREATE_cmp(dcontext, opnd_create_reg(REG_XCX),
+                                  opnd_create_reg(REG_R10)));
+        }
+    } else {
+        added_size += tracelist_add
+            (dcontext, trace, targeter,
+             INSTR_CREATE_cmp(dcontext, opnd_create_reg(REG_XCX),
+                              X64_MODE_DC(dcontext) ? opnd_create_reg(REG_XAX)
+                                                    : opnd_create_reg(REG_R10)));
+    }
+    /* change jmp into jne to trace cmp entry of ibl routine (special entry
+     * that is after the eflags save) */
+    instr_set_opcode(targeter, OP_jnz);
+    added_size++; /* jcc is 6 bytes, jmp is 5 bytes */
+    ASSERT(opnd_is_pc(instr_get_target(targeter)));
+    instr_set_target(targeter, opnd_create_pc
+                     (get_trace_cmp_entry(dcontext, opnd_get_pc
+                                          (instr_get_target(targeter)))));
+    /* since the target gets lost we need to OR in this flag */
+    instr_exit_branch_set_type(targeter, instr_exit_branch_type(targeter) |
+                               INSTR_TRACE_CMP_EXIT);
+    return added_size;
+}
+#endif
 
 /* Mangles an indirect branch in a trace where a basic block with tag "tag"
  * is being added as the next block beyond the indirect branch.
@@ -5041,76 +5227,36 @@ mangle_indirect_branch_in_trace(dcontext_t *dcontext, instrlist_t *trace,
 #endif /* NATIVE_RETURN */
 
 #ifdef X64
-        added_size += tracelist_add
-            (dcontext, trace, targeter, INSTR_CREATE_mov_st
-             (dcontext, opnd_create_tls_slot(os_tls_offset(PREFIX_XAX_SPILL_SLOT)),
-              opnd_create_reg(REG_XAX)));
-        added_size += tracelist_add
-            (dcontext, trace, targeter, INSTR_CREATE_mov_imm
-             (dcontext, opnd_create_reg(REG_XAX),
-              OPND_CREATE_INTPTR((ptr_int_t)next_tag)));
-        /* saving in the trace and restoring in ibl means that
-         * -unsafe_ignore_eflags_{trace,ibl} must be equivalent
-         */
-        if (!DYNAMO_OPTION(unsafe_ignore_eflags_trace)) {
-            added_size += tracelist_add
-                (dcontext, trace, targeter, INSTR_CREATE_mov_st
-                 (dcontext, opnd_create_tls_slot(os_tls_offset(INDIRECT_STUB_SPILL_SLOT)),
-                  opnd_create_reg(REG_XAX)));
-            /* FIXME: share w/ insert_save_eflags() */
-            added_size += tracelist_add
-                (dcontext, trace, targeter, INSTR_CREATE_lahf(dcontext));
-            if (!INTERNAL_OPTION(unsafe_ignore_overflow)) { /* OF needs saving */
-                /* Move OF flags into the OF flag spill slot. */
+        if (X64_CACHE_MODE_DC(dcontext)) {
+            added_size +=
+                mangle_x64_ib_in_trace(dcontext, trace, targeter, next_tag);
+        } else {
+#endif
+            if (!INTERNAL_OPTION(unsafe_ignore_eflags_trace)) {
+                /* if equal follow to the next instruction after the exit CTI */
+                added_size +=
+                    insert_transparent_comparison(dcontext, trace, targeter,
+                                                  next_tag);
+                /* leave jmp as it is, a jmp to exit stub (thence to ind br
+                 * lookup) */
+            }
+            else {
+                /* assume eflags don't need to be saved across ind branches,
+                 * so go ahead and use cmp, jne
+                 */
+                /* FIXME: no way to cmp w/ 64-bit immed */
+                IF_X64(ASSERT_NOT_IMPLEMENTED(!X64_MODE_DC(dcontext)));
                 added_size += tracelist_add
                     (dcontext, trace, targeter,
-                     INSTR_CREATE_setcc(dcontext, OP_seto, opnd_create_reg(REG_AL)));
-            }
-            added_size += tracelist_add
-                (dcontext, trace, targeter,
-                 INSTR_CREATE_cmp(dcontext, opnd_create_reg(REG_XCX),
-                                  opnd_create_tls_slot(os_tls_offset
-                                                       (INDIRECT_STUB_SPILL_SLOT))));
-        } else {
-            added_size += tracelist_add
-                (dcontext, trace, targeter,
-                 INSTR_CREATE_cmp(dcontext, opnd_create_reg(REG_XCX),
-                                  opnd_create_reg(REG_XAX)));
-        }
-        /* change jmp into jne to trace cmp entry of ibl routine (special entry
-         * that is after the eflags save) */
-        instr_set_opcode(targeter, OP_jnz);
-        added_size++; /* jcc is 6 bytes, jmp is 5 bytes */
-        ASSERT(opnd_is_pc(instr_get_target(targeter)));
-        instr_set_target(targeter, opnd_create_pc
-                         (get_trace_cmp_entry(dcontext, opnd_get_pc
-                                              (instr_get_target(targeter)))));
-        /* since the target gets lost we need to OR in this flag */
-        instr_exit_branch_set_type(targeter, instr_exit_branch_type(targeter) |
-                                   INSTR_TRACE_CMP_EXIT);
-#else
-        if (!INTERNAL_OPTION(unsafe_ignore_eflags_trace)) {
-            /* if equal follow to the next instruction after the exit CTI */
-            added_size +=
-                insert_transparent_comparison(dcontext, trace, targeter, next_tag);
-            /* leave jmp as it is, a jmp to exit stub (thence to ind br
-             * lookup) */
-        }
-        else {
-            /* assume eflags don't need to be saved across ind branches,
-             * so go ahead and use cmp, jne
-             */
-            /* FIXME: no way to cmp w/ 64-bit immed */
-            IF_X64(ASSERT_NOT_IMPLEMENTED(false));
-            added_size += tracelist_add
-                (dcontext, trace, targeter,
-                 INSTR_CREATE_cmp(dcontext, opnd_create_reg(REG_ECX),
-                                  OPND_CREATE_INT32((int)(ptr_int_t)next_tag)));
+                     INSTR_CREATE_cmp(dcontext, opnd_create_reg(REG_ECX),
+                                      OPND_CREATE_INT32((int)(ptr_int_t)next_tag)));
 
-            /* Change jmp into jne indirect_branch_lookup */
-            /* CHECK: is that also going to exit stub */
-            instr_set_opcode(targeter, OP_jnz);
-            added_size++; /* jcc is 6 bytes, jmp is 5 bytes */
+                /* Change jmp into jne indirect_branch_lookup */
+                /* CHECK: is that also going to exit stub */
+                instr_set_opcode(targeter, OP_jnz);
+                added_size++; /* jcc is 6 bytes, jmp is 5 bytes */
+            }
+#ifdef X64
         }
 #endif /* X64 */
         /* PR 214962: our spill restoration needs this whole sequence marked mangle */
@@ -5144,26 +5290,34 @@ mangle_indirect_branch_in_trace(dcontext_t *dcontext, instrlist_t *trace,
     added_size += insert_restore_spilled_xcx(dcontext, trace, next);
 
 #ifdef X64
-    LOG(THREAD, LOG_INTERP, 4, "next_flags for post-ibl-cmp: 0x%x\n",
-        next_flags);
-    if (!TEST(FRAG_WRITES_EFLAGS_6, next_flags) &&
-        !DYNAMO_OPTION(unsafe_ignore_eflags_trace)) {
-        if (!TEST(FRAG_WRITES_EFLAGS_OF, next_flags) &&  /* OF was saved */
-            !INTERNAL_OPTION(unsafe_ignore_overflow)) { 
-            /* restore OF using add that overflows if OF was on when we did seto */
+    if (X64_CACHE_MODE_DC(dcontext)) {
+        LOG(THREAD, LOG_INTERP, 4, "next_flags for post-ibl-cmp: 0x%x\n",
+            next_flags);
+        if (!TEST(FRAG_WRITES_EFLAGS_6, next_flags) &&
+            !DYNAMO_OPTION(unsafe_ignore_eflags_trace)) {
+            if (!TEST(FRAG_WRITES_EFLAGS_OF, next_flags) &&  /* OF was saved */
+                !INTERNAL_OPTION(unsafe_ignore_overflow)) { 
+                /* restore OF using add that overflows if OF was on when we did seto */
+                added_size += tracelist_add
+                    (dcontext, trace, next, INSTR_CREATE_add
+                     (dcontext, opnd_create_reg(REG_AL), OPND_CREATE_INT8(0x7f)));
+            }
             added_size += tracelist_add
-                (dcontext, trace, next, INSTR_CREATE_add
-                 (dcontext, opnd_create_reg(REG_AL), OPND_CREATE_INT8(0x7f)));
+                (dcontext, trace, next, INSTR_CREATE_sahf(dcontext));
+        } else
+            STATS_INC(trace_ib_no_flag_restore);
+        /* TODO optimization: check if xax is live or not in next bb */
+        if (X64_MODE_DC(dcontext)) {
+            added_size += tracelist_add
+                (dcontext, trace, next, INSTR_CREATE_mov_ld
+                 (dcontext, opnd_create_reg(REG_XAX),
+                  opnd_create_tls_slot(os_tls_offset(PREFIX_XAX_SPILL_SLOT))));
+        } else {
+            added_size += tracelist_add
+                (dcontext, trace, next, INSTR_CREATE_mov_ld
+                 (dcontext, opnd_create_reg(REG_XAX), opnd_create_reg(REG_R8)));
         }
-        added_size += tracelist_add
-            (dcontext, trace, next, INSTR_CREATE_sahf(dcontext));
-    } else
-        STATS_INC(trace_ib_no_flag_restore);
-    /* TODO optimization: check if xax is live or not in next bb */
-    added_size += tracelist_add
-        (dcontext, trace, next, INSTR_CREATE_mov_ld
-         (dcontext, opnd_create_reg(REG_XAX),
-          opnd_create_tls_slot(os_tls_offset(PREFIX_XAX_SPILL_SLOT))));
+    }
 #endif
 
 #ifdef RETURN_STACK
@@ -5409,6 +5563,20 @@ fixup_last_cti(dcontext_t *dcontext, instrlist_t *trace,
     if (record_translation)
         instrlist_set_translation_target(trace, NULL);
     instrlist_set_our_mangling(trace, false); /* PR 267260 */
+
+#ifdef X64
+    DOCHECK(1, {
+        if (FRAG_IS_32(trace_flags)) {
+            instr_t *in;
+            /* in case we missed any in tracelist_add() */
+            for (in = instrlist_first(trace); in != NULL; in = instr_get_next(in)) {
+                if (instr_is_our_mangling(in))
+                    ASSERT(instr_get_x86_mode(in));
+            }
+        }
+    });
+#endif
+
     ASSERT(added_size < TRACE_CTI_MANGLE_SIZE_UPPER_BOUND);
     return added_size;
 }
@@ -5668,6 +5836,12 @@ extend_trace(dcontext_t *dcontext, fragment_t *f, linkstub_t *prev_l)
     uint num_exits_deleted = 0;
     uint new_exits_dir = 0, new_exits_indir = 0;
 
+#ifdef X64
+    ASSERT((!!FRAG_IS_32(md->trace_flags) == !X64_MODE_DC(dcontext)) ||
+           (!FRAG_IS_32(md->trace_flags) && !X64_MODE_DC(dcontext) &&
+            DYNAMO_OPTION(x86_to_x64)));
+#endif
+
     STATS_INC(num_traces_extended);
 
     /* if you want to re-add the ability to add traces, revive
@@ -5925,10 +6099,12 @@ mangle_trace(dcontext_t *dcontext, instrlist_t *ilist, monitor_data_t *md)
             }); 
 
             /* Add jump that fixup_last_cti expects */
-            if (!instr_is_ubr(inst)) {
+            if (!instr_is_ubr(inst) || instr_get_opcode(inst) == OP_jmp_far) {
                 app_pc target;
-                if (instr_is_mbr(inst)) {
-                    target = get_ibl_routine(dcontext, IBL_LINKED, DEFAULT_IBL_TRACE(), 
+                if (instr_is_mbr(inst) || instr_get_opcode(inst) == OP_jmp_far) {
+                    target = get_ibl_routine(dcontext,
+                                             get_ibl_entry_type(instr_branch_type(inst)),
+                                             DEFAULT_IBL_TRACE(),
                                              get_ibl_branch_type(inst));
                 } else if (instr_is_cbr(inst)) {
                     /* Do not call instr_length() on this inst: use length

@@ -49,9 +49,10 @@
 ##  [-@archother@]                  Use @archother@-bit DynamoRIO (default is @archdefault@-bit).  This
 ##                           should match what the client library and executable
 ##                           being run were compiled for.
-##  [-norun]               Only for drconfig.  Requests that an application NOT be
-##                           run under DR control.  Useful for following all
-##                           child processes except a blacklist.
+##  [-norun]               Requests that an application NOT be run under DR
+##                           control.  Useful for following all child processes
+##                           except a blacklist.  DR will still be loaded, and
+##                           the app API available.
 ##  [-unreg]               Only for drconfig.  Removes configuration file.
 ##  [-dr_home <path>]      Path to the DynamoRIO install.
 ##                           Defaults to .. from @name@; may also be omitted
@@ -120,14 +121,30 @@ then
     exit
 fi
 
+early=""
+verbose=""
+specified_ops=""
 # Read options
 while [ "$1" = "-v" ] || [ "$1" = "-debug" ] || [ "$1" = "-dr_home" ] || \
       [ "$1" = "-ops" ] || [ "$1" = "-logdir" ] || [ "$1" = "-client" ] || \
       [ "$1" = "-32" ] || [ "$1" = "-64" ] || [ "$1" = "-norun" ] || \
-      [ "$1" = "-reg" ] || [ "$1" = "-unreg" ]
+      [ "$1" = "-reg" ] || [ "$1" = "-unreg" ] || [ "$1" = "-early" ]
 do
 
-if [ "$1" = "-v" ] 
+if [ "$1" = "-early" ]
+then
+    early=yes
+    specified_ops=yes
+    if [ -n "$ops" ]
+    then
+        ops="$ops -early_inject"
+    else
+        ops="-early_inject"
+    fi
+    shift
+fi
+
+if [ "$1" = "-v" ]
 then
     verbose=yes
     shift
@@ -259,29 +276,22 @@ case "$1" in
       ;;
 esac
 
+if [ ! -n "$DYNAMORIO_HOME" ]
+then
+    DYNAMORIO_HOME="$default_home"
+fi
+
 # Setup lib path
 if [ ! -n "$dr_lib_path" ]
 then
-    if [ -n "$DYNAMORIO_HOME" ]
-    then
-        dr_lib_path=$DYNAMORIO_HOME/lib$arch
-        dr_ext_path=$DYNAMORIO_HOME/ext/lib$arch
-    else
-        dr_lib_path=$default_home/lib$arch
-        dr_ext_path=$default_home/ext/lib$arch
-    fi
+    dr_lib_path=$DYNAMORIO_HOME/lib$arch
+    dr_ext_path=$DYNAMORIO_HOME/ext/lib$arch
 fi
 if [ ! -e "$dr_lib_path/$lib/libdynamorio.so" ]
 then
     # Support running from old build dir layout
-    if [ -n "$DYNAMORIO_HOME" ]
-    then
-        dr_lib_build_path=$DYNAMORIO_HOME/lib
-        dr_ext_build_path=$DYNAMORIO_HOME/ext/lib
-    else
-        dr_lib_build_path=$default_home/lib
-        dr_ext_build_path=$default_home/ext/lib
-    fi
+    dr_lib_build_path=$DYNAMORIO_HOME/lib
+    dr_ext_build_path=$DYNAMORIO_HOME/ext/lib
     if [ -e "$dr_lib_build_path/libdynamorio.so" ]
     then
         lib=""
@@ -364,8 +374,20 @@ then
     app="$1"
     shift
 fi
+
 # better to require bash and use ${app##*/}?
 name=`basename $app`
+if [ "$early" = "yes" ]
+then
+    appwhich=`which $app`
+    if [ "$appwhich" = "" ]
+    then
+        appwhich=$app
+    fi
+    appdir=`dirname $appwhich`
+    fullpath=`cd $appdir;pwd`
+    fullname="$fullpath/$name"
+fi
 
 if [ "$config" = "1" ]
 then
@@ -403,11 +425,20 @@ fi
 
 if [ "$runapp" = "1" ]
 then
-    export LD_LIBRARY_PATH=$dr_lib_path/$lib:$dr_ext_path/$lib:$LD_LIBRARY_PATH
-    export LD_PRELOAD="libdynamorio.so libdrpreload.so"
-    
     # keep same pid for easier scripting
-    exec $app $*
+    if [ "$early" = "yes" ]
+    then
+        drloader="$DYNAMORIO_HOME/bin$arch/drloader"
+        if [ "$verbose" = "yes" ]
+        then
+            echo "experimental support for early injection in Linux"
+        fi
+        exec "$drloader" "$dr_lib_path/$lib/libdynamorio.so" "$fullname" $*
+    else
+        export LD_LIBRARY_PATH=$dr_lib_path/$lib:$dr_ext_path/$lib:$LD_LIBRARY_PATH
+        export LD_PRELOAD="libdynamorio.so libdrpreload.so"
+        exec $app $*
+    fi
 else
     if [ "$verbose" = "yes" ]
     then

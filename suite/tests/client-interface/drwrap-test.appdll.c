@@ -78,6 +78,31 @@ replaceme(int *x)
 }
 
 int EXPORT
+replaceme2(int *x)
+{
+    print("in replaceme2\n");
+    *x = 5;
+    return -1;
+}
+
+static int
+replace_callsite_callee(int *x)
+{
+    *x = 5;
+    return -1;
+}
+
+int EXPORT
+replace_callsite(int *x)
+{
+    int y = replace_callsite_callee(x);
+    /* just putting in stuff to prevent tailcall */
+    if (y == *x)
+        *x = y + 1;
+    return y;
+}
+
+int EXPORT
 skipme(int *x)
 {
     print("in skipme\n");
@@ -180,6 +205,10 @@ run_tests(void)
     print("skipme returned %d and x=%d\n", res, x);
     res = replaceme(&x);
     print("replaceme returned %d and x=%d\n", res, x);
+    res = replaceme2(&x);
+    print("replaceme2 returned %d and x=%d\n", res, x);
+    res = replace_callsite(&x);
+    print("replace_callsite returned %d and x=%d\n", res, x);
     preonly(&x);
     postonly(&x);
 

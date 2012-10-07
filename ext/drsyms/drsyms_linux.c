@@ -50,8 +50,13 @@
 #include "drsyms_private.h"
 #include "hashtable.h"
 
-/* Guards our internal state and libdwarf's modifications of mod->dbg. */
+/* Guards our internal state and libdwarf's modifications of mod->dbg.
+ * We use a recursive lock to allow queries to be called from enumerate callbacks.
+ */
 static void *symbol_lock;
+
+/* We have to restrict operations when operating in a nested query from a callback */
+static bool recursive_context;
 
 /* Hashtable for mapping module paths to dbg_module_t*. */
 #define MODTABLE_HASH_BITS 8
@@ -89,16 +94,18 @@ drsym_enumerate_symbols_local(const char *modpath, drsym_enumerate_cb callback,
     if (modpath == NULL || callback == NULL)
         return DRSYM_ERROR_INVALID_PARAMETER;
 
-    dr_mutex_lock(symbol_lock);
+    dr_recurlock_lock(symbol_lock);
     mod = lookup_or_load(modpath);
     if (mod == NULL) {
-        dr_mutex_unlock(symbol_lock);
+        dr_recurlock_unlock(symbol_lock);
         return DRSYM_ERROR_LOAD_FAILED;
     }
 
+    recursive_context = true;
     r = drsym_unix_enumerate_symbols(mod, callback, data, flags);
+    recursive_context = false;
 
-    dr_mutex_unlock(symbol_lock);
+    dr_recurlock_unlock(symbol_lock);
     return r;
 }
 
@@ -112,16 +119,16 @@ drsym_lookup_symbol_local(const char *modpath, const char *symbol,
     if (modpath == NULL || symbol == NULL || modoffs == NULL)
         return DRSYM_ERROR_INVALID_PARAMETER;
 
-    dr_mutex_lock(symbol_lock);
+    dr_recurlock_lock(symbol_lock);
     mod = lookup_or_load(modpath);
     if (mod == NULL) {
-        dr_mutex_unlock(symbol_lock);
+        dr_recurlock_unlock(symbol_lock);
         return DRSYM_ERROR_LOAD_FAILED;
     }
 
     r = drsym_unix_lookup_symbol(mod, symbol, modoffs, flags);
 
-    dr_mutex_unlock(symbol_lock);
+    dr_recurlock_unlock(symbol_lock);
     return r;
 }
 
@@ -138,16 +145,16 @@ drsym_lookup_address_local(const char *modpath, size_t modoffs,
     if (out->struct_size != sizeof(*out))
         return DRSYM_ERROR_INVALID_SIZE;
 
-    dr_mutex_lock(symbol_lock);
+    dr_recurlock_lock(symbol_lock);
     mod = lookup_or_load(modpath);
     if (mod == NULL) {
-        dr_mutex_unlock(symbol_lock);
+        dr_recurlock_unlock(symbol_lock);
         return DRSYM_ERROR_LOAD_FAILED;
     }
 
     r = drsym_unix_lookup_address(mod, modoffs, out, flags);
 
-    dr_mutex_unlock(symbol_lock);
+    dr_recurlock_unlock(symbol_lock);
     return r;
 }
 
@@ -162,7 +169,7 @@ drsym_init(int shmid_in)
 {
     shmid = shmid_in;
 
-    symbol_lock = dr_mutex_create();
+    symbol_lock = dr_recurlock_create();
 
     drsym_unix_init();
 
@@ -188,7 +195,7 @@ drsym_exit(void)
         /* FIXME NYI i#446 */
     }
     hashtable_delete(&modtable);
-    dr_mutex_destroy(symbol_lock);
+    dr_recurlock_destroy(symbol_lock);
     return res;
 }
 
@@ -230,8 +237,26 @@ drsym_enumerate_symbols(const char *modpath, drsym_enumerate_cb callback, void *
 
 DR_EXPORT
 drsym_error_t
+drsym_get_type(const char *modpath, size_t modoffs, uint levels_to_expand,
+               char *buf, size_t buf_sz, drsym_type_t **type OUT)
+{
+    return DRSYM_ERROR_NOT_IMPLEMENTED;
+}
+
+
+DR_EXPORT
+drsym_error_t
 drsym_get_func_type(const char *modpath, size_t modoffs, char *buf,
                     size_t buf_sz, drsym_func_type_t **func_type OUT)
+{
+    return DRSYM_ERROR_NOT_IMPLEMENTED;
+}
+
+DR_EXPORT
+drsym_error_t
+drsym_expand_type(const char *modpath, uint type_id, uint levels_to_expand,
+                  char *buf, size_t buf_sz,
+                  drsym_type_t **expanded_type OUT)
 {
     return DRSYM_ERROR_NOT_IMPLEMENTED;
 }
@@ -257,10 +282,52 @@ drsym_get_module_debug_kind(const char *modpath, drsym_debug_kind_t *kind OUT)
         if (modpath == NULL || kind == NULL)
             return DRSYM_ERROR_INVALID_PARAMETER;
 
-        dr_mutex_lock(symbol_lock);
+        dr_recurlock_lock(symbol_lock);
         mod = lookup_or_load(modpath);
         r = drsym_unix_get_module_debug_kind(mod, kind);
-        dr_mutex_unlock(symbol_lock);
+        dr_recurlock_unlock(symbol_lock);
         return r;
+    }
+}
+
+DR_EXPORT
+drsym_error_t
+drsym_module_has_symbols(const char *modpath)
+{
+    drsym_debug_kind_t kind;
+    drsym_error_t r = drsym_get_module_debug_kind(modpath, &kind);
+    if (r == DRSYM_SUCCESS && !TEST(DRSYM_SYMBOLS, kind))
+        r = DRSYM_ERROR;
+    return r;
+}
+
+DR_EXPORT
+drsym_error_t
+drsym_free_resources(const char *modpath)
+{
+    if (IS_SIDELINE) {
+        return DRSYM_ERROR_NOT_IMPLEMENTED;
+    } else {
+#if 0 /* FIXME i#880 */
+        bool found;
+
+        if (modpath == NULL)
+            return DRSYM_ERROR_INVALID_PARAMETER;
+
+        /* unsafe to free during iteration */
+        if (recursive_context)
+            return DRSYM_ERROR_RECURSIVE;
+
+        /* FIXME i#880: libdwarf code crashes on a free if unloaded
+         * and reloaded later so temporarily disabling this
+         */
+        dr_recurlock_lock(symbol_lock);
+        found = hashtable_remove(&modtable, (void *)modpath);
+        dr_recurlock_unlock(symbol_lock);
+
+        return (found ? DRSYM_SUCCESS : DRSYM_ERROR);
+#else
+        return DRSYM_ERROR;
+#endif
     }
 }

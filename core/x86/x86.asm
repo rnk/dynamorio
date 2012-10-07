@@ -189,6 +189,12 @@ START_FILE
         lea      REG_XAX, [PRIV_MCXT_SIZE + REG_XSP] @N@\
         mov      [PUSHGPR_XSP_OFFS + REG_XSP], REG_XAX
 
+/* This is really the alignment needed by x64 code.  For now, when we bother to
+ * align the stack pointer, we just go for 16 byte alignment.  We do *not*
+ * assume 16-byte alignment across the code base.
+ * i#847: Investigate using aligned SSE ops (see get_xmm_caller_saved).
+ */
+#define FRAME_ALIGNMENT 16
 
 /****************************************************************************/
 /****************************************************************************/
@@ -214,7 +220,7 @@ DECL_EXTERN(internal_error)
 DECL_EXTERN(internal_exception_info)
 DECL_EXTERN(is_currently_on_dstack)
 DECL_EXTERN(nt_continue_setup)
-#if defined(LINUX) && defined(X64)
+#if defined(LINUX)
 DECL_EXTERN(master_signal_handler_C)
 #endif
 DECL_EXTERN(hashlookup_null_target)
@@ -225,9 +231,11 @@ DECL_EXTERN(fixup_rtframe_pointers)
 #endif
 #ifdef LINUX
 DECL_EXTERN(dr_setjmp_sigmask)
+DECL_EXTERN(privload_early_inject)
 #endif
 #ifdef WINDOWS
 DECL_EXTERN(dynamorio_earliest_init_takeover_C)
+DECL_EXTERN(os_terminate_wow64_stack)
 #endif
 
 /* non-functions: these make us non-PIC! (PR 212290) */
@@ -240,7 +248,6 @@ DECL_EXTERN(sysenter_ret_address)
 DECL_EXTERN(sysenter_tls_offset)
 #ifdef WINDOWS
 DECL_EXTERN(wow64_index)
-DECL_EXTERN(wow64_syscall_stack)
 # ifdef X64
 DECL_EXTERN(syscall_argsz)
 # endif
@@ -418,17 +425,19 @@ GLOBAL_LABEL(clone_and_swap_stack:)
 #ifdef DR_APP_EXPORTS
         DECLARE_EXPORTED_FUNC(dr_app_start)
 GLOBAL_LABEL(dr_app_start:)
+        sub     REG_XSP, FRAME_ALIGNMENT - ARG_SZ  /* Maintain alignment. */
 
         /* grab exec state and pass as param in a priv_mcontext_t struct */
-        PUSH_PRIV_MCXT([REG_XSP - PUSH_PRIV_MCXT_PRE_PC_SHIFT]) /* return address as pc */
+        PUSH_PRIV_MCXT([FRAME_ALIGNMENT - ARG_SZ + REG_XSP -
+                        PUSH_PRIV_MCXT_PRE_PC_SHIFT]) /* return address as pc */
 
         /* do the rest in C */
-        lea      REG_XAX, [REG_XSP] /* stack grew down, so priv_mcontext_t at tos */
+        lea     REG_XAX, [REG_XSP] /* stack grew down, so priv_mcontext_t at tos */
         CALLC1(dr_app_start_helper, REG_XAX)
 
         /* if we come back, then DR is not taking control so 
          * clean up stack and return */
-        add      REG_XSP, PRIV_MCXT_SIZE
+        add      REG_XSP, PRIV_MCXT_SIZE + FRAME_ALIGNMENT - ARG_SZ
         ret
         END_FUNC(dr_app_start)
 
@@ -449,9 +458,11 @@ GLOBAL_LABEL(dr_app_take_over:  )
  */
         DECLARE_EXPORTED_FUNC(dynamorio_app_take_over)
 GLOBAL_LABEL(dynamorio_app_take_over:)
+        sub     REG_XSP, FRAME_ALIGNMENT - ARG_SZ  /* Maintain alignment. */
 
         /* grab exec state and pass as param in a priv_mcontext_t struct */
-        PUSH_PRIV_MCXT([REG_XSP - PUSH_PRIV_MCXT_PRE_PC_SHIFT]) /* return address as pc */
+        PUSH_PRIV_MCXT([FRAME_ALIGNMENT - ARG_SZ + REG_XSP -
+                        PUSH_PRIV_MCXT_PRE_PC_SHIFT]) /* return address as pc */
 
         /* do the rest in C */
         lea      REG_XAX, [REG_XSP] /* stack grew down, so priv_mcontext_t at tos */
@@ -459,7 +470,7 @@ GLOBAL_LABEL(dynamorio_app_take_over:)
 
         /* if we come back, then DR is not taking control so 
          * clean up stack and return */
-        add      REG_XSP, PRIV_MCXT_SIZE
+        add      REG_XSP, PRIV_MCXT_SIZE + FRAME_ALIGNMENT - ARG_SZ
         ret
         END_FUNC(dynamorio_app_take_over)
         
@@ -569,6 +580,16 @@ cat_spin:
         jmp      cat_spin
 cat_have_lock:
         /* need to grab everything off dstack first */
+#ifdef WINDOWS
+        /* PR 601533: the wow64 syscall writes to the stack b/c it
+         * makes a call, so we have a race that can lead to a hang or
+         * worse.  we do not expect the syscall to return, so we can
+         * use a global single-entry stack (the wow64 layer swaps to a
+         * different stack: presumably for alignment and other reasons).
+         */
+        CALLC1(os_terminate_wow64_stack, -1/*INVALID_HANDLE_VALUE*/)
+        mov      REG_XDI, REG_XAX    /* esp to use */
+#endif
         mov      REG_XSI, [2*ARG_SZ + REG_XBP]  /* sysnum */
         pop      REG_XAX             /* syscall */
         pop      REG_XCX             /* dstack */
@@ -583,6 +604,9 @@ cat_have_lock:
         mov      REG_XSP, PTRSZ SYMREF(initstack) /* rip-relative on x64 */
 #endif
         /* now save registers */
+#ifdef WINDOWS
+        push     REG_XDI   /* esp to use */
+#endif
         push     REG_XDX   /* sys_arg2 */
         push     REG_XBX   /* sys_arg1 */
         push     REG_XAX   /* syscall */
@@ -608,21 +632,15 @@ cat_have_lock:
         pop      REG_XCX   /* sys_arg2 */
 # else
         pop      REG_XDX   /* sys_arg1 == param_base */
-        /* sys_arg2 unused */
+        pop      REG_XCX   /* sys_arg2 (unused) */
 # endif
+#endif
+#ifdef WINDOWS
+        pop      REG_XSP    /* get the stack pointer we pushed earlier */
 #endif
         /* give up initstack mutex -- potential problem here with a thread getting 
          *   an asynch event that then uses initstack, but syscall should only care 
          *   about ebx and edx */
-#ifdef WINDOWS
-        /* PR 601533: the wow64 syscall writes to the stack b/c it
-         * makes a call, so we have a race that can lead to a hang or
-         * worse.  we do not expect the syscall to return, so we can
-         * use a global single-entry stack (the wow64 layer swaps to a
-         * different stack: presumably for alignment and other reasons).
-         */
-        mov      REG_XSP, PTRSZ SYMREF(wow64_syscall_stack)
-#endif
 #if !defined(X64) && defined(LINUX)
         /* PIC base is still in xdi */
 	lea      REG_XBP, VAR_VIA_GOT(REG_XDI, initstack_mutex)
@@ -999,6 +1017,23 @@ GLOBAL_LABEL(dynamorio_syscall_wow64:)
         call     PTRSZ SEGMEM(fs,HEX(0c0))
         ret
         END_FUNC(dynamorio_syscall_wow64)
+
+/* Win8 has no index and furthermore requires the stack to be set
+ * up (i.e., we can't just point edx where we want it).
+ * Thus, we must shift the retaddr one slot down on top of sys_enum.
+ * => signature: dynamorio_syscall_wow64_noedx(sys_enum, arg1, arg2, ...)
+ */
+        DECLARE_FUNC(dynamorio_syscall_wow64_noedx)
+GLOBAL_LABEL(dynamorio_syscall_wow64_noedx:)
+        mov      eax, [4 + esp]
+        mov      ecx, DWORD SYMREF(syscalls)
+        mov      eax, [ecx + eax*4]
+        mov      ecx, [esp]
+        mov      [esp + 4], ecx
+        lea      esp, [esp + 4]
+        call     PTRSZ SEGMEM(fs,HEX(0c0))
+        ret
+        END_FUNC(dynamorio_syscall_wow64_noedx)
       
 #endif /* WINDOWS */
 
@@ -1099,6 +1134,24 @@ GLOBAL_LABEL(client_int_syscall:)
 #endif /* LINUX */
 #ifndef NOT_DYNAMORIO_CORE_PROPER
 #ifdef LINUX
+
+#ifndef STANDALONE_UNIT_TEST
+/* i#47: Early injection _start routine.  The kernel sets all registers to zero
+ * except the SP and PC.  The stack has argc, argv[], envp[], and the auxiliary
+ * vector laid out on it.
+ */
+        DECLARE_FUNC(_start)
+GLOBAL_LABEL(_start:)
+        xor     REG_XBP, REG_XBP  /* Terminate stack traces at NULL. */
+#ifdef X64
+        mov     ARG1, REG_XSP
+#else
+        push    REG_XSP
+#endif
+        call    privload_early_inject
+        jmp     unexpected_return
+        END_FUNC(_start)
+#endif
 
 /* while with pre-2.6.9 kernels we were able to rely on the kernel's
  * default sigreturn code sequence and be more platform independent,
@@ -1208,21 +1261,34 @@ GLOBAL_LABEL(dynamorio_nonrt_sigreturn:)
         jmp      unexpected_return
         END_FUNC(dynamorio_sigreturn)
 #endif
-        
-#if defined(X64) && defined(HAVE_SIGALTSTACK)
-/* PR 305020: for x64 we can't use args to get the original stack pointer,
- * so we use a stub routine here that adds a 4th arg to our C routine:
- *   master_signal_handler(int sig, siginfo_t *siginfo, kernel_ucontext_t *ucxt)
+
+#ifdef HAVE_SIGALTSTACK
+/* We used to get the SP by taking the address of our args, but that doesn't
+ * work on x64 nor with other compilers.  Today we use asm to pass in the
+ * initial SP.  For x64, we add a 4th register param and tail call to
+ * master_signal_handler_C.  Adding a param and doing a tail call on ia32 is
+ * hard, so we make a real call and pass only xsp.  The C routine uses it to
+ * read the original params.
+ * See also PR 305020.
  */
         DECLARE_FUNC(master_signal_handler)
 GLOBAL_LABEL(master_signal_handler:)
-        mov      rcx, rsp /* pass as 4th arg */
+#ifdef X64
+        mov      ARG4, REG_XSP /* pass as 4th arg */
         jmp      master_signal_handler_C
         /* master_signal_handler_C will do the ret */
-        END_FUNC(master_signal_handler)
+#else
+        /* We need to pass in xsp.  The easiest way is to create an
+         * intermediate frame.
+         */
+        mov      REG_XAX, REG_XSP
+        CALLC1(master_signal_handler_C, REG_XAX)
+        ret
 #endif
+        END_FUNC(master_signal_handler)
 
-#ifndef HAVE_SIGALTSTACK
+#else /* !HAVE_SIGALTSTACK */
+
 /* PR 283149: if we're on the app stack now and we need to deliver
  * immediately, we can't copy over our own sig frame w/ the app's, and we
  * can't push the app's below ours and have continuation work.  One choice
@@ -1295,13 +1361,17 @@ no_swap:
         pop      ARG2
         pop      ARG1
         mov      rcx, rsp /* pass as 4th arg */
+        jmp      master_signal_handler_C
+        /* can't return, no retaddr */
 # else
         add      REG_XSP, 3*ARG_SZ
-# endif
-        jmp      master_signal_handler_C
-        /* shouldn't return */
-        jmp      unexpected_return
+        /* We need to pass in xsp.  The easiest way is to create an
+         * intermediate frame.
+         */
+        mov      REG_XAX, REG_XSP
+        CALLC1(master_signal_handler_C, REG_XAX)
         ret
+# endif
         END_FUNC(master_signal_handler)
 #endif /* !HAVE_SIGALTSTACK */
 
@@ -1895,6 +1965,180 @@ GLOBAL_LABEL(hashlookup_null_handler:)
         jmp      PTRSZ SYMREF(hashlookup_null_target) /* rip-relative on x64 */
 #endif
         END_FUNC(hashlookup_null_handler)
+
+#ifdef X64
+# define PTRSZ_SHIFT_BITS 3
+# define PTRSZ_SUFFIXED(string_op) string_op##q
+# ifdef LINUX
+#  define ARGS_TO_XDI_XSI_XDX()         /* ABI handles this. */
+#  define RESTORE_XDI_XSI()             /* Not needed. */
+# else /* WINDOWS */
+/* Get args 1, 2, 3 into rdi, rsi, and rdx. */
+#  define ARGS_TO_XDI_XSI_XDX() \
+        push     rdi                            @N@\
+        push     rsi                            @N@\
+        mov      rdi, ARG1                      @N@\
+        mov      rsi, ARG2                      @N@\
+        mov      rdx, ARG3
+#  define RESTORE_XDI_XSI() \
+        pop      rsi                            @N@\
+        pop      rdi
+# endif /* WINDOWS */
+#else
+# define PTRSZ_SHIFT_BITS 2
+# define PTRSZ_SUFFIXED(string_op) string_op##d
+
+/* Get args 1, 2, 3 into edi, esi, and edx to match Linux x64 ABI.  Need to save
+ * edi and esi since they are callee-saved.  The ARGN macros can't handle
+ * stack adjustments, so use the scratch regs eax and ecx to hold the args
+ * before the pushes.
+ */
+# define ARGS_TO_XDI_XSI_XDX() \
+        mov     eax, ARG1                       @N@\
+        mov     ecx, ARG2                       @N@\
+        mov     edx, ARG3                       @N@\
+        push    edi                             @N@\
+        push    esi                             @N@\
+        mov     edi, eax                        @N@\
+        mov     esi, ecx
+# define RESTORE_XDI_XSI() \
+        pop esi                                 @N@\
+        pop edi
+#endif
+
+/* Repeats string_op for XDX bytes using aligned pointer-sized operations when
+ * possible.  Assumes that string_op works by counting down until XCX reaches
+ * zero.  The pointer-sized string ops are aligned based on ptr_to_align.
+ * For string ops that have both a src and dst, aligning based on src is
+ * preferred, subject to micro-architectural differences.
+ *
+ * XXX: glibc memcpy uses SSE instructions to copy, which is 10% faster on x64
+ * and ~2x faster for 20kb copies on plain x86.  Using SSE is quite complicated,
+ * because it means doing cpuid checks and loop unrolling.  Many of our string
+ * operations are short anyway.  For safe_read, it also increases the number of
+ * potentially faulting PCs.
+ */
+#define REP_STRING_OP(funcname, ptr_to_align, string_op) \
+        mov     REG_XCX, ptr_to_align                           @N@\
+        and     REG_XCX, (ARG_SZ - 1)                           @N@\
+        jz      funcname##_aligned                              @N@\
+        neg     REG_XCX                                         @N@\
+        add     REG_XCX, ARG_SZ                                 @N@\
+        cmp     REG_XDX, REG_XCX  /* if (n < xcx) */            @N@\
+        cmovb   REG_XCX, REG_XDX  /*     xcx = n; */            @N@\
+        sub     REG_XDX, REG_XCX                                @N@\
+ADDRTAKEN_LABEL(funcname##_pre:)                                @N@\
+        rep string_op##b                                        @N@\
+funcname##_aligned:                                             @N@\
+        /* Aligned word-size ops. */                            @N@\
+        mov     REG_XCX, REG_XDX                                @N@\
+        shr     REG_XCX, PTRSZ_SHIFT_BITS                       @N@\
+ADDRTAKEN_LABEL(funcname##_mid:)                                @N@\
+        rep PTRSZ_SUFFIXED(string_op)                           @N@\
+        /* Handle trailing bytes. */                            @N@\
+        mov     REG_XCX, REG_XDX                                @N@\
+        and     REG_XCX, (ARG_SZ - 1)                           @N@\
+ADDRTAKEN_LABEL(funcname##_post:)                               @N@\
+        rep string_op##b
+
+/* Declare these labels global so we can take their addresses in C.  pre, mid,
+ * and post are defined by REP_STRING_OP().
+ */
+DECLARE_GLOBAL(safe_read_asm_pre)
+DECLARE_GLOBAL(safe_read_asm_mid)
+DECLARE_GLOBAL(safe_read_asm_post)
+DECLARE_GLOBAL(safe_read_asm_recover)
+
+/* i#350: We implement safe_read in assembly and save the PCs that can fault.
+ * If these PCs fault, we return from the signal handler to the epilog, which
+ * can recover.  We return the source pointer from XSI, and the caller uses this
+ * to determine how many bytes were copied and whether it matches size.
+ *
+ * XXX: Do we care about differentiating whether the read or write faulted?
+ * Currently this is just "safe_memcpy", and we recover regardless of whether
+ * the read or write faulted.
+ *
+ * void *
+ * safe_read_asm(void *dst, const void *src, size_t n);
+ */
+        DECLARE_FUNC(safe_read_asm)
+GLOBAL_LABEL(safe_read_asm:)
+        ARGS_TO_XDI_XSI_XDX()           /* dst=xdi, src=xsi, n=xdx */
+        /* Copy xdx bytes, align on src. */
+        REP_STRING_OP(safe_read_asm, REG_XSI, movs)
+ADDRTAKEN_LABEL(safe_read_asm_recover:)
+        mov     REG_XAX, REG_XSI        /* Return cur_src */
+        RESTORE_XDI_XSI()
+        ret
+        END_FUNC(safe_read_asm)
+
+#ifdef LINUX
+/* i#46: Implement private memcpy and memset for libc isolation.  If we import
+ * memcpy and memset from libc in the normal way, the application can override
+ * those definitions and intercept them.  In particular, this occurs when
+ * running an app that links in the Address Sanitizer runtime.  Since we already
+ * need a reasonably efficient assembly memcpy implementation for safe_read, we
+ * go ahead and reuse the code for private memcpy and memset.
+ *
+ * XXX: See comment on REP_STRING_OP about maybe using SSE instrs.  It's more
+ * viable for memcpy and memset than for safe_read_asm.
+ */
+
+/* Private memcpy.
+ */
+        DECLARE_FUNC(memcpy)
+GLOBAL_LABEL(memcpy:)
+        ARGS_TO_XDI_XSI_XDX()           /* dst=xdi, src=xsi, n=xdx */
+        mov    REG_XAX, REG_XDI         /* Save dst for return. */
+        /* Copy xdx bytes, align on src. */
+        REP_STRING_OP(memcpy, REG_XSI, movs)
+        RESTORE_XDI_XSI()
+        ret                             /* Return original dst. */
+        END_FUNC(memcpy)
+
+/* Private memset.
+ */
+        DECLARE_FUNC(memset)
+GLOBAL_LABEL(memset:)
+        ARGS_TO_XDI_XSI_XDX()           /* dst=xdi, val=xsi, n=xdx */
+        push    REG_XDI                 /* Save dst for return. */
+        test    esi, esi                /* Usually val is zero. */
+        jnz     make_val_word_size
+        xor     eax, eax
+do_memset:
+        /* Set xdx bytes, align on dst. */
+        REP_STRING_OP(memset, REG_XDI, stos)
+        pop     REG_XAX                 /* Return original dst. */
+        RESTORE_XDI_XSI()
+        ret
+
+        /* Create pointer-sized value in XAX using multiply. */
+make_val_word_size:
+        and     esi, HEX(ff)
+# ifdef X64
+        mov     rax, HEX(0101010101010101)
+# else
+        mov     eax, HEX(01010101)
+# endif
+        /* Use two-operand imul to avoid clobbering XDX. */
+        imul    REG_XAX, REG_XSI
+        jmp     do_memset
+        END_FUNC(memset)
+
+/* gcc emits calls to these *_chk variants in release builds when the size of
+ * dst is known at compile time.  In C, the caller is responsible for cleaning
+ * up arguments on the stack, so we alias these *_chk routines to the non-chk
+ * routines and rely on the caller to clean up the extra dst_len arg.
+ */
+.global __memcpy_chk
+.hidden __memcpy_chk
+.set __memcpy_chk,memcpy
+
+.global __memset_chk
+.hidden __memset_chk
+.set __memset_chk,memset
+
+#endif /* LINUX */
 
 /*#############################################################################
  *#############################################################################

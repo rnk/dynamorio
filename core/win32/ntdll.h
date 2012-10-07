@@ -82,6 +82,7 @@ typedef LONG NTSTATUS;
 /* make sure to cast to signed in case passed reg_t */
 #define NT_SUCCESS(Status) ((NTSTATUS)(Status) >= 0)
 #define STATUS_SUCCESS ((NTSTATUS)0x00000000L)
+#define STATUS_UNSUCCESSFUL ((NTSTATUS)0xC0000001L)
 
 #define NT_CURRENT_PROCESS ( (HANDLE) PTR_UINT_MINUS_1 )
 #define NT_CURRENT_THREAD  ( (HANDLE) (ptr_uint_t)-2 )
@@ -578,7 +579,7 @@ typedef CLIENT_ID *PCLIENT_ID;
 typedef struct _EXCEPTION_REGISTRATION {
      struct _EXCEPTION_REGISTRATION* prev;
      PVOID                   handler;
-} EXCEPTION_REGISTRATION, *PEXCEPTION_REGISTRATION_RECORD;
+} EXCEPTION_REGISTRATION, *PEXCEPTION_REGISTRATION;
 
 typedef struct _GDI_TEB_BATCH
 {
@@ -590,7 +591,7 @@ typedef struct _GDI_TEB_BATCH
 /* The layout here is from ntdll pdb on x64 xpsp2 */
 typedef struct _TEB {                               /* offset: 32bit / 64bit */
     /* We lay out NT_TIB, which is declared in winnt.h */    
-    PEXCEPTION_REGISTRATION_RECORD ExceptionList;           /* 0x000 / 0x000 */
+    PEXCEPTION_REGISTRATION   ExceptionList;                /* 0x000 / 0x000 */
     PVOID                     StackBase;                    /* 0x004 / 0x008 */
     PVOID                     StackLimit;                   /* 0x008 / 0x010 */
     PVOID                     SubSystemTib;                 /* 0x00c / 0x018 */
@@ -1124,6 +1125,10 @@ get_ntdll_base(void);
 bool
 is_in_ntdll(app_pc pc);
 #endif
+
+NTSTATUS
+nt_remote_query_virtual_memory(HANDLE process, const byte *pc,
+                               MEMORY_BASIC_INFORMATION *mbi, size_t mbilen, size_t *got);
 
 /* replacement for API call VirtualQuery */
 size_t
@@ -1764,6 +1769,9 @@ nt_pipe_transceive(HANDLE hpipe, void *input, uint input_size,
 
 #define TIMER_UNITS_PER_MILLISECOND (1000 * 10) /* 100ns intervals */
 
+wchar_t *
+get_process_param_buf(RTL_USER_PROCESS_PARAMETERS *params, wchar_t *buf);
+
 /* uint query_time_seconds() declared in os_shared.h */
 /* uint64 query_time_millis() declared in os_shared.h */
 
@@ -1862,6 +1870,9 @@ LDR_MODULE *
 get_ldr_module_by_name(wchar_t *name);;
 
 #ifndef X64
+void *
+get_own_x64_peb(void);
+
 HANDLE
 get_module_handle_64(wchar_t *name);
 

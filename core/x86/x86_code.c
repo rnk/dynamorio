@@ -1,4 +1,5 @@
 /* **********************************************************
+ * Copyright (c) 2012 Google, Inc.  All rights reserved.
  * Copyright (c) 2001-2010 VMware, Inc.  All rights reserved.
  * **********************************************************/
 
@@ -59,13 +60,13 @@ get_xmm_vals(priv_mcontext_t *mc)
     }
 }
 
-/* initializes dcontext and performs other initialization
- * intended to be done each time a thread comes under dynamo control
+/* Just calls dynamo_thread_under_dynamo.  We used to initialize dcontext here,
+ * but that would end up initializing it twice.
  */
 static void
 thread_starting(dcontext_t *dcontext)
 {
-    initialize_dynamo_context(dcontext);
+    ASSERT(dcontext->initialized);
     dynamo_thread_under_dynamo(dcontext);
 #ifdef WINDOWS
     LOG(THREAD, LOG_INTERP, 2, "thread_starting: interpreting thread %d\n",
@@ -82,6 +83,9 @@ dynamo_start(priv_mcontext_t *mc)
     ASSERT(dcontext != NULL);
     thread_starting(dcontext);
 
+    /* Signal other threads for take over. */
+    dynamorio_take_over_threads(dcontext);
+
     /* Set return address */
     dcontext->next_tag = mc->pc;
     ASSERT(dcontext->next_tag != NULL);
@@ -93,12 +97,7 @@ dynamo_start(priv_mcontext_t *mc)
     /* clear pc */
     mcontext->pc = 0;
 
-    /* Swap stacks so dispatch is invoked outside the application.
-     * We begin interpretation at the application return point,
-     * and thus we need to look like DR returned -- adjust the app
-     * stack to account for the return address.
-     */
-    mcontext->xsp += XSP_SZ;
+    /* Swap stacks so dispatch is invoked outside the application. */
     call_switch_stack(dcontext, dcontext->dstack, dispatch,
                       false/*not on initstack*/, true/*return on error*/);
     /* In release builds, this will simply return and continue native
@@ -398,3 +397,35 @@ back_from_native_C(priv_mcontext_t *mc)
 }
 
 /****************************************************************************/
+
+/* C-level wrapper around the asm implementation.  Shuffles arguments and
+ * increments stats.
+ * We used to use try/except on Linux and NtReadVirtualMemory on Windows, but
+ * this is faster than both.
+ */
+bool
+safe_read_fast(const void *base, size_t size, void *out_buf, size_t *bytes_read)
+{
+    byte *stop_pc;
+    size_t nbytes;
+    stop_pc = safe_read_asm(out_buf, base, size);
+    nbytes = stop_pc - (byte*)base;
+    if (bytes_read != NULL)
+        *bytes_read = nbytes;
+    return (nbytes == size);
+}
+
+bool
+is_safe_read_pc(app_pc pc)
+{
+    return (pc == (app_pc)safe_read_asm_pre ||
+            pc == (app_pc)safe_read_asm_mid ||
+            pc == (app_pc)safe_read_asm_post);
+}
+
+app_pc
+safe_read_resume_pc(void)
+{
+    return (app_pc) &safe_read_asm_recover;
+}
+

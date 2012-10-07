@@ -1,4 +1,5 @@
 /* **********************************************************
+ * Copyright (c) 2012 Google, Inc.  All rights reserved.
  * Copyright (c) 2003 VMware, Inc.  All rights reserved.
  * **********************************************************/
 
@@ -40,6 +41,11 @@
 #include <float.h>
 #include <math.h>
 #include <string.h>
+
+/* This is only in float.h for VS2010+ */
+#ifndef _FPE_MULTIPLE_TRAPS
+# define _FPE_MULTIPLE_TRAPS 0x8d
+#endif
 
 jmp_buf mark;              /* Address for long jump to jump to */
 int     fperr;             /* Global error number */
@@ -130,6 +136,10 @@ void fpcheck(void)
     case _FPE_UNDERFLOW:
 	strcpy(fpstr, "Underflow");
 	break;
+    /* FIXME i#910: on win8 this is raised instead of _FPE_ZERODIVIDE */
+    case _FPE_MULTIPLE_TRAPS:
+        fperr = _FPE_ZERODIVIDE;
+        /* fall-through */
     case _FPE_ZERODIVIDE:
 	strcpy(fpstr, "Divide by zero");
 	break;

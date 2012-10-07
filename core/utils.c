@@ -79,19 +79,15 @@
 
 #include <stdarg.h> /* for varargs */
 
-#include <ctype.h> /* for tolower */
-
 #ifdef SIDELINE
 extern void sideline_exit(void);
 #endif
 
-#if defined(INTERNAL) || defined(DEBUG) || defined(CLIENT_INTERFACE) \
-    || defined(DR_APP_EXPORTS)
 /* use for soft errors that can handle some cleanup: assertions and apichecks
  * performs some cleanup and then calls os_terminate 
  */
 static void
-assertion_terminate()
+soft_terminate()
 {
 #ifdef SIDELINE
     /* kill child threads */
@@ -109,8 +105,6 @@ assertion_terminate()
     /* do not try to clean up */
     os_terminate(NULL, TERMINATE_PROCESS);
 }
-#endif /* defined(INTERNAL) || defined(DEBUG) || defined(CLIENT_INTERFACE) 
-        * || defined(DR_APP_EXPORTS) */
 
 #if defined(INTERNAL) || defined(DEBUG)
 /* checks whether an assert statement should be ignored, 
@@ -191,11 +185,10 @@ internal_error(char *file, int line, char *expr)
 #endif
                          );
 
-    assertion_terminate();
+    soft_terminate();
 }
 #endif /* defined(INTERNAL) || defined(DEBUG) */
 
-#if defined(CLIENT_INTERFACE) || defined(DR_APP_EXPORTS)
 /* abort on external application created error, i.e. apicheck */
 void
 external_error(char *file, int line, char *msg)
@@ -209,9 +202,8 @@ external_error(char *file, int line, char *msg)
         report_dynamorio_problem(NULL, DUMPCORE_FATAL_USAGE_ERROR, NULL, NULL,
                                  "Usage error: %s (%s, line %d)", msg, file, line);
     });
-    assertion_terminate();
+    soft_terminate();
 }
-#endif
 
 /****************************************************************************/
 /* SYNCHRONIZATION */
@@ -702,6 +694,9 @@ mutex_fork_reset(mutex_t *mutex)
     /* i#239/PR 498752: need to free locks held by other threads at fork time.
      * We can't call ASSIGN_INIT_LOCK_FREE as that clobbers any contention event
      * (=> leak) and the debug-build lock lists (=> asserts like PR 504594).
+     * If the synch before fork succeeded, this is unecessary.  If we encounter
+     * more deadlocks after fork because of synch failure, we can add more calls
+     * to reset locks on a case by case basis.
      */
     mutex->lock_requests = LOCK_FREE_STATE;
 # ifdef DEADLOCK_AVOIDANCE
@@ -807,10 +802,29 @@ spinmutex_delete(spin_mutex_t *spin_lock)
     mutex_delete(&spin_lock->lock);
 }
 
+#ifdef DEADLOCK_AVOIDANCE
+static bool
+mutex_ownable(mutex_t *lock)
+{
+    bool ownable = LOCK_OWNABLE;
+# ifdef CLIENT_INTERFACE
+    /* i#779: support DR locks used as app locks */
+    if (lock->app_lock) {
+        ASSERT(lock->rank == dr_client_mutex_rank);
+        ownable = LOCK_NOT_OWNABLE;
+    }
+# endif
+    return ownable;
+}
+#endif
+
 void
 mutex_lock(mutex_t *lock)
 {
     bool acquired;
+#ifdef DEADLOCK_AVOIDANCE
+    bool ownable = mutex_ownable(lock);
+#endif
 
     if (INTERNAL_OPTION(spin_yield_mutex)) {
         spinmutex_lock((spin_mutex_t *)lock);
@@ -850,12 +864,12 @@ mutex_lock(mutex_t *lock)
 
     /* we have strong intentions to grab this lock, increment requests */
     acquired = atomic_inc_and_test(&lock->lock_requests);
-    DEADLOCK_AVOIDANCE_LOCK(lock, acquired, LOCK_OWNABLE);
+    DEADLOCK_AVOIDANCE_LOCK(lock, acquired, ownable);
 
     if (!acquired) {
         mutex_wait_contended_lock(lock);
 #       ifdef DEADLOCK_AVOIDANCE
-        DEADLOCK_AVOIDANCE_LOCK(lock, true, LOCK_OWNABLE); /* now we got it  */
+        DEADLOCK_AVOIDANCE_LOCK(lock, true, ownable); /* now we got it  */
         /* this and previous owner are not included in lock_requests */
         if (lock->max_contended_requests < (uint)lock->lock_requests)
             lock->max_contended_requests = (uint)lock->lock_requests;
@@ -868,6 +882,9 @@ bool
 mutex_trylock(mutex_t *lock)
 {
     bool acquired;
+#ifdef DEADLOCK_AVOIDANCE
+    bool ownable = mutex_ownable(lock);
+#endif
 
     if (INTERNAL_OPTION(spin_yield_mutex)) {
         return spinmutex_trylock((spin_mutex_t *)lock);
@@ -880,7 +897,7 @@ mutex_trylock(mutex_t *lock)
        old value may be >=0 when several threads are trying to acquire lock,
        so we should return false
      */
-    DEADLOCK_AVOIDANCE_LOCK(lock, acquired, LOCK_OWNABLE);
+    DEADLOCK_AVOIDANCE_LOCK(lock, acquired, ownable);
     return acquired;
 }
 
@@ -888,13 +905,17 @@ mutex_trylock(mutex_t *lock)
 void
 mutex_unlock(mutex_t *lock)
 {
+#ifdef DEADLOCK_AVOIDANCE
+    bool ownable = mutex_ownable(lock);
+#endif
+
     if (INTERNAL_OPTION(spin_yield_mutex)) {
         spinmutex_unlock((spin_mutex_t *)lock);
         return;
     }
 
     ASSERT(lock->lock_requests > LOCK_FREE_STATE && "lock not owned");
-    DEADLOCK_AVOIDANCE_UNLOCK(lock, LOCK_OWNABLE);
+    DEADLOCK_AVOIDANCE_UNLOCK(lock, ownable);
     
     if (atomic_dec_and_test(&lock->lock_requests)) 
         return;
@@ -924,6 +945,16 @@ mutex_delete(mutex_t *lock)
 #endif
     }
 }
+
+#ifdef CLIENT_INTERFACE
+void
+mutex_mark_as_app(mutex_t *lock)
+{
+# ifdef DEADLOCK_AVOIDANCE
+    lock->app_lock = true;
+# endif
+}
+#endif
 
 static inline 
 void
@@ -1682,7 +1713,8 @@ divide_uint64_print(uint64 numerator, uint64 denominator, bool percentage,
                       - (precision_multiple * *top));
 }
 
-#if defined(DEBUG) || defined(INTERNAL) || defined(CLIENT_INTERFACE)
+#if (defined(DEBUG) || defined(INTERNAL) || defined(CLIENT_INTERFACE) || \
+     defined(STANDALONE_UNIT_TEST))
 /* for printing a float (can't use %f on windows with NOLIBC), NOTE: you must
  * preserve floating point state to call this function!! 
  * FIXME : truncates instead of rounding, also negative with width looks funny,
@@ -1709,7 +1741,7 @@ double_print(double val, uint precision, uint *top, uint *bottom, char **sign)
     *top = (uint)val;
     *bottom = (uint)((val - *top) * precision_multiple);
 }
-#endif /* DEBUG || INTERNAL */
+#endif /* DEBUG || INTERNAL || CLIENT_INTERFACE || STANDALONE_UNIT_TEST */
 
 #ifdef WINDOWS
 /* for pre_inject, injector, and core shared files, is just wrapper for syslog
@@ -2280,7 +2312,6 @@ double_strrchr(const char *string, char c1, char c2)
 #endif
 
 #ifdef WINDOWS
-# if !defined(NOT_DYNAMORIO_CORE) && !defined(NOT_DYNAMORIO_CORE_PROPER)
 /* Just like wcslen, but if the string is >= MAX characters long returns MAX
  * whithout interrogating past str+MAX.  NOTE - this matches most library 
  * implementations, but does NOT work the same way as the strnlen etc.
@@ -2289,7 +2320,7 @@ double_strrchr(const char *string, char c1, char c2)
  * eventually would be nice to share the various string routines used both by
  * the core and the hotpatch2 module. */
 size_t
-wcsnlen(const wchar_t *str, size_t max)
+our_wcsnlen(const wchar_t *str, size_t max)
 {
     const wchar_t *s = str;
     size_t i = 0;
@@ -2301,7 +2332,6 @@ wcsnlen(const wchar_t *str, size_t max)
 
     return i;
 }
-# endif
 #endif
 
 static int
@@ -2426,12 +2456,13 @@ create_log_dir(int dir_type)
     SELF_UNPROTECT_DATASEC(DATASEC_RARELY_PROT);
 #ifdef LINUX
     if (dir_type == PROCESS_DIR && pre_execve != NULL) {
-        /* if this app has a logdir config, that should trump sharing
+        /* if this app has a logdir option or config, that should trump sharing
          * the pre-execve logdir.  a logdir env var should not.
          */
         bool is_env;
-        if (get_config_val_ex(DYNAMORIO_VAR_LOGDIR, NULL, &is_env) == NULL ||
-            is_env) {
+        if (IS_STRING_OPTION_EMPTY(logdir) &&
+            (get_config_val_ex(DYNAMORIO_VAR_LOGDIR, NULL, &is_env) == NULL ||
+             is_env)) {
             /* use same dir as pre-execve! */
             sharing_logdir = true;
             strncpy(logdir, pre_execve, BUFFER_SIZE_ELEMENTS(logdir));
@@ -2449,10 +2480,17 @@ create_log_dir(int dir_type)
             int retval;
             ASSERT(sizeof(basedir) == sizeof(old_basedir));
             strncpy(old_basedir, basedir, sizeof(basedir));
-            retval = get_parameter(PARAM_STR(DYNAMORIO_VAR_LOGDIR), basedir, 
-                                   sizeof(basedir));
-            if (IS_GET_PARAMETER_FAILURE(retval))
-                basedir[0] = '\0';
+            /* option takes precedence over config var */
+            if (IS_STRING_OPTION_EMPTY(logdir)) {
+                retval = get_parameter(PARAM_STR(DYNAMORIO_VAR_LOGDIR), basedir,
+                                       BUFFER_SIZE_ELEMENTS(basedir));
+                if (IS_GET_PARAMETER_FAILURE(retval))
+                    basedir[0] = '\0';
+            } else {
+                string_option_read_lock();
+                strncpy(basedir, DYNAMO_OPTION(logdir), BUFFER_SIZE_ELEMENTS(basedir));
+                string_option_read_unlock();
+            }
             basedir[sizeof(basedir)-1] =  '\0';
             if (!basedir_initialized ||
                 strncmp(old_basedir, basedir, sizeof(basedir))) {
@@ -2752,6 +2790,11 @@ print_statistics(int *data, int size)
         stddev += diff*diff;
     }
     stddev /= (double)size;
+    /* FIXME i#46: We need a private sqrt impl.  libc's sqrt can actually
+     * clobber errno, too!
+     */
+    ASSERT(!DYNAMO_OPTION(early_inject) &&
+           "FRAGMENT_SIZES_STUDY incompatible with early injection");
     stddev = sqrt(stddev);
 
     LOG(GLOBAL, LOG_ALL, 0, "\t#      = %9d\n", size);
@@ -3115,42 +3158,6 @@ print_xml_cdata(file_t f, const char *str)
 
 /* TODO - NYI print_xml_body_string, print_xml_attribute_string */
 
-#ifdef LINUX
-void 
-getnamefrompid(int pid, char *name, uint maxlen)
-{
-    int fd,n;
-    char tempstring[200+1], *lastpart;
-
-# ifdef VMX86_SERVER
-    if (os_in_vmkernel_userworld()) {
-        vmk_getnamefrompid(pid, name, maxlen);
-        return;
-    }
-# endif
-
-    /*this is a shitty way of getting the process name,
-    but i can't think of anything better... */
-
-    snprintf(tempstring, 200+1, "/proc/%d/cmdline", pid);
-    fd = open_syscall(tempstring, O_RDONLY, 0);
-    /* buffer overflow even if only off by 1 can be devastating */
-    n = read_syscall(fd, tempstring, 200);   
-    tempstring[n] = '\0';
-    lastpart = rindex(tempstring, '/');
-
-    if (lastpart == NULL)
-      lastpart = tempstring;
-    else
-      lastpart++; /*don't include last '/' in name*/ 
-
-    strncpy(name, lastpart, maxlen-1);
-    name[maxlen-1]  = '\0'; /* if max no null */
-
-    close_syscall(fd);
-}
-#endif
-
 void
 print_version_and_app_info(file_t file)
 {
@@ -3268,8 +3275,7 @@ static const uint days_per_month_normal[12] =
 static const uint days_per_month_leap[12] = 
     {31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
 
-/* On Linux, millis is the number of milliseconds since the Epoch (Jan 1, 1970).
- * On Windows, millis is the number of milliseconds since Jan 1, 1600 (this is
+/* millis is the number of milliseconds since Jan 1, 1601 (this is
  * the current UTC time).
  */ 
 void
@@ -3291,20 +3297,15 @@ convert_millis_to_date(uint64 millis, dr_time_t *dr_time OUT)
      * operations than continuing to use LONGLONG time. */
     time /= 24;
 
-    /* time is now num. of days since Sun. Jan. 1, 1601 (1970 for Linux) */
+    /* time is now num. of days since Sun. Jan. 1, 1601 */
     dr_time->day_of_week = (uint)(time % 7); /* Sun. is 0 */
 
-#ifdef WINDOWS
     /* Since 1601 is the first year of a 400 year leap year cycle, we can use
      * the following to figure out the correct year. NOTE the 100 year and 4
      * year values are only correct if not crossing a 400 year of 100 year
      * (respectively) alignment. */
-# define BASE_YEAR 1601
+#define BASE_YEAR 1601
     ASSERT(BASE_YEAR % 400 == 1); /* verify alignment */
-#else
-# define BASE_YEAR 1970
-    /* this all works since 2000 is in fact a leap year */
-#endif
 #define DAYS_IN_400_YEARS (400*365 + 97)
 #define DAYS_IN_100_YEARS (100*365 + 24)
 #define DAYS_IN_4_YEARS (4*365 + 1)
@@ -4073,7 +4074,7 @@ profile_callers_exit()
 #endif /* CALL_PROFILE */
 
 
-#ifdef UTILS_UNIT_TEST
+#ifdef STANDALONE_UNIT_TEST
 
 # ifdef printf
 #  undef printf
@@ -4081,7 +4082,8 @@ profile_callers_exit()
 # define printf(...) print_file(STDERR, __VA_ARGS__)
 
 /* some tests for double_print() and divide_uint64_print() */
-int main()
+void
+unit_test_utils(void)
 {
     char buf[128];
     uint c, d;
@@ -4091,10 +4093,12 @@ int main()
     divide_uint64_print(a, b, percent, p, &c, &d);                        \
     snprintf(buf, BUFFER_SIZE_ELEMENTS(buf), fmt, c, d);                  \
     NULL_TERMINATE_BUFFER(buf);                                           \
-    if (strcmp(buf, result) == 0)                                         \
+    if (strcmp(buf, result) == 0) {                                       \
         printf("PASS\n");                                                 \
-    else                                                                  \
+    } else {                                                              \
         printf("FAIL : \"%s\" doesn't match \"%s\"\n", buf, result);      \
+        exit(-1);                                                         \
+    }
 
     DO_TEST(1, 20, 3, false, "%u.%.3u", "0.050");
     DO_TEST(2, 5, 2, false, "%3u.%.2u", "  0.40");
@@ -4106,10 +4110,12 @@ int main()
     double_print(a, p, &c, &d, &s);                                       \
     snprintf(buf, BUFFER_SIZE_ELEMENTS(buf), fmt, s, c, d);               \
     NULL_TERMINATE_BUFFER(buf);                                           \
-    if (strcmp(buf, result) == 0)                                         \
+    if (strcmp(buf, result) == 0) {                                       \
         printf("PASS\n");                                                 \
-    else                                                                  \
+    } else {                                                              \
         printf("FAIL : \"%s\" doesn't match \"%s\"\n", buf, result);      \
+        exit(-1);                                                         \
+    }
 
     DO_TEST(-2.06, 3, "%s%u.%.3u", "-2.060");
     DO_TEST(2.06, 4, "%s%u.%.4u", "2.0600");
@@ -4119,11 +4125,19 @@ int main()
     DO_TEST(-23.0456, 5, "%s%4u.%.5u", "-  23.04560");
 
 # undef DO_TEST
+
+    EXPECT(BOOLS_MATCH(1, 1), true);
+    EXPECT(BOOLS_MATCH(1, 0), false);
+    EXPECT(BOOLS_MATCH(0, 1), false);
+    EXPECT(BOOLS_MATCH(0, 0), true);
+    EXPECT(BOOLS_MATCH(1, 2), true);
+    EXPECT(BOOLS_MATCH(2, 1), true);
+    EXPECT(BOOLS_MATCH(1, -1), true);
 }
 
 # undef printf
 
-#endif /* UTILS_UNIT_TEST */
+#endif /* STANDALONE_UNIT_TEST */
 
 
 char *

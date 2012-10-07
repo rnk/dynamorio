@@ -1,5 +1,5 @@
 # **********************************************************
-# Copyright (c) 2010-2011 Google, Inc.    All rights reserved.
+# Copyright (c) 2010-2012 Google, Inc.    All rights reserved.
 # Copyright (c) 2009-2010 VMware, Inc.    All rights reserved.
 # **********************************************************
 
@@ -33,11 +33,15 @@ add_executable(run_in_bg run_in_bg.c)
 
 if (UNIX)
   add_executable(runstats runstats.c)
-  add_executable(nudgeunix nudgeunix.c)
+  add_executable(nudgeunix nudgeunix.c ${PROJECT_SOURCE_DIR}/core/linux/nudgesig.c)
+  add_executable(drloader drloader.c)
 
   include_directories(
-    ${PROJECT_SOURCE_DIR}/core/lib
-    )
+   ${PROJECT_SOURCE_DIR}/core
+   ${PROJECT_SOURCE_DIR}/core/lib
+  )
+
+  add_definitions(-DNOT_DYNAMORIO_CORE)
 
   # New drrun variant that uses experimental ptrace injection on Linux.
   add_executable(drrun_inject drrun_inject.c)
@@ -82,6 +86,7 @@ if (UNIX)
     GROUP_READ GROUP_EXECUTE WORLD_READ WORLD_EXECUTE
     PATTERN "run_in_bg*"
     PATTERN "runstats*"
+    PATTERN "*_exe"  # Don't install the native drdeploy variants for now.
     EXCLUDE)
 
   # Set up our debugging support for gdb in the build directory.
@@ -97,6 +102,54 @@ if (UNIX)
     WORKING_DIRECTORY "${CMAKE_LIBRARY_OUTPUT_DIRECTORY}"
     OUTPUT_QUIET)
   configure_file(gdbinit ${CMAKE_BINARY_DIR}/.gdbinit)
+
+  # Drops the last path element from path and stores it in path_out.
+  function (dirname path_out path)
+    string(REGEX REPLACE "/[^/]*$" "" path "${path}")
+    set(${path_out} "${path}" PARENT_SCOPE)
+  endfunction (dirname)
+
+  # Links a target against a list of libraries, and adds relative rpaths
+  # pointing to the directories of the libraries.
+  #
+  # By default, CMake sets an absolute rpath to the build directory, which it
+  # strips at install time.  By adding our own relative rpath, so long as the
+  # target and its libraries stay in the same layout relative to each other,
+  # the loader will be able to find the libraries.  We assume that the layout
+  # is the same in the build and install directories.
+  function (link_libs_with_rel_rpath target)
+    target_link_libraries(${target} ${ARGN})
+
+    # Turn off the default CMake rpath setting and add our own LINK_FLAGS.
+    set_target_properties(${target} PROPERTIES SKIP_BUILD_RPATH ON)
+    foreach (lib ${ARGN})
+      # Compute the relative path between the directory of the target and the
+      # library it is linked against.
+      get_target_property(tgt_path ${target} LOCATION)
+      get_target_property(lib_path ${lib} LOCATION)
+      dirname(tgt_path "${tgt_path}")
+      dirname(lib_path "${lib_path}")
+      file(RELATIVE_PATH relpath "${tgt_path}" "${lib_path}")
+
+      # Append the new rpath element if it isn't there already.
+      set(new_lflag "-Wl,-rpath='$$ORIGIN/${relpath}'")
+      get_target_property(lflags ${target} LINK_FLAGS)
+      if (NOT lflags MATCHES new_lflag)
+        append_property_string(TARGET ${target} LINK_FLAGS "${new_lflag}")
+      endif ()
+    endforeach ()
+  endfunction (link_libs_with_rel_rpath)
+
+  # FIXME i#840: Drop the _exe suffix, replace the shell scripts, and combine
+  # with the Windows drdeploy.c targets below.
+  # Add a native version of drconfig.
+  add_executable(drconfig_exe drdeploy.c)
+  link_libs_with_rel_rpath(drconfig_exe drconfiglib)
+  set_target_properties(drconfig_exe PROPERTIES COMPILE_FLAGS "-DDRCONFIG")
+  # Add a native version of drrun.
+  add_executable(drrun_exe drdeploy.c)
+  link_libs_with_rel_rpath(drrun_exe drconfiglib drinjectlib)
+  set_target_properties(drrun_exe PROPERTIES COMPILE_FLAGS "-DDRRUN")
 
   DR_install(TARGETS nudgeunix DESTINATION ${INSTALL_BIN})
 else (UNIX)
@@ -120,6 +173,7 @@ else (UNIX)
     DRload
     balloon 
     dummy 
+    create_process 
     )
   if (NOT X64)
     # FIXME i#118: ldmp not yet 64-bit
@@ -143,7 +197,7 @@ else (UNIX)
     target_link_libraries(${tgt}
       policy_static user32 advapi32 pdh imagehlp shell32 "${extra_lib}")
 
-    string(REGEX MATCH "(closewnd|winstats)" no_unicode "${tgt}")
+    string(REGEX MATCH "(closewnd|winstats|create_process)" no_unicode "${tgt}")
     if (no_unicode)
       set(unicode_cflags "")
     else (no_unicode)

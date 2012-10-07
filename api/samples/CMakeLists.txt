@@ -123,17 +123,18 @@ foreach (src ${srcs})
     set(DynamoRIO_RPATH OFF)
     configure_DynamoRIO_standalone(${tgt})
 
-    get_target_property(tgtnm ${tgt} LOCATION)
-    if (UNIX)
-      set(FIND_MSG "(set LD_LIBRARY_PATH)")
-    else (UNIX)
-      set(FIND_MSG "(set PATH or copy to same directory)")
-    endif (UNIX)
-    add_custom_command(TARGET ${tgt}
-      POST_BUILD
-      COMMAND ${CMAKE_COMMAND}
-      ARGS -E echo "Make sure the loader finds the dynamorio library ${FIND_MSG}"
-      VERBATIM)
+    if (NOT DynamoRIO_INTERNAL OR NOT "${CMAKE_GENERATOR}" MATCHES "Ninja")
+      if (UNIX)
+        set(FIND_MSG "(set LD_LIBRARY_PATH)")
+      else (UNIX)
+        set(FIND_MSG "(set PATH or copy to same directory)")
+      endif (UNIX)
+      add_custom_command(TARGET ${tgt}
+        POST_BUILD
+        COMMAND ${CMAKE_COMMAND}
+        ARGS -E echo "Make sure the loader finds the dynamorio library ${FIND_MSG}"
+        VERBATIM)
+    endif ()
   else ("${tgt}" STREQUAL "tracedump")
     add_library(${tgt} SHARED ${src})
     if (SHOW_SYMBOLS AND "${tgt}" STREQUAL "instrcalls" AND DR_EXT_DRSYMS_STATIC)
@@ -159,12 +160,14 @@ foreach (src ${srcs})
       use_DynamoRIO_extension(${tgt} drutil)
     endif ()
 
-    get_target_property(tgtnm ${tgt} LOCATION${location_suffix})
-    add_custom_command(TARGET ${tgt}
-      POST_BUILD
-      COMMAND ${CMAKE_COMMAND}
-      ARGS -E echo "Usage: pass to drconfig or drrun: -client ${tgtnm} 0 \"\""
-      VERBATIM)
+    if (NOT DynamoRIO_INTERNAL OR NOT "${CMAKE_GENERATOR}" MATCHES "Ninja")
+      get_target_property(tgtnm ${tgt} LOCATION${location_suffix})
+      add_custom_command(TARGET ${tgt}
+        POST_BUILD
+        COMMAND ${CMAKE_COMMAND}
+        ARGS -E echo "Usage: pass to drconfig or drrun: -client ${tgtnm} 0 \"\""
+        VERBATIM)
+    endif ()
   endif ("${tgt}" STREQUAL "tracedump")
 
   set(tgts ${tgts} ${tgt})
@@ -187,6 +190,9 @@ foreach (tgt ${tgts})
     # I believe it's the lack of CMAKE_BUILD_TYPE that's eliminating this?
     # In any case we make sure to add it:
     get_target_property(cur_flags ${tgt} LINK_FLAGS)
+    if (NOT cur_flags)
+      set(cur_flags "") # XXX: if we require cmake 2.8.6 we can simply use APPEND_STRING
+    endif (NOT cur_flags)
     set_target_properties(${tgt} PROPERTIES LINK_FLAGS "${cur_flags} /debug")
   endif (WIN32 AND GENERATE_PDBS)
 endforeach (tgt)

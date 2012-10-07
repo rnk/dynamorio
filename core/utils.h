@@ -124,13 +124,11 @@ void internal_error(char *file, int line, char *expr);
 bool ignore_assert(const char *assert_file_line, const char *expr);
 #endif
 
-/* only support apicheck for exported api's */
-#if defined(CLIENT_INTERFACE) || defined(DR_APP_EXPORTS)
-# define apicheck(x, msg) \
+/* we now use apicheck as a SYSLOG + abort even for non-API builds */
+#define apicheck(x, msg) \
     ((void)((DEBUG_CHECKS(CHKLVL_ASSERTS) && !(x)) ? \
      (external_error(__FILE__, __LINE__, msg), 0) : 0))
 void external_error(char *file, int line, char *msg);
-#endif
 
 #ifdef CLIENT_INTERFACE
 # ifdef DEBUG
@@ -230,6 +228,10 @@ typedef struct _mutex_t {
      */
     uint      rank;             /* sets rank order in which this lock can be set */
     thread_id_t owner;            /* TID of owner (reusable, not available before initialization) */
+    /* Above here is explicitly set w/ INIT_LOCK_NO_TYPE macro so update
+     * it if changing them.  Below here is filled with 0's.
+     */
+
     dcontext_t *owning_dcontext; /* dcontext responsible (reusable, multiple per thread) */
     struct _mutex_t *prev_owned_lock; /* linked list of thread owned locks */
     uint count_times_acquired;  /* count total times this lock was acquired */
@@ -249,6 +251,10 @@ typedef struct _mutex_t {
 #  define MAX_MUTEX_CALLSTACK 4
     byte *callstack[MAX_MUTEX_CALLSTACK];
     /* keep as last item so not initialized in INIT_LOCK_NO_TYPE */
+# ifdef CLIENT_INTERFACE
+    /* i#779: support DR locks used as app locks */
+    bool app_lock;
+# endif
 #else
 #  define MAX_MUTEX_CALLSTACK 0 /* cannot use */
 #endif /* MUTEX_CALLSTACK */
@@ -344,13 +350,15 @@ enum {
                                    * < change_linking_lock for add_to_free_list */
 
     LOCK_RANK(change_linking_lock), /* < shared_vm_areas, < all heap locks */
-    LOCK_RANK(shared_vm_areas), /* > change_linking_lock, < executable_areas  */
-    LOCK_RANK(shared_cache_count_lock),
-    LOCK_RANK(tracedump_mutex),  /* < table_rwlock, > change_linking_lock */
 
 #if defined(CLIENT_SIDELINE) && defined(CLIENT_INTERFACE)
     LOCK_RANK(fragment_delete_mutex),
 #endif
+
+    LOCK_RANK(tracedump_mutex),  /* < fragment_delete_mutex, > shared_vm_areas */
+
+    LOCK_RANK(shared_vm_areas), /* > tracedump_mutex, < executable_areas  */
+    LOCK_RANK(shared_cache_count_lock),
 
     LOCK_RANK(emulate_write_lock), /* in future may be < emulate_write_areas */
 
@@ -474,6 +482,7 @@ enum {
                                      < dynamo_areas, < global_alloc_lock */
     IF_LINUX_(IF_DEBUG(LOCK_RANK(elf_areas))) /* < all_memory_areas */
     IF_LINUX_(LOCK_RANK(all_memory_areas))    /* < dynamo_areas */
+    IF_LINUX_(LOCK_RANK(set_thread_area_lock)) /* no constraints */
     LOCK_RANK(landing_pad_areas_lock),  /* < global_alloc_lock, < dynamo_areas */
     LOCK_RANK(dynamo_areas),    /* < global_alloc_lock */
     LOCK_RANK(map_intercept_pc_lock), /* < global_alloc_lock */
@@ -569,10 +578,7 @@ bool thread_owns_first_or_both_locks_only(dcontext_t *dcontext, mutex_t *lock1, 
 #  define INIT_LOCK_NO_TYPE(name, rank) {LOCK_FREE_STATE,               \
                                          CONTENTION_EVENT_NOT_CREATED,  \
                                          name, rank,                    \
-                                         INVALID_THREAD_ID,             \
-                                         NULL, NULL,                    \
-                                         0, 0, 0, 0, 0,                 \
-                                         NULL, NULL}
+                                         INVALID_THREAD_ID,}
 #else
 /* Ignore the arguments */
 #  define INIT_LOCK_NO_TYPE(name, rank) {LOCK_FREE_STATE, CONTENTION_EVENT_NOT_CREATED}
@@ -663,6 +669,9 @@ bool mutex_trylock(mutex_t *mutex);
 void mutex_unlock(mutex_t *mutex);
 #ifdef LINUX
 void mutex_fork_reset(mutex_t *mutex);
+#endif
+#ifdef CLIENT_INTERFACE
+void mutex_mark_as_app(mutex_t *lock);
 #endif
 
 /* spinmutex synchronization */
@@ -1098,10 +1107,9 @@ char * double_strchr(char *string, char c1, char c2);
 const char * double_strrchr(const char *string, char c1, char c2);
 #else
 /* double_strrchr() defined in win32/inject_shared.h */
-# if !defined(NOT_DYNAMORIO_CORE) && !defined(NOT_DYNAMORIO_CORE_PROPER)
-/* conflicts w/ VC8 string.h in drinjectlib */
-size_t wcsnlen(const wchar_t *str, size_t max);
-# endif
+/* wcsnlen is provided in ntdll only from win7 onward */
+size_t our_wcsnlen(const wchar_t *str, size_t max);
+# define wcsnlen our_wcsnlen
 #endif
 bool str_case_prefix(const char *str, const char *pfx);
 
@@ -2067,12 +2075,12 @@ void profile_callers_exit(void);
 
 /* an ASSERT replacement for use in unit tests */
 #define EXPECT(expr, expected) do {                             \
-    ptr_uint_t value_once = (ptr_uint_t) expr;                  \
+    ptr_uint_t value_once = (ptr_uint_t) (expr);                \
     EXPECT_RELATION_INTERNAL(#expr, value_once, ==, expected);  \
 } while (0)
 
 #define EXPECT_RELATION(expr, REL, expected) do {               \
-    ptr_uint_t value_once = (ptr_uint_t) expr;                  \
+    ptr_uint_t value_once = (ptr_uint_t) (expr);                \
     EXPECT_RELATION_INTERNAL(#expr, value_once, REL, expected); \
 } while (0)
 
@@ -2080,7 +2088,13 @@ void profile_callers_exit(void);
     LOG(GLOBAL, LOG_ALL, 1, "%s = %d [expected "#REL" %d] %s\n",        \
         exprstr, value_once, expected,                                  \
         value_once REL expected ? "good" : "BAD");                      \
-    ASSERT_MESSAGE(CHKLVL_ASSERTS, exprstr, value_once REL expected);\
+    /* Avoid ASSERT to support a release build. */                      \
+    if (!(value REL expected)) {                                        \
+        print_file(STDERR,                                              \
+                   "EXPECT failed at %s:%d in test %s: %s\n",           \
+                   __FILE__, __LINE__, __FUNCTION__, exprstr);          \
+        os_terminate(NULL, TERMINATE_PROCESS);                          \
+    }                                                                   \
 } while (0)
 
 #define TESTRUN(test) do {                              \

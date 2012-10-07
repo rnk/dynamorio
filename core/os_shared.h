@@ -59,8 +59,13 @@ void os_tls_init(void);
 void os_tls_exit(struct _local_state_t *local_state, bool other_thread);
 void os_thread_init(dcontext_t *dcontext);
 void os_thread_exit(dcontext_t *dcontext);
+
+/* must only be called for the executing thread */
 void os_thread_under_dynamo(dcontext_t *dcontext);
+/* must only be called for the executing thread */
 void os_thread_not_under_dynamo(dcontext_t *dcontext);
+
+bool os_take_over_all_unknown_threads(dcontext_t *dcontext);
 
 void os_heap_init(void);
 void os_heap_exit(void);
@@ -168,6 +173,11 @@ bool
 os_tls_cfree(uint offset, uint num_slots);
 #endif
 
+bool
+os_using_app_state(dcontext_t *dcontext);
+void
+os_swap_context(dcontext_t *dcontext, bool to_app);
+
 bool pre_system_call(dcontext_t *dcontext);
 void post_system_call(dcontext_t *dcontext);
 
@@ -197,6 +207,7 @@ typedef enum {
 } terminate_flags_t;
 
 void os_terminate(dcontext_t *dcontext, terminate_flags_t flags);
+void os_terminate_with_code(dcontext_t *dcontext, terminate_flags_t flags, int exit_code);
 
 typedef enum {
     ILLEGAL_INSTRUCTION_EXCEPTION,
@@ -360,6 +371,15 @@ bool query_memory_ex_from_os(const byte *pc, OUT dr_mem_info_t *info);
 #endif
 
 bool get_stack_bounds(dcontext_t *dcontext, byte **base, byte **top);
+
+/* Does a safe_read of *src_ptr into dst_var, returning true for success.  We
+ * assert that the size of dst and src match.  The other advantage over plain
+ * safe_read is that the caller doesn't need to pass sizeof(dst), which is
+ * useful for repeated small memory accesses.
+ */
+#define SAFE_READ_VAL(dst_var, src_ptr) \
+    (ASSERT(sizeof(dst_var) == sizeof(*src_ptr)), \
+     safe_read(src_ptr, sizeof(dst_var), &dst_var))
 
 bool is_readable_without_exception(const byte *pc, size_t size);
 bool is_readable_without_exception_query_os(byte *pc, size_t size);
@@ -760,15 +780,13 @@ void wait_for_event(event_t e);
 timestamp_t
 get_timer_frequency(void);
 
-/* On Linux, returns the number of seconds since the Epoch (Jan 1, 1970).
- * On Windows, returns the number of seconds since Jan 1, 1600 (this is
+/* Returns the number of seconds since Jan 1, 1601 (this is
  * the current UTC time).
  */
 uint
 query_time_seconds(void);
 
-/* On Linux, returns the number of milliseconds since the Epoch (Jan 1, 1970).
- * On Windows, returns the number of milliseconds since Jan 1, 1600 (this is
+/* Returns the number of milliseconds since Jan 1, 1601 (this is
  * the current UTC time).
  */
 uint64
@@ -914,7 +932,7 @@ hook_text(byte *hook_code_buf, const app_pc image_addr,
           intercept_function_t hook_func, const void *callee_arg, 
           const after_intercept_action_t action_after,
           const bool abort_if_hooked, const bool ignore_cti,
-          byte **app_code_copy_p, byte **alt_exit_cti_p);
+          byte **app_code_copy_p, byte **alt_exit_tgt_p);
 void
 unhook_text(byte *hook_code_buf, app_pc image_addr);
 void
@@ -929,14 +947,17 @@ os_check_option_compatibility(void);
 
 /* Introduced as part of PR 250294 - 64-bit hook reachability. */
 #define LANDING_PAD_AREA_SIZE   64*1024
+#define MAX_HOOK_DISPLACED_LENGTH (JMP_LONG_LENGTH + MAX_INSTR_LENGTH)
 #ifdef X64
 /* 8 bytes for the 64-bit abs addr, 6 for abs ind jmp to the trampoline and 5
- * for return jmp back to the instruction after the hook. */
-# define LANDING_PAD_SIZE    19
+ * for return jmp back to the instruction after the hook.  Plus displaced instr(s).
+ */
+# define LANDING_PAD_SIZE    (19 + MAX_HOOK_DISPLACED_LENGTH)
 #else
 /* 5 bytes each for the two relative jumps (one to the trampoline and the 
- * other back to instruction after hook. */
-# define LANDING_PAD_SIZE    10
+ * other back to instruction after hook.  Plus displaced instr(s).
+ */
+# define LANDING_PAD_SIZE    (10 + MAX_HOOK_DISPLACED_LENGTH)
 #endif
 byte *alloc_landing_pad(app_pc addr_to_hook);
 void landing_pads_to_executable_areas(bool add);

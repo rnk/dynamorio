@@ -2446,8 +2446,10 @@ fragment_create(dcontext_t *dcontext, app_pc tag, int body_size,
     IF_X64(ASSERT_TRUNCATE(f->id, int, next_id));
     DOSTATS({ f->id = (int) next_id; });
     DO_GLOBAL_STATS({
-        if (!TEST(FRAG_IS_TRACE, f->flags))
+        if (!TEST(FRAG_IS_TRACE, f->flags)) {
             RSTATS_INC(num_bbs);
+            IF_X64(if (FRAG_IS_32(f->flags)) STATS_INC(num_32bit_bbs);)
+        }
     });
 #if defined(NATIVE_RETURN) && !defined(DEBUG)
     num_fragments++;
@@ -3092,6 +3094,7 @@ fragment_delete(dcontext_t *dcontext, fragment_t *f, uint actions)
 {
 #if defined(CLIENT_INTERFACE) && defined(CLIENT_SIDELINE)
     bool acquired_shared_vm_lock = false;
+    bool acquired_fragdel_lock = false;
 #endif
     LOG(THREAD, LOG_FRAGMENT, 3,
         "fragment_delete: *"PFX" F%d("PFX")."PFX" %s 0x%x\n",
@@ -3122,8 +3125,15 @@ fragment_delete(dcontext_t *dcontext, fragment_t *f, uint actions)
         acquire_recursive_lock(&change_linking_lock);
         acquire_vm_areas_lock(dcontext, FRAG_SHARED);
     }
-    if (!TEST(FRAGDEL_NO_HEAP, actions) || !TEST(FRAGDEL_NO_FCACHE, actions))
+    /* XXX: I added the test for FRAG_WAS_DELETED for i#759: does sideline
+     * look at fragments after that is set?  If so need to resolve rank order
+     * w/ shared_cache_lock.
+     */
+    if (!TEST(FRAG_WAS_DELETED, f->flags) &&
+        (!TEST(FRAGDEL_NO_HEAP, actions) || !TEST(FRAGDEL_NO_FCACHE, actions))) {
+        acquired_fragdel_lock = true;
         fragment_get_fragment_delete_mutex(dcontext);
+    }
 #endif
 
 #if defined(INTERNAL) || defined(CLIENT_INTERFACE)
@@ -3201,7 +3211,7 @@ fragment_delete(dcontext_t *dcontext, fragment_t *f, uint actions)
             fragment_free(dcontext, f);
     }
 #if defined(CLIENT_INTERFACE) && defined(CLIENT_SIDELINE)
-    if (!TEST(FRAGDEL_NO_HEAP, actions) || !TEST(FRAGDEL_NO_FCACHE, actions))
+    if (acquired_fragdel_lock)
         fragment_release_fragment_delete_mutex(dcontext);
     if (acquired_shared_vm_lock) {
         release_vm_areas_lock(dcontext, FRAG_SHARED);
@@ -3868,7 +3878,7 @@ fragment_remove_ibl_entries_in_region(dcontext_t *dcontext, app_pc start, app_pc
         TABLE_RWLOCK(ibtable, write, lock);
         if (ibtable->entries > 0) {
             removed = hashtable_ibl_range_remove(dcontext, ibtable,
-                                                 (ptr_uint_t)start, (ptr_uint_t)end);
+                                                 (ptr_uint_t)start, (ptr_uint_t)end, NULL);
             /* Ensure a full remove gets everything */
             ASSERT(start != UNIVERSAL_REGION_BASE || end != UNIVERSAL_REGION_END ||
                    (ibtable->entries == 0 &&
@@ -4530,6 +4540,17 @@ fragment_delete_future(dcontext_t *dcontext, future_fragment_t *fut)
     fragment_free_future(dcontext, fut);
 }
 
+/* We do not want to remove futures from a flushed region if they have
+ * incoming links (i#609).
+ */
+static bool
+fragment_delete_future_filter(fragment_t *f)
+{
+    future_fragment_t *fut = (future_fragment_t *) f;
+    ASSERT(TEST(FRAG_IS_FUTURE, f->flags));
+    return (fut->incoming_stubs == NULL);
+}
+
 static uint
 fragment_delete_futures_in_region(dcontext_t *dcontext, app_pc start, app_pc end)
 {
@@ -4541,7 +4562,8 @@ fragment_delete_futures_in_region(dcontext_t *dcontext, app_pc start, app_pc end
     ASSERT(!NEED_SHARED_LOCK(flags) || self_owns_recursive_lock(&change_linking_lock));
     TABLE_RWLOCK(futtable, write, lock);
     removed = hashtable_fragment_range_remove(dcontext, futtable,
-                                              (ptr_uint_t)start, (ptr_uint_t)end);
+                                              (ptr_uint_t)start, (ptr_uint_t)end,
+                                              fragment_delete_future_filter);
     TABLE_RWLOCK(futtable, write, unlock);
     return removed;
 }
@@ -4799,13 +4821,14 @@ rct_table_invalidate_range(dcontext_t *dcontext, rct_type_t which,
         TABLE_RWLOCK(permod->live_table, write, lock);
         entries_removed =
             hashtable_app_pc_range_remove(dcontext, permod->live_table, 
-                                          (ptr_uint_t)text_start, (ptr_uint_t)text_end);
+                                          (ptr_uint_t)text_start, (ptr_uint_t)text_end,
+                                          NULL);
 
         DOCHECK(1, {
             uint second_pass =
                 hashtable_app_pc_range_remove(dcontext, permod->live_table, 
                                               (ptr_uint_t)text_start,
-                                              (ptr_uint_t)text_end);
+                                              (ptr_uint_t)text_end, NULL);
             ASSERT(second_pass == 0 && "nothing should be missed");
             /* simplest sanity check that hashtable_app_pc_range_remove() works */
         });
@@ -5004,13 +5027,13 @@ rct_module_table_copy(dcontext_t *dcontext, app_pc modpc, rct_type_t which,
                 DEBUG_DECLARE(removed +=)
                     hashtable_app_pc_range_remove(dcontext, merged,
                                                   (ptr_uint_t)permod->live_min,
-                                                  (ptr_uint_t)limit_start);
+                                                  (ptr_uint_t)limit_start, NULL);
             }
             if (limit_end <= permod->live_max) {
                 DEBUG_DECLARE(removed +=)
                     hashtable_app_pc_range_remove(dcontext, merged,
                                                   (ptr_uint_t)limit_end,
-                                                  (ptr_uint_t)permod->live_max+1);
+                                                  (ptr_uint_t)permod->live_max+1, NULL);
             }
             TABLE_RWLOCK(merged, write, unlock);
             STATS_RCT_ADD(which, module_persist_out_of_range, removed);
@@ -6400,6 +6423,11 @@ flush_fragments_synch_unlink_priv(dcontext_t *dcontext, app_pc base, size_t size
     if (DYNAMO_OPTION(shared_syscalls) && IS_SHARED_SYSCALL_THREAD_SHARED)
         unlink_shared_syscall(GLOBAL_DCONTEXT);
 #endif
+#ifdef CLIENT_INTERFACE
+    /* i#849: unlink while we clear out ibt */
+    if (!client_ibl_xfer_is_thread_private())
+        unlink_client_ibl_xfer(GLOBAL_DCONTEXT);
+#endif
 
     for (i=0; i<flush_num_threads; i++) {
         tgt_dcontext = flush_threads[i]->dcontext;
@@ -6475,6 +6503,11 @@ flush_fragments_synch_unlink_priv(dcontext_t *dcontext, app_pc base, size_t size
         if (DYNAMO_OPTION(shared_syscalls) && !IS_SHARED_SYSCALL_THREAD_SHARED)
             unlink_shared_syscall(tgt_dcontext);
 #endif
+#ifdef CLIENT_INTERFACE
+        /* i#849: unlink while we clear out ibt */
+        if (client_ibl_xfer_is_thread_private())
+            unlink_client_ibl_xfer(tgt_dcontext);
+#endif
 
         /* Optimization for shared deletion strategy: perform flush work
          * for a thread waiting at a system call on behalf of that thread
@@ -6533,6 +6566,16 @@ flush_fragments_synch_unlink_priv(dcontext_t *dcontext, app_pc base, size_t size
                      */
                     link_shared_syscall(tgt_dcontext);
                 }
+            }
+#endif
+#ifdef CLIENT_INTERFACE
+            if (client_ibl_xfer_is_thread_private()) {
+                if (SHARED_FRAGMENTS_ENABLED()) {
+                    /* see shared_syscall relink comment: we have to delay the relink */
+                    tgt_pt->flush_queue_nonempty = true;
+                    STATS_INC(num_flushq_relink_client_ibl);
+                } else
+                    link_client_ibl_xfer(dcontext);
             }
 #endif
             goto next_thread;
@@ -6678,6 +6721,10 @@ flush_fragments_unlink_shared(dcontext_t *dcontext, app_pc base, size_t size,
     /* Re-link thread-shared shared_syscall */
     if (DYNAMO_OPTION(shared_syscalls) && IS_SHARED_SYSCALL_THREAD_SHARED)
         link_shared_syscall(GLOBAL_DCONTEXT);
+#endif
+#ifdef CLIENT_INTERFACE
+    if (!client_ibl_xfer_is_thread_private())
+        link_client_ibl_xfer(GLOBAL_DCONTEXT);
 #endif
 
     STATS_ADD(num_flushed_fragments, num_flushed);
@@ -7161,7 +7208,7 @@ output_trace_binary(dcontext_t *dcontext, per_thread_t *pt, fragment_t *f,
             p += sizeof(linkcount_type_t);
         }
 #endif
-        if (TEST(LINK_SEPARATE_STUB, l->flags)) {
+        if (TEST(LINK_SEPARATE_STUB, l->flags) && stub_pc != NULL) {
             TRACEBUF_MAKE_ROOM(p, buf, DIRECT_EXIT_STUB_SIZE(f->flags));
             ASSERT(stub_pc < f->start_pc || stub_pc >= f->start_pc+f->size);
             memcpy(p, stub_pc, DIRECT_EXIT_STUB_SIZE(f->flags));

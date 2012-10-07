@@ -1284,10 +1284,9 @@ vmm_heap_init()
 #ifdef X64
     /* add reachable regions before we allocate the heap, xref PR 215395 */
 # ifdef WINDOWS
-    request_region_be_heap_reachable(get_ntdll_base(),
-                                     get_allocation_size(get_ntdll_base(), NULL));
     request_region_be_heap_reachable(get_dynamorio_dll_start(),
                                      get_allocation_size(get_dynamorio_dll_start(), NULL));
+    /* i#774, i#901: we do not need to be near ntdll.dll */
 # else /* LINUX */
     /* FIXME - On Linux we compile core with -fpic and samples Makefile uses it as
      * well (comments suggest problems if we don't).  But without our own loader
@@ -3131,6 +3130,10 @@ common_heap_alloc(thread_units_t *tu, size_t size HEAPACCT(which_heap_t which))
 #if defined(DEBUG_MEMORY) && defined(DEBUG)
     size_t check_alloc_size;
     dcontext_t *dcontext = tu->dcontext;
+    /* DrMem i#999: private libs can be heap-intensive and our checks here
+     * can have a prohibitive perf cost!
+     */
+    uint chklvl = CHKLVL_MEMFILL + (IF_HEAPACCT_ELSE(which == ACCT_LIBDUP ? 1 : 0, 0));
     ASSERT_CURIOSITY(which != ACCT_TOMBSTONE && 
                      "Do you really need to use ACCT_TOMBSTONE? (potentially dangerous)");
 #endif
@@ -3235,7 +3238,9 @@ common_heap_alloc(thread_units_t *tu, size_t size HEAPACCT(which_heap_t which))
                     "Variable-size block: allocating "PFX" (%d bytes [%d aligned] in "
                     "%d block)\n", p, size, aligned_size, sz);
                 /* ensure memory we got from the free list is in a heap unit */
-                ASSERT(find_heap_unit(tu, p, sz) != NULL);
+                DOCHECK(CHKLVL_DEFAULT, {  /* expensive check */
+                   ASSERT(find_heap_unit(tu, p, sz) != NULL);
+                });
 #endif
                 ASSERT(ALIGNED(sz, HEAP_ALIGNMENT));
                 alloc_size = sz + HEADER_SIZE;
@@ -3251,7 +3256,9 @@ common_heap_alloc(thread_units_t *tu, size_t size HEAPACCT(which_heap_t which))
             ASSERT(ALIGNED(tu->free_list[bucket], HEAP_ALIGNMENT));
 #ifdef DEBUG_MEMORY
             /* ensure memory we got from the free list is in a heap unit */
-            ASSERT(find_heap_unit(tu, p, alloc_size) != NULL);
+            DOCHECK(CHKLVL_DEFAULT, {  /* expensive check */
+                ASSERT(find_heap_unit(tu, p, alloc_size) != NULL);
+            });
 #endif
             ACCOUNT_FOR_ALLOC(alloc_reuse, tu, which, alloc_size, aligned_size);
         }
@@ -3389,7 +3396,7 @@ common_heap_alloc(thread_units_t *tu, size_t size HEAPACCT(which_heap_t which))
 #ifdef DEBUG_MEMORY
     if (bucket == BLOCK_TYPES-1 && check_alloc_size <= MAXROOM) {
         /* verify is unallocated memory, skip possible free list next pointer */
-        DOCHECK(CHKLVL_MEMFILL, {
+        DOCHECK(chklvl, {
             CLIENT_ASSERT(is_region_memset_to_char
                           (p+sizeof(heap_pc *), (alloc_size-HEADER_SIZE)-sizeof(heap_pc *),
                            HEAP_UNALLOCATED_BYTE), "memory corruption detected");
@@ -3398,11 +3405,10 @@ common_heap_alloc(thread_units_t *tu, size_t size HEAPACCT(which_heap_t which))
             "\nalloc var "PFX"-"PFX" %d bytes, ret "PFX"-"PFX" %d bytes\n",
             p-HEADER_SIZE, p-HEADER_SIZE+alloc_size, alloc_size, p, p+size, size);
         /* there can only be extra padding if we took off of the free list */
-        DOCHECK(CHKLVL_MEMFILL,
-                memset(p+size, HEAP_PAD_BYTE, (alloc_size-HEADER_SIZE)-size););
+        DOCHECK(chklvl, memset(p+size, HEAP_PAD_BYTE, (alloc_size-HEADER_SIZE)-size););
     } else {
         /* verify is unallocated memory, skip possible free list next pointer */
-        DOCHECK(CHKLVL_MEMFILL, {
+        DOCHECK(chklvl, {
             CLIENT_ASSERT(is_region_memset_to_char
                           (p+sizeof(heap_pc *), alloc_size-sizeof(heap_pc *), 
                            HEAP_UNALLOCATED_BYTE), "memory corruption detected");
@@ -3410,9 +3416,9 @@ common_heap_alloc(thread_units_t *tu, size_t size HEAPACCT(which_heap_t which))
         LOG(THREAD, LOG_HEAP, 6,
             "\nalloc fix or oversize "PFX"-"PFX" %d bytes, ret "PFX"-"PFX" %d bytes\n",
             p, p+alloc_size, alloc_size, p, p+size, size);
-        DOCHECK(CHKLVL_MEMFILL, memset(p+size, HEAP_PAD_BYTE, alloc_size-size););
+        DOCHECK(chklvl, memset(p+size, HEAP_PAD_BYTE, alloc_size-size););
     }
-    DOCHECK(CHKLVL_MEMFILL, memset(p, HEAP_ALLOCATED_BYTE, size););
+    DOCHECK(chklvl, memset(p, HEAP_ALLOCATED_BYTE, size););
 # ifdef HEAP_ACCOUNTING
     LOG(THREAD, LOG_HEAP, 6, "\t%s\n", whichheap_name[which]);
 # endif
@@ -3443,8 +3449,16 @@ common_heap_free(thread_units_t *tu, void *p_void, size_t size HEAPACCT(which_he
 {
     int bucket = 0;
     heap_pc p = (heap_pc) p_void;
-#if defined(DEBUG_MEMORY) || defined(HEAP_ACCOUNTING)
-    DEBUG_DECLARE(dcontext_t *dcontext = tu->dcontext;)
+#if defined(DEBUG) && (defined(DEBUG_MEMORY) || defined(HEAP_ACCOUNTING))
+    dcontext_t *dcontext = tu->dcontext;
+    /* DrMem i#999: private libs can be heap-intensive and our checks here
+     * can have a prohibitive perf cost!
+     * XXX: b/c of re-use we have to memset on free.  Perhaps we should
+     * have a separate heap pool for private libs.  But, the overhead
+     * from that final memset is small compared to what we've already
+     * saved, so maybe not worth it.
+     */
+    uint chklvl = CHKLVL_MEMFILL + (IF_HEAPACCT_ELSE(which == ACCT_LIBDUP ? 1 : 0, 0));
 #endif
     size_t alloc_size, aligned_size = ALIGN_FORWARD(size, HEAP_ALIGNMENT);
     ASSERT(size > 0); /* we don't want to pay check cost in release */
@@ -3469,7 +3483,7 @@ common_heap_free(thread_units_t *tu, void *p_void, size_t size HEAPACCT(which_he
      * to perform this check.  We accept objects that start with 0xcdcdcdcd so
      * long as the second four bytes are not also 0xcdcdcdcd.
      */
-    DOCHECK(CHKLVL_MEMFILL, {
+    DOCHECK(chklvl, {
         ASSERT_CURIOSITY(
             (*(uint *)p != HEAP_UNALLOCATED_UINT ||
              (size >= 2*sizeof(uint) && *(((uint *)p)+1) != HEAP_UNALLOCATED_UINT)) &&
@@ -3492,7 +3506,9 @@ common_heap_free(thread_units_t *tu, void *p_void, size_t size HEAPACCT(which_he
 
 #ifdef DEBUG_MEMORY
         /* ensure we are freeing memory in a proper unit */
-        ASSERT(find_heap_unit(tu, p, size) != NULL);
+        DOCHECK(CHKLVL_DEFAULT, {  /* expensive check */
+            ASSERT(find_heap_unit(tu, p, size) != NULL);
+        });
 #endif
 
         if (!safe_to_allocate_or_free_heap_units()) {
@@ -3539,14 +3555,15 @@ common_heap_free(thread_units_t *tu, void *p_void, size_t size HEAPACCT(which_he
         LOG(THREAD, LOG_HEAP, 6,
             "\nfree var "PFX"-"PFX" %d bytes, asked "PFX"-"PFX" %d bytes\n",
             p-HEADER_SIZE, p-HEADER_SIZE+alloc_size, alloc_size, p, p+size, size);
-        ASSERT_MESSAGE(CHKLVL_MEMFILL, "heap overflow",
+        ASSERT_MESSAGE(chklvl, "heap overflow",
                        is_region_memset_to_char(p+size, (alloc_size-HEADER_SIZE)-size,
                                                 HEAP_PAD_BYTE));
         /* ensure we are freeing memory in a proper unit */
-        ASSERT(find_heap_unit(tu, p, alloc_size - HEADER_SIZE) != NULL);
+        DOCHECK(CHKLVL_DEFAULT, {  /* expensive check */
+            ASSERT(find_heap_unit(tu, p, alloc_size - HEADER_SIZE) != NULL);
+        });
         /* set used and padding memory back to unallocated */
-        DOCHECK(CHKLVL_MEMFILL,
-                memset(p, HEAP_UNALLOCATED_BYTE, alloc_size-HEADER_SIZE););
+        DOCHECK(CHKLVL_MEMFILL, memset(p, HEAP_UNALLOCATED_BYTE, alloc_size-HEADER_SIZE););
 # endif
         STATS_SUB(heap_headers, HEADER_SIZE);
     } else {
@@ -3554,10 +3571,12 @@ common_heap_free(thread_units_t *tu, void *p_void, size_t size HEAPACCT(which_he
         LOG(THREAD, LOG_HEAP, 6,
             "\nfree fix "PFX"-"PFX" %d bytes, asked "PFX"-"PFX" %d bytes\n",
             p, p+alloc_size, alloc_size, p, p+size, size);
-        ASSERT_MESSAGE(CHKLVL_MEMFILL, "heap overflow",
+        ASSERT_MESSAGE(chklvl, "heap overflow",
                        is_region_memset_to_char(p+size, alloc_size-size, HEAP_PAD_BYTE));
         /* ensure we are freeing memory in a proper unit */
-        ASSERT(find_heap_unit(tu, p, alloc_size) != NULL);
+        DOCHECK(CHKLVL_DEFAULT, {  /* expensive check */
+            ASSERT(find_heap_unit(tu, p, alloc_size) != NULL);
+        });
         /* set used and padding memory back to unallocated */
         DOCHECK(CHKLVL_MEMFILL, memset(p, HEAP_UNALLOCATED_BYTE, alloc_size););
 # endif
@@ -4460,7 +4479,7 @@ special_heap_delete_lock(void *special)
  *
  * A landing pad will have nothing more than a jump (5-byte rel for 32-bit DR
  * and 64-bit abs ind jmp for 64-bit DR) to the trampoline and a 5-byte rel jmp
- * back to the next instruction after the hook.
+ * back to the next instruction after the hook, plus the displaced app instrs.
  *
  * To handle hook chaining landing pads won't be released till process exit
  * (not on a detach), their first jump will just be nop'ed.  As landing pads
