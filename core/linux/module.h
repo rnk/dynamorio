@@ -299,4 +299,56 @@ extern struct _IO_FILE  **privmod_stdin;
 /* loader.c */
 bool  privload_redirect_sym(ELF_ADDR *r_addr, const char *name);
 
+/* Data structure for loading an ELF.
+ */
+typedef struct elf_loader_t {
+    const char *filename;
+    file_t fd;
+    ELF_HEADER_TYPE *ehdr;              /* Points into buf. */
+    ELF_PROGRAM_HEADER_TYPE *phdrs;     /* Points into buf or file_map. */
+    app_pc load_base;                   /* Load base. */
+    ptr_int_t load_delta;               /* Delta from preferred base. */
+    size_t image_size;                  /* Size of the mapped image. */
+    void *file_map;                     /* Whole file map, if needed. */
+    size_t file_size;                   /* Size of the file map. */
+
+    /* Static buffer sized to hold most headers in a single read. */
+    byte buf[sizeof(ELF_HEADER_TYPE) + sizeof(ELF_PROGRAM_HEADER_TYPE) * 12];
+} elf_loader_t;
+
+typedef byte *(*map_fn_t)(file_t f, size_t *size INOUT, uint64 offs,
+                          app_pc addr, uint prot/*MEMPROT_*/, bool cow,
+                          bool image, bool fixed);
+typedef bool (*unmap_fn_t)(byte *map, size_t size);
+typedef bool (*prot_fn_t)(byte *map, size_t size, uint prot/*MEMPROT_*/);
+
+/* Initialized an ELF loader for use with the given file.
+ */
+bool
+elf_loader_init(elf_loader_t *elf, const char *filename);
+
+/* Frees resources needed to load the ELF, not the mapped image itself.
+ */
+void
+elf_loader_destroy(elf_loader_t *elf);
+
+/* Reads ELF headers and program headers, either via a read or mmap syscall.
+ */
+bool
+elf_loader_read_headers(elf_loader_t *elf, const char *filename);
+
+/* Maps in the entire ELF file, including unmapped portions such as section
+ * headers and debug info.  Does not re-map the same file if called twice.
+ */
+app_pc
+elf_loader_map_file(elf_loader_t *elf);
+
+/* Maps in the PT_LOAD segments of an ELF file, returning the base.  Must be
+ * called after reading program headers.  All image mappings are done via the
+ * provided function pointers.
+ */
+app_pc
+elf_loader_map_phdrs(elf_loader_t *elf, bool fixed, map_fn_t map_func,
+                     unmap_fn_t unmap_func, prot_fn_t prot_func);
+
 #endif /* MODULE_H */
