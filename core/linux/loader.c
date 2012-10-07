@@ -530,6 +530,8 @@ elf_loader_find_pt_interp(elf_loader_t *elf)
     ELF_PROGRAM_HEADER_TYPE *phdrs = elf->phdrs;
 
     ASSERT(elf->load_base != NULL && "call elf_loader_map_phdrs() first");
+    if (ehdr == NULL || phdrs == NULL || elf->load_base == NULL)
+        return NULL;
     for (i = 0; i < ehdr->e_phnum; i++) {
         if (phdrs[i].p_type == PT_INTERP) {
             return (const char *) (phdrs[i].p_vaddr + elf->load_delta);

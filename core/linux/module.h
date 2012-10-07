@@ -356,4 +356,12 @@ app_pc
 elf_loader_map_phdrs(elf_loader_t *elf, bool fixed, map_fn_t map_func,
                      unmap_fn_t unmap_func, prot_fn_t prot_func);
 
+/* Iterate program headers of a mapped ELF image and find the string that
+ * PT_INTERP points to.  Typically this comes early in the file and is always
+ * included in PT_LOAD segments, so we safely do this after the initial
+ * mapping.
+ */
+const char *
+elf_loader_find_pt_interp(elf_loader_t *elf);
+
 #endif /* MODULE_H */
