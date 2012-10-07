@@ -216,6 +216,9 @@ const char *usage_str =
     "       -mem               Print memory usage statistics.\n"
     "       -pidfile <file>    Print the pid of the child process to the given file.\n"
     "       -no_inject         Run the application natively.\n"
+# ifdef LINUX  /* XXX: Ugh ifdefs. */
+    "       -use_ptrace        Whether to use ptrace to inject.\n"
+# endif
     "       -use_dll <dll>     Inject given dll instead of configured DR dll.\n"
     "       -force             Inject regardless of configuration.\n"
     "       -exit0             Return a 0 exit code instead of the app's exit code.\n"
@@ -651,9 +654,10 @@ int main(int argc, char *argv[])
     char *drlib_path = NULL;
     int exitcode;
 # ifdef WINDOWS
-    bool debugger_key_injection = false;
     time_t start_time, end_time;
-# endif /* WINDOWS */
+# else
+    bool use_ptrace = false;  /* no ptrace by default on Linux */
+# endif
     char *app_name;
     char full_app_name[MAXIMUM_PATH];
     const char **app_argv;
@@ -769,6 +773,10 @@ int main(int argc, char *argv[])
         }
         else if (strcmp(argv[i], "-no_wait") == 0) {
             limit = -1;
+            continue;
+        }
+        else if (strcmp(argv[i], "-use_ptrace") == 0) {
+            use_ptrace = true;
             continue;
         }
         else if (strcmp(argv[i], "-exit0") == 0) {

@@ -138,6 +138,17 @@ dr_inject_process_run(void *data);
  */
 int
 dr_inject_process_wait(void *data);
+
+/**
+ * Use the ptrace system call to inject into the child.  Does not work with
+ * dr_inject_prepare_to_exec().
+ *
+ * \note Unix only.
+ *
+ * \return  Whether successful.
+ */
+bool
+dr_inject_use_ptrace(void *data);
 #endif
 
 /**

@@ -430,16 +430,6 @@ privload_load(const char *filename, privmod_t *dependent)
     privmod = privload_insert(dependent, map, size, get_shared_lib_name(map),
                               filename);
 
-    /* NOCHECKIN */
-    extern bool loading_dr_deps;
-    if (loading_dr_deps) {
-        void dr_printf(const char *fmt, ...);
-        dr_printf("finalizing DR's dep\n");
-        /* We're processing DynamoRIO imports before heap init. */
-        if (!privload_load_finalize(privmod))
-            return NULL;
-    }
-
     /* If no heap yet, we'll call finalize later in loader_init() */
     if (privmod != NULL && privload_modlist_initialized()) {
         if (!privload_load_finalize(privmod))

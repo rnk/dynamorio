@@ -335,7 +335,7 @@ dr_gdb_add_symbol_file(const char *filename, app_pc textaddr)
  * should use os_read to read the ELF header and program headers.  We can't do
  * this currently because we need to compute text_addr for gdb.
  */
-static app_pc
+app_pc
 map_elf_phdrs(const char *filename, bool fixed, size_t *size OUT,
               ptr_int_t *load_delta OUT, app_pc *text_addr_p OUT,
               map_fn_t map_func, unmap_fn_t unmap_func, prot_fn_t prot_func)
@@ -1322,6 +1322,8 @@ privload_early_inject(void **sp)
     ELF_HEADER_TYPE *exe_ehdr;
     const char *interp;
     priv_mcontext_t mc;
+
+    print_file(2, "in privload_early_inject\n");
 
     dynamorio_set_envp(envp);
 

@@ -216,6 +216,7 @@ if (UNIX)
     linux/injector.c
     config.c    # to read config
     linux/os.c  # for file_t interface
+    #linux/loader.c  # for map_elf_phdrs
     ${x86_noncore_asm_src}  # for dynamorio_syscall
     )
 else (UNIX)
@@ -378,6 +379,9 @@ add_library(drdecode
   )
 set_target_properties(drdecode PROPERTIES
   COMPILE_FLAGS "-DNOT_DYNAMORIO_CORE_PROPER -DSTANDALONE_DECODER")
+if (UNIX)
+  append_property_string(TARGET drdecode COMPILE_FLAGS "-fPIC")
+endif (UNIX)
 add_gen_events_deps(drdecode)
 
 ###########################################################################
