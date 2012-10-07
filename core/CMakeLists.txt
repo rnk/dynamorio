@@ -216,7 +216,8 @@ if (UNIX)
     linux/injector.c
     config.c    # to read config
     linux/os.c  # for file_t interface
-    #linux/loader.c  # for map_elf_phdrs
+    linux/loader.c
+    linux/module.c
     ${x86_noncore_asm_src}  # for dynamorio_syscall
     )
 else (UNIX)

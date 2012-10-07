@@ -353,7 +353,7 @@ typedef struct _inject_cxt_t {
     char dynamorio_library_path[MAXIMUM_PATH];
 } inject_cxt_t;
 
-//static bool op_exec_gdb = false;
+static bool op_exec_gdb = false;
 static bool verbose = false;
 
 typedef struct _enum_name_pair_t {
@@ -672,7 +672,7 @@ injectee_map_file(file_t f, size_t *size INOUT, uint64 offs, app_pc addr,
     /* image is a nop on Linux. */
     r = (ptr_int_t)injectee_mmap(injected_info, addr, *size,
                                  memprot_to_osprot(prot), flags, fd, offs);
-    if (r < 0) {
+    if (r < 0 && r >= -4096) {
         dr_printf("injectee_mmap(%p, %p) -> %p\n", addr, *size, r);
         return NULL;
     }
@@ -949,13 +949,24 @@ inject_ptrace(dr_inject_info_t *info, const char *library_path)
     size_t loaded_size;
     app_pc injected_base;
     ptr_int_t load_delta;
+    elf_loader_t loader;
     /* XXX: Have to use globals to communicate to injectee_map_file. =/ */
     injected_dr_fd = dr_fd;
     injected_info = info;
-    injected_base = map_elf_phdrs(library_path, true/*fixed*/, &loaded_size,
-                                  &load_delta, NULL/*text addr*/,
-                                  injectee_map_file, injectee_unmap,
-                                  injectee_prot);
+    if (!elf_loader_read_headers(&loader, library_path)) {
+        return false;
+    }
+    injected_base = elf_loader_map_phdrs(&loader, true/*fixed*/,
+                                         injectee_map_file, injectee_unmap,
+                                         injectee_prot);
+    if (injected_base == NULL) {
+        return false;
+    }
+    /* Looking up exports through ptrace is hard, so we use the same entry
+     * point as early injection with different arguments.
+     */
+    void *injected_dr_start = loader.ehdr->e_entry + loader.load_delta;
+    elf_loader_destroy(&loader);
 
     struct user_regs_struct regs;
     os_ptrace(PTRACE_GETREGS, info->pid, NULL, &regs);
@@ -993,11 +1004,10 @@ inject_ptrace(dr_inject_info_t *info, const char *library_path)
     regs.rsp = ALIGN_BACKWARD(regs.rsp, 16);  /* Align stack. */
     regs.rdi = regs.rsp;  /* Pass the address of cxt as parameter 1. */
     ptrace_write_memory(info->pid, (void*)regs.rsp, &cxt, sizeof(cxt));
-    void *injected_dr_start = translate_dr_dll(injected_base, &_dr_start);
     regs.rip = (reg_t)injected_dr_start;
     os_ptrace(PTRACE_SETREGS, info->pid, NULL, &regs);
 
-    op_exec_gdb = true;
+    //op_exec_gdb = true;
     if (op_exec_gdb) {
         /* Initializing in the child will be tough, and we can't attach gdb to a
          * process under ptrace, so for now we re-exec ourselves as gdb and the
