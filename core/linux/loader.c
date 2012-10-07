@@ -1401,12 +1401,13 @@ privload_early_inject(void **sp)
     if (interp != NULL) {
         /* Load the ELF pointed at by PT_INTERP, usually ld.so. */
         elf_loader_t interp_ld;
-        app_pc ld_map;
+        app_pc interp_map;
         success = elf_loader_read_headers(&interp_ld, interp);
         apicheck(success, "Failed to read ELF interpreter headers.");
-        ld_map = elf_loader_map_phdrs(&interp_ld, false /* fixed */,
-                                      os_map_file, os_unmap_file, os_set_protection);
-        apicheck(ld_map != NULL && is_elf_so_header(ld_map, 0),
+        interp_map = elf_loader_map_phdrs(&interp_ld, false /* fixed */,
+                                          os_map_file, os_unmap_file,
+                                          os_set_protection);
+        apicheck(interp_map != NULL && is_elf_so_header(interp_map, 0),
                  "Failed to map ELF interpreter.");
         ASSERT_MESSAGE(CHKLVL_ASSERTS, "The interpreter shouldn't have an "
                        "interpreter.",
