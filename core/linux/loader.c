@@ -134,6 +134,23 @@ privload_delete_os_privmod_data(privmod_t *privmod);
 static void
 privload_mod_tls_init(privmod_t *mod);
 
+/* Data structure for loading an ELF.
+ */
+typedef struct elf_loader_t {
+    const char *filename;
+    file_t fd;
+    ELF_HEADER_TYPE *ehdr;              /* Points into buf. */
+    ELF_PROGRAM_HEADER_TYPE *phdrs;     /* Points into buf or file_map. */
+    app_pc load_base;                   /* Load base. */
+    ptr_int_t load_delta;               /* Delta from preferred base. */
+    size_t image_size;                  /* Size of the mapped image. */
+    void *file_map;                     /* Whole file map, if needed. */
+    size_t file_size;                   /* Size of the file map. */
+
+    /* Static buffer sized to hold most headers in a single read. */
+    byte buf[sizeof(ELF_HEADER_TYPE) + sizeof(ELF_PROGRAM_HEADER_TYPE) * 12];
+} elf_loader_t;
+
 typedef byte *(*map_fn_t)(file_t f, size_t *size INOUT, uint64 offs,
                           app_pc addr, uint prot/*MEMPROT_*/, bool cow,
                           bool image, bool fixed);
@@ -329,109 +346,144 @@ dr_gdb_add_symbol_file(const char *filename, app_pc textaddr)
      */
 }
 
-/* Map in the PT_LOAD segments in an ELF's program headers.
- *
- * XXX: Instead of mapping the file twice and disturbing the address space, we
- * should use os_read to read the ELF header and program headers.  We can't do
- * this currently because we need to compute text_addr for gdb.
- */
-app_pc
-map_elf_phdrs(const char *filename, bool fixed, size_t *size OUT,
-              ptr_int_t *load_delta OUT, app_pc *text_addr_p OUT,
-              map_fn_t map_func, unmap_fn_t unmap_func, prot_fn_t prot_func)
+static bool
+os_read_until(file_t fd, void *buf, size_t toread)
 {
-    file_t fd;
-    app_pc file_map, lib_base, lib_end, last_end;
-    ELF_HEADER_TYPE *elf_hdr;
+    ssize_t nread;
+    do {
+        nread = os_read(fd, buf, toread);
+        toread -= nread;
+    } while (nread > 0 && toread > 0);
+    return (nread >= 0);
+}
+
+static bool
+elf_loader_init(elf_loader_t *elf, const char *filename)
+{
+    memset(elf, 0, sizeof(*elf));
+    elf->filename = filename;
+    elf->fd = os_open(filename, OS_OPEN_READ);
+    return elf->fd != INVALID_FILE;
+}
+
+/* Frees resources needed to load the ELF, not the mapped image itself.
+ */
+static void
+elf_loader_destroy(elf_loader_t *elf)
+{
+    os_close(elf->fd);
+    if (elf->file_map != NULL) {
+        os_unmap_file(elf->file_map, elf->file_size);
+    }
+}
+
+static ELF_HEADER_TYPE *
+elf_loader_read_ehdr(elf_loader_t *elf)
+{
+    /* The initial read is sized to read both ehdr and all phdrs. */
+    if (elf->fd == INVALID_FILE)
+        return NULL;
+    if (!os_read_until(elf->fd, elf->buf, sizeof(elf->buf)))
+        return NULL;
+    if (!is_elf_so_header(elf->buf, sizeof(elf->buf)))
+        return NULL;
+    elf->ehdr = (ELF_HEADER_TYPE *) elf->buf;
+    return elf->ehdr;
+}
+
+/* Maps in the entire ELF file, including unmapped portions such as section
+ * headers and debug info.  Does not re-map the same file if called twice.
+ */
+static app_pc
+elf_loader_map_file(elf_loader_t *elf)
+{
+    uint64 size64;
+    if (elf->file_map != NULL)
+        return elf->file_map;
+    if (elf->fd == INVALID_FILE)
+        return NULL;
+    if (!os_get_file_size_by_handle(elf->fd, &size64))
+        return NULL;
+    elf->file_size = (size_t)size64;  /* truncate */
+    elf->file_map = os_map_file(elf->fd, &elf->file_size, 0, NULL, MEMPROT_READ,
+                                true/*cow*/, false/*image*/, false/*fixed*/);
+    return elf->file_map;
+}
+
+static ELF_PROGRAM_HEADER_TYPE *
+elf_loader_read_phdrs(elf_loader_t *elf)
+{
+    size_t ph_off;
+    size_t ph_size;
+    if (elf->ehdr == NULL)
+        return NULL;
+    ph_off = elf->ehdr->e_phoff;
+    ph_size = elf->ehdr->e_phnum * elf->ehdr->e_phentsize;
+    if (ph_off + ph_size < sizeof(elf->buf)) {
+        /* We already read phdrs, and they are in buf. */
+        elf->phdrs = (ELF_PROGRAM_HEADER_TYPE *) (elf->buf + elf->ehdr->e_phoff);
+    } else {
+        /* We have large or distant phdrs, so map the whole file.  We could
+         * seek and read just the phdrs to avoid disturbing the address space,
+         * but that would introduce a dependency on DR's heap.
+         */
+        if (elf_loader_map_file(elf) == NULL)
+            return NULL;
+        elf->phdrs = (ELF_PROGRAM_HEADER_TYPE *) (elf->file_map +
+                                                  elf->ehdr->e_phoff);
+    }
+    return elf->phdrs;
+}
+
+/* Typically we just want to do all of the above and check for any errors.
+ */
+static bool
+elf_loader_read_headers(elf_loader_t *elf, const char *filename)
+{
+    if (!elf_loader_init(elf, filename))
+        return false;
+    if (elf_loader_read_ehdr(elf) == NULL)
+        return false;
+    if (elf_loader_read_phdrs(elf) == NULL)
+        return false;
+    return true;
+}
+
+static app_pc
+elf_loader_map_phdrs(elf_loader_t *elf, bool fixed, map_fn_t map_func,
+                     unmap_fn_t unmap_func, prot_fn_t prot_func)
+{
+    app_pc lib_base, lib_end, last_end;
+    ELF_HEADER_TYPE *elf_hdr = elf->ehdr;
     app_pc  map_base, map_end;
     reg_t   pg_offs;
-    size_t map_size;
-    uint64 file_size_64;
-    size_t file_size;
     uint   seg_prot, i;
     ptr_int_t delta;
-    app_pc text_addr;
 
-    /* Zero optional out args. */
-    if (size != NULL)
-        *size = 0;
-    if (load_delta != NULL)
-        *load_delta = 0;
-    if (text_addr_p != NULL)
-        *text_addr_p = 0;
-
-    /* open file for mmap later */
-    fd = os_open(filename, OS_OPEN_READ);
-    if (fd == INVALID_FILE) {
-        LOG(GLOBAL, LOG_LOADER, 1, "%s: failed to open %s\n", __FUNCTION__, filename);
-        return NULL;
-    }
-
-    /* get file size */
-    if (!os_get_file_size_by_handle(fd, &file_size_64)) {
-        os_close(fd);
-        LOG(GLOBAL, LOG_LOADER, 1, "%s: failed to get library %s file size\n",
-            __FUNCTION__, filename);
-        return NULL;
-    }
-    file_size = file_size_64;  /* Truncate, we have to pass it as size_t *. */
-
-    /* map the library file into memory for parsing */
-    file_map = (*map_func)(fd, &file_size, 0/*offs*/, NULL/*base*/,
-                           MEMPROT_READ /* for parsing only */,
-                           true  /*writes should not change file*/,
-                           false /*image*/,
-                           false /*!fixed*/);
-    if (file_map == NULL) {
-        os_close(fd);
-        LOG(GLOBAL, LOG_LOADER, 1, "%s: failed to map %s\n", __FUNCTION__, filename);
-        return NULL;
-    }
-
-    /* verify if it is elf so header */
-    if (!is_elf_so_header(file_map, file_size)) {
-        (*unmap_func)(file_map, file_size);
-        os_close(fd);
-        LOG(GLOBAL, LOG_LOADER, 1, "%s: %s is not a elf so header\n", 
-            __FUNCTION__, filename);
-        return NULL;
-    }
-
-    /* more sanity check */
-    elf_hdr = (ELF_HEADER_TYPE *) file_map;
-    ASSERT_CURIOSITY(elf_hdr->e_phoff != 0);
-    ASSERT_CURIOSITY(elf_hdr->e_phentsize == 
-                     sizeof(ELF_PROGRAM_HEADER_TYPE));
-
-    /* get the library size and preferred base */
-    map_base = 
-        module_vaddr_from_prog_header(file_map + elf_hdr->e_phoff,
-                                      elf_hdr->e_phnum,
-                                      &map_end);
-    map_size = map_end - map_base;
-    if (size != NULL)
-        *size = map_size;
+    map_base = module_vaddr_from_prog_header((app_pc)elf->phdrs,
+                                             elf->ehdr->e_phnum, &map_end);
+    elf->image_size = map_end - map_base;
 
     /* reserve the memory from os for library */
-    lib_base = (*map_func)(-1, &map_size, 0, map_base,
+    lib_base = (*map_func)(-1, &elf->image_size, 0, map_base,
                            MEMPROT_WRITE | MEMPROT_READ /* prot */,
                            true  /* copy-on-write */,
                            true  /* image, make it reachable */,
                            fixed);
     ASSERT(lib_base != NULL);
-    lib_end = lib_base + map_size;
+    lib_end = lib_base + elf->image_size;
+    elf->load_base = lib_base;
 
     if (map_base != NULL && map_base != lib_base) {
-        /* the mapped memory is not at preferred address, 
+        /* the mapped memory is not at preferred address,
          * should be ok if it is still reachable for X64,
-         * which will be checked later. 
+         * which will be checked later.
          */
         LOG(GLOBAL, LOG_LOADER, 1, "%s: module not loaded at preferred address\n",
             __FUNCTION__);
     }
     delta = lib_base - map_base;
-    if (load_delta != NULL)
-        *load_delta = delta;
+    elf->load_delta = delta;
 
     /* walk over the program header to load the individual segments */
     last_end = lib_base;
@@ -439,13 +491,13 @@ map_elf_phdrs(const char *filename, bool fixed, size_t *size OUT,
         app_pc seg_base, seg_end, map, file_end;
         size_t seg_size;
         ELF_PROGRAM_HEADER_TYPE *prog_hdr = (ELF_PROGRAM_HEADER_TYPE *)
-            (file_map + elf_hdr->e_phoff + i * elf_hdr->e_phentsize);
+            ((byte *)elf->phdrs + i * elf_hdr->e_phentsize);
         if (prog_hdr->p_type == PT_LOAD) {
             seg_base = (app_pc)ALIGN_BACKWARD(prog_hdr->p_vaddr, PAGE_SIZE)
                        + delta;
             seg_end  = (app_pc)ALIGN_FORWARD(prog_hdr->p_vaddr +
                                              prog_hdr->p_filesz,
-                                             PAGE_SIZE) 
+                                             PAGE_SIZE)
                        + delta;
             seg_size = seg_end - seg_base;
             if (seg_base != last_end) {
@@ -455,18 +507,18 @@ map_elf_phdrs(const char *filename, bool fixed, size_t *size OUT,
             }
             seg_prot = module_segment_prot_to_osprot(prog_hdr);
             pg_offs  = ALIGN_BACKWARD(prog_hdr->p_offset, PAGE_SIZE);
-            /* FIXME: 
+            /* FIXME:
              * This function can be called after dynamorio_heap_initialized,
              * and we will use map_file instead of os_map_file.
-             * However, map_file does not allow mmap with overlapped memory, 
+             * However, map_file does not allow mmap with overlapped memory,
              * so we have to unmap the old memory first.
-             * This might be a problem, e.g. 
+             * This might be a problem, e.g.
              * one thread unmaps the memory and before mapping the actual file,
              * another thread requests memory via mmap takes the memory here,
              * a racy condition.
              */
             (*unmap_func)(seg_base, seg_size);
-            map = (*map_func)(fd, &seg_size, pg_offs,
+            map = (*map_func)(elf->fd, &seg_size, pg_offs,
                               seg_base /* base */,
                               seg_prot | MEMPROT_WRITE /* prot */,
                               true /* writes should not change file */,
@@ -477,43 +529,40 @@ map_elf_phdrs(const char *filename, bool fixed, size_t *size OUT,
             file_end = (app_pc)prog_hdr->p_vaddr + prog_hdr->p_filesz;
             if (seg_end > file_end + delta)
                 memset(file_end + delta, 0, seg_end - (file_end + delta));
-            seg_end  = (app_pc)ALIGN_FORWARD(prog_hdr->p_vaddr + 
+            seg_end  = (app_pc)ALIGN_FORWARD(prog_hdr->p_vaddr +
                                              prog_hdr->p_memsz,
                                              PAGE_SIZE) + delta;
             seg_size = seg_end - seg_base;
             (*prot_func)(seg_base, seg_size, seg_prot);
             last_end = seg_end;
-        } 
+        }
     }
     ASSERT(last_end == lib_end);
-
-    text_addr = (app_pc)module_get_text_section(file_map, file_size) + delta;
-    if (text_addr_p != NULL)
-        *text_addr_p = text_addr;
-    /* Add debugging comment about how to get symbol information in gdb. */
-#ifdef INTERNAL
-    if (printed_gdb_commands) {
-        /* This is a dynamically loaded auxlib, so we print here.  The client
-         * and its direct dependencies are batched up and printed in
-         * os_loader_init_epilogue.
-         */
-        SYSLOG_INTERNAL_INFO("Paste into GDB to debug DynamoRIO clients:\n"
-                             "add-symbol-file '%s' %p\n", filename, text_addr);
-    }
-#endif /* INTERNAL */
-
-    LOG(GLOBAL, LOG_LOADER, 1,
-        "for debugger: add-symbol-file %s %p\n",
-        filename, text_addr);
-    if (IF_CLIENT_INTERFACE_ELSE(INTERNAL_OPTION(privload_register_gdb), false)) {
-        dr_gdb_add_symbol_file(filename, text_addr);
-    }
-
-    /* unmap the file_map */
-    (*unmap_func)(file_map, file_size);
-    os_close(fd); /* no longer needed */
+    /* FIXME: Check for failure above rather than always succeeding. */
 
     return lib_base;
+}
+
+/* Iterate program headers of a mapped ELF image and find the string that
+ * PT_INTERP points to.  Typically this comes early in the file and is always
+ * included in PT_LOAD segments, so we safely do this after the initial
+ * mapping.
+ */
+static const char *
+elf_loader_find_pt_interp(elf_loader_t *elf)
+{
+    int i;
+    ELF_HEADER_TYPE *ehdr = elf->ehdr;
+    ELF_PROGRAM_HEADER_TYPE *phdrs = elf->phdrs;
+
+    ASSERT(elf->load_base != NULL && "call elf_loader_map_phdrs() first");
+    for (i = 0; i < ehdr->e_phnum; i++) {
+        if (phdrs[i].p_type == PT_INTERP) {
+            return (const char *) (phdrs[i].p_vaddr + elf->load_delta);
+        }
+    }
+
+    return NULL;
 }
 
 app_pc
@@ -523,8 +572,7 @@ privload_map_and_relocate(const char *filename, size_t *size OUT)
     unmap_fn_t unmap_func;
     prot_fn_t prot_func;
     app_pc base = NULL;
-    ptr_int_t delta;
-    app_pc text_addr;
+    elf_loader_t loader;
 
     ASSERT_OWN_RECURSIVE_LOCK(true, &privload_lock);
     /* get appropriate function */
@@ -541,16 +589,29 @@ privload_map_and_relocate(const char *filename, size_t *size OUT)
         prot_func  = os_set_protection;
     }
 
-    base = map_elf_phdrs(filename, false /* not fixed */, size, &delta,
-                         &text_addr, map_func, unmap_func, prot_func);
-
+    if (elf_loader_read_headers(&loader, filename)) {
+        base = elf_loader_map_phdrs(&loader, false /* fixed */, map_func,
+                                    unmap_func, prot_func);
+        if (base != NULL) {
+            if (size != NULL)
+                *size = loader.image_size;
 #if defined(INTERNAL) || defined(CLIENT_INTERFACE)
-    /* We record the gdb command now.  We can't recompute it later
-     * (see module_get_text_section comments), and we can't allocate a proper
-     * os_privmod_data_t yet.
-     */
-    privload_add_gdb_cmd(filename, text_addr);
+            /* XXX: This requires an extra mmap now. */
+            if (elf_loader_map_file(&loader) != NULL) {
+                app_pc text_addr;
+                text_addr = (app_pc)module_get_text_section(loader.file_map,
+                                                            loader.file_size);
+                text_addr += loader.load_delta;
+                /* We record the gdb command now.  We can't recompute it later
+                 * (see module_get_text_section comments), and we can't allocate a proper
+                 * os_privmod_data_t yet.
+                 */
+                privload_add_gdb_cmd(filename, text_addr);
+            }
 #endif
+        }
+    }
+    elf_loader_destroy(&loader);
 
     return base;
 }
@@ -1279,30 +1340,6 @@ privload_setup_auxv(char **envp, app_pc map, ptr_int_t delta)
     }
 }
 
-/* Iterate program headers of a mapped ELF image and find the string that
- * PT_INTERP points to.  Typically this comes early in the file and is always
- * included in PT_LOAD segments, so we safely do this after the initial
- * mapping.
- */
-static const char *
-find_pt_interp(app_pc map, ptr_int_t delta)
-{
-    int i;
-    ELF_HEADER_TYPE *ehdr = (ELF_HEADER_TYPE *) map;
-    ELF_PROGRAM_HEADER_TYPE *phdrs;
-
-    ASSERT(is_elf_so_header(map, 0));
-    ASSERT(sizeof(*phdrs) == ehdr->e_phentsize);
-    phdrs = (ELF_PROGRAM_HEADER_TYPE *) (map + ehdr->e_phoff);
-    for (i = 0; i < ehdr->e_phnum; i++) {
-        if (phdrs[i].p_type == PT_INTERP) {
-            return (const char *) (phdrs[i].p_vaddr + delta);
-        }
-    }
-
-    return NULL;
-}
-
 /* Called from _start in x86.asm.  sp is the initial app stack pointer that the
  * kernel set up for us, and it points to the usual argc, argv, envp, and auxv
  * that the kernel puts on the stack.
@@ -1317,11 +1354,10 @@ privload_early_inject(void **sp)
     char *exe_path;
     char *exe_basename;
     app_pc exe_map;
-    size_t exe_map_size;
-    ptr_int_t exe_map_delta;
-    ELF_HEADER_TYPE *exe_ehdr;
+    elf_loader_t exe_ld;
     const char *interp;
     priv_mcontext_t mc;
+    bool success;
 
     print_file(2, "in privload_early_inject\n");
 
@@ -1338,17 +1374,18 @@ privload_early_inject(void **sp)
      */
     set_executable_path(exe_path);
 
+    success = elf_loader_read_headers(&exe_ld, exe_path);
+    apicheck(success, "Failed to read app ELF headers.  Check path and "
+             "architecture.");
     /* FIXME: PIEs with a base of 0 should not use MAP_FIXED. */
-    exe_map = map_elf_phdrs(exe_path, true /* MAP_FIXED */, &exe_map_size,
-                            &exe_map_delta, NULL /* text addr */, os_map_file,
-                            os_unmap_file, os_set_protection);
+    exe_map = elf_loader_map_phdrs(&exe_ld, true /* MAP_FIXED */, os_map_file,
+                                   os_unmap_file, os_set_protection);
     apicheck(exe_map != NULL, "Failed to load application.  "
              "Check path and architecture.");
+    ASSERT(exe_ld.load_delta == 0);
     ASSERT(is_elf_so_header(exe_map, 0));
-    ASSERT(exe_map_delta == 0);
-    exe_ehdr = (ELF_HEADER_TYPE *) exe_map;
 
-    privload_setup_auxv(envp, exe_map, exe_map_delta);
+    privload_setup_auxv(envp, exe_map, exe_ld.load_delta);
 
     /* Set the process name with prctl PR_SET_NAME.  This makes killall <app>
      * work.
@@ -1362,28 +1399,28 @@ privload_early_inject(void **sp)
     dynamorio_syscall(SYS_prctl, 5, PR_SET_NAME, (ptr_uint_t)exe_basename,
                       0, 0, 0);
 
-    interp = find_pt_interp(exe_map, exe_map_delta);
+    interp = elf_loader_find_pt_interp(&exe_ld);
     if (interp != NULL) {
         /* Load the ELF pointed at by PT_INTERP, usually ld.so. */
-        app_pc ld_map;
-        size_t ld_map_size;
-        ptr_int_t ld_map_delta;
-        ELF_HEADER_TYPE *ld_ehdr;
-
-        ld_map = map_elf_phdrs(interp, false /* fixed */, &ld_map_size,
-                               &ld_map_delta, NULL /* text */,
-                               os_map_file, os_unmap_file, os_set_protection);
-        apicheck(ld_map != NULL, "Failed to map ELF interpreter.");
+        elf_loader_t interp_ld;
+        app_pc interp_map;
+        success = elf_loader_read_headers(&interp_ld, interp);
+        apicheck(success, "Failed to read ELF interpreter headers.");
+        interp_map = elf_loader_map_phdrs(&interp_ld, false /* fixed */,
+                                          os_map_file, os_unmap_file,
+                                          os_set_protection);
+        apicheck(interp_map != NULL && is_elf_so_header(interp_map, 0),
+                 "Failed to map ELF interpreter.");
         ASSERT_MESSAGE(CHKLVL_ASSERTS, "The interpreter shouldn't have an "
                        "interpreter.",
-                       find_pt_interp(ld_map, ld_map_delta) == NULL);
-        ASSERT(is_elf_so_header(ld_map, 0));
-        ld_ehdr = (ELF_HEADER_TYPE *) ld_map;
-        entry = (app_pc)ld_ehdr->e_entry + ld_map_delta;
+                       elf_loader_find_pt_interp(&interp_ld) == NULL);
+        entry = (app_pc)interp_ld.ehdr->e_entry + interp_ld.load_delta;
+        elf_loader_destroy(&interp_ld);
     } else {
         /* No PT_INTERP, so this is a static exe. */
-        entry = (app_pc)exe_ehdr->e_entry + exe_map_delta;
+        entry = (app_pc)exe_ld.ehdr->e_entry + exe_ld.load_delta;
     }
+    elf_loader_destroy(&exe_ld);
 
     /* Initialize DR *after* we map the app image.  This is consistent with our
      * old behavior, and allows the client to do things like call
