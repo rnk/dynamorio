@@ -216,8 +216,10 @@ if (UNIX)
     linux/injector.c
     config.c    # to read config
     linux/os.c  # for file_t interface
-    linux/loader.c
-    linux/module.c
+    #linux/loader.c
+    #linux/module.c
+    string.c
+    io.c
     ${x86_noncore_asm_src}  # for dynamorio_syscall
     )
 else (UNIX)

@@ -251,20 +251,12 @@ module_add_segment_data(OUT os_module_data_t *out_data,
      * walk done in dl_iterate_get_areas_cb().
      */
     if (out_data->num_segments == 0) {
-        /* NOCHECKIN: DR's segments are pre-allocated, check no invalid free. */
-        if (out_data->alloc_segments == 0) {
-            /* over-allocate to avoid 2 passes to count PT_LOAD */
-            out_data->alloc_segments = elf_hdr->e_phnum;
-            out_data->segments = (module_segment_t *)
-                HEAP_ARRAY_ALLOC(GLOBAL_DCONTEXT, module_segment_t,
-                                 out_data->alloc_segments, ACCT_OTHER, PROTECTED);
-            out_data->contiguous = true;
-        } else {
-            void dr_printf(const char *fmt, ...);
-            dr_printf("dr phnum: %d\n", elf_hdr->e_phnum);
-            ASSERT(out_data->alloc_segments >= elf_hdr->e_phnum &&
-                   "Allocate more segments for DR!");
-        }
+        /* over-allocate to avoid 2 passes to count PT_LOAD */
+        out_data->alloc_segments = elf_hdr->e_phnum;
+        out_data->segments = (module_segment_t *)
+            HEAP_ARRAY_ALLOC(GLOBAL_DCONTEXT, module_segment_t,
+                             out_data->alloc_segments, ACCT_OTHER, PROTECTED);
+        out_data->contiguous = true;
     }
     /* Keep array sorted in addr order.  I'm assuming segments are disjoint! */
     for (i = 0; i < out_data->num_segments; i++) {
@@ -1736,8 +1728,8 @@ module_relocate_symbol(ELF_REL_TYPE *rel,
     name  = (char *)pd->os_data.dynstr + sym->st_name;
 
 #ifdef CLIENT_INTERFACE
-    //if (INTERNAL_OPTION(private_loader) && privload_redirect_sym(r_addr, name))
-        //return;
+    if (INTERNAL_OPTION(private_loader) && privload_redirect_sym(r_addr, name))
+        return;
 #endif
     
     resolved = true;

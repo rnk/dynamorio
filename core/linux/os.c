@@ -3714,11 +3714,13 @@ os_close_protected(file_t f)
 }
 #endif /* !NOT_DYNAMORIO_CORE_PROPER */
 
+#ifndef NOT_DYNAMORIO_CORE_PROPER /* so drinject can use drdecode's copy */
 ssize_t
 os_write(file_t f, const void *buf, size_t count)
 {
     return write_syscall(f, buf, count);
 }
+#endif /* !NOT_DYNAMORIO_CORE_PROPER */
 
 ssize_t 
 os_read(file_t f, void *buf, size_t count)

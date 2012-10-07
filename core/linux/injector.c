@@ -83,6 +83,13 @@ inject_ptrace(dr_inject_info_t *info, const char *library_path);
 static long
 os_ptrace(enum __ptrace_request request, pid_t pid, void *addr, void *data);
 
+/* Never actually called, but needed to link in config.c. */
+const char *
+get_application_short_name(void)
+{
+    return "";
+}
+
 /* Shadow DR's internal_error so assertions work in standalone mode.  DR tries
  * to use safe_read to take a stack trace, but none of its signal handlers are
  * installed, so it will segfault before it prints our error.
@@ -356,6 +363,10 @@ typedef struct _inject_cxt_t {
 static bool op_exec_gdb = false;
 static bool verbose = false;
 
+/* Used to pass data into the remote mapping routines. */
+static int injected_dr_fd;
+static dr_inject_info_t *injected_info;
+
 typedef struct _enum_name_pair_t {
     const int enum_val;
     const char * const enum_name;
@@ -450,7 +461,7 @@ ptrace_write_memory(pid_t pid, void *dst, void *src, size_t len)
     return true;
 }
 
-#define APP  instrlist_meta_append
+#define APP  instrlist_append
 
 /* Push a pointer to a string to the stack.  We create a fake instruction with
  * raw bytes equal to the string we want to put in the injectee.  The call will
@@ -627,16 +638,6 @@ injectee_mmap(dr_inject_info_t *info, void *addr, size_t sz, int prot,
     return (void*)injectee_run_get_xax(info, dc, ilist);
 }
 
-static void *
-translate_dr_dll(void *injected_base, void *dr_addr)
-{
-    app_pc dr_base = get_dynamorio_dll_start();
-    return ((app_pc)dr_addr - dr_base) + injected_base;
-}
-
-static int injected_dr_fd;
-static dr_inject_info_t *injected_info;
-
 /* translate platform independent protection bits to native flags */
 static inline uint
 memprot_to_osprot(uint prot)
@@ -673,7 +674,7 @@ injectee_map_file(file_t f, size_t *size INOUT, uint64 offs, app_pc addr,
     r = (ptr_int_t)injectee_mmap(injected_info, addr, *size,
                                  memprot_to_osprot(prot), flags, fd, offs);
     if (r < 0 && r >= -4096) {
-        dr_printf("injectee_mmap(%p, %p) -> %p\n", addr, *size, r);
+        printf("injectee_mmap(%p, %p) -> %p\n", addr, (void*)*size, (void*)r);
         return NULL;
     }
     return (byte*)r;
@@ -693,7 +694,7 @@ injectee_unmap(byte *addr, size_t size)
     gen_syscall(dc, ilist, SYS_munmap, num_args, args);
     r = injectee_run_get_xax(injected_info, dc, ilist) == 0;
     if (r < 0) {
-        dr_printf("injectee_munmap(%p, %p) -> %p\n", addr, size, r);
+        printf("injectee_munmap(%p, %p) -> %p\n", addr, (void*)size, (void*)r);
         return false;
     }
     return true;
@@ -714,218 +715,10 @@ injectee_prot(byte *addr, size_t size, uint prot/*MEMPROT_*/)
     gen_syscall(dc, ilist, SYS_mprotect, num_args, args);
     r = injectee_run_get_xax(injected_info, dc, ilist) == 0;
     if (r < 0) {
-        dr_printf("injectee_prot(%p, %p, %x) -> %d\n", addr, size, prot, r);
+        printf("injectee_prot(%p, %p, %x) -> %d\n", addr, (void*)size, prot, (int)r);
         return false;
     }
     return true;
-}
-
-
-/* Returns the minimum p_vaddr field, aligned to page boundaries, in
- * the loadable segments in the prog_header array, or POINTER_MAX if
- * there are no loadable segments.
- *
- * NOCHECKIN: Copied from module.c
- */
-app_pc
-module_vaddr_from_prog_header(app_pc prog_header, uint num_segments,
-                              OUT app_pc *out_end)
-{
-    uint i;
-    app_pc min_vaddr = (app_pc) POINTER_MAX;
-    app_pc mod_end = (app_pc) PTR_UINT_0;
-    for (i = 0; i < num_segments; i++) {
-        /* Without the ELF header we use sizeof instead of elf_hdr->e_phentsize
-         * which must be a reliable assumption as dl_iterate_phdr() doesn't
-         * bother to deliver the entry size.
-         */
-        ELF_PROGRAM_HEADER_TYPE *prog_hdr = (ELF_PROGRAM_HEADER_TYPE *)
-            (prog_header + i * sizeof(ELF_PROGRAM_HEADER_TYPE));
-        if (prog_hdr->p_type == PT_LOAD) {
-            /* ELF requires p_vaddr to already be aligned to p_align */
-            min_vaddr =
-                MIN(min_vaddr, (app_pc) ALIGN_BACKWARD(prog_hdr->p_vaddr, PAGE_SIZE));
-            mod_end =
-                MAX(mod_end, (app_pc)
-                    ALIGN_FORWARD(prog_hdr->p_vaddr + prog_hdr->p_memsz, PAGE_SIZE));
-        }
-    }
-    if (out_end != NULL)
-        *out_end = mod_end;
-    return min_vaddr;
-}
-
-typedef byte *(*map_fn_t)(file_t f, size_t *size INOUT, uint64 offs,
-                          app_pc addr, uint prot/*MEMPROT_*/, bool cow,
-                          bool image, bool fixed);
-typedef bool (*unmap_fn_t)(byte *map, size_t size);
-typedef bool (*prot_fn_t)(byte *map, size_t size, uint prot/*MEMPROT_*/);
-
-
-/* Map in the PT_LOAD segments in an ELF's program headers.
- *
- * NOCHECKIN: Copied from loader.c
- *
- * XXX: Instead of mapping the file twice and disturbing the address space, we
- * should use os_read to read the ELF header and program headers.  We can't do
- * this currently because we need to compute text_addr for gdb.
- */
-static app_pc
-map_elf_phdrs(const char *filename, bool fixed, size_t *size OUT,
-              ptr_int_t *load_delta OUT, app_pc *text_addr_p OUT,
-              map_fn_t map_func, unmap_fn_t unmap_func, prot_fn_t prot_func)
-{
-    file_t fd;
-    app_pc file_map, lib_base, lib_end, last_end;
-    ELF_HEADER_TYPE *elf_hdr;
-    app_pc  map_base, map_end;
-    reg_t   pg_offs;
-    size_t map_size;
-    uint64 file_size_64;
-    size_t file_size;
-    uint   seg_prot, i;
-    ptr_int_t delta;
-
-    /* Zero optional out args. */
-    if (size != NULL)
-        *size = 0;
-    if (load_delta != NULL)
-        *load_delta = 0;
-
-    /* open file for mmap later */
-    fd = os_open(filename, OS_OPEN_READ);
-    if (fd == INVALID_FILE) {
-        LOG(GLOBAL, LOG_LOADER, 1, "%s: failed to open %s\n", __FUNCTION__, filename);
-        return NULL;
-    }
-
-    /* get file size */
-    if (!os_get_file_size_by_handle(fd, &file_size_64)) {
-        os_close(fd);
-        LOG(GLOBAL, LOG_LOADER, 1, "%s: failed to get library %s file size\n",
-            __FUNCTION__, filename);
-        return NULL;
-    }
-    file_size = file_size_64;  /* Truncate, we have to pass it as size_t *. */
-
-    /* map the library file into memory for parsing */
-    file_map = os_map_file(fd, &file_size, 0/*offs*/, NULL/*base*/,
-                           MEMPROT_READ /* for parsing only */,
-                           true  /*writes should not change file*/,
-                           false /*image*/,
-                           false /*!fixed*/);
-    if (file_map == NULL) {
-        os_close(fd);
-        LOG(GLOBAL, LOG_LOADER, 1, "%s: failed to map %s\n", __FUNCTION__, filename);
-        return NULL;
-    }
-
-#if 0  /* FIXME: is_elf_so_header undefined, trust it for now */
-    /* verify if it is elf so header */
-    if (!is_elf_so_header(file_map, file_size)) {
-        (*unmap_func)(file_map, file_size);
-        os_close(fd);
-        LOG(GLOBAL, LOG_LOADER, 1, "%s: %s is not a elf so header\n", 
-            __FUNCTION__, filename);
-        return NULL;
-    }
-#endif
-
-    /* more sanity check */
-    elf_hdr = (ELF_HEADER_TYPE *) file_map;
-    ASSERT_CURIOSITY(elf_hdr->e_phoff != 0);
-    ASSERT_CURIOSITY(elf_hdr->e_phentsize == 
-                     sizeof(ELF_PROGRAM_HEADER_TYPE));
-
-    /* get the library size and preferred base */
-    map_base = 
-        module_vaddr_from_prog_header(file_map + elf_hdr->e_phoff,
-                                      elf_hdr->e_phnum,
-                                      &map_end);
-    map_size = map_end - map_base;
-    if (size != NULL)
-        *size = map_size;
-
-    /* reserve the memory from os for library */
-    lib_base = (*map_func)(-1, &map_size, 0, map_base,
-                           MEMPROT_WRITE | MEMPROT_READ /* prot */,
-                           true  /* copy-on-write */,
-                           true  /* image, make it reachable */,
-                           fixed);
-    ASSERT(lib_base != NULL);
-    lib_end = lib_base + map_size;
-
-    if (map_base != NULL && map_base != lib_base) {
-        /* the mapped memory is not at preferred address, 
-         * should be ok if it is still reachable for X64,
-         * which will be checked later. 
-         */
-        LOG(GLOBAL, LOG_LOADER, 1, "%s: module not loaded at preferred address\n",
-            __FUNCTION__);
-    }
-    delta = lib_base - map_base;
-    if (load_delta != NULL)
-        *load_delta = delta;
-
-    /* walk over the program header to load the individual segments */
-    last_end = lib_base;
-    for (i = 0; i < elf_hdr->e_phnum; i++) {
-        app_pc seg_base, seg_end, map, file_end;
-        size_t seg_size;
-        ELF_PROGRAM_HEADER_TYPE *prog_hdr = (ELF_PROGRAM_HEADER_TYPE *)
-            (file_map + elf_hdr->e_phoff + i * elf_hdr->e_phentsize);
-        if (prog_hdr->p_type == PT_LOAD) {
-            seg_base = (app_pc)ALIGN_BACKWARD(prog_hdr->p_vaddr, PAGE_SIZE)
-                       + delta;
-            seg_end  = (app_pc)ALIGN_FORWARD(prog_hdr->p_vaddr +
-                                             prog_hdr->p_filesz,
-                                             PAGE_SIZE) 
-                       + delta;
-            seg_size = seg_end - seg_base;
-            if (seg_base != last_end) {
-                /* XXX: a hole, I reserve this space instead of unmap it */
-                size_t hole_size = seg_base - last_end;
-                (*prot_func)(last_end, hole_size, MEMPROT_NONE);
-            }
-            seg_prot = module_segment_prot_to_osprot(prog_hdr);
-            pg_offs  = ALIGN_BACKWARD(prog_hdr->p_offset, PAGE_SIZE);
-            /* FIXME: 
-             * This function can be called after dynamorio_heap_initialized,
-             * and we will use map_file instead of os_map_file.
-             * However, map_file does not allow mmap with overlapped memory, 
-             * so we have to unmap the old memory first.
-             * This might be a problem, e.g. 
-             * one thread unmaps the memory and before mapping the actual file,
-             * another thread requests memory via mmap takes the memory here,
-             * a racy condition.
-             */
-            (*unmap_func)(seg_base, seg_size);
-            map = (*map_func)(fd, &seg_size, pg_offs,
-                              seg_base /* base */,
-                              seg_prot | MEMPROT_WRITE /* prot */,
-                              true /* writes should not change file */,
-                              true /* image */,
-                              true /* fixed */);
-            ASSERT(map != NULL);
-            /* fill zeros at extend size */
-            file_end = (app_pc)prog_hdr->p_vaddr + prog_hdr->p_filesz;
-            if (seg_end > file_end + delta)
-                memset(file_end + delta, 0, seg_end - (file_end + delta));
-            seg_end  = (app_pc)ALIGN_FORWARD(prog_hdr->p_vaddr + 
-                                             prog_hdr->p_memsz,
-                                             PAGE_SIZE) + delta;
-            seg_size = seg_end - seg_base;
-            (*prot_func)(seg_base, seg_size, seg_prot);
-            last_end = seg_end;
-        } 
-    }
-    ASSERT(last_end == lib_end);
-
-    /* unmap the file_map */
-    os_unmap_file(file_map, file_size);
-    os_close(fd); /* no longer needed */
-
-    return lib_base;
 }
 
 bool
@@ -946,9 +739,7 @@ inject_ptrace(dr_inject_info_t *info, const char *library_path)
     /* Call our private loader, but perform the mmaps in the child process
      * instead of the parent.
      */
-    size_t loaded_size;
     app_pc injected_base;
-    ptr_int_t load_delta;
     elf_loader_t loader;
     /* XXX: Have to use globals to communicate to injectee_map_file. =/ */
     injected_dr_fd = dr_fd;
@@ -965,7 +756,7 @@ inject_ptrace(dr_inject_info_t *info, const char *library_path)
     /* Looking up exports through ptrace is hard, so we use the same entry
      * point as early injection with different arguments.
      */
-    void *injected_dr_start = loader.ehdr->e_entry + loader.load_delta;
+    reg_t injected_dr_start = loader.ehdr->e_entry + loader.load_delta;
     elf_loader_destroy(&loader);
 
     struct user_regs_struct regs;
@@ -998,7 +789,7 @@ inject_ptrace(dr_inject_info_t *info, const char *library_path)
     memset(&cxt, 0, sizeof(cxt));
     memcpy(&cxt.regs, &regs, sizeof(regs));
     cxt.dynamorio_dll_start = injected_base;
-    cxt.dynamorio_dll_end = injected_base + loaded_size;
+    cxt.dynamorio_dll_end = injected_base + loader.image_size;
     strncpy(cxt.dynamorio_library_path, library_path, MAXIMUM_PATH);
     regs.rsp -= sizeof(cxt); /* Allocate space for cxt. */
     regs.rsp = ALIGN_BACKWARD(regs.rsp, 16);  /* Align stack. */
@@ -1017,7 +808,7 @@ inject_ptrace(dr_inject_info_t *info, const char *library_path)
         char *argv[10];
         int num_args = 0;
         os_ptrace(PTRACE_DETACH, info->pid, NULL, NULL);
-        dr_snprintf(pid_str, sizeof(pid_str), "%d", info->pid);
+        snprintf(pid_str, sizeof(pid_str), "%d", info->pid);
         argv[num_args++] = "/usr/bin/gdb";
         argv[num_args++] = "--quiet";
         argv[num_args++] = "--pid";
@@ -1038,7 +829,7 @@ inject_ptrace(dr_inject_info_t *info, const char *library_path)
                   (void*)offsetof(struct user_regs_struct, rip), &pc);
         fprintf(stderr, "Unexpected trace event, expected SIGTRAP, got:\n"
                    "status: 0x%x, stopped: %d, by signal: %d, at pc: %p\n",
-                   status, WIFSTOPPED(status), WSTOPSIG(status), pc);
+                   status, WIFSTOPPED(status), WSTOPSIG(status), (void*)pc);
         return false;
     }
 
