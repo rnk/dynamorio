@@ -322,18 +322,23 @@ typedef byte *(*map_fn_t)(file_t f, size_t *size INOUT, uint64 offs,
 typedef bool (*unmap_fn_t)(byte *map, size_t size);
 typedef bool (*prot_fn_t)(byte *map, size_t size, uint prot/*MEMPROT_*/);
 
-/* Initialized an ELF loader for use with the given file.
- */
+/* Initialized an ELF loader for use with the given file. */
 bool
 elf_loader_init(elf_loader_t *elf, const char *filename);
 
-/* Frees resources needed to load the ELF, not the mapped image itself.
- */
+/* Frees resources needed to load the ELF, not the mapped image itself. */
 void
 elf_loader_destroy(elf_loader_t *elf);
 
-/* Reads ELF headers and program headers, either via a read or mmap syscall.
- */
+/* Reads the main ELF header. */
+ELF_HEADER_TYPE *
+elf_loader_read_ehdr(elf_loader_t *elf);
+
+/* Reads the ELF program headers, via read() or mmap() syscalls. */
+ELF_PROGRAM_HEADER_TYPE *
+elf_loader_read_phdrs(elf_loader_t *elf);
+
+/* Shorthand to initialize the loader and read the ELF and program headers. */
 bool
 elf_loader_read_headers(elf_loader_t *elf, const char *filename);
 

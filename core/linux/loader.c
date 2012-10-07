@@ -353,7 +353,7 @@ elf_loader_destroy(elf_loader_t *elf)
     memset(elf, 0, sizeof(*elf));
 }
 
-static ELF_HEADER_TYPE *
+ELF_HEADER_TYPE *
 elf_loader_read_ehdr(elf_loader_t *elf)
 {
     /* The initial read is sized to read both ehdr and all phdrs. */
@@ -383,7 +383,7 @@ elf_loader_map_file(elf_loader_t *elf)
     return elf->file_map;
 }
 
-static ELF_PROGRAM_HEADER_TYPE *
+ELF_PROGRAM_HEADER_TYPE *
 elf_loader_read_phdrs(elf_loader_t *elf)
 {
     size_t ph_off;
