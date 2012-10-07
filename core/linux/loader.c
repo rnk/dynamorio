@@ -134,29 +134,6 @@ privload_delete_os_privmod_data(privmod_t *privmod);
 static void
 privload_mod_tls_init(privmod_t *mod);
 
-/* Data structure for loading an ELF.
- */
-typedef struct elf_loader_t {
-    const char *filename;
-    file_t fd;
-    ELF_HEADER_TYPE *ehdr;              /* Points into buf. */
-    ELF_PROGRAM_HEADER_TYPE *phdrs;     /* Points into buf or file_map. */
-    app_pc load_base;                   /* Load base. */
-    ptr_int_t load_delta;               /* Delta from preferred base. */
-    size_t image_size;                  /* Size of the mapped image. */
-    void *file_map;                     /* Whole file map, if needed. */
-    size_t file_size;                   /* Size of the file map. */
-
-    /* Static buffer sized to hold most headers in a single read. */
-    byte buf[sizeof(ELF_HEADER_TYPE) + sizeof(ELF_PROGRAM_HEADER_TYPE) * 12];
-} elf_loader_t;
-
-typedef byte *(*map_fn_t)(file_t f, size_t *size INOUT, uint64 offs,
-                          app_pc addr, uint prot/*MEMPROT_*/, bool cow,
-                          bool image, bool fixed);
-typedef bool (*unmap_fn_t)(byte *map, size_t size);
-typedef bool (*prot_fn_t)(byte *map, size_t size, uint prot/*MEMPROT_*/);
-
 /***************************************************************************/
 
 /* os specific loader initialization prologue before finalizing the load. */
@@ -357,7 +334,7 @@ os_read_until(file_t fd, void *buf, size_t toread)
     return (nread >= 0);
 }
 
-static bool
+bool
 elf_loader_init(elf_loader_t *elf, const char *filename)
 {
     memset(elf, 0, sizeof(*elf));
@@ -366,15 +343,14 @@ elf_loader_init(elf_loader_t *elf, const char *filename)
     return elf->fd != INVALID_FILE;
 }
 
-/* Frees resources needed to load the ELF, not the mapped image itself.
- */
-static void
+void
 elf_loader_destroy(elf_loader_t *elf)
 {
     os_close(elf->fd);
     if (elf->file_map != NULL) {
         os_unmap_file(elf->file_map, elf->file_size);
     }
+    memset(elf, 0, sizeof(*elf));
 }
 
 static ELF_HEADER_TYPE *
@@ -391,10 +367,7 @@ elf_loader_read_ehdr(elf_loader_t *elf)
     return elf->ehdr;
 }
 
-/* Maps in the entire ELF file, including unmapped portions such as section
- * headers and debug info.  Does not re-map the same file if called twice.
- */
-static app_pc
+app_pc
 elf_loader_map_file(elf_loader_t *elf)
 {
     uint64 size64;
@@ -435,9 +408,7 @@ elf_loader_read_phdrs(elf_loader_t *elf)
     return elf->phdrs;
 }
 
-/* Typically we just want to do all of the above and check for any errors.
- */
-static bool
+bool
 elf_loader_read_headers(elf_loader_t *elf, const char *filename)
 {
     if (!elf_loader_init(elf, filename))
@@ -449,7 +420,7 @@ elf_loader_read_headers(elf_loader_t *elf, const char *filename)
     return true;
 }
 
-static app_pc
+app_pc
 elf_loader_map_phdrs(elf_loader_t *elf, bool fixed, map_fn_t map_func,
                      unmap_fn_t unmap_func, prot_fn_t prot_func)
 {
@@ -459,6 +430,9 @@ elf_loader_map_phdrs(elf_loader_t *elf, bool fixed, map_fn_t map_func,
     reg_t   pg_offs;
     uint   seg_prot, i;
     ptr_int_t delta;
+
+    if (elf->phdrs == NULL)
+        return NULL;
 
     map_base = module_vaddr_from_prog_header((app_pc)elf->phdrs,
                                              elf->ehdr->e_phnum, &map_end);
@@ -548,7 +522,7 @@ elf_loader_map_phdrs(elf_loader_t *elf, bool fixed, map_fn_t map_func,
  * included in PT_LOAD segments, so we safely do this after the initial
  * mapping.
  */
-static const char *
+const char *
 elf_loader_find_pt_interp(elf_loader_t *elf)
 {
     int i;
