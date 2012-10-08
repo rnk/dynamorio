@@ -125,6 +125,15 @@ typedef struct _os_thread_data_t {
     void *app_thread_areas; /* data structure for app's thread area info */
 } os_thread_data_t;
 
+enum { ARGC_PTRACE_SENTINEL = -1 };
+
+/* This data is pushed on the stack by the ptrace injection code. */
+typedef struct ptrace_stack_args_t {
+    ptr_int_t argc;             /* Set to ARGC_PTRACE_SENTINEL */
+    priv_mcontext_t mc;         /* Registers at attach time */
+} ptrace_stack_args_t;
+
+
 /* in os.c */
 void os_thread_take_over(priv_mcontext_t *mc);
 

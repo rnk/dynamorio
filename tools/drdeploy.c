@@ -1105,7 +1105,7 @@ int main(int argc, char *argv[])
     /* On Linux, we use exec by default to create the app process.  This matches
      * our drrun shell script and makes scripting easier for the user.
      */
-    if (limit == 0) {
+    if (limit == 0 && !use_ptrace) {
         errcode = dr_inject_prepare_to_exec(app_name, app_argv, &inject_data);
     } else
 #endif /* LINUX */
@@ -1146,6 +1146,17 @@ int main(int argc, char *argv[])
             goto error;
     }
 # endif
+
+#ifdef LINUX
+    if (use_ptrace) {
+        if (!dr_inject_use_ptrace(inject_data)) {
+            error("unable to use ptrace");
+            goto error;
+        } else {
+            info("using ptrace to inject");
+        }
+    }
+#endif
 
     if (inject && !dr_inject_process_inject(inject_data, force_injection, drlib_path)) {
         error("unable to inject: did you forget to run drconfig first?");

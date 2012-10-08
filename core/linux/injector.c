@@ -46,6 +46,7 @@
 #include "instr_create.h"
 #include "decode.h"
 #include "disassemble.h"
+#include "os_private.h"
 
 #include <assert.h>
 #include <errno.h>
@@ -58,6 +59,8 @@
 #include <sys/user.h>
 #include <sys/wait.h>
 #include <unistd.h>
+
+static bool verbose = true;
 
 typedef enum _inject_method_t {
     INJECT_EXEC_DR,     /* Works with self or child. */
@@ -90,6 +93,14 @@ get_application_short_name(void)
     return "";
 }
 
+/* Map module safe reads to just memcpy. */
+bool
+safe_read(const void *base, size_t size, void *out_buf)
+{
+    memcpy(out_buf, base, size);
+    return true;
+}
+
 /* Shadow DR's internal_error so assertions work in standalone mode.  DR tries
  * to use safe_read to take a stack trace, but none of its signal handlers are
  * installed, so it will segfault before it prints our error.
@@ -100,6 +111,12 @@ internal_error(char *file, int line, char *expr)
     fprintf(stderr, "ASSERT failed: %s:%d (%s)\n", file, line, expr);
     fflush(stderr);
     abort();
+}
+
+bool
+ignore_assert(const char *assert_stmt, const char *expr)
+{
+    return false;
 }
 
 void
@@ -140,7 +157,8 @@ fork_suspended_child(const char *exe, const char **argv, int fds[2])
             real_exe = (char *) exe;
         } else if (strcmp("ptrace", pipe_cmd) == 0) {
             real_exe = (char *) exe;
-            os_ptrace(PTRACE_TRACEME, 0, NULL, NULL);
+            printf("would call PTRACE_TRACEME\n");
+            //os_ptrace(PTRACE_TRACEME, 0, NULL, NULL);
         } else if (strncmp("exec_dr ", pipe_cmd, 8) == 0) {
             setenv(DYNAMORIO_VAR_EXE_PATH, exe, true/*overwrite*/);
             real_exe = pipe_cmd;
@@ -157,6 +175,8 @@ write_pipe_cmd(int pipe_fd, const char *cmd)
 {
     ssize_t towrite = strlen(cmd);
     ssize_t written = 0;
+    if (verbose)
+        fprintf(stderr, "writing cmd: %s\n", cmd);
     while (towrite > 0) {
         ssize_t nwrote = write(pipe_fd, cmd + written, towrite);
         if (nwrote <= 0)
@@ -251,6 +271,7 @@ dr_inject_use_ptrace(void *data)
     if (info->exec_self)
         return false;
     info->method = INJECT_PTRACE;
+    printf("method: %d\n", info->method);
     return true;
 }
 
@@ -291,6 +312,7 @@ dr_inject_process_inject(void *data, bool force_injection,
         library_path = dr_path_buf;
     }
 
+    printf("method: %d\n", info->method);
     switch (info->method) {
     case INJECT_EXEC_DR:
         return inject_exec_dr(info, library_path);
@@ -343,25 +365,7 @@ dr_inject_process_exit(void *data, bool terminate)
  * PTRACE INJECTION CODE
  */
 
-/* Struct containing info passed from the injector to _dr_start in the injectee.
- */
-typedef struct _inject_cxt_t {
-    /* FIXME: We can easily translate to priv_mcontext_t in the injector, making
-     * our code more portable.
-     */
-    struct user_regs_struct regs;
-
-    /* We know these values at injection time, so we pass them in and initialize
-     * them rather than attempting to parse /proc/self/maps, which requires
-     * sscanf from libc.
-     */
-    app_pc dynamorio_dll_start;
-    app_pc dynamorio_dll_end;
-    char dynamorio_library_path[MAXIMUM_PATH];
-} inject_cxt_t;
-
 static bool op_exec_gdb = false;
-static bool verbose = false;
 
 /* Used to pass data into the remote mapping routines. */
 static int injected_dr_fd;
@@ -419,8 +423,8 @@ os_ptrace(enum __ptrace_request request, pid_t pid, void *addr, void *data)
              }
         }
         ASSERT(pair != NULL);
-        fprintf(stderr, "ptrace failed: ptrace(%s, %d, %p, %p) -> %ld %s\n",
-                   pair->enum_name, (int)pid, addr, data, r, strerror(-r));
+        fprintf(stderr, "\tptrace(%s, %d, %p, %p) -> %ld %s\n",
+                pair->enum_name, (int)pid, addr, data, r, strerror(-r));
     }
     return r;
 }
@@ -721,12 +725,75 @@ injectee_prot(byte *addr, size_t size, uint prot/*MEMPROT_*/)
     return true;
 }
 
+static void
+user_regs_to_mc(priv_mcontext_t *mc, struct user_regs_struct *regs)
+{
+    /* Convert from ptrace regs style to mcontext style. */
+#ifdef X64
+    mc->rax = regs->rax;
+    mc->rcx = regs->rcx;
+    mc->rdx = regs->rdx;
+    mc->rbx = regs->rbx;
+    mc->rsp = regs->rsp;
+    mc->rbp = regs->rbp;
+    mc->rsi = regs->rsi;
+    mc->rdi = regs->rdi;
+    mc->r8  = regs->r8 ;
+    mc->r9  = regs->r9 ;
+    mc->r10 = regs->r10;
+    mc->r11 = regs->r11;
+    mc->r12 = regs->r12;
+    mc->r13 = regs->r13;
+    mc->r14 = regs->r14;
+    mc->r15 = regs->r15;
+#else
+    mc->eax = regs->eax;
+    mc->ecx = regs->ecx;
+    mc->edx = regs->edx;
+    mc->ebx = regs->ebx;
+    mc->esp = regs->esp;
+    mc->ebp = regs->ebp;
+    mc->esi = regs->esi;
+    mc->edi = regs->edi;
+#endif
+}
+
 bool
 inject_ptrace(dr_inject_info_t *info, const char *library_path)
 {
-    /* Cause the child to call PTRACE_TRACEME. */
-    /* XXX: To implement attach, we should switch to PTRACE_ATTACH. */
-    write_pipe_cmd(info->pipe_fd, "ptrace");
+    /* Attach to the process in question. */
+    int status;
+    os_ptrace(PTRACE_ATTACH, info->pid, NULL, NULL);
+    waitpid(info->pid, &status, 0);
+    if (!WIFSTOPPED(status) || WSTOPSIG(status) != SIGTRAP) {
+        ptr_int_t pc;
+        os_ptrace(PTRACE_PEEKUSER, info->pid,
+                  (void*)offsetof(struct user_regs_struct, rip), &pc);
+        fprintf(stderr, "status: 0x%x, stopped: %d, by signal: %d, at pc: %p\n",
+                   status, WIFSTOPPED(status), WSTOPSIG(status), (void*)pc);
+    }
+
+    if (info->pipe_fd != 0) {
+        /* For children we created, walk it across the execve call. */
+        write_pipe_cmd(info->pipe_fd, "ptrace");
+        close(info->pipe_fd);
+        info->pipe_fd = 0;
+        os_ptrace(PTRACE_SETOPTIONS, info->pid, NULL, (void*)PTRACE_O_TRACEEXEC);
+        os_ptrace(PTRACE_CONT, info->pid, NULL, NULL);
+        waitpid(info->pid, &status, 0);
+        if (!WIFSTOPPED(status) || WSTOPSIG(status) != SIGTRAP) {
+            ptr_int_t pc;
+            os_ptrace(PTRACE_PEEKUSER, info->pid,
+                      (void*)offsetof(struct user_regs_struct, rip), &pc);
+            fprintf(stderr, "Unexpected trace event, expected SIGTRAP, got:\n"
+                       "status: 0x%x, stopped: %d, by signal: %d, at pc: %p\n",
+                       status, WIFSTOPPED(status), WSTOPSIG(status), (void*)pc);
+            return false;
+        }
+
+    } else {
+        /* FIXME: NYI */
+    }
 
     /* Open libdynamorio.so as readonly in the child. */
     int dr_fd = injectee_open(info, library_path, O_RDONLY, 0);
@@ -785,18 +852,17 @@ inject_ptrace(dr_inject_info_t *info, const char *library_path)
      * If you need to pass more info to the injected child process, this is a
      * good place to put it.
      */
-    inject_cxt_t cxt;
-    memset(&cxt, 0, sizeof(cxt));
-    memcpy(&cxt.regs, &regs, sizeof(regs));
-    cxt.dynamorio_dll_start = injected_base;
-    cxt.dynamorio_dll_end = injected_base + loader.image_size;
-    strncpy(cxt.dynamorio_library_path, library_path, MAXIMUM_PATH);
-    regs.rsp -= sizeof(cxt); /* Allocate space for cxt. */
+    ptrace_stack_args_t args;
+    memset(&args, 0, sizeof(args));
+    user_regs_to_mc(&args.mc, &regs);
+    args.argc = ARGC_PTRACE_SENTINEL;
+    regs.rsp -= sizeof(args); /* Allocate space for args. */
     regs.rsp = ALIGN_BACKWARD(regs.rsp, 16);  /* Align stack. */
-    regs.rdi = regs.rsp;  /* Pass the address of cxt as parameter 1. */
-    ptrace_write_memory(info->pid, (void*)regs.rsp, &cxt, sizeof(cxt));
-    regs.rip = (reg_t)injected_dr_start;
+    ptrace_write_memory(info->pid, (void*)regs.rsp, &args, sizeof(args));
+    regs.rip = injected_dr_start;
     os_ptrace(PTRACE_SETREGS, info->pid, NULL, &regs);
+
+    /* FIXME: Takeover other threads */
 
     //op_exec_gdb = true;
     if (op_exec_gdb) {
@@ -820,8 +886,10 @@ inject_ptrace(dr_inject_info_t *info, const char *library_path)
         ASSERT(false && "failed to exec gdb?");
     }
 
+    /* This should run something equivalent to dynamorio_app_init(), and then
+     * return.
+     */
     os_ptrace(PTRACE_CONT, info->pid, NULL, NULL);
-    int status;
     waitpid(info->pid, &status, 0);
     if (!WIFSTOPPED(status) || WSTOPSIG(status) != SIGTRAP) {
         ptr_int_t pc;
@@ -833,13 +901,10 @@ inject_ptrace(dr_inject_info_t *info, const char *library_path)
         return false;
     }
 
-    //int init = injectee_call_dr_fn(info, injected_dr_start);
-    //printf("_dr_start: 0x%x\n", init);
-
     /* Reset back to initial state (for now, eventually adjust state to start in
      * DR).
      */
-    os_ptrace(PTRACE_SETREGS, info->pid, NULL, &cxt.regs);
+    //os_ptrace(PTRACE_SETREGS, info->pid, NULL, &regs);
 
     return true;
 }
