@@ -33,6 +33,15 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+/* Needed to avoid this MSVC 2010 warning:
+ * warning C4789: destination of memory copy is too small
+ */
+void *
+pointer_plus_three(void **a)
+{
+    return a + 3;
+}
+
 void baz()
 {
     fprintf(stderr, "** Return address successfully overwritten **\n");
@@ -42,16 +51,18 @@ void baz()
 
 void bar()
 {
-    unsigned int a[2];
+    void *a[2];
+    void **p = pointer_plus_three(a);
     fprintf(stderr, "** Return address successfully overwritten **\n");
     fflush(stdout);
-    a[3] = (unsigned)baz;
+    *p = (void *)baz;
 }
 
 void foo()
 {
-    unsigned int a[2];
-    a[3] = (unsigned)bar;
+    void *a[2];
+    void **p = pointer_plus_three(a);
+    *p = (void *)bar;
 }
 
 int main()
