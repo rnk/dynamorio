@@ -52,6 +52,8 @@
 #include "instr.h"
 #include "perscache.h"
 
+extern file_t all_bb_logs;
+
 #ifdef CLIENT_INTERFACE
 /* in interp.c.  not declared in arch_exports.h to avoid having to go
  * make monitor_data_t opaque in globals.h.
@@ -157,8 +159,9 @@ create_private_copy(dcontext_t *dcontext, fragment_t *f)
      */
 
     KSTART(temp_private_bb);
-    LOG(THREAD, LOG_MONITOR, 4,
-        "Creating private copy of F%d ("PFX") for trace creation\n", f->id, f->tag);
+    //LOG(THREAD, LOG_MONITOR, 4,
+    print_file(all_bb_logs,
+        "Creating private copy of F%d ("PFX") for trace creation\n", -1, f->tag);
 
     IF_X64(ASSERT((get_x86_mode(dcontext) && FRAG_IS_32(f->flags)) ||
                   (!get_x86_mode(dcontext) && !FRAG_IS_32(f->flags)) ||
@@ -1784,10 +1787,13 @@ internal_extend_trace(dcontext_t *dcontext, fragment_t *f, linkstub_t *prev_l,
         return end_and_emit_trace(dcontext, f);
     }
 
+    ASSERT(TEST(FRAG_TEMP_PRIVATE, f->flags) || !TEST(FRAG_SHARED, f->flags));
     if (TEST(FRAG_SHARED, f->flags) && !TEST(FRAG_TEMP_PRIVATE, f->flags)) {
         /* strategy: make a private copy of f to avoid synch issues w/ others
          * modifying its linking before we get back here
          */
+        print_file(STDERR, "RELEASE BUILD ASSERT: re-calling create_private_copy\n");
+        asm ("int3");
         if (!TEST(FRAG_COARSE_GRAIN, f->flags)) {
             if (!create_private_copy(dcontext, f)) {
                 return end_and_emit_trace(dcontext, f);
@@ -2086,7 +2092,8 @@ monitor_cache_enter(dcontext_t *dcontext, fragment_t *f)
                 if (head == NULL)
                     head = fragment_lookup_bb(dcontext, f->tag);
                 if (head == NULL) {
-                    LOG(THREAD, LOG_MONITOR, 3,
+                    //LOG(THREAD, LOG_MONITOR, 3,
+                    print_file(all_bb_logs,
                         "Client custom trace 0x%08x requiring shadow bb 0x%08x\n",
                         md->trace_tag, f->tag);
                     SELF_PROTECT_LOCAL(dcontext, WRITABLE);
@@ -2124,7 +2131,7 @@ monitor_cache_enter(dcontext_t *dcontext, fragment_t *f)
                 f = head;
             }
 #endif
-            if (TEST(FRAG_COARSE_GRAIN, f->flags)
+            if (TEST(FRAG_COARSE_GRAIN, f->flags) || TEST(FRAG_SHARED, f->flags)
                 IF_CLIENT_INTERFACE(|| md->pass_to_client)) {
                 /* We need linkstub_t info for trace_exit_stub_size_diff() so we go
                  * ahead and make a private copy here.
@@ -2313,7 +2320,8 @@ monitor_cache_enter(dcontext_t *dcontext, fragment_t *f)
     }
 #endif
     if (start_trace &&
-        (TEST(FRAG_COARSE_GRAIN, f->flags) IF_CLIENT_INTERFACE(|| md->pass_to_client))) {
+        (TEST(FRAG_COARSE_GRAIN, f->flags) || TEST(FRAG_SHARED, f->flags)
+         IF_CLIENT_INTERFACE(|| md->pass_to_client))) {
         ASSERT(TEST(FRAG_IS_TRACE_HEAD, f->flags));
         /* We need linkstub_t info for trace_exit_stub_size_diff() so we go
          * ahead and make a private copy here.
