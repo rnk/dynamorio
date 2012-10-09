@@ -1785,7 +1785,14 @@ internal_extend_trace(dcontext_t *dcontext, fragment_t *f, linkstub_t *prev_l,
     }
 
     /* We should have made the private copy earlier, unless f is thread private. */
-    ASSERT(TEST(FRAG_TEMP_PRIVATE, f->flags) || !TEST(FRAG_SHARED, f->flags));
+    if (!TEST(FRAG_TEMP_PRIVATE, f->flags)) {
+        ASSERT(!TEST(FRAG_SHARED, f->flags));
+        /* must store this fragment, and also duplicate its flags so know what
+         * to restore.  can't rely on last_exit for restoring since could end up
+         * not coming out of cache from last_fragment (e.g., if hit sigreturn)
+         */
+        md->last_fragment = f;
+    }
 
     /* hold lock across cannot delete changes too, and store of flags */
     SHARED_FLAGS_RECURSIVE_LOCK(f->flags, acquire, change_linking_lock);
