@@ -134,7 +134,8 @@ enum {
 };
 
 /* simple way to disable sandboxing */
-#define SANDBOX_FLAG() (INTERNAL_OPTION(cache_consistency) ? FRAG_SELFMOD_SANDBOXED : 0)
+#define SANDBOX_FLAG() (print_file(STDERR, "SANDBOX_FLAG() on line %d\n", __LINE__), \
+                        (INTERNAL_OPTION(cache_consistency) ? FRAG_SELFMOD_SANDBOXED : 0))
 
 /* Fields only used for written_areas */
 typedef struct _ro_vs_sandbox_data_t {

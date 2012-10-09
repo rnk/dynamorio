@@ -105,7 +105,7 @@ bool mangle_trace(dcontext_t *dcontext, instrlist_t *ilist, monitor_data_t *md);
  */
 /* define replaced by -max_bb_instrs option */
 
-file_t all_bb_logs = INVALID_FILE;
+static file_t all_bb_logs = INVALID_FILE;
 
 /* exported so micro routines can assert whether held */
 DECLARE_CXTSWPROT_VAR(mutex_t bb_building_lock, INIT_LOCK_FREE(bb_building_lock));
@@ -3374,9 +3374,9 @@ build_bb_ilist(dcontext_t *dcontext, build_bb_t *bb)
         print_file(STDERR,
                 "*** must rebuild bb to avoid following direct cti for selfmod ***\n");
         instrlist_disassemble(dcontext, bb->start_pc, bb->ilist, STDERR);
-        //all_bb_logs = STDERR;
-        //char dummy;
-        //os_read(STDIN, &dummy, 1);
+        all_bb_logs = STDERR;
+        char dummy;
+        os_read(STDIN, &dummy, 1);
         STATS_INC(num_bb_end_early);
         instrlist_clear_and_destroy(dcontext, bb->ilist);
         if (bb->vmlist != NULL) {
