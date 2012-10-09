@@ -1784,43 +1784,8 @@ internal_extend_trace(dcontext_t *dcontext, fragment_t *f, linkstub_t *prev_l,
         return end_and_emit_trace(dcontext, f);
     }
 
-    if (TEST(FRAG_SHARED, f->flags) && !TEST(FRAG_TEMP_PRIVATE, f->flags)) {
-        /* strategy: make a private copy of f to avoid synch issues w/ others
-         * modifying its linking before we get back here
-         */
-        if (!TEST(FRAG_COARSE_GRAIN, f->flags)) {
-            if (!create_private_copy(dcontext, f)) {
-                return end_and_emit_trace(dcontext, f);
-            }
-        }
-        /* else, we should have made the private copy earlier */
-        ASSERT(md->last_copy != NULL);
-        ASSERT(md->last_copy->tag == f->tag);
-        ASSERT(md->last_fragment == md->last_copy);
-        if (md->trace_tag == NULL) {
-            /* trace was aborted b/c our new fragment clobbered someone (see
-             * comments in create_private_copy) --
-             * when emitting our private bb we can kill the last_fragment):
-             * just exit now
-             */
-            LOG(THREAD, LOG_MONITOR, 4, "Private copy ended up aborting trace!\n");
-            STATS_INC(num_trace_private_copy_abort);
-            /* trace abort happened in emit_fragment, so we went and undid the
-             * clearing of last_fragment by assigning it to last_copy, must re-clear!
-             */
-            md->last_fragment = NULL;
-            return f;
-        }
-
-        /* operate on new f from here on */
-        f = md->last_fragment;
-    } else {
-        /* must store this fragment, and also duplicate its flags so know what
-         * to restore.  can't rely on last_exit for restoring since could end up
-         * not coming out of cache from last_fragment (e.g., if hit sigreturn)
-         */
-        md->last_fragment = f;
-    }
+    /* We should have made the private copy earlier, unless f is thread private. */
+    ASSERT(TEST(FRAG_TEMP_PRIVATE, f->flags) || !TEST(FRAG_SHARED, f->flags));
 
     /* hold lock across cannot delete changes too, and store of flags */
     SHARED_FLAGS_RECURSIVE_LOCK(f->flags, acquire, change_linking_lock);
@@ -2124,7 +2089,7 @@ monitor_cache_enter(dcontext_t *dcontext, fragment_t *f)
                 f = head;
             }
 #endif
-            if (TEST(FRAG_COARSE_GRAIN, f->flags)
+            if (TEST(FRAG_COARSE_GRAIN, f->flags) || TEST(FRAG_SHARED, f->flags)
                 IF_CLIENT_INTERFACE(|| md->pass_to_client)) {
                 /* We need linkstub_t info for trace_exit_stub_size_diff() so we go
                  * ahead and make a private copy here.
@@ -2313,7 +2278,8 @@ monitor_cache_enter(dcontext_t *dcontext, fragment_t *f)
     }
 #endif
     if (start_trace &&
-        (TEST(FRAG_COARSE_GRAIN, f->flags) IF_CLIENT_INTERFACE(|| md->pass_to_client))) {
+        (TEST(FRAG_COARSE_GRAIN, f->flags) || TEST(FRAG_SHARED, f->flags)
+         IF_CLIENT_INTERFACE(|| md->pass_to_client))) {
         ASSERT(TEST(FRAG_IS_TRACE_HEAD, f->flags));
         /* We need linkstub_t info for trace_exit_stub_size_diff() so we go
          * ahead and make a private copy here.
