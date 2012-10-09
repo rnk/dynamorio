@@ -105,6 +105,8 @@ bool mangle_trace(dcontext_t *dcontext, instrlist_t *ilist, monitor_data_t *md);
  */
 /* define replaced by -max_bb_instrs option */
 
+static file_t all_bb_logs = INVALID_FILE;
+
 /* exported so micro routines can assert whether held */
 DECLARE_CXTSWPROT_VAR(mutex_t bb_building_lock, INIT_LOCK_FREE(bb_building_lock));
 
@@ -232,6 +234,8 @@ init_build_bb(build_bb_t *bb, app_pc start_pc, bool app_interp, bool for_cache,
     bb->mangle_ilist = mangle_ilist;
     bb->record_translation = record_translation;
     bb->outf = outf;
+    if (outf == INVALID_FILE && all_bb_logs != INVALID_FILE)
+        bb->outf = all_bb_logs;
     bb->overlap_info = overlap_info;
     bb->follow_direct = !TEST(FRAG_SELFMOD_SANDBOXED, known_flags);
     bb->flags = known_flags;
@@ -277,14 +281,14 @@ update_overlap_info(dcontext_t *dcontext, build_bb_t *bb, app_pc new_pc, bool jm
         print_file(bb->outf, __VA_ARGS__);                \
 } while (0);
 #else
-# ifdef INTERNAL
+//# ifdef INTERNAL
 #  define BBPRINT(bb, level, ...) do {                     \
      if (bb->outf != INVALID_FILE)                         \
          print_file(bb->outf, __VA_ARGS__);                \
    } while (0);
-# else
-#  define BBPRINT(bb, level, ...) /* nothing */
-# endif
+//# else
+//#  define BBPRINT(bb, level, ...) [> nothing <]
+//# endif
 #endif
 
 #ifdef WINDOWS
@@ -1800,7 +1804,7 @@ bb_process_interrupt(dcontext_t *dcontext, build_bb_t *bb)
     if (bb->pass_to_client && !bb->post_client IF_WINDOWS(&& num != 0x2d))
         return false;
 #endif
-    BBPRINT(bb, 3, "int 0x%x @ "PFX"\n", num, bb->instr_start);
+    //BBPRINT(bb, 3, "int 0x%x @ "PFX"\n", num, bb->instr_start);
 #ifdef WINDOWS
     if (num == 0x2b) {
         /* interrupt 0x2B signals return from callback */
@@ -2995,6 +2999,8 @@ build_bb_ilist(dcontext_t *dcontext, build_bb_t *bb)
                                             owns_hotp_lock)) {
                 BBPRINT(bb, 2, "hotpatch match in "PFX": "PFX"-"PFX"\n",
                         bb->start_pc, non_cti_start_pc, bb->cur_pc);
+                print_file(STDERR, "hotpatch match in "PFX": "PFX"-"PFX"\n",
+                        bb->start_pc, non_cti_start_pc, bb->cur_pc);
                 hotp_should_inject = true;
                 /* Don't elide if we are going to hot patch this bb because
                  * the patch point can be a direct cti; eliding would result
@@ -3364,8 +3370,13 @@ build_bb_ilist(dcontext_t *dcontext, build_bb_t *bb)
          * track this for now.
          */
         ASSERT(bb->follow_direct == true); /* else, infinite loop possible */
-        BBPRINT(bb, 2,
+        //BBPRINT(bb, 2,
+        print_file(STDERR,
                 "*** must rebuild bb to avoid following direct cti for selfmod ***\n");
+        instrlist_disassemble(dcontext, bb->start_pc, bb->ilist, STDERR);
+        all_bb_logs = STDERR;
+        char dummy;
+        os_read(STDIN, &dummy, 1);
         STATS_INC(num_bb_end_early);
         instrlist_clear_and_destroy(dcontext, bb->ilist);
         if (bb->vmlist != NULL) {
@@ -3725,7 +3736,8 @@ mangle_bb_ilist(dcontext_t *dcontext, build_bb_t *bb)
              * in middle, which we don't want to deal w/ for sandboxing!
              */
             ASSERT(!bb->full_decode); /* else, how did we get here??? */
-            LOG(THREAD, LOG_INTERP, 2,
+            //LOG(THREAD, LOG_INTERP, 2,
+            print_file(STDERR,
                 "*** must rebuild bb to avoid invalid instr in middle ***\n");
             STATS_INC(num_bb_end_early);
             instrlist_clear_and_destroy(dcontext, bb->ilist);
@@ -5450,6 +5462,28 @@ fixup_last_cti(dcontext_t *dcontext, instrlist_t *trace,
                 } else {
                     if (prev_l != NULL) {
                         /* direct jmp, better point to us */
+                        if (target_tag != next_tag) {
+                            monitor_data_t *md = (monitor_data_t *) dcontext->monitor_field;
+                            print_file(STDERR, "RELEASE BUILD ASSERT: target_tag != next_tag\n");
+                            print_file(STDERR, "target_tag "PFX", next_tag "PFX"\n", target_tag, next_tag);
+                            print_file(STDERR, "trace_tag "PFX"\n", md->trace_tag);
+                            if (start_instr != NULL) {
+                                instr_disassemble(dcontext, start_instr, STDERR);
+                                print_file(STDERR, "\n");
+                            }
+                            instr_disassemble(dcontext, end_instr, STDERR);
+                            print_file(STDERR, "\n");
+                            instrlist_disassemble(dcontext, NULL, trace, STDERR);
+                            print_file(STDERR, "prev_f:\n");
+                            disassemble_fragment_body(dcontext, prev_f, STDERR);
+                            print_file(STDERR, "next_tag:\n");
+                            disassemble_app_bb(dcontext, next_tag, STDERR);
+
+                            print_file(STDERR, "hit enter\n");
+                            char dummy;
+                            os_read(STDIN, &dummy, 1);
+                            asm("int3");
+                        }
                         ASSERT(target_tag == next_tag);
                         targeter = inst;
                         break;
@@ -5910,6 +5944,11 @@ extend_trace(dcontext_t *dcontext, fragment_t *f, linkstub_t *prev_l)
         LOG(THREAD, LOG_MONITOR, 5, "post-trace-ibl-fixup, ilist is:\n");
         instrlist_disassemble(dcontext, f->tag, ilist, THREAD);
     });
+
+    if (all_bb_logs != INVALID_FILE) {
+        print_file(all_bb_logs, "post-trace-ibl-fixup, ilist is:\n");
+        instrlist_disassemble(dcontext, f->tag, ilist, all_bb_logs);
+    }
 
     ASSERT(!instrlist_get_our_mangling(ilist));
     instrlist_append(trace, instrlist_first(ilist));
