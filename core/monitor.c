@@ -2115,7 +2115,6 @@ monitor_cache_enter(dcontext_t *dcontext, fragment_t *f)
                  */
                 if (create_private_copy(dcontext, f)) {
                     /* operate on new f from here on */
-                    f = md->last_fragment;
                     if (md->trace_tag == NULL) {
                         /* trace was aborted b/c our new fragment clobbered
                          * someone (see comments in create_private_copy) --
@@ -2132,6 +2131,7 @@ monitor_cache_enter(dcontext_t *dcontext, fragment_t *f)
                         md->last_fragment = NULL;
                         return f;
                     }
+                    f = md->last_fragment;
                 } else {
                     end_trace = true;
                 }
