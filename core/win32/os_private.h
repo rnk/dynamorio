@@ -77,7 +77,12 @@ typedef struct {
     char dynamorio_lib_path[MAX_PATH];
 } earliest_args_t;
 
-#define EARLY_INJECT_HOOK_SIZE 5
+/* Max size is x64 ind jmp (6 bytes) + target (8 bytes).
+ * Simpler to always use the same size, esp wrt cross-arch injection.
+ * We assume all our early inject target functions are at least
+ * this size.  We restore the hook right away in any case.
+ */
+#define EARLY_INJECT_HOOK_SIZE 14
 
 bool
 is_first_thread_in_new_process(HANDLE process_handle, CONTEXT *cxt);
@@ -236,12 +241,18 @@ sys_param_addr(dcontext_t *dcontext, reg_t *param_base, int num)
 static inline reg_t
 sys_param(dcontext_t *dcontext, reg_t *param_base, int num)
 {
+    /* sys_param is also called from handle_system_call where dcontext->whereami
+     * is not set to WHERE_SYSCALL_HANDLER yet.
+     */
+    ASSERT(!dcontext->post_syscall);
     return *sys_param_addr(dcontext, param_base, num);
 }
 
 static inline reg_t
 postsys_param(dcontext_t *dcontext, reg_t *param_base, int num)
 {
+    ASSERT(dcontext->whereami == WHERE_SYSCALL_HANDLER &&
+           dcontext->post_syscall);
 #ifdef X64
     switch (num) {
     /* Register params are volatile so we save in dcontext in pre-syscall */
