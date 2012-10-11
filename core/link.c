@@ -2321,10 +2321,7 @@ shift_links_to_new_fragment(dcontext_t *dcontext,
         ASSERT((!NEED_SHARED_LOCK(new_f->flags) &&
                 !NEED_SHARED_LOCK(old_f->flags)) ||
                self_owns_recursive_lock(&change_linking_lock));
-        //LOG(THREAD, LOG_LINKS, 4, "Marking old and new as FRAG_TRACE_LINKS_SHIFTED\n");
-        print_file(STDERR, "Marking old and new as FRAG_TRACE_LINKS_SHIFTED\n");
-        print_file(STDERR, "old_f: "PFX", old_f->tag: "PFX"\n", old_f, old_f->tag);
-        print_file(STDERR, "new_f: "PFX", new_f->tag: "PFX"\n", new_f, new_f->tag);
+        LOG(THREAD, LOG_LINKS, 4, "Marking old and new as FRAG_TRACE_LINKS_SHIFTED\n");
         new_f->flags |= FRAG_TRACE_LINKS_SHIFTED;
         old_f->flags |= FRAG_TRACE_LINKS_SHIFTED;
     }
