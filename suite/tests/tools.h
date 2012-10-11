@@ -39,6 +39,7 @@
 #include <stdio.h>
 #include <string.h> /* memcpy */
 #include <assert.h>
+#include <ucontext.h>
 
 #ifdef LINUX
 # include <sys/mman.h>
