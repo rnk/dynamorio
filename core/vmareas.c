@@ -8935,7 +8935,8 @@ vm_area_unlink_fragments(dcontext_t *dcontext, app_pc start, app_pc end,
                      * use of fragment_t.incoming_stubs as a union.  so we
                      * do this for all fragments.
                      */
-                    if (FRAG_ALSO(entry) != NULL || FRAG_MULTI(entry)) {
+                    if (!TEST(FRAG_WAS_DELETED, entry->flags) &&
+                        (FRAG_ALSO(entry) != NULL || FRAG_MULTI(entry))) {
                         if (FRAG_MULTI(entry)) {
                             vm_area_remove_fragment(dcontext, f);
                             /* move to this area's frags list so will get
