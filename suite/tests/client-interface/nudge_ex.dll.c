@@ -104,7 +104,7 @@ nudge_child(process_id_t child_pid)
      * parent a nudge b/c that will kill it (on Linux).
      * For now we just wait a little and we try several times.
      */
-    dr_sleep(400);
+    dr_sleep(2000);
     do {
         dr_sleep(200);
         res = dr_nudge_client_ex(child_pid, client_id, NUDGE_ARG_PRINT, 0);
