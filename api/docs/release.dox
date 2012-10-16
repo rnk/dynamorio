@@ -139,6 +139,8 @@ And in the non-core APIs:
 
 Further non-compatibility-affecting changes include:
 
+ - Added preliminary Windows 8 support, though private kernelbase.dll is
+   not yet supported
  - Added persistent cache support for clients via
    dr_register_persist_ro(), dr_register_persist_rx(), 
    dr_register_persist_rw(), dr_register_persist_patch(), and
@@ -193,6 +195,8 @@ Further non-compatibility-affecting changes include:
  - Added a new operand type enabling an instr_t to be used as a
    memory reference: opnd_create_mem_instr(), opnd_is_mem_instr(),
    opnd_get_mem_instr_disp()
+ - Added DYNAMORIO_CONFIGDIR alternative to HOME as a config dir location.
+   Additionally, drrun uses a temp dir for config files rather than failing.
  - Deprecated dr_save_arith_flags() and dr_restore_arith_flags()
  - Fixed performance regression involving inlined clean calls
  - Fixed bug involving 32-bit Linux support on a 64-bit Linux
