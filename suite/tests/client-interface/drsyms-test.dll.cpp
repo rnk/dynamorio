@@ -590,7 +590,7 @@ enum_sym_cb(const char *name, size_t modoffs, void *data)
             /* If the expected mangling is _ZL*, try _Z* too.  Different gccs
              * from Cyginw, MinGW, and Linux all do different things.
              */
-            if (strncmp("_ZL", expected, 3) == 0) {
+            if (strncmp(expected, "_ZL", 3) == 0) {
                 dr_snprintf(alternative, BUFFER_SIZE_ELEMENTS(alternative),
                             "%2s%s", expected, expected+3);
                 NULL_TERMINATE_BUFFER(alternative);
