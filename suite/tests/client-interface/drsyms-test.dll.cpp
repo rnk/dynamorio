@@ -592,7 +592,7 @@ enum_sym_cb(const char *name, size_t modoffs, void *data)
              */
             if (strncmp(expected, "_ZL", 3) == 0) {
                 dr_snprintf(alternative, BUFFER_SIZE_ELEMENTS(alternative),
-                            "%2s%s", expected, expected+3);
+                            "%.2s%s", expected, expected+3);
                 NULL_TERMINATE_BUFFER(alternative);
             }
             if (strcmp(name, expected) != 0 &&
