@@ -499,6 +499,7 @@ dynamorio_app_init(void)
         proc_init();
         modules_init(); /* before vm_areas_init() */
         os_init();
+        config_heap_init(); /* after heap_init */
         /* loader initialization, finalize the private lib load.
          * FIXME i#338: this must be before arch_init() for Windows, but Linux
          * wants it later.
@@ -1013,6 +1014,7 @@ dynamo_shared_exit(IF_WINDOWS_(thread_record_t *toexit)
      */
     profile_callers_exit();
 #endif
+    data_section_exit();  /* i#521: before os_fast_exit deletes dump_core_lock */
     os_fast_exit();
     os_slow_exit();
     vm_areas_exit();
@@ -1033,7 +1035,6 @@ dynamo_shared_exit(IF_WINDOWS_(thread_record_t *toexit)
     heap_exit();
     vmm_heap_exit();
     diagnost_exit();
-    data_section_exit();
     /* funny dependences: options exit just frees lock, not destroying
      * any options that are needed for other exits, so do it prior to
      * checking locks in debug build
