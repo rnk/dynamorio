@@ -262,8 +262,8 @@ set(CTEST_COMMAND "${CTEST_EXECUTABLE_NAME}")
 
 # Detect if the kernel is ia32 or x64.  If the kernel is ia32, there's no sense
 # in trying to run any x64 code.  On Windows, the x64 toolchain is built as x64
-# code, so we can't even build the a package.  On Linux, it's possible to have
-# an ia32 toolchain that targets x64, but we don't currently support it.
+# code, so we can't even build.  On Linux, it's possible to have an ia32
+# toolchain that targets x64, but we don't currently support it.
 if (NOT DEFINED KERNEL_IS_X64)  # Allow variable override.
   if (WIN32)
     # Check both PROCESSOR_ARCHITECTURE and PROCESSOR_ARCHITEW6432 in case CMake
