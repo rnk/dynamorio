@@ -1,4 +1,5 @@
 /* **********************************************************
+ * Copyright (c) 2012 Google, Inc.  All rights reserved.
  * Copyright (c) 2006-2010 VMware, Inc.  All rights reserved.
  * **********************************************************/
 
@@ -415,4 +416,5 @@ REPEAT 4096
         ENDM
 
 END_FILE
+
 #endif /* ASM_CODE_ONLY */
