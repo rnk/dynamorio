@@ -216,6 +216,9 @@ size_t get_allocation_size(byte *pc, byte **base_pc);
 byte *get_allocation_base(byte *pc);
 void mark_page_as_guard(byte *pc);
 
+bool
+os_find_free_code_space_in_libs(void **start OUT, void **end OUT);
+
 void merge_writecopy_pages(app_pc start, app_pc end);
 
 bool is_pid_me(process_id_t pid);
@@ -436,6 +439,9 @@ is_in_interception_buffer(byte *pc);
 
 bool
 is_part_of_interception(byte *pc);
+
+bool
+is_on_interception_initial_route(byte *pc);
 
 bool
 is_syscall_trampoline(byte *pc, byte **tgt);
