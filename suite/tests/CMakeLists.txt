@@ -1398,7 +1398,7 @@ if (CLIENT_INTERFACE)
   tobuild_api(api.dis api/dis.c "-syntax_intel"
     "${CMAKE_CURRENT_SOURCE_DIR}/api/dis-udis86-randtest.raw" OFF)
   tobuild_api(api.ir api/ir.c "" "" OFF)
-  tobuild_api(api.startstop api/startstop.c "" "" OFF)
+  tobuild_api(api.startstop_FLAKY api/startstop.c "" "" OFF) # FIXME i#813
   # test static decoder library
   tobuild_api(api.ir-static api/ir.c "" "" ON)
   tobuild_api(api.static api/static.c "" "" ON)
@@ -1411,8 +1411,9 @@ if (CLIENT_INTERFACE)
       "" "-thread_private -cache_bb_unit_init 4K" "")
   endif ()
 
-  tobuild_ci(client.nudge_ex client-interface/nudge_ex.c "" "" "")
-  use_DynamoRIO_extension(client.nudge_ex.dll drmgr)
+  # FIXME i#953: flaky, uses sleeps
+  tobuild_ci(client.nudge_ex_FLAKY client-interface/nudge_ex.c "" "" "")
+  use_DynamoRIO_extension(client.nudge_ex_FLAKY.dll drmgr)
 
   tobuild_ci(client.retaddr client-interface/retaddr.c "" "" "")
 endif (CLIENT_INTERFACE)
@@ -1496,7 +1497,7 @@ if (UNIX)
   tobuild(pthreads.pthreads pthreads/pthreads.c)
   tobuild(pthreads.pthreads_exit pthreads/pthreads_exit.c)
   tobuild(pthreads.ptsig_FLAKY pthreads/ptsig.c)
-  tobuild(pthreads.pthreads_fork pthreads/pthreads_fork.c)
+  tobuild(pthreads.pthreads_fork_FLAKY pthreads/pthreads_fork.c) # FIXME i#951
 
   # Clang will likely never support gcc nested functions:
   # http://llvm.org/PR9206
