@@ -275,13 +275,21 @@ if (NOT DEFINED KERNEL_IS_X64)  # Allow variable override.
       set(KERNEL_IS_X64 OFF)
     endif ()
   else ()
-    # FIXME: Linux detection is NYI.  True ia32 Linux kernels are getting rare.
-    set(KERNEL_IS_X64 ON)
+    # uname -m is what the kernel supports.
+    execute_process(COMMAND uname -m
+      OUTPUT_VARIABLE machine
+      RESULT_VARIABLE cmd_result)
+    # If for some reason uname fails (not on PATH), assume the kernel is x64
+    # anyway.
+    if (cmd_result OR "${machine}" MATCHES "x86_64")
+      set(KERNEL_IS_X64 ON)
+    else ()
+      set(KERNEL_IS_X64 OFF)
+    endif ()
   endif ()
 endif ()
-
 if (NOT KERNEL_IS_X64)
-  message(WARNING "WARNING: Kernel is not x64, skipping x64 builds!")
+  message("WARNING: Kernel is not x64, skipping x64 builds")
 endif ()
 
 if (arg_use_ninja)
