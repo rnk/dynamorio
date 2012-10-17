@@ -68,6 +68,8 @@
 
 #include <string.h>
 
+static bool post_self_mod;
+
 enum {
     /* VM_ flags to distinguish region types 
      * We also use some FRAG_ flags (but in a separate field so no value space overlap)
@@ -5692,6 +5694,26 @@ simulate_attack(dcontext_t *dcontext, app_pc pc)
 }
 #endif /* SIMULATE_ATTACK */
 
+static void
+print_entry(dcontext_t *dcontext, fragment_t *entry, char *prefix)
+{
+    if (entry == NULL)
+        print_file(STDERR, "%s<NULL>\n", prefix);
+    else if (FRAG_MULTI(entry)) {
+        if (FRAG_MULTI_INIT(entry)) {
+            print_file(STDERR, "%s"PFX" <init: tag="PFX"> pc="PFX"\n",
+                prefix, entry, FRAG_FRAG(entry), FRAG_PC(entry));
+        } else {
+            print_file(STDERR, "%s"PFX" F="PFX" pc="PFX"\n",
+                prefix, entry, FRAG_FRAG(entry), FRAG_PC(entry));
+        }
+    } else {
+        fragment_t *f = (fragment_t *) entry;
+        print_file(STDERR, "%s"PFX" F%d tag="PFX"\n",
+            prefix, f, -1, f->tag);
+    }
+}
+
 #if defined(DEBUG) && defined(INTERNAL)
 static void
 print_entry(dcontext_t *dcontext, fragment_t *entry, char *prefix)
@@ -8473,14 +8495,20 @@ vm_area_remove_fragment(dcontext_t *dcontext, fragment_t *f)
         match = f;
     } else {
         /* we do get called for multi-entries from vm_area_destroy_list */
-        LOG(THREAD, LOG_VMAREAS, 4,
-            "vm_area_remove_fragment: entry "PFX"\n", f);
+        //LOG(THREAD, LOG_VMAREAS, 4,
+        if (post_self_mod) {
+        //print_file(STDERR, 
+            //"vm_area_remove_fragment: entry "PFX"\n", f);
+        }
         match = FRAG_FRAG(f);
     }
     ASSERT(FRAG_PREV(f) != NULL); /* prev wraps around, should never be null */
 
     entry = f;
     while (entry != NULL) {
+        if (post_self_mod && multi && 0) {
+            print_entry(dcontext, entry, "\tremoving ");
+        }
         DOLOG(5, LOG_VMAREAS, { print_entry(dcontext, entry, "\tremoving "); });
         /* from vm_area_destroy_list we can end up deleting a multi-init */
         ASSERT(FRAG_FRAG(entry) == match);
@@ -8846,6 +8874,42 @@ unlink_fragments_for_deletion(dcontext_t *dcontext, fragment_t *list,
     return num;
 }
 
+static void
+print_frag_flags(uint flags)
+{
+    if (TEST(FRAG_IS_FUTURE            , flags)) print_file(STDERR, "FRAG_IS_FUTURE            \n");
+    if (TEST(FRAG_TRACE_LINKS_SHIFTED  , flags)) print_file(STDERR, "FRAG_TRACE_LINKS_SHIFTED  \n");
+    if (TEST(FRAG_IS_TRACE             , flags)) print_file(STDERR, "FRAG_IS_TRACE             \n");
+    if (TEST(FRAG_IS_TRACE_HEAD        , flags)) print_file(STDERR, "FRAG_IS_TRACE_HEAD        \n");
+    if (TEST(FRAG_LINKED_OUTGOING      , flags)) print_file(STDERR, "FRAG_LINKED_OUTGOING      \n");
+    if (TEST(FRAG_LINKED_INCOMING      , flags)) print_file(STDERR, "FRAG_LINKED_INCOMING      \n");
+    if (TEST(FRAG_CANNOT_DELETE        , flags)) print_file(STDERR, "FRAG_CANNOT_DELETE        \n");
+    if (TEST(FRAG_CANNOT_BE_TRACE      , flags)) print_file(STDERR, "FRAG_CANNOT_BE_TRACE      \n");
+    if (TEST(FRAG_FAKE                 , flags)) print_file(STDERR, "FRAG_FAKE                 \n");
+    if (TEST(FRAG_WRITES_EFLAGS_6      , flags)) print_file(STDERR, "FRAG_WRITES_EFLAGS_6      \n");
+    if (TEST(FRAG_WRITES_EFLAGS_OF     , flags)) print_file(STDERR, "FRAG_WRITES_EFLAGS_OF     \n");
+    if (TEST(FRAG_FCACHE_FREE_LIST     , flags)) print_file(STDERR, "FRAG_FCACHE_FREE_LIST     \n");
+    if (TEST(FRAG_HAS_SYSCALL          , flags)) print_file(STDERR, "FRAG_HAS_SYSCALL          \n");
+    if (TEST(FRAG_TRACE_BUILDING       , flags)) print_file(STDERR, "FRAG_TRACE_BUILDING       \n");
+    if (TEST(FRAG_WAS_DELETED          , flags)) print_file(STDERR, "FRAG_WAS_DELETED          \n");
+    if (TEST(FRAG_SELFMOD_SANDBOXED    , flags)) print_file(STDERR, "FRAG_SELFMOD_SANDBOXED    \n");
+    if (TEST(FRAG_HAS_DIRECT_CTI       , flags)) print_file(STDERR, "FRAG_HAS_DIRECT_CTI       \n");
+    if (TEST(FRAG_IS_EMPTY_SLOT        , flags)) print_file(STDERR, "FRAG_IS_EMPTY_SLOT        \n");
+    if (TEST(FRAG_IS_EXTRA_VMAREA      , flags)) print_file(STDERR, "FRAG_IS_EXTRA_VMAREA      \n");
+    if (TEST(FRAG_IS_EXTRA_VMAREA_INIT , flags)) print_file(STDERR, "FRAG_IS_EXTRA_VMAREA_INIT \n");
+    if (TEST(FRAG_HAS_MOV_SEG          , flags)) print_file(STDERR, "FRAG_HAS_MOV_SEG          \n");
+    if (TEST(FRAG_32_BIT               , flags)) print_file(STDERR, "FRAG_32_BIT               \n");
+    if (TEST(FRAG_MUST_END_TRACE       , flags)) print_file(STDERR, "FRAG_MUST_END_TRACE       \n");
+    if (TEST(FRAG_SHARED               , flags)) print_file(STDERR, "FRAG_SHARED               \n");
+    if (TEST(FRAG_TEMP_PRIVATE         , flags)) print_file(STDERR, "FRAG_TEMP_PRIVATE         \n");
+    if (TEST(FRAG_TRACE_OUTPUT         , flags)) print_file(STDERR, "FRAG_TRACE_OUTPUT         \n");
+    if (TEST(FRAG_CBR_FALLTHROUGH_SHORT, flags)) print_file(STDERR, "FRAG_CBR_FALLTHROUGH_SHORT\n");
+    if (TEST(FRAG_COARSE_GRAIN         , flags)) print_file(STDERR, "FRAG_COARSE_GRAIN         \n");
+    if (TEST(FRAG_HAS_TRANSLATION_INFO , flags)) print_file(STDERR, "FRAG_HAS_TRANSLATION_INFO \n");
+    if (TEST(FRAG_X86_TO_X64           , flags)) print_file(STDERR, "FRAG_X86_TO_X64           \n");
+    if (TEST(FRAG_FOLLOWS_FREE_ENTRY   , flags)) print_file(STDERR, "FRAG_FOLLOWS_FREE_ENTRY   \n");
+}
+
 /* returns the number of fragments unlinked */
 int
 vm_area_unlink_fragments(dcontext_t *dcontext, app_pc start, app_pc end,
@@ -8878,7 +8942,7 @@ vm_area_unlink_fragments(dcontext_t *dcontext, app_pc start, app_pc end,
         ASSERT_OWN_MUTEX(DYNAMO_OPTION(shared_deletion), &shared_cache_flush_lock);
     }
     
-    LOG(THREAD, LOG_FRAGMENT|LOG_VMAREAS, 2, "vm_area_unlink_fragments "PFX".."PFX"\n",
+    LOG(THREADGET, LOG_FRAGMENT|LOG_VMAREAS, 2, "vm_area_unlink_fragments "PFX".."PFX"\n",
         start, end);
 
     /* walk backwards to avoid O(n^2)
@@ -8887,7 +8951,7 @@ vm_area_unlink_fragments(dcontext_t *dcontext, app_pc start, app_pc end,
     for (i = data->areas.length - 1; i >= 0; i--) {
         /* look for overlap */
         if (start < data->areas.buf[i].end && end > data->areas.buf[i].start) {
-            LOG(THREAD, LOG_FRAGMENT|LOG_VMAREAS, 2,
+            LOG(THREADGET, LOG_FRAGMENT|LOG_VMAREAS, 2,
                 "\tmarking region "PFX".."PFX" for deletion & unlinking all its frags\n",
                 data->areas.buf[i].start, data->areas.buf[i].end);
             data->areas.buf[i].vm_flags |= VM_DELETE_ME;
@@ -8903,7 +8967,7 @@ vm_area_unlink_fragments(dcontext_t *dcontext, app_pc start, app_pc end,
                  * if the caller holds fragment_t pointers and expects them not
                  * to be flushed (e.g., a faulting write on a read-only code region).
                  */
-                LOG(THREAD, LOG_FRAGMENT|LOG_VMAREAS, 2,
+                LOG(THREADGET, LOG_FRAGMENT|LOG_VMAREAS, 2,
                     "\tWARNING: region "PFX".."PFX" is larger than "
                     "flush area "PFX".."PFX"\n",
                     data->areas.buf[i].start, data->areas.buf[i].end,
@@ -8924,7 +8988,7 @@ vm_area_unlink_fragments(dcontext_t *dcontext, app_pc start, app_pc end,
                  * is already unlinked 
                  */
                 if (!TEST(FRAG_WAS_DELETED, f->flags) || data == shared_data) {
-                    LOG(THREAD, LOG_FRAGMENT|LOG_VMAREAS, 5,
+                    LOG(THREADGET, LOG_FRAGMENT|LOG_VMAREAS, 5,
                         "\tunlinking "PFX"%s F%d("PFX")\n",
                         entry, FRAG_MULTI(entry) ? " multi": "", FRAG_ID(entry),
                         FRAG_PC(entry));
@@ -8935,6 +8999,31 @@ vm_area_unlink_fragments(dcontext_t *dcontext, app_pc start, app_pc end,
                      * use of fragment_t.incoming_stubs as a union.  so we
                      * do this for all fragments.
                      */
+                    //if (FRAG_MULTI(entry)) {
+                        ////print_file(STDERR,
+                            ////"\tunlinking "PFX"%s F%d("PFX")\n",
+                            ////entry, FRAG_MULTI(entry) ? " multi": "", IF_DEBUG_ELSE(FRAG_ID(entry), -1),
+                            ////FRAG_PC(entry));
+                    //}
+                    //if (TEST(FRAG_FCACHE_FREE_LIST, f->flags)) {
+                        //print_file(STDERR, "FRAG_FCACHE_FREE_LIST: f: "PFX", f->tag: "PFX"\n", f, f->tag);
+                    //}
+                    if (TEST(FRAG_WAS_DELETED, entry->flags)) {
+                        print_file(STDERR, "f->flags 0x%x\n", f->flags);
+                        print_frag_flags(f->flags);
+                        print_file(STDERR, "f: "PFX", f->tag: "PFX"\n", f, f->tag);
+                        print_file(STDERR, "f-> flags & FRAG_WAS_DELETED: %d\n",
+                                   TEST(FRAG_WAS_DELETED, f->flags));
+                        disassemble_fragment_body(dcontext, f, STDERR);
+                        print_file(STDERR, "RELEASE BUILD ASSERT: %s:%d\n", __FILE__, __LINE__);
+                        print_file(STDERR,
+                            "\tunlinking "PFX"%s F%d("PFX")\n",
+                            entry, FRAG_MULTI(entry) ? " multi": "", IF_DEBUG_ELSE(FRAG_ID(entry), -1),
+                            FRAG_PC(entry));
+                        //char dummy;
+                        //os_read(STDIN, &dummy, 1);
+                        asm ("int3");
+                    }
                     if (!TEST(FRAG_WAS_DELETED, entry->flags) &&
                         (FRAG_ALSO(entry) != NULL || FRAG_MULTI(entry))) {
                         if (FRAG_MULTI(entry)) {
@@ -8962,24 +9051,24 @@ vm_area_unlink_fragments(dcontext_t *dcontext, app_pc start, app_pc end,
                     if (written_pc != NULL) {
                         app_pc bb;
                         DOLOG(2, LOG_VMAREAS, {
-                            LOG(THREAD, LOG_VMAREAS, 1, "Flushing F%d "PFX":\n",
+                            LOG(THREADGET, LOG_VMAREAS, 1, "Flushing F%d "PFX":\n",
                                 FRAG_ID(entry), FRAG_PC(entry));
                             disassemble_fragment(dcontext, entry, false);
-                            LOG(THREAD, LOG_VMAREAS, 1, "First app bb for frag:\n");
-                            disassemble_app_bb(dcontext, FRAG_PC(entry), THREAD);
+                            LOG(THREADGET, LOG_VMAREAS, 1, "First app bb for frag:\n");
+                            disassemble_app_bb(dcontext, FRAG_PC(entry), THREADGET);
                         });
                         if (fragment_overlaps(dcontext, entry, written_pc,
                                               written_pc+1, false, NULL, &bb)) {
-                            LOG(THREAD, LOG_VMAREAS, 1,
+                            LOG(THREADGET, LOG_VMAREAS, 1,
                                 "Write target is actually inside app bb @"PFX":\n",
                                 written_pc);
-                            disassemble_app_bb(dcontext, bb, THREAD);
+                            disassemble_app_bb(dcontext, bb, THREADGET);
                         }
                     }
 #endif
                     num++;
                 } else {
-                    LOG(THREAD, LOG_FRAGMENT|LOG_VMAREAS, 5,
+                    LOG(THREADGET, LOG_FRAGMENT|LOG_VMAREAS, 5,
                         "\tnot unlinking "PFX"%s F%d("PFX") (already unlinked)\n",
                         entry, FRAG_MULTI(entry) ? " multi": "", FRAG_ID(entry), FRAG_PC(entry));
                 }
@@ -9007,14 +9096,14 @@ vm_area_unlink_fragments(dcontext_t *dcontext, app_pc start, app_pc end,
                 /* ASSUMPTION: remove_vm_area, given exact bounds, simply shifts later
                  * areas down in vector!
                  */
-                LOG(THREAD, LOG_VMAREAS, 3, "Before removing vm area:\n");
-                DOLOG(3, LOG_VMAREAS, { print_vm_areas(&data->areas, THREAD); });
-                LOG(THREAD, LOG_VMAREAS, 2, "Removing shared vm area "PFX"-"PFX"\n",
+                LOG(THREADGET, LOG_VMAREAS, 3, "Before removing vm area:\n");
+                DOLOG(3, LOG_VMAREAS, { print_vm_areas(&data->areas, THREADGET); });
+                LOG(THREADGET, LOG_VMAREAS, 2, "Removing shared vm area "PFX"-"PFX"\n",
                     data->areas.buf[i].start, data->areas.buf[i].end);
                 remove_vm_area(&data->areas, data->areas.buf[i].start,
                                data->areas.buf[i].end, false);
-                LOG(THREAD, LOG_VMAREAS, 3, "After removing vm area:\n");
-                DOLOG(3, LOG_VMAREAS, { print_vm_areas(&data->areas, THREAD); });
+                LOG(THREADGET, LOG_VMAREAS, 3, "After removing vm area:\n");
+                DOLOG(3, LOG_VMAREAS, { print_vm_areas(&data->areas, THREADGET); });
             }
         }
     }
@@ -9025,7 +9114,7 @@ vm_area_unlink_fragments(dcontext_t *dcontext, app_pc start, app_pc end,
         mutex_unlock(&shared_delete_lock);
     }
     
-    LOG(THREAD, LOG_FRAGMENT|LOG_VMAREAS, 2, "  Unlinked %d frags\n", num);
+    LOG(THREADGET, LOG_FRAGMENT|LOG_VMAREAS, 2, "  Unlinked %d frags\n", num);
     return num;
 }
 
@@ -10164,6 +10253,10 @@ handle_modified_code(dcontext_t *dcontext, cache_pc instr_cache_pc,
                 "\twrote to "PFX"-"PFX"\n",
                 instr_app_pc, bb_start, bb_end, target, target+opnd_size);
             SYSLOG_INTERNAL_WARNING_ONCE("self-modifying code.");
+            DO_ONCE({
+                print_file(STDERR, "self-modifying code.\n");
+                post_self_mod = true;
+            });
             /* can leave non-intersection part of instr pages as executable,
              * no need to flush them
              */
