@@ -3337,6 +3337,10 @@ fragment_remove_shared_no_flush(dcontext_t *dcontext, fragment_t *f)
      * invalidation, so that users of vm_area_add_to_list() can rely on this
      * flag to determine validity
      */
+    if (TEST(f->flags, FRAG_IS_TRACE)) {
+        //print_file(STDERR, "%s:%d: marking trace "PFX" tag "PFX" deleted\n",
+                   //__FILE__, __LINE__, f, f->tag);
+    }
     f->flags |= FRAG_WAS_DELETED;
 
     release_vm_areas_lock(dcontext, f->flags);
@@ -3436,6 +3440,10 @@ fragment_unlink_for_deletion(dcontext_t *dcontext, fragment_t *f)
      * additionally the flag indicates that translation info was allocated
      * for this fragment.
      */
+    if (TEST(f->flags, FRAG_IS_TRACE)) {
+        //print_file(STDERR, "%s:%d: marking trace "PFX" tag "PFX" deleted\n",
+                   //__FILE__, __LINE__, f, f->tag);
+    }
     f->flags |= FRAG_WAS_DELETED;
 
     /* the original app code cannot be used to recreate state, so we must

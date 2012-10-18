@@ -4094,6 +4094,9 @@ master_signal_handler_C(byte *xsp)
             is_DR_exception = true;
         }
         if (is_DR_exception) {
+            print_file(STDERR,
+                "** Received SIG%s at DR pc "PFX" in thread %d\n",
+                (sig == SIGSEGV) ? "SEGV" : "BUS", pc, get_thread_id());
             /* kill(getpid(), SIGSEGV) looks just like a SIGSEGV in the store of eax
              * to mcontext after the syscall instr in do_syscall -- try to distinguish:
              */
@@ -4148,7 +4151,8 @@ master_signal_handler_C(byte *xsp)
             }
         }
         /* pass it to the application (or client) */
-        LOG(THREAD, LOG_ALL, 1,
+        //LOG(THREAD, LOG_ALL, 1,
+        print_file(STDERR,
             "** Received SIG%s at cache pc "PFX" in thread %d\n",
             (sig == SIGSEGV) ? "SEGV" : "BUS", pc, get_thread_id());
         ASSERT(syscall_signal || safe_is_in_fcache(dcontext, pc, (byte *)sc->SC_XSP));
