@@ -9025,6 +9025,10 @@ vm_area_unlink_fragments(dcontext_t *dcontext, app_pc start, app_pc end,
                     data->areas.buf[i].start, data->areas.buf[i].end,
                     start, end);                    
             }
+            /* FIXME i#942: Why is this necessary?  Someone somewhere is
+             * breaking the invariant that a fragment isn't on the same vmarea
+             * list twice.  Hypothesis is that it has to do with sandbox2ro.
+             */
             vm_area_clean_fraglist(dcontext, &data->areas.buf[i]);
             ASSERT(!TEST(FRAG_COARSE_GRAIN, data->areas.buf[i].frag_flags));
             for (entry = data->areas.buf[i].custom.frags; entry != NULL; entry = next) {
