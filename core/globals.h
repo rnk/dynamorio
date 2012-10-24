@@ -1014,4 +1014,7 @@ int tolower(int c);
 #  define modify_ldt   modify_ldt_forbidden_function
 #endif
 
+bool check_all_exec_vm_areas_lock(dcontext_t *dcontext);
+bool check_all_exec_vm_areas(dcontext_t *dcontext);
+
 #endif /* _GLOBALS_H_ */

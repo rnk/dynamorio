@@ -128,7 +128,7 @@ if (UNIX)
       file(RELATIVE_PATH relpath "${tgt_path}" "${lib_path}")
 
       # Append the new rpath element if it isn't there already.
-      set(new_lflag "-Wl,-rpath='$$ORIGIN/${relpath}'")
+      set(new_lflag "-Wl,-rpath='$ORIGIN/${relpath}'")
       get_target_property(lflags ${target} LINK_FLAGS)
       if (NOT lflags MATCHES new_lflag)
         append_property_string(TARGET ${target} LINK_FLAGS "${new_lflag}")

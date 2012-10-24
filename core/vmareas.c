@@ -466,6 +466,8 @@ vmvector_free_vector(dcontext_t *dcontext, vm_area_vector_t *v);
 static void
 vm_area_clean_fraglist(dcontext_t *dcontext, vm_area_t *area);
 static bool
+is_vmarea_fraglist_clean(vm_area_t *area);
+static bool
 lookup_addr(vm_area_vector_t *v, app_pc addr, vm_area_t **area);
 #if defined(DEBUG) && defined(INTERNAL)
 static void
@@ -1241,6 +1243,13 @@ add_vm_area(vm_area_vector_t *v, app_pc start, app_pc end,
         }
     }
     DOLOG(5, LOG_VMAREAS, { print_vm_areas(v, GLOBAL); });
+    /* NOCHECKIN: Super spense. */
+    //if (TEST(VECTOR_FRAGMENT_LIST, v->flags)) {
+        //for (i = 0; i < v->length; i++) {
+            //ASSERT(is_vmarea_fraglist_clean(&v->buf[i]));
+        //}
+    //}
+    ASSERT(check_all_exec_vm_areas(GLOBAL_DCONTEXT));
 }
 
 static void
@@ -1451,6 +1460,11 @@ remove_vm_area(vm_area_vector_t *v, app_pc start, app_pc end, bool restore_prot)
                     _IF_DEBUG(new_area.comment));
     }
     DOLOG(5, LOG_VMAREAS, { print_vm_areas(v, GLOBAL); });
+    //if (TEST(VECTOR_FRAGMENT_LIST, v->flags)) {
+        //for (i = 0; i < v->length; i++) {
+            //ASSERT(is_vmarea_fraglist_clean(&v->buf[i]));
+        //}
+    //}
     return true;
 }
 
@@ -8441,6 +8455,90 @@ remove_fraglist_entry(dcontext_t *dcontext, fragment_t *entry, vm_area_t *area)
         SHARED_VECTOR_RWLOCK(vector, write, unlock);
 }
 
+#ifdef DEBUG
+bool
+check_all_exec_vm_areas(dcontext_t *dcontext)
+{
+    uint i;
+    thread_data_t *data = GET_DATA(dcontext, 0);
+    vm_area_vector_t *v = &data->areas;
+    if (!dynamo_initialized)
+        return true;
+    if (TEST(VECTOR_FRAGMENT_LIST, v->flags)) {
+        for (i = 0; i < v->length; i++) {
+            if (!is_vmarea_fraglist_clean(&v->buf[i])) {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+bool
+check_all_exec_vm_areas_lock(dcontext_t *dcontext)
+{
+    bool r;
+    if (!dynamo_initialized)
+        return true;
+    read_lock(&executable_areas->lock);
+    r = check_all_exec_vm_areas(GLOBAL_DCONTEXT);
+    read_unlock(&executable_areas->lock);
+    return r;
+}
+
+#define CHECK_CLEAN(cond) do { \
+    if (!(cond)) { \
+        print_file(STDERR, "CHECK_CLEAN: %s:%d: %s\n", __FILE__, __LINE__, #cond); \
+        return false; \
+    } \
+} while (0)
+
+/* For every multi_entry_t fragment in the fraglist, make sure that neither the
+ * real fragment nor any of the other also fragments are in the same fraglist.
+ * This can happen after a merger, or maybe a flush.
+ */
+static bool
+is_vmarea_fraglist_clean(vm_area_t *area)
+{
+    fragment_t *entry;
+    for (entry = area->custom.frags; entry != NULL; entry = FRAG_NEXT(entry)) {
+        if (FRAG_MULTI(entry)) {
+            fragment_t *f = FRAG_FRAG(entry);
+            // FIXME: Why can't I get frag?  seems to be invalid sometimes, a
+            // real tag, not a fragment.
+            //fragment_t *also = FRAG_ALSO(f);
+            fragment_t *also = FRAG_ALSO(entry);
+            CHECK_CLEAN(f != FRAG_NEXT(entry));
+            /* Iterate the also list.  All elements should be outside the
+             * current area, or they should be the multi_entry_t that we're
+             * currently looking at.
+             */
+            while (also != NULL) {
+                uint dummy;
+                if (!safe_read(also, 4, &dummy)) {
+                    print_file(STDERR, "also: %p\n", also);
+                    os_read(STDIN, &dummy, 1);
+                }
+                CHECK_CLEAN(FRAG_MULTI(also));
+                app_pc pc = ((multi_entry_t*)also)->pc;
+                if (!(also == entry || !(pc >= area->start && pc < area->end))) {
+                    print_file(STDERR, "also == entry: %d\n", also == entry);
+                    print_file(STDERR, "  "PFX" start\n  "PFX" pc\n  "PFX" end\n",
+                               area->start, pc, area->end);
+                }
+                CHECK_CLEAN(also == entry || !(pc >= area->start && pc < area->end));
+                also = FRAG_ALSO(also);
+            }
+            /* If we have a multi entry for a fragment, the fragment itself
+             * shouldn't be in the same area and on the same list.
+             */
+            CHECK_CLEAN(!(!FRAG_MULTI_INIT(entry) && f->tag >= area->start && f->tag < area->end));
+        }
+    }
+    return true;
+}
+#endif /* DEBUG */
+
 /* Removes redundant also entries in area's frags list
  * (viz., those also entries that are now in same area as frag)
  * Meant to be called after merging areas
@@ -8462,6 +8560,7 @@ vm_area_clean_fraglist(dcontext_t *dcontext, vm_area_t *area)
          */
         if (FRAG_MULTI(entry)) {
             f = FRAG_FRAG(entry);
+            ASSERT(f != next);
             /* Remove later also entries first */
             also = FRAG_ALSO(entry);
             also_prev = entry;
@@ -8493,6 +8592,7 @@ vm_area_clean_fraglist(dcontext_t *dcontext, vm_area_t *area)
         }
     }
     DOLOG(6, LOG_VMAREAS, { print_fraglist(dcontext, area, "after cleaning "); });
+    //ASSERT(is_vmarea_fraglist_clean(area));
 }
 
 void
@@ -8971,6 +9071,7 @@ vm_area_unlink_fragments(dcontext_t *dcontext, app_pc start, app_pc end,
     thread_data_t *data = GET_DATA(dcontext, 0);
     fragment_t *entry, *next, *prev;
     int num = 0, i;
+    //check_all_exec_vm_areas(dcontext);
     if (data == shared_data) {
         /* we also need to add to the deletion list */
         mutex_lock(&shared_delete_lock);
@@ -9031,6 +9132,11 @@ vm_area_unlink_fragments(dcontext_t *dcontext, app_pc start, app_pc end,
              */
             vm_area_clean_fraglist(dcontext, &data->areas.buf[i]);
             ASSERT(!TEST(FRAG_COARSE_GRAIN, data->areas.buf[i].frag_flags));
+            /* FIXME i#942: Why is this necessary?  Someone somewhere is
+             * breaking the invariant that a fragment isn't on the same vmarea
+             * list twice.  Hypothesis is that it has to do with sandbox2ro.
+             */
+            //ASSERT(is_vmarea_fraglist_clean(&data->areas.buf[i]));
             for (entry = data->areas.buf[i].custom.frags; entry != NULL; entry = next) {
                 fragment_t *f = FRAG_FRAG(entry);
                 prev = FRAG_PREV(entry);
@@ -9231,6 +9337,7 @@ vm_area_unlink_fragments(dcontext_t *dcontext, app_pc start, app_pc end,
     }
     
     if (data == shared_data) {
+        //ASSERT(check_all_exec_vm_areas(GLOBAL_DCONTEXT));
         SHARED_VECTOR_RWLOCK(&data->areas, write, unlock);
         release_recursive_lock(&change_linking_lock);
         mutex_unlock(&shared_delete_lock);
@@ -10220,6 +10327,7 @@ handle_modified_code(dcontext_t *dcontext, cache_pc instr_cache_pc,
     SYSLOG_INTERNAL_WARNING_ONCE("writing to executable region.");
     STATS_INC(num_write_faults);
     read_lock(&executable_areas->lock);
+    //ASSERT(check_all_exec_vm_areas(GLOBAL_DCONTEXT));
     lookup_addr(executable_areas, (app_pc)target, &a);
     if (a == NULL) {
         LOG(THREAD, LOG_VMAREAS, 1,
@@ -10590,6 +10698,9 @@ handle_modified_code(dcontext_t *dcontext, cache_pc instr_cache_pc,
      * FIXME - Redoing the write would be more efficient then going back to
      * dispatch and should be the common case. */
     flush_fragments_in_region_finish(dcontext, false /*don't keep initexit_lock*/);
+    //read_lock(&executable_areas->lock);
+    //ASSERT(check_all_exec_vm_areas(GLOBAL_DCONTEXT));
+    //read_unlock(&executable_areas->lock);
     return instr_app_pc;
 }
 
@@ -10655,6 +10766,8 @@ vm_area_selfmod_check_clear_exec_count(dcontext_t *dcontext, fragment_t *f)
     bool convert_s2ro = true;
     if (DYNAMO_OPTION(sandbox2ro_threshold) == 0)
         return false;
+
+    ASSERT(check_all_exec_vm_areas_lock(GLOBAL_DCONTEXT));
 
     /* NOTE - we could only grab the readlock here.  Even though we're going to
      * write to selfmod_execs count, it's not really protected by the written_areas
@@ -10789,6 +10902,7 @@ vm_area_selfmod_check_clear_exec_count(dcontext_t *dcontext, fragment_t *f)
 
     flush_fragments_in_region_finish(dcontext,
                                      false /*don't keep initexit_lock*/);
+    ASSERT(check_all_exec_vm_areas_lock(GLOBAL_DCONTEXT));
     return true;
 }
 
