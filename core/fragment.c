@@ -55,6 +55,9 @@
 # include "nudge.h"
 #endif
 
+bool check_all_exec_vm_areas(dcontext_t *dcontext);
+bool check_all_exec_vm_areas_lock(dcontext_t *dcontext);
+
 /* FIXME: make these runtime parameters */
 #define INIT_HTABLE_SIZE_SHARED_BB    (DYNAMO_OPTION(coarse_units) ? 5 : 10)
 #define INIT_HTABLE_SIZE_SHARED_TRACE 10
@@ -6699,6 +6702,8 @@ flush_fragments_unlink_shared(dcontext_t *dcontext, app_pc base, size_t size,
          * back to flush_invalidate_ibl_shared_target to remove shared
          * fragments from private/shared ibl tables
          */
+        //ASSERT(check_all_exec_vm_areas(GLOBAL_DCONTEXT));
+
         if (list == NULL) {
             shared_flushed =
                 vm_area_unlink_fragments(GLOBAL_DCONTEXT, base, base + size,
@@ -6910,6 +6915,7 @@ flush_fragments_in_region_start(dcontext_t *dcontext, app_pc base, size_t size,
                                 _IF_DGCDIAG(app_pc written_pc))
 {
     KSTART(flush_region);
+    ASSERT(check_all_exec_vm_areas(GLOBAL_DCONTEXT));
     while (true) {
         if (flush_fragments_synch_unlink_priv(dcontext, base, size, own_initexit_lock,
                                               exec_invalid, force_synchall
@@ -6959,6 +6965,7 @@ void
 flush_fragments_and_remove_region(dcontext_t *dcontext, app_pc base, size_t size,
                                   bool own_initexit_lock, bool free_futures)
 {
+    //ASSERT(check_all_exec_vm_areas(GLOBAL_DCONTEXT));
     flush_fragments_in_region_start(dcontext, base, size, own_initexit_lock,
                                     free_futures, true/*exec invalid*/,
                                     false/*don't force synchall*/ _IF_DGCDIAG(NULL));
@@ -6983,6 +6990,7 @@ flush_fragments_from_region(dcontext_t *dcontext, app_pc base, size_t size,
     /* we pass false to flush_fragments_in_region_start() below for owning the initexit
      * lock */
     ASSERT_DO_NOT_OWN_MUTEX(true, &thread_initexit_lock);
+    //ASSERT(check_all_exec_vm_areas(GLOBAL_DCONTEXT));
 
     /* ok to call on non-exec region, so don't need to test return value
      * both flush routines will return quickly if nothing to flush/was flushed */
@@ -7003,6 +7011,7 @@ invalidate_code_cache()
 {
     dcontext_t *dcontext = get_thread_private_dcontext();
     LOG(GLOBAL, LOG_FRAGMENT, 2, "invalidate_code_cache()\n");
+    //ASSERT(check_all_exec_vm_areas(GLOBAL_DCONTEXT));
     flush_fragments_in_region_start(dcontext, UNIVERSAL_REGION_BASE,
                                     UNIVERSAL_REGION_SIZE,
                                     false, true /* remove futures */,

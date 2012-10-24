@@ -58,6 +58,7 @@
  */
 extern bool mangle_trace(dcontext_t *dcontext, instrlist_t *ilist, monitor_data_t *md);
 #endif
+bool check_all_exec_vm_areas_lock(dcontext_t *dcontext);
 
 /* SPEC2000 applu has a trace head entry fragment of size 40K! */
 /* streamit's fft had a 944KB bb (ridiculous unrolling) */
@@ -1252,6 +1253,8 @@ end_and_emit_trace(dcontext_t *dcontext, fragment_t *cur_f)
      * to a trace b/c traces have prefixes that basic blocks don't!
      */
 
+    ASSERT(check_all_exec_vm_areas_lock(GLOBAL_DCONTEXT));
+
     DOSTATS({
         /* static count last_exit statistics case 4817 */
         if (LINKSTUB_INDIRECT(dcontext->last_exit->flags)) {
@@ -1671,6 +1674,9 @@ end_and_emit_trace(dcontext_t *dcontext, fragment_t *cur_f)
 #endif
 
  end_and_emit_trace_return:
+
+    ASSERT(check_all_exec_vm_areas_lock(GLOBAL_DCONTEXT));
+
     if (cur_f == NULL && cur_f_tag == tag)
         return trace_f;
     else {
