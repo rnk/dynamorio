@@ -885,6 +885,11 @@ get_application_name_helper(bool ignore_cache, bool full_path)
             strncpy(executable_path, read_proc_self_exe(ignore_cache),
                     BUFFER_SIZE_ELEMENTS(executable_path));
             NULL_TERMINATE_BUFFER(executable_path);
+            /* FIXME: Fall back on /proc/self/cmdline and maybe argv[0] from
+             * _init().
+             */
+            ASSERT(strlen(executable_path) > 0 &&
+                   "readlink /proc/self/exe failed");
         }
     }
 
