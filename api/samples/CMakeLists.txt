@@ -154,6 +154,8 @@ foreach (src ${srcs})
     endif ()
     if ("${tgt}" STREQUAL "wrap")
       use_DynamoRIO_extension(${tgt} drwrap)
+      # XXX i#893: drwrap's asm isn't SEH compliant.
+      append_property_string(TARGET ${tgt} LINK_FLAGS "/safeseh:no")
     endif ()
     if ("${tgt}" STREQUAL "memtrace")
       use_DynamoRIO_extension(${tgt} drmgr)
