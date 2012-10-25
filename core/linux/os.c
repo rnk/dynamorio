@@ -7518,7 +7518,8 @@ read_proc_self_exe(bool ignore_cache)
         NULL_TERMINATE_BUFFER(exepath);
         /* i#960: readlink does not null terminate, so we do it. */
         res = dynamorio_syscall(SYS_readlink, 3, exepath, exepath,
-                                BUFFER_SIZE_BYTES(exepath)-1);
+                                BUFFER_SIZE_ELEMENTS(exepath)-1);
+        ASSERT(res < BUFFER_SIZE_ELEMENTS(exepath));
         exepath[MAX(res, 0)] = '\0';
         NULL_TERMINATE_BUFFER(exepath);
     }
