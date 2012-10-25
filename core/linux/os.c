@@ -7490,7 +7490,8 @@ get_dynamorio_library_path(void)
 }
 
 #ifdef HAVE_PROC_MAPS
-/* Get full path+name of executable file from /proc/self/exe.
+/* Get full path+name of executable file from /proc/self/exe.  Returns an empty
+ * string on error.
  * FIXME i#47: This will return DR's path when using early injection.
  */
 static char *
@@ -7510,9 +7511,10 @@ read_proc_self_exe(bool ignore_cache)
                      "/proc/%d/exe", get_process_id());
         ASSERT(len > 0);
         NULL_TERMINATE_BUFFER(exepath);
+        /* i#960: readlink does not null terminate, so we do it. */
         res = dynamorio_syscall(SYS_readlink, 3, exepath, exepath,
-                                BUFFER_SIZE_BYTES(exepath));
-        ASSERT(res > 0);
+                                BUFFER_SIZE_BYTES(exepath)-1);
+        exepath[MAX(res, 0)] = '\0';
         NULL_TERMINATE_BUFFER(exepath);
     }
     return exepath;
