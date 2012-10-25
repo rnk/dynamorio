@@ -156,6 +156,9 @@ Further non-compatibility-affecting changes include:
  - Added dr_inject_prepare_to_exec() on Linux
  - Added drsym_free_resources()
  - Added drsym_module_has_symbols()
+ - Added a type_id field to drsym_info_t (without compatibility changes)
+ - Added drsym_enumerate_symbols_ex() and drsym_search_symbols_ex() which
+   return drsym_info_t on each symbol
  - Added dr_exit_process() to cleanly shut down with a specified
    exit code
  - Added dr_convert_handle_to_pid()
@@ -197,6 +200,8 @@ Further non-compatibility-affecting changes include:
    opnd_get_mem_instr_disp()
  - Added DYNAMORIO_CONFIGDIR alternative to HOME as a config dir location.
    Additionally, drrun uses a temp dir for config files rather than failing.
+ - Added library search path control via the client_basename.drpath file
+ - Added drmgr_register_pre_syscall_event_ex()
  - Deprecated dr_save_arith_flags() and dr_restore_arith_flags()
  - Fixed performance regression involving inlined clean calls
  - Fixed bug involving 32-bit Linux support on a 64-bit Linux
