@@ -253,7 +253,6 @@ our_vsscanf(const char *str, const char *fmt, va_list ap)
             switch (c) {
             /* Modifiers, should all continue the loop. */
             case 'l':
-                ASSERT(int_size != SZ_LONGLONG && "too many longs");
                 if (int_size == SZ_LONG)
                     int_size = SZ_LONGLONG;
                 else
@@ -301,8 +300,8 @@ our_vsscanf(const char *str, const char *fmt, va_list ap)
                 spec = SPEC_STRING;
                 goto spec_done;
             default:
-                ASSERT(false && "unknown specifier");
-                return num_parsed;
+                CLIENT_ASSERT(false, "dr_sscanf: unknown specifier");
+                return num_parsed;  /* error */
             }
         }
 spec_done:
@@ -354,14 +353,17 @@ spec_done:
                     *va_arg(ap, long *) = (long)res;
                 else if (int_size == SZ_LONGLONG)
                     *va_arg(ap, long long *) = (long long)res;
-                else
+                else {
                     ASSERT_NOT_REACHED();
+                    return num_parsed;
+                }
             }
             break;
         }
         default:
             /* Format parsing code above should return an error earlier. */
             ASSERT_NOT_REACHED();
+            return num_parsed;
         }
 
         if (!is_ignored)
