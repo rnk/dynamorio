@@ -3281,6 +3281,42 @@ DR_API
 int
 dr_vsnwprintf(wchar_t *buf, size_t max, const wchar_t *fmt, va_list ap);
 
+DR_API
+/**
+ * Utility routine to parse strings that match a pre-defined format string,
+ * similar to the sscanf() C routine.
+ *
+ * The benefit of using dr_sscanf() over native sscanf() is that DR's
+ * implementation is standalone, signal-safe, and cross-platform.  On Linux,
+ * sscanf() has been observed to call malloc().  On Windows, sscanf() will call
+ * strlen(), which can break when using mapped files.
+ *
+ * Supported format specifiers:
+ * - %s: Matches a sequence of non-whitespace, non-null characters, and stores
+ *   them in the passed-in buffer.  Use with a width specifier to avoid buffer
+ *   overflow.
+ * - %c: Matches any single character.
+ * - %d: Matches a signed decimal integer.
+ * - %u: Matches an unsigned decimal integer.
+ * - %x: Matches an unsigned hexadecimal integer, with or without a leading 0x.
+ * - %p: Matches a pointer-sized hexadecimal integer as %x does.
+ * - %%: Matches literal % character, does not store output.
+ *
+ * Supported format modifiers:
+ * - *: The * modifier causes the scan to match the specifier, but not store any
+ *   output.  No output parameter is consumed for this specifier, and one should
+ *   not be passed.
+ * - 0-9: A decimal integer preceding the specifier gives the width to match.
+ *   For strings, this indicates the maximum number of characters to copy.  For
+ *   integers, this indicates the maximum number of digits to parse.
+ * - l, ll: For an integer specifier, marks the integer as long or long long.
+ * - h: For an integer specifier, marks the integer as short.
+ *
+ * \warning dr_sscanf() does \em not support parsing floating point numbers yet.
+ */
+int
+dr_sscanf(const char *str, const char *fmt, ...);
+
 DR_API 
 /** Prints \p msg followed by the instruction \p instr to file \p f. */
 void 

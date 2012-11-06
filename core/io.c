@@ -99,7 +99,6 @@ double2int(double d)
 #define IOX_WIDE_CHAR
 #include "iox.h"
 
-#ifdef LINUX
 /*****************************************************************************
  * Stand alone sscanf implementation.
  */
@@ -382,8 +381,6 @@ our_sscanf(const char *str, const char *fmt, ...)
     va_end(ap);
     return res;
 }
-
-#endif /* LINUX */
 
 #ifdef STANDALONE_UNIT_TEST
 # ifdef LINUX
@@ -695,12 +692,12 @@ unit_test_io(void)
     wbuf[6] = L'\0';
     EXPECT(wcscmp(wbuf, L"narrow"), 0);
 
-#ifdef LINUX
     /* sscanf tests */
     test_sscanf_maps_x86();
     test_sscanf_maps_x64();
     test_sscanf_all_specs();
 
+#ifdef LINUX
     /* memcpy tests */
     test_our_memcpy();
     our_memcpy_vs_libc();
