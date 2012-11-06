@@ -7124,6 +7124,7 @@ check_thread_vm_area(dcontext_t *dcontext, app_pc pc, app_pc tag, void **vmlist,
     DEBUG_DECLARE(char *new_area_prefix;)
 
     /* deadlock issues if write lock is held already for vmlist!=NULL case */
+    ASSERT(check_all_exec_vm_areas(GLOBAL_DCONTEXT));
     ASSERT(vmlist == NULL || !caller_execareas_writelock);
 #ifdef HOT_PATCHING_INTERFACE
     /* hotp_vul_table_lock goes hand in hand w/ executable_areas lock here */
@@ -7964,6 +7965,7 @@ check_thread_vm_area(dcontext_t *dcontext, app_pc pc, app_pc tag, void **vmlist,
                                  false/*leave bb*/, data, vmlist,
                                  own_execareas_writelock,
                                  caller_execareas_writelock);
+    ASSERT(check_all_exec_vm_areas(GLOBAL_DCONTEXT));
     return result;
 }
 

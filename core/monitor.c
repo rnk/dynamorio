@@ -1253,7 +1253,7 @@ end_and_emit_trace(dcontext_t *dcontext, fragment_t *cur_f)
      * to a trace b/c traces have prefixes that basic blocks don't!
      */
 
-    ASSERT(check_all_exec_vm_areas_lock(GLOBAL_DCONTEXT));
+    //ASSERT(check_all_exec_vm_areas_lock(GLOBAL_DCONTEXT));
 
     DOSTATS({
         /* static count last_exit statistics case 4817 */
@@ -1675,7 +1675,7 @@ end_and_emit_trace(dcontext_t *dcontext, fragment_t *cur_f)
 
  end_and_emit_trace_return:
 
-    ASSERT(check_all_exec_vm_areas_lock(GLOBAL_DCONTEXT));
+    //ASSERT(check_all_exec_vm_areas_lock(GLOBAL_DCONTEXT));
 
     if (cur_f == NULL && cur_f_tag == tag)
         return trace_f;
