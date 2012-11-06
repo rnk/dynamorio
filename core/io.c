@@ -515,6 +515,7 @@ test_sscanf_all_specs(void)
 /*****************************************************************************
  * memcpy() and memset() tests
  */
+
 # ifdef LINUX
 #  include <errno.h>
 #  include <dlfcn.h>  /* for dlsym for libc routines */
