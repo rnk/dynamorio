@@ -977,7 +977,7 @@ int our_vsnprintf_wide(wchar_t *s, size_t max, const wchar_t *fmt, va_list ap);
 #define _snwprintf our_snprintf_wide
 int our_sscanf(const char *str, const char *format, ...);
 int our_vsscanf(const char *str, const char *fmt, va_list ap);
-const char * parse_int(const char *sp, uint64 *res_out, int base, int width,
+const char * parse_int(const char *sp, uint64 *res_out, uint base, uint width,
                        bool is_signed);
 #define sscanf our_sscanf
 

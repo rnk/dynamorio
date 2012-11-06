@@ -133,11 +133,11 @@ our_isspace(int c)
 }
 
 const char *
-parse_int(const char *sp, uint64 *res_out, int base, int width, bool is_signed)
+parse_int(const char *sp, uint64 *res_out, uint base, uint width, bool is_signed)
 {
     bool negative = false;
     uint64 res = 0;
-    int i;  /* Use an index rather than pointer to compare with width. */
+    uint i;  /* Use an index rather than pointer to compare with width. */
 
     /* Check for invalid base. */
     if (base < 0 || base > 36 || base == 1) {
@@ -323,7 +323,7 @@ spec_done:
             } else {
                 char *str_out = va_arg(ap, char*);
                 if (width > 0) {
-                    int i = 0;
+                    uint i = 0;
                     while (i < width && *sp != '\0' && !our_isspace(*sp)) {
                         *str_out++ = *sp++;
                         i++;
@@ -383,23 +383,16 @@ our_sscanf(const char *str, const char *fmt, ...)
 }
 
 #ifdef STANDALONE_UNIT_TEST
-# ifdef LINUX
-#  include <errno.h>
-#  include <dlfcn.h>  /* for dlsym for libc routines */
-
-/* From dlfcn.h, but we'd have to define _GNU_SOURCE 1 before globals.h. */
-#  define RTLD_NEXT     ((void *) -1l)
-
-typedef void (*memcpy_t)(void *dst, const void *src, size_t n);
+/*****************************************************************************
+ * sscanf() tests
+ */
 
 /* Copied from core/linux/os.c and modified so that they work when run
  * cross-arch.  We need %ll to parse 64-bit ints on 32-bit and drop the %l to
  * parse 32-bit ints on x64.
  */
-#  define UI64 UINT64_FORMAT_CODE
-#  define HEX64 INT64_FORMAT"x"
-#  define MAPS_LINE_FORMAT4 "%08x-%08x %s %08x %*s %"UI64" %4096s"
-#  define MAPS_LINE_FORMAT8 "%016"HEX64"-%016"HEX64" %s %016"HEX64" %*s %"UI64" %4096s"
+# define MAPS_LINE_FORMAT4 "%08x-%08x %s %08x %*s %llu %4096s"
+# define MAPS_LINE_FORMAT8 "%016llx-%016llx %s %016llx %*s %llu %4096s"
 
 static void
 test_sscanf_maps_x86(void)
@@ -516,6 +509,18 @@ test_sscanf_all_specs(void)
      * integers that overflow their requested integer sizes.
      */
 }
+
+/*****************************************************************************
+ * memcpy() and memset() tests
+ */
+# ifdef LINUX
+#  include <errno.h>
+#  include <dlfcn.h>  /* for dlsym for libc routines */
+
+/* From dlfcn.h, but we'd have to define _GNU_SOURCE 1 before globals.h. */
+#  define RTLD_NEXT     ((void *) -1l)
+
+typedef void (*memcpy_t)(void *dst, const void *src, size_t n);
 
 static void
 test_memcpy_offset_size(size_t src_offset, size_t dst_offset, size_t size)
