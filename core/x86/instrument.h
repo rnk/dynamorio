@@ -3310,7 +3310,7 @@ DR_API
  * - \%u: Matches an unsigned decimal integer.
  * - \%x: Matches an unsigned hexadecimal integer, with or without a leading 0x.
  * - \%p: Matches a pointer-sized hexadecimal integer as %x does.
- * - \%%: Matches literal % character, does not store output.
+ * - \%%: Matches a literal % character.  Does not store output.
  *
  * Supported format modifiers:
  * - *: The * modifier causes the scan to match the specifier, but not store any

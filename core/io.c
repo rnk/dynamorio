@@ -253,12 +253,21 @@ our_vsscanf(const char *str, const char *fmt, va_list ap)
             switch (c) {
             /* Modifiers, should all continue the loop. */
             case 'l':
-                if (int_size == SZ_LONG)
-                    int_size = SZ_LONGLONG;
-                else
+                if (int_size == SZ_INT) {
                     int_size = SZ_LONG;
-                continue;
+                } else if (int_size == SZ_LONG) {
+                    int_size = SZ_LONGLONG;
+                } else {
+                    CLIENT_ASSERT(int_size != SZ_SHORT,
+                                  "dr_sscanf: can't use %hl modifier");
+                    CLIENT_ASSERT(int_size != SZ_LONGLONG,
+                                  "dr_sscanf: too many longs (%lll)");
+                    return num_parsed;  /* error */
+                }
+                break;
             case 'h':
+                CLIENT_ASSERT(int_size == SZ_INT,
+                              "dr_sscanf: can't use %lh modifier");
                 int_size = SZ_SHORT;
                 continue;
             case '*':
@@ -272,6 +281,13 @@ our_vsscanf(const char *str, const char *fmt, va_list ap)
                  */
                 width = width * 10 + c - '0';
                 continue;
+            /* XXX: Modifiers we could add support for:
+             * - I64, I32: Windows-style integer widths.
+             * - j, z, t: C99 modifiers for intmax_t, size_t, and ptrdiff_t.
+             * - [] scan sets: These are complicated and better to avoid.
+             * - .*: For dynamically sized strings.  Not part of C scanf.
+             * - n$: Store the result into the nth pointer arg after fmt.
+             */
 
             /* Specifiers, should all break the loop. */
             case 'u':
@@ -299,6 +315,11 @@ our_vsscanf(const char *str, const char *fmt, va_list ap)
             case 's':
                 spec = SPEC_STRING;
                 goto spec_done;
+            /* XXX: Specifiers we could add support for:
+             * - o: octal integer
+             * - g, e, f: floating point
+             * - n: characters consumed so far
+             */
             default:
                 CLIENT_ASSERT(false, "dr_sscanf: unknown specifier");
                 return num_parsed;  /* error */
@@ -309,6 +330,7 @@ spec_done:
         /* Parse the string. */
         switch (spec) {
         case SPEC_CHAR:
+            /* XXX: We don't support width with %c. */
             if (!is_ignored) {
                 *va_arg(ap, char*) = *sp;
             }
