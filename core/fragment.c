@@ -6923,7 +6923,7 @@ flush_fragments_in_region_start(dcontext_t *dcontext, app_pc base, size_t size,
                                 _IF_DGCDIAG(app_pc written_pc))
 {
     KSTART(flush_region);
-    ASSERT(check_all_exec_vm_areas(GLOBAL_DCONTEXT));
+    //ASSERT(check_all_exec_vm_areas(GLOBAL_DCONTEXT));
     while (true) {
         if (flush_fragments_synch_unlink_priv(dcontext, base, size, own_initexit_lock,
                                               exec_invalid, force_synchall
@@ -6952,6 +6952,7 @@ flush_fragments_in_region_start(dcontext_t *dcontext, app_pc base, size_t size,
         flush_fragments_free_futures(base, size);
     }
 
+    //ASSERT(check_all_exec_vm_areas(GLOBAL_DCONTEXT));
     executable_areas_lock();
 }
 

@@ -5830,6 +5830,14 @@ print_frag_arealist(dcontext_t *dcontext, fragment_t *f)
 }
 #endif /* DEBUG && INTERNAL */
 
+static bool
+frag_in_area(vm_area_t *area, fragment_t *f)
+{
+    if (area == NULL)
+        return true;
+    app_pc pc = FRAG_PC(f);
+    return (pc >= area->start && pc < area->end);
+}
 
 /* adds entry to front of area's frags list 
  * caller must synchronize modification of area
@@ -5840,6 +5848,13 @@ print_frag_arealist(dcontext_t *dcontext, fragment_t *f)
 static void
 prepend_entry_to_fraglist(vm_area_t *area, fragment_t *entry)
 {
+    /* This is violated when flushing multi-vmarea fragments.
+     * Possible 942 scenario:
+     * - Execute stage 1&2 flush
+     * - Don't execute stage 3?
+     * - Do another stage 1&2 flush
+     */
+    //ASSERT(frag_in_area(area, entry));
     FRAG_NEXT_ASSIGN(entry, area->custom.frags);
     /* prev wraps around, but not next */
     if (area->custom.frags != NULL) {
@@ -7124,7 +7139,7 @@ check_thread_vm_area(dcontext_t *dcontext, app_pc pc, app_pc tag, void **vmlist,
     DEBUG_DECLARE(char *new_area_prefix;)
 
     /* deadlock issues if write lock is held already for vmlist!=NULL case */
-    ASSERT(check_all_exec_vm_areas(GLOBAL_DCONTEXT));
+    //ASSERT(check_all_exec_vm_areas(GLOBAL_DCONTEXT));
     ASSERT(vmlist == NULL || !caller_execareas_writelock);
 #ifdef HOT_PATCHING_INTERFACE
     /* hotp_vul_table_lock goes hand in hand w/ executable_areas lock here */
@@ -7965,7 +7980,7 @@ check_thread_vm_area(dcontext_t *dcontext, app_pc pc, app_pc tag, void **vmlist,
                                  false/*leave bb*/, data, vmlist,
                                  own_execareas_writelock,
                                  caller_execareas_writelock);
-    ASSERT(check_all_exec_vm_areas(GLOBAL_DCONTEXT));
+    //ASSERT(check_all_exec_vm_areas(GLOBAL_DCONTEXT));
     return result;
 }
 
@@ -8201,6 +8216,8 @@ vm_area_add_fragment(dcontext_t *dcontext, fragment_t *f, void *vmlist)
         FRAG_PREV_ASSIGN(prev, f);
     }
 
+    ASSERT(frag_in_area(area, entry));
+
     prev = FRAG_ALSO(entry);
     nonpersistent_heap_free(MULTI_ALLOC_DC(dcontext, entry->flags), entry,
                             sizeof(multi_entry_t) HEAPACCT(ACCT_VMAREA_MULTI));
@@ -8226,6 +8243,7 @@ vm_area_add_fragment(dcontext_t *dcontext, fragment_t *f, void *vmlist)
 
     DOLOG(6, LOG_VMAREAS, { print_frag_arealist(dcontext, f); });
     DOLOG(7, LOG_VMAREAS, { print_fraglists(dcontext); });
+    ASSERT(check_all_exec_vm_areas_lock(GLOBAL_DCONTEXT));
 
     /* can't release lock once done w/ prev/next values since alsos can 
      * be changed as well by vm_area_clean_fraglist()!
@@ -8417,6 +8435,7 @@ remove_fraglist_entry(dcontext_t *dcontext, fragment_t *entry, vm_area_t *area)
      * we shouldn't get here
      */
     ASSERT(!TEST(VECTOR_SHARED, vector->flags) || !TEST(FRAG_WAS_DELETED, entry->flags));
+    ASSERT(frag_in_area(area, entry));
 
     prev = FRAG_PREV(entry);
     if (FRAG_NEXT(prev) == NULL || FRAG_NEXT(entry) == NULL) {
@@ -8527,6 +8546,7 @@ is_vmarea_fraglist_clean(vm_area_t *area)
                     print_file(STDERR, "also == entry: %d\n", also == entry);
                     print_file(STDERR, "  "PFX" start\n  "PFX" pc\n  "PFX" end\n",
                                area->start, pc, area->end);
+                    disassemble_app_bb(get_thread_private_dcontext(), pc, STDERR);
                 }
                 CHECK_CLEAN(also == entry || !(pc >= area->start && pc < area->end));
                 also = FRAG_ALSO(also);
@@ -10700,9 +10720,7 @@ handle_modified_code(dcontext_t *dcontext, cache_pc instr_cache_pc,
      * FIXME - Redoing the write would be more efficient then going back to
      * dispatch and should be the common case. */
     flush_fragments_in_region_finish(dcontext, false /*don't keep initexit_lock*/);
-    //read_lock(&executable_areas->lock);
-    //ASSERT(check_all_exec_vm_areas(GLOBAL_DCONTEXT));
-    //read_unlock(&executable_areas->lock);
+    ASSERT(check_all_exec_vm_areas_lock(GLOBAL_DCONTEXT));
     return instr_app_pc;
 }
 

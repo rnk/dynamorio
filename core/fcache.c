@@ -3932,7 +3932,9 @@ fcache_flush_pending_units(dcontext_t *dcontext, fragment_t *was_I_flushed)
         if (u == unit_flushed)
             not_flushed = false;
 
+        ASSERT(check_all_exec_vm_areas(GLOBAL_DCONTEXT));
         list_add_head = chain_fragments_for_flush(dcontext, u, &list_add_tail);
+        ASSERT(check_all_exec_vm_areas(GLOBAL_DCONTEXT));
         if (list_head == NULL) {
             list_head = list_add_head;
             list_tail = list_add_tail;
