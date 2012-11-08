@@ -289,8 +289,21 @@ our_vsscanf(const char *str, const char *fmt, va_list ap)
                  */
                 width = width * 10 + c - '0';
                 continue;
+            case 'I':
+                /* We support I32 and I64 from Windows sscanf because DR exports
+                 * macros that use them.
+                 */
+                if (strncmp("32", fp, 2) == 0) {
+                    int_size = SZ_INT;
+                } else if (strncmp("64", fp, 2) == 0) {
+                    int_size = SZ_LONGLONG;
+                } else {
+                    CLIENT_ASSERT(false,
+                                  "dr_sscanf: unsupported I<width> modifier");
+                    return num_parsed;
+                }
+                break;
             /* XXX: Modifiers we could add support for:
-             * - I64, I32: Windows-style integer widths.
              * - j, z, t: C99 modifiers for intmax_t, size_t, and ptrdiff_t.
              * - [] scan sets: These are complicated and better to avoid.
              * - .*: For dynamically sized strings.  Not part of C scanf.
@@ -545,6 +558,13 @@ test_sscanf_all_specs(void)
     EXPECT(res, 2);
     EXPECT(signed_int, 123456);
     EXPECT(unsigned_int, 0x9abc);
+
+    /* Test Windows-style integer width specifiers using decimal ULLONG_MAX. */
+    res = our_sscanf("1234 18446744073709551615", "%I32d %I64d",
+                     &signed_int, &ull_num);
+    EXPECT(res, 2);
+    EXPECT(signed_int, 1234);
+    EXPECT((ull_num == ULLONG_MAX), true);
 
     /* FIXME: When parse_int has range checking, we should add tests for parsing
      * integers that overflow their requested integer sizes.
