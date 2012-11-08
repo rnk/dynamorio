@@ -549,13 +549,13 @@ bool vm_areas_exited = false;
  *
  * vmlist->|---------------|
  *         | multi_entry_t |->f---------------->/--------------------\
- * vmlist<-|---------------|<---\               |                    |
- *                               \-also_vmarea<-|                    |
- * vmlist->|---------------|                    |  real fragment     |
+ * vmlist<-|---------------|<------also_vmarea<-|                    |
+ *              |also_vmarea                    |                    |
+ * vmlist->|----V----------|                    |  real fragment     |
  *         | multi_entry_t |->f---------------->|  usually trace     |
  * vmlist<-|---------------|                    |  or follow direct  |
- *                                              |                    |
- * vmlist->|---------------|                    |                    |
+ *              |also_vmarea                    |                    |
+ * vmlist->|----V----------|                    |                    |
  *         | multi_entry_t |->f---------------->\--------------------/
  * vmlist<-|---------------|
  *
@@ -5831,7 +5831,7 @@ print_frag_arealist(dcontext_t *dcontext, fragment_t *f)
 #endif /* DEBUG && INTERNAL */
 
 static bool
-frag_in_area(vm_area_t *area, fragment_t *f)
+area_contains_frag_pc(vm_area_t *area, fragment_t *f)
 {
     if (area == NULL)
         return true;
@@ -5848,18 +5848,13 @@ frag_in_area(vm_area_t *area, fragment_t *f)
 static void
 prepend_entry_to_fraglist(vm_area_t *area, fragment_t *entry)
 {
-    /* This is violated when flushing multi-vmarea fragments.
-     * Possible 942 scenario:
-     * - Execute stage 1&2 flush
-     * - Don't execute stage 3?
-     * - Do another stage 1&2 flush
+    /* Can't assert area_contains_frag_pc() because vm_area_unlink_fragments
+     * moves all also entries onto the area fraglist that's being flushed.
      */
-    //ASSERT(frag_in_area(area, entry));
-    LOG(THREAD_GET, LOG_VMAREAS, 2,
+    LOG(THREAD_GET, LOG_VMAREAS, 4,
         "%s: putting F%d ("PFX") (%s) on vmarea "PFX"-"PFX"\n",
-        __FUNCTION__, FRAG_MULTI(entry) ? -1 : entry->id,
-        FRAG_PC(entry),
-        TEST(FRAG_SHARED, entry->flags),
+        __FUNCTION__, FRAG_ID(entry), FRAG_PC(entry),
+        TEST(FRAG_SHARED, entry->flags) ? "shared" : "private",
         area->start, area->end);
     FRAG_NEXT_ASSIGN(entry, area->custom.frags);
     /* prev wraps around, but not next */
@@ -5891,7 +5886,7 @@ prepend_fraglist(dcontext_t *dcontext, vm_area_t *area, app_pc entry_pc,
     if (prev != NULL)
         FRAG_ALSO_ASSIGN(prev, entry);
     FRAG_ALSO_ASSIGN(entry, NULL);
-    ASSERT(frag_in_area(area, entry));
+    ASSERT(area_contains_frag_pc(area, entry));
     prepend_entry_to_fraglist(area, entry);
     DOLOG(7, LOG_VMAREAS, {
         print_fraglist(dcontext, area, "after prepend_fraglist, ");
@@ -8223,7 +8218,7 @@ vm_area_add_fragment(dcontext_t *dcontext, fragment_t *f, void *vmlist)
         FRAG_PREV_ASSIGN(prev, f);
     }
 
-    ASSERT(frag_in_area(area, entry));
+    ASSERT(area_contains_frag_pc(area, entry));
 
     prev = FRAG_ALSO(entry);
     nonpersistent_heap_free(MULTI_ALLOC_DC(dcontext, entry->flags), entry,
@@ -8491,7 +8486,7 @@ remove_fraglist_entry(dcontext_t *dcontext, fragment_t *entry, vm_area_t *area)
      * we shouldn't get here
      */
     ASSERT(!TEST(VECTOR_SHARED, vector->flags) || !TEST(FRAG_WAS_DELETED, entry->flags));
-    ASSERT(frag_in_area(area, entry));
+    ASSERT(area_contains_frag_pc(area, entry));
 
     prev = FRAG_PREV(entry);
     if (FRAG_NEXT(prev) == NULL || FRAG_NEXT(entry) == NULL) {
@@ -9201,11 +9196,8 @@ vm_area_unlink_fragments(dcontext_t *dcontext, app_pc start, app_pc end,
                     data->areas.buf[i].start, data->areas.buf[i].end,
                     start, end);                    
             }
-            /* FIXME i#942: Why is this necessary?  Someone somewhere is
-             * breaking the invariant that a fragment isn't on the same vmarea
-             * list twice.  Hypothesis is that it has to do with sandbox2ro.
-             */
-            vm_area_clean_fraglist(dcontext, &data->areas.buf[i]);
+            ASSERT(is_vmarea_fraglist_clean(&data->areas.buf[i]) &&
+                   "i#942: trying to flush unclean fraglist");
             ASSERT(!TEST(FRAG_COARSE_GRAIN, data->areas.buf[i].frag_flags));
             /* FIXME i#942: Why is this necessary?  Someone somewhere is
              * breaking the invariant that a fragment isn't on the same vmarea
