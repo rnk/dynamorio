@@ -491,55 +491,6 @@ else (UNIX)
   message(STATUS "Found message compiler: ${CMAKE_MC_COMPILER}")
   mark_as_advanced(CMAKE_MC_COMPILER)
 
-  # DDKROOT env var is recommended method in our docs
-  if (NOT "$ENV{DDKROOT}" STREQUAL "")
-    set(DDK_ROOT "$ENV{DDKROOT}")
-  # Check default install path
-  elseif (EXISTS "$ENV{SYSTEMDRIVE}/WINDDK/3790.1830/")
-    set(DDK_ROOT "$ENV{SYSTEMDRIVE}/WINDDK/3790.1830/")
-  elseif (EXISTS "$ENV{SYSTEMDRIVE}/WINDDK/6000/")
-    set(DDK_ROOT "$ENV{SYSTEMDRIVE}/WINDDK/6000/")
-  elseif (EXISTS "$ENV{SYSTEMDRIVE}/WINDDK/7600.16385.1/")
-    set(DDK_ROOT "$ENV{SYSTEMDRIVE}/WINDDK/7600.16385.1/")
-  elseif (EXISTS "$ENV{ProgramFiles(x86)}/Windows Kits")
-    # just take first
-    file(GLOB subdirs "$ENV{ProgramFiles(x86)}/Windows Kits/*")
-    list(GET subdirs 0 subdir)
-    set(DDK_ROOT ${subdir})
-  endif (NOT "$ENV{DDKROOT}" STREQUAL "")
-  # Note that we want the oldest ntdll.lib for maximum compatibility.
-  # The 2003 DDK (3790.1830) or Vista WDK (6000) both have these paths:
-  if (X64)
-    if (EXISTS "${DDK_ROOT}/Lib/win8/um/x64")
-      set(NTDLL_LIB_SUBPATH Lib/win8/um/x64)
-    else ()
-      set(NTDLL_LIB_SUBPATH lib/wnet/amd64)
-    endif ()
-  else (X64)
-    # Newer WDK (7600.16385.1) does not have w2k so use wxp: if using
-    # that WDK, won't be able to run on 2K or NT.
-    if (EXISTS "${DDK_ROOT}/lib/w2k/i386")
-      set(NTDLL_LIB_SUBPATH lib/w2k/i386)
-    else ()
-      message(STATUS "(DDK/WDK for targeting Windows 2000 or earlier not found)")
-      # Win8 WDK has different path.
-      if (EXISTS "${DDK_ROOT}/Lib/win8/um/x86")
-        set(NTDLL_LIB_SUBPATH Lib/win8/um/x86)
-      else ()
-        set(NTDLL_LIB_SUBPATH lib/wxp/i386)
-      endif ()
-    endif ()
-  endif (X64)
-  # Use find_library() and not find_path() in case on LIB env var or sthg
-  find_library(NTDLL_LIBPATH ntdll.lib HINTS "${DDK_ROOT}/${NTDLL_LIB_SUBPATH}"
-    DOC "Path to ntdll.lib from either 2003 DDK (3790.1830) or Vista WDK (6000)")
-  if (NOT NTDLL_LIBPATH)
-    message(FATAL_ERROR "ntdll.lib not found: required to build")
-  endif (NOT NTDLL_LIBPATH)
-  message(STATUS "Found ntdll.lib: ${NTDLL_LIBPATH}")
-  get_filename_component(NTDLL_LIBPATH "${NTDLL_LIBPATH}" PATH)
-  link_directories(${NTDLL_LIBPATH})
-
 endif (UNIX)
 
 find_package(Perl)
@@ -836,14 +787,7 @@ endif (NOT DISABLE_WARNINGS)
 ###########################################################################
 # utility functions
 
-function (append_property_string type target name value)
-  # XXX: if we require cmake 2.8.6 we can simply use APPEND_STRING
-  get_property(cur ${type} ${target} PROPERTY ${name})
-  if (cur)
-    set(value "${cur} ${value}")
-  endif (cur)
-  set_property(${type} ${target} PROPERTY ${name} "${value}")
-endfunction (append_property_string)
+include(make/utils.cmake)
 
 ###########################################################################
 
@@ -920,6 +864,9 @@ math(EXPR VERSION_NUMBER_INTEGER
   "${VERSION_NUMBER_MAJOR}*100 + ${VERSION_NUMBER_MINOR}")
 # 3.0 broke backcompat and 3.1 was first release so it's now the oldest compat
 set(OLDEST_COMPATIBLE_VERSION "301")
+
+# i#955: a Windows version of ELF DT_RPATH where a local file stores lib paths
+set(DR_RPATH_SUFFIX "drpath")
 
 # This does a copy-if-different, so it won't trigger recompilation of
 # every single source file if no changes
@@ -1081,7 +1028,15 @@ if (BUILD_TOOLS)
 endif (BUILD_TOOLS)
 
 if (BUILD_DRGUI)
-  add_subdirectory(tools/DRgui)
+  find_package(MFC)
+  if (NOT MFC_FOUND)
+    message(STATUS "MFC not found: disabling DRgui")
+    set(BUILD_DRGUI OFF)
+  endif ()
+
+  if (BUILD_DRGUI)
+    add_subdirectory(tools/DRgui)
+  endif ()
 endif (BUILD_DRGUI)
 
 # create empty logs dir for running out of build dir
@@ -1118,7 +1073,7 @@ if (CLIENT_INTERFACE OR APP_EXPORTS)
             ${BUILD_INCLUDE}/dr_api.h)
   file(MAKE_DIRECTORY ${BUILD_INCLUDE})
   # technically only the headers in the genapi.pl list
-  file(GLOB header_files core/*.h core/*/*.h libutil/*.h core/hotpatch.c)
+  file(GLOB header_files core/*.h core/*/*.h libutil/*.h core/hotpatch.c ext/*/*.h)
   add_custom_command(
     OUTPUT ${BUILD_INCLUDE}/dr_app.h # among other files
     DEPENDS ${PROJECT_SOURCE_DIR}/core/lib/genapi.pl
@@ -1265,6 +1220,19 @@ configure_file(
   ${PROJECT_SOURCE_DIR}/make/DynamoRIOConfig.cmake.in
   ${PROJECT_BINARY_DIR}/cmake/DynamoRIOConfig.cmake
   @ONLY)
+
+# INCLUDEFILE feature
+file(READ ${PROJECT_BINARY_DIR}/cmake/DynamoRIOConfig.cmake contents)
+string(REGEX MATCHALL "\nINCLUDEFILE [^ \r\n]*" includes "${contents}")
+foreach (inc ${includes})
+  string(REGEX REPLACE "\nINCLUDEFILE " "" incfile "${inc}")
+  file(READ "${incfile}" subst)
+  # strip out copyright header, which we prefixed with "##"
+  string(REGEX REPLACE "(^|\n)##[^\n]*" "" subst "${subst}")
+  string(REGEX REPLACE "${inc}" "\n${subst}" contents "${contents}")
+endforeach (inc)
+file(WRITE ${PROJECT_BINARY_DIR}/cmake/DynamoRIOConfig.cmake "${contents}")
+
 configure_file(
   ${PROJECT_SOURCE_DIR}/make/DynamoRIOConfigVersion.cmake.in
   ${PROJECT_BINARY_DIR}/cmake/DynamoRIOConfigVersion.cmake
