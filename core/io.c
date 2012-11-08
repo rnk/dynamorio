@@ -370,6 +370,8 @@ spec_done:
             break;
         case SPEC_INT: {
             uint64 res;
+            while (*sp != '\0' && our_isspace(*sp))
+                sp++;
             sp = parse_int(sp, &res, base, width, is_signed);
             if (sp == NULL)
                 return num_parsed;
@@ -536,6 +538,13 @@ test_sscanf_all_specs(void)
     EXPECT(signed_int, 123);
     EXPECT(signed_int_2, 456);
     EXPECT(unsigned_int, 0x9ab);
+
+    /* Test skipping leading whitespace for integer conversions. */
+    res = our_sscanf(" \t123456\t\n 0x9abc", "%d%x",
+                     &signed_int, &unsigned_int);
+    EXPECT(res, 2);
+    EXPECT(signed_int, 123456);
+    EXPECT(unsigned_int, 0x9abc);
 
     /* FIXME: When parse_int has range checking, we should add tests for parsing
      * integers that overflow their requested integer sizes.
