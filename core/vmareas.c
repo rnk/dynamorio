@@ -1249,7 +1249,7 @@ add_vm_area(vm_area_vector_t *v, app_pc start, app_pc end,
             //ASSERT(is_vmarea_fraglist_clean(&v->buf[i]));
         //}
     //}
-    ASSERT(check_all_exec_vm_areas(GLOBAL_DCONTEXT));
+    //ASSERT(check_all_exec_vm_areas(GLOBAL_DCONTEXT));
 }
 
 static void
@@ -5855,6 +5855,12 @@ prepend_entry_to_fraglist(vm_area_t *area, fragment_t *entry)
      * - Do another stage 1&2 flush
      */
     //ASSERT(frag_in_area(area, entry));
+    LOG(THREAD_GET, LOG_VMAREAS, 2,
+        "%s: putting F%d ("PFX") (%s) on vmarea "PFX"-"PFX"\n",
+        __FUNCTION__, FRAG_MULTI(entry) ? -1 : entry->id,
+        FRAG_PC(entry),
+        TEST(FRAG_SHARED, entry->flags),
+        area->start, area->end);
     FRAG_NEXT_ASSIGN(entry, area->custom.frags);
     /* prev wraps around, but not next */
     if (area->custom.frags != NULL) {
@@ -5885,6 +5891,7 @@ prepend_fraglist(dcontext_t *dcontext, vm_area_t *area, app_pc entry_pc,
     if (prev != NULL)
         FRAG_ALSO_ASSIGN(prev, entry);
     FRAG_ALSO_ASSIGN(entry, NULL);
+    ASSERT(frag_in_area(area, entry));
     prepend_entry_to_fraglist(area, entry);
     DOLOG(7, LOG_VMAREAS, {
         print_fraglist(dcontext, area, "after prepend_fraglist, ");
@@ -8243,7 +8250,7 @@ vm_area_add_fragment(dcontext_t *dcontext, fragment_t *f, void *vmlist)
 
     DOLOG(6, LOG_VMAREAS, { print_frag_arealist(dcontext, f); });
     DOLOG(7, LOG_VMAREAS, { print_fraglists(dcontext); });
-    ASSERT(check_all_exec_vm_areas_lock(GLOBAL_DCONTEXT));
+    //ASSERT(check_all_exec_vm_areas_lock(GLOBAL_DCONTEXT));
 
     /* can't release lock once done w/ prev/next values since alsos can 
      * be changed as well by vm_area_clean_fraglist()!
@@ -8265,10 +8272,57 @@ release_vm_areas_lock(dcontext_t *dcontext, uint flags)
     SHARED_VECTOR_RWLOCK(&data->areas, write, unlock);
 }
 
-/* Case 8419: this routine will fail and return false if f is marked as
+#ifdef DEBUG
+static bool
+frag_also_list_areas_unique(dcontext_t *dcontext, thread_data_t *tgt_data,
+                            void **vmlist)
+{
+    fragment_t *entry;
+    fragment_t *already;
+    vm_area_t *entry_area;
+    vm_area_t *already_area;
+    bool ok;
+    for (entry = (fragment_t *) *vmlist; entry != NULL;
+         entry = FRAG_ALSO(entry)) {
+        ASSERT(FRAG_MULTI(entry));
+        ok = lookup_addr(&tgt_data->areas, FRAG_PC(entry), &entry_area);
+        ASSERT(ok);
+        /* Iterate the previous also entries and make sure they don't have the
+         * same vmarea.
+         * XXX: This is O(n^2) in the also list length, but these lists are
+         * short and the O(n) impl would require a hashtable.
+         */
+        for (already = (fragment_t *) *vmlist; already != entry;
+             already = FRAG_ALSO(already)) {
+            ASSERT(FRAG_MULTI(already));
+            ok = lookup_addr(&tgt_data->areas, FRAG_PC(already), &already_area);
+            ASSERT(ok);
+            if (entry_area == already_area)
+                return false;
+        }
+    }
+    return true;
+}
+#endif /* DEBUG */
+
+/* Creates a list of also entries for each vmarea touched by f and prepends it
+ * to vmlist.  The set of vmareas touched is computed with respect to
+ * list_flags, not f->flags.  For example, f may be thread private, but
+ * list_flags has FRAG_SHARED, as in the case of a temp private frag used for
+ * shared trace building.
+ *
+ * Case 8419: this routine will fail and return false if f is marked as
  * FRAG_WAS_DELETED, since that means f's also entries have been deleted!
  * Caller can make an atomic no-fail region by holding f's vm area lock
  * and the change_linking_lock and passing true for have_locks.
+ *
+ * FIXME: Hypothetically, could we have a bug which is the opposite of i#942?
+ * In i#942, we had a multi-area fragment where the source areas were more
+ * fragmented than the target areas.  As a result, we got duplicate also entries
+ * in the target area's fragment list.  See the loop on 'already' below to see
+ * how it is handled.  Could we have the opposite bug, where target areas are
+ * more fragmented than source?  If so, we could have a cache consistency bug,
+ * in particular for traces.
  */
 bool
 vm_area_add_to_list(dcontext_t *dcontext, app_pc tag, void **vmlist,
@@ -8318,7 +8372,8 @@ vm_area_add_to_list(dcontext_t *dcontext, app_pc tag, void **vmlist,
     /* walk f's areas */
     while (entry != NULL) {
         /* see if each of f's areas is already on trace's list */
-        ok = lookup_addr(&src_data->areas, FRAG_PC(entry), &area);
+        /* i#942: We need to check tgt_data->areas, not src_data->areas. */
+        ok = lookup_addr(&tgt_data->areas, FRAG_PC(entry), &area);
         ASSERT(ok);
         ok = false; /* whether found existing entry in area or not */
         for (already = (fragment_t *) *vmlist; already != NULL;
@@ -8360,6 +8415,7 @@ vm_area_add_to_list(dcontext_t *dcontext, app_pc tag, void **vmlist,
         }
         entry = FRAG_ALSO(entry);
     }
+    ASSERT(frag_also_list_areas_unique(dcontext, tgt_data, vmlist));
     DOLOG(6, LOG_VMAREAS, { print_frag_arealist(dcontext, (fragment_t *) *vmlist); });
     DOLOG(7, LOG_VMAREAS, { print_fraglists(dcontext); });
  vm_area_add_to_list_done:
@@ -8483,11 +8539,13 @@ check_all_exec_vm_areas(dcontext_t *dcontext)
     uint i;
     thread_data_t *data = GET_DATA(dcontext, 0);
     vm_area_vector_t *v = &data->areas;
+    ASSERT(false);  /* Problem is probably in vm_area_add_to_list, we don't need this. */
     if (!dynamo_initialized)
         return true;
     if (TEST(VECTOR_FRAGMENT_LIST, v->flags)) {
         for (i = 0; i < v->length; i++) {
             if (!is_vmarea_fraglist_clean(&v->buf[i])) {
+                print_fraglist(dcontext, &v->buf[i], "asdf ");
                 return false;
             }
         }
@@ -8535,11 +8593,6 @@ is_vmarea_fraglist_clean(vm_area_t *area)
              * currently looking at.
              */
             while (also != NULL) {
-                uint dummy;
-                if (!safe_read(also, 4, &dummy)) {
-                    print_file(STDERR, "also: %p\n", also);
-                    os_read(STDIN, &dummy, 1);
-                }
                 CHECK_CLEAN(FRAG_MULTI(also));
                 app_pc pc = ((multi_entry_t*)also)->pc;
                 if (!(also == entry || !(pc >= area->start && pc < area->end))) {
@@ -10720,7 +10773,7 @@ handle_modified_code(dcontext_t *dcontext, cache_pc instr_cache_pc,
      * FIXME - Redoing the write would be more efficient then going back to
      * dispatch and should be the common case. */
     flush_fragments_in_region_finish(dcontext, false /*don't keep initexit_lock*/);
-    ASSERT(check_all_exec_vm_areas_lock(GLOBAL_DCONTEXT));
+    //ASSERT(check_all_exec_vm_areas_lock(GLOBAL_DCONTEXT));
     return instr_app_pc;
 }
 
@@ -10787,7 +10840,7 @@ vm_area_selfmod_check_clear_exec_count(dcontext_t *dcontext, fragment_t *f)
     if (DYNAMO_OPTION(sandbox2ro_threshold) == 0)
         return false;
 
-    ASSERT(check_all_exec_vm_areas_lock(GLOBAL_DCONTEXT));
+    //ASSERT(check_all_exec_vm_areas_lock(GLOBAL_DCONTEXT));
 
     /* NOTE - we could only grab the readlock here.  Even though we're going to
      * write to selfmod_execs count, it's not really protected by the written_areas
@@ -10922,7 +10975,7 @@ vm_area_selfmod_check_clear_exec_count(dcontext_t *dcontext, fragment_t *f)
 
     flush_fragments_in_region_finish(dcontext,
                                      false /*don't keep initexit_lock*/);
-    ASSERT(check_all_exec_vm_areas_lock(GLOBAL_DCONTEXT));
+    //ASSERT(check_all_exec_vm_areas_lock(GLOBAL_DCONTEXT));
     return true;
 }
 

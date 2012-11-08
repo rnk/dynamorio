@@ -3712,7 +3712,7 @@ check_for_modified_code(dcontext_t *dcontext, cache_pc instr_cache_pc,
         translated_pc = recreate_app_pc(dcontext, instr_cache_pc, f);
         ASSERT(translated_pc != NULL);
         mutex_unlock(&thread_initexit_lock);
-        ASSERT(check_all_exec_vm_areas_lock(GLOBAL_DCONTEXT));
+        //ASSERT(check_all_exec_vm_areas_lock(GLOBAL_DCONTEXT));
         next_pc =
             handle_modified_code(dcontext, instr_cache_pc, translated_pc,
                                  target, f);

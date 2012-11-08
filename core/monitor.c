@@ -1974,12 +1974,12 @@ monitor_cache_enter(dcontext_t *dcontext, fragment_t *f)
     trace_head_counter_t *ctr;
     uint add_size = 0, prev_mangle_size = 0; /* NOTE these aren't set if end_trace */
 
-    if (!check_all_exec_vm_areas_lock(GLOBAL_DCONTEXT)) {
-        print_file(STDERR, "tag: "PFX"\n", f->tag);
-        disassemble_app_bb(dcontext, f->tag, STDERR);
-        disassemble_fragment_body(dcontext, f, STDERR);
-        ASSERT(false);
-    }
+    //if (!check_all_exec_vm_areas_lock(GLOBAL_DCONTEXT)) {
+        //print_file(STDERR, "tag: "PFX"\n", f->tag);
+        //disassemble_app_bb(dcontext, f->tag, STDERR);
+        //disassemble_fragment_body(dcontext, f, STDERR);
+        //ASSERT(false);
+    //}
 
     if (DYNAMO_OPTION(disable_traces) || f == NULL) {
         /* nothing to do */
