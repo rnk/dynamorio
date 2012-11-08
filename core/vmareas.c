@@ -8991,8 +8991,8 @@ vm_area_unlink_fragments(dcontext_t *dcontext, app_pc start, app_pc end,
         ASSERT_OWN_MUTEX(DYNAMO_OPTION(shared_deletion), &shared_cache_flush_lock);
     }
     
-    LOG(THREAD_GET, LOG_FRAGMENT|LOG_VMAREAS, 2, "vm_area_unlink_fragments "PFX".."PFX"\n",
-        start, end);
+    LOG(THREAD_GET, LOG_FRAGMENT|LOG_VMAREAS, 2,
+        "vm_area_unlink_fragments "PFX".."PFX"\n", start, end);
 
     /* walk backwards to avoid O(n^2)
      * FIXME case 9819: could use executable_area_overlap_bounds() to avoid linear walk
@@ -9100,7 +9100,8 @@ vm_area_unlink_fragments(dcontext_t *dcontext, app_pc start, app_pc end,
                 } else {
                     LOG(THREAD_GET, LOG_FRAGMENT|LOG_VMAREAS, 5,
                         "\tnot unlinking "PFX"%s F%d("PFX") (already unlinked)\n",
-                        entry, FRAG_MULTI(entry) ? " multi": "", FRAG_ID(entry), FRAG_PC(entry));
+                        entry, FRAG_MULTI(entry) ? " multi": "", FRAG_ID(entry),
+                        FRAG_PC(entry));
                 }
                 /* let recreate_fragment_ilist() know that this fragment
                  * is pending deletion and might no longer match the app's
