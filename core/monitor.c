@@ -58,7 +58,6 @@
  */
 extern bool mangle_trace(dcontext_t *dcontext, instrlist_t *ilist, monitor_data_t *md);
 #endif
-bool check_all_exec_vm_areas_lock(dcontext_t *dcontext);
 
 /* SPEC2000 applu has a trace head entry fragment of size 40K! */
 /* streamit's fft had a 944KB bb (ridiculous unrolling) */
@@ -1253,8 +1252,6 @@ end_and_emit_trace(dcontext_t *dcontext, fragment_t *cur_f)
      * to a trace b/c traces have prefixes that basic blocks don't!
      */
 
-    //ASSERT(check_all_exec_vm_areas_lock(GLOBAL_DCONTEXT));
-
     DOSTATS({
         /* static count last_exit statistics case 4817 */
         if (LINKSTUB_INDIRECT(dcontext->last_exit->flags)) {
@@ -1674,9 +1671,6 @@ end_and_emit_trace(dcontext_t *dcontext, fragment_t *cur_f)
 #endif
 
  end_and_emit_trace_return:
-
-    //ASSERT(check_all_exec_vm_areas_lock(GLOBAL_DCONTEXT));
-
     if (cur_f == NULL && cur_f_tag == tag)
         return trace_f;
     else {
@@ -1973,13 +1967,6 @@ monitor_cache_enter(dcontext_t *dcontext, fragment_t *f)
 #endif
     trace_head_counter_t *ctr;
     uint add_size = 0, prev_mangle_size = 0; /* NOTE these aren't set if end_trace */
-
-    //if (!check_all_exec_vm_areas_lock(GLOBAL_DCONTEXT)) {
-        //print_file(STDERR, "tag: "PFX"\n", f->tag);
-        //disassemble_app_bb(dcontext, f->tag, STDERR);
-        //disassemble_fragment_body(dcontext, f, STDERR);
-        //ASSERT(false);
-    //}
 
     if (DYNAMO_OPTION(disable_traces) || f == NULL) {
         /* nothing to do */

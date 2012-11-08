@@ -71,7 +71,6 @@
 #ifdef VMX86_SERVER
 # include "vmkuw.h"
 #endif
-bool check_all_exec_vm_areas_lock(dcontext_t *dcontext);
 
 /* forward declarations */
 static void
@@ -155,8 +154,6 @@ dispatch(dcontext_t *dcontext)
             dispatch_enter_native(dcontext);
             ASSERT_NOT_REACHED();
         }
-
-        //ASSERT(check_all_exec_vm_areas_lock(GLOBAL_DCONTEXT));
 
         /* Neither hotp_only nor thin_client should have any fragment 
          * fcache related work to do.

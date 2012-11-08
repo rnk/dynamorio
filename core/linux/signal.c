@@ -96,8 +96,6 @@
 
 /**** data structures ***************************************************/
 
-bool check_all_exec_vm_areas_lock(dcontext_t *dcontext);
-
 /* handler with SA_SIGINFO flag set gets three arguments: */
 typedef void (*handler_t)(int, struct siginfo *, void *);
 
@@ -3712,7 +3710,6 @@ check_for_modified_code(dcontext_t *dcontext, cache_pc instr_cache_pc,
         translated_pc = recreate_app_pc(dcontext, instr_cache_pc, f);
         ASSERT(translated_pc != NULL);
         mutex_unlock(&thread_initexit_lock);
-        //ASSERT(check_all_exec_vm_areas_lock(GLOBAL_DCONTEXT));
         next_pc =
             handle_modified_code(dcontext, instr_cache_pc, translated_pc,
                                  target, f);
@@ -4098,9 +4095,6 @@ master_signal_handler_C(byte *xsp)
             is_DR_exception = true;
         }
         if (is_DR_exception) {
-            print_file(STDERR,
-                "** Received SIG%s at DR pc "PFX" in thread %d\n",
-                (sig == SIGSEGV) ? "SEGV" : "BUS", pc, get_thread_id());
             /* kill(getpid(), SIGSEGV) looks just like a SIGSEGV in the store of eax
              * to mcontext after the syscall instr in do_syscall -- try to distinguish:
              */
@@ -4155,8 +4149,7 @@ master_signal_handler_C(byte *xsp)
             }
         }
         /* pass it to the application (or client) */
-        //LOG(THREAD, LOG_ALL, 1,
-        print_file(STDERR,
+        LOG(THREAD, LOG_ALL, 1,
             "** Received SIG%s at cache pc "PFX" in thread %d\n",
             (sig == SIGSEGV) ? "SEGV" : "BUS", pc, get_thread_id());
         ASSERT(syscall_signal || safe_is_in_fcache(dcontext, pc, (byte *)sc->SC_XSP));
