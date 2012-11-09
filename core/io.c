@@ -383,6 +383,7 @@ spec_done:
             break;
         case SPEC_INT: {
             uint64 res;
+            /* C sscanf skips leading whitespace before parsing integers. */
             while (*sp != '\0' && our_isspace(*sp))
                 sp++;
             sp = parse_int(sp, &res, base, width, is_signed);
