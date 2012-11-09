@@ -8244,6 +8244,30 @@ frag_also_list_areas_unique(dcontext_t *dcontext, thread_data_t *tgt_data,
     }
     return true;
 }
+
+static void
+exec_area_bounds_match(dcontext_t *dcontext, vm_area_vector_t *v)
+{
+    int i;
+    read_lock(&executable_areas->lock);
+    for (i = 0; i < v->length; i++) {
+        vm_area_t *thread_area = &v->buf[i];
+        vm_area_t *exec_area;
+        bool ok = lookup_addr(executable_areas, thread_area->start, &exec_area);
+        ASSERT(ok);
+        if (!(thread_area->start == exec_area->start &&
+              thread_area->end == exec_area->end)) {
+            DOLOG(1, LOG_VMAREAS, {
+                LOG(THREAD, LOG_VMAREAS, 1, "%s: bounds mismatch\n", __FUNCTION__);
+                print_vm_area(v, thread_area, STDERR, "thread area: ");
+                print_vm_area(v, exec_area, STDERR, "thread area: ");
+            });
+            ASSERT(false && "vmvector does not match exec area bounds");
+        }
+    }
+    read_unlock(&executable_areas->lock);
+}
+
 #endif /* DEBUG */
 
 /* Creates a list of also entries for each vmarea touched by f and prepends it
@@ -8302,6 +8326,10 @@ vm_area_add_to_list(dcontext_t *dcontext, app_pc tag, void **vmlist,
     ASSERT((lock && !have_locks) || (!lock && have_locks) ||
            (!TEST(VECTOR_SHARED, tgt_data->areas.flags) &&
             !TEST(VECTOR_SHARED, src_data->areas.flags)));
+    DOCHECK(CHKLVL_ASSERTS, {
+        exec_area_bounds_match(dcontext, &src_data->areas);
+        exec_area_bounds_match(dcontext, &tgt_data->areas);
+    });
     /* If deleted, the also field is invalid and we cannot handle that! */
     if (TEST(FRAG_WAS_DELETED, f->flags)) {
         success = false;
