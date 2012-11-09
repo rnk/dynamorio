@@ -131,6 +131,10 @@ enum {
      * This flags is NOT propagated on vmarea splits.
      */
     VM_ADD_TO_SHARED_DATA  = 0x1000,
+
+    /* i#942: Add a flag to prevent merging sandbox2ro areas.
+     */
+    VM_SANDBOX2RO          = 0x2000,
 };
 
 /* simple way to disable sandboxing */
@@ -461,6 +465,8 @@ vm_area_vector_t *native_exec_areas;
 static void
 vmvector_free_vector(dcontext_t *dcontext, vm_area_vector_t *v);
 
+static void
+exec_area_bounds_match(dcontext_t *dcontext, thread_data_t *data);
 static void
 vm_area_clean_fraglist(dcontext_t *dcontext, vm_area_t *area);
 static bool
@@ -7869,6 +7875,10 @@ check_thread_vm_area(dcontext_t *dcontext, app_pc pc, app_pc tag, void **vmlist,
         DOLOG(2, LOG_VMAREAS, { print_vm_area(&data->areas, local_area,
                                               THREAD, new_area_prefix); });
         DOLOG(5, LOG_VMAREAS, { print_vm_areas(&data->areas, THREAD); });
+        DOCHECK(CHKLVL_ASSERTS, {
+            LOG(THREAD, 1, LOG_VMAREAS, "checking data\n");
+            exec_area_bounds_match(dcontext, data);
+        });
     }
 
     ASSERT(local_area != NULL);
@@ -8246,8 +8256,9 @@ frag_also_list_areas_unique(dcontext_t *dcontext, thread_data_t *tgt_data,
 }
 
 static void
-exec_area_bounds_match(dcontext_t *dcontext, vm_area_vector_t *v)
+exec_area_bounds_match(dcontext_t *dcontext, thread_data_t *data)
 {
+    vm_area_vector_t *v = &data->areas;
     int i;
     read_lock(&executable_areas->lock);
     for (i = 0; i < v->length; i++) {
@@ -8255,13 +8266,24 @@ exec_area_bounds_match(dcontext_t *dcontext, vm_area_vector_t *v)
         vm_area_t *exec_area;
         bool ok = lookup_addr(executable_areas, thread_area->start, &exec_area);
         ASSERT(ok);
-        if (!(thread_area->start == exec_area->start &&
-              thread_area->end == exec_area->end)) {
-            DOLOG(1, LOG_VMAREAS, {
-                LOG(THREAD, LOG_VMAREAS, 1, "%s: bounds mismatch\n", __FUNCTION__);
-                print_vm_area(v, thread_area, STDERR, "thread area: ");
-                print_vm_area(v, exec_area, STDERR, "thread area: ");
-            });
+        /* It's OK if thread areas are more fragmented than executable_areas.
+         */
+        if (!(thread_area->start >= exec_area->start &&
+              thread_area->end <= exec_area->end)) {
+            LOG(THREAD, LOG_VMAREAS, 1,
+                "%s: bounds mismatch on %s vmvector\n", __FUNCTION__,
+                (TEST(VECTOR_SHARED, v->flags) ? "shared" : "private"));
+            print_file(STDERR,
+                "%s: bounds mismatch on %s vmvector\n", __FUNCTION__,
+                (TEST(VECTOR_SHARED, v->flags) ? "shared" : "private"));
+            print_vm_area(v, thread_area, THREAD, "thread area: ");
+            print_vm_area(v, exec_area, THREAD, "exec area: ");
+            print_vm_area(v, thread_area, STDERR, "thread area: ");
+            print_vm_area(v, exec_area, STDERR, "exec area: ");
+            print_file(THREAD, "executable_areas:\n");
+            print_vm_areas(executable_areas, THREAD);
+            print_file(THREAD, "thread areas:\n");
+            print_vm_areas(v, THREAD);
             ASSERT(false && "vmvector does not match exec area bounds");
         }
     }
@@ -8327,8 +8349,10 @@ vm_area_add_to_list(dcontext_t *dcontext, app_pc tag, void **vmlist,
            (!TEST(VECTOR_SHARED, tgt_data->areas.flags) &&
             !TEST(VECTOR_SHARED, src_data->areas.flags)));
     DOCHECK(CHKLVL_ASSERTS, {
-        exec_area_bounds_match(dcontext, &src_data->areas);
-        exec_area_bounds_match(dcontext, &tgt_data->areas);
+        LOG(THREAD, 1, LOG_VMAREAS, "checking src_data\n");
+        exec_area_bounds_match(dcontext, src_data);
+        LOG(THREAD, 1, LOG_VMAREAS, "checking tgt_data\n");
+        exec_area_bounds_match(dcontext, tgt_data);
     });
     /* If deleted, the also field is invalid and we cannot handle that! */
     if (TEST(FRAG_WAS_DELETED, f->flags)) {
@@ -8341,8 +8365,7 @@ vm_area_add_to_list(dcontext_t *dcontext, app_pc tag, void **vmlist,
     /* walk f's areas */
     while (entry != NULL) {
         /* see if each of f's areas is already on trace's list */
-        /* i#942: We need to check tgt_data->areas, not src_data->areas. */
-        ok = lookup_addr(&tgt_data->areas, FRAG_PC(entry), &area);
+        ok = lookup_addr(&src_data->areas, FRAG_PC(entry), &area);
         ASSERT(ok);
         ok = false; /* whether found existing entry in area or not */
         for (already = (fragment_t *) *vmlist; already != NULL;
@@ -10687,6 +10710,8 @@ vm_area_selfmod_check_clear_exec_count(dcontext_t *dcontext, fragment_t *f)
                  * is not a correctness problem.  Current flush impl, though,
                  * will flush whole region.
                  */
+                vm_area_t area_copy = *exec_area;  /* copy since we remove it */
+                exec_area = &area_copy;
                 LOG(THREAD, LOG_VMAREAS, 1,
                     "\tconverting "PFX"-"PFX" from sandbox to ro\n",
                     exec_area->start, exec_area->end);
@@ -10694,6 +10719,23 @@ vm_area_selfmod_check_clear_exec_count(dcontext_t *dcontext, fragment_t *f)
                 /* can't ASSERT(!TEST(VM_MADE_READONLY, area->vm_flags)) (case 7877) */
                 vm_make_unwritable(exec_area->start, exec_area->end - exec_area->start);
                 exec_area->vm_flags |= VM_MADE_READONLY;
+                /* i#942: Remove the sandboxed area and re-add it to merge it
+                 * back with any areas it used to be a part of.
+                 */
+                remove_vm_area(executable_areas, exec_area->start,
+                               exec_area->end, false /* !restore_prot */);
+                ok = add_executable_vm_area(exec_area->start, exec_area->end,
+                                            exec_area->vm_flags,
+                                            exec_area->frag_flags,
+                                            true /*own lock */
+                                            _IF_DEBUG("selfmod replacement"));
+                ASSERT(ok);
+                /* Re-do the lookup in case of merger. */
+                ok = lookup_addr(executable_areas, f->tag, &exec_area);
+                ASSERT(ok);
+                /* XXX NOCHECKIN: We need to go update all the thread areas to
+                 * be consistent!?  How can we do that without re-synching?
+                 */
                 LOG(THREAD, LOG_VMAREAS, 3,
                     "After marking "PFX"-"PFX" as NOT selfmod:\n",
                     exec_area->start, exec_area->end);
@@ -11241,6 +11283,7 @@ vmvector_tests()
                         INIT_READWRITE_LOCK(thread_vm_areas)};
     bool res;
     app_pc start = NULL, end = NULL;
+    print_file(STDERR, "\nvm_area_vector_t tests\n");
     /* FIXME: not tested */
     vmvector_add(&v, INT_TO_PC(0x100), INT_TO_PC(0x103), NULL);
     vmvector_add(&v, INT_TO_PC(0x200), INT_TO_PC(0x203), NULL);
@@ -11369,6 +11412,27 @@ unit_test_vmareas(void)
     add_vm_area(&v, INT_TO_PC(3), INT_TO_PC(4), 0, 0, NULL _IF_DEBUG("B"));
     print_vector_msg(&v, STDERR, "after merging with B");
     check_vec(&v, 0, INT_TO_PC(1), INT_TO_PC(5), 0, FRAG_SELFMOD_SANDBOXED, NULL);
+
+    /* clear for next test */
+    remove_vm_area(&v, INT_TO_PC(0), UNIVERSAL_REGION_END, false);
+    print_file(STDERR, "\n");
+
+    /* TEST 5: Are adjacent areas merged?
+     */
+    add_vm_area(&v, INT_TO_PC(1), INT_TO_PC(2), 0, 0, NULL _IF_DEBUG("A"));
+    add_vm_area(&v, INT_TO_PC(2), INT_TO_PC(3), 0, 0, NULL _IF_DEBUG("B"));
+    add_vm_area(&v, INT_TO_PC(3), INT_TO_PC(4), 0, 0, NULL _IF_DEBUG("C"));
+    print_vector_msg(&v, STDERR, "do areas merge");
+    check_vec(&v, 0, INT_TO_PC(1), INT_TO_PC(4), 0, 0, NULL);
+
+    remove_vm_area(&v, INT_TO_PC(1), INT_TO_PC(4), false);
+    add_vm_area(&v, INT_TO_PC(1), INT_TO_PC(2), 0, 0, NULL _IF_DEBUG("A"));
+    add_vm_area(&v, INT_TO_PC(2), INT_TO_PC(3), 0, FRAG_SELFMOD_SANDBOXED, NULL _IF_DEBUG("B"));
+    add_vm_area(&v, INT_TO_PC(3), INT_TO_PC(4), 0, 0, NULL _IF_DEBUG("C"));
+    print_vector_msg(&v, STDERR, "do areas merge with flags");
+    check_vec(&v, 0, INT_TO_PC(1), INT_TO_PC(2), 0, 0, NULL);
+    check_vec(&v, 1, INT_TO_PC(2), INT_TO_PC(3), 0, FRAG_SELFMOD_SANDBOXED, NULL);
+    check_vec(&v, 2, INT_TO_PC(3), INT_TO_PC(4), 0, 0, NULL);
 
     vmvector_tests();
 }
