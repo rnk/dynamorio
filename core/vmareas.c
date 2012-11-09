@@ -131,10 +131,6 @@ enum {
      * This flags is NOT propagated on vmarea splits.
      */
     VM_ADD_TO_SHARED_DATA  = 0x1000,
-
-    /* i#942: Add a flag to prevent merging sandbox2ro areas.
-     */
-    VM_SANDBOX2RO          = 0x2000,
 };
 
 /* simple way to disable sandboxing */
@@ -7876,7 +7872,8 @@ check_thread_vm_area(dcontext_t *dcontext, app_pc pc, app_pc tag, void **vmlist,
                                               THREAD, new_area_prefix); });
         DOLOG(5, LOG_VMAREAS, { print_vm_areas(&data->areas, THREAD); });
         DOCHECK(CHKLVL_ASSERTS, {
-            LOG(THREAD, 1, LOG_VMAREAS, "checking data\n");
+            LOG(THREAD, 1, LOG_VMAREAS,
+                "checking thread vmareas against executable_areas\n");
             exec_area_bounds_match(dcontext, data);
         });
     }
@@ -8224,6 +8221,10 @@ release_vm_areas_lock(dcontext_t *dcontext, uint flags)
 }
 
 #ifdef DEBUG
+/* i#942: Check that each also_vmarea entry in a multi-area fragment is in its
+ * own vmarea.  If a fragment is on a vmarea fragment list twice, we can end up
+ * deleting the that fragment twice while flushing.
+ */
 static bool
 frag_also_list_areas_unique(dcontext_t *dcontext, thread_data_t *tgt_data,
                             void **vmlist)
@@ -8255,6 +8256,11 @@ frag_also_list_areas_unique(dcontext_t *dcontext, thread_data_t *tgt_data,
     return true;
 }
 
+/* i#942: Check that the per-thread list of executed areas doesn't cross any
+ * executable_area boundries.  If this happens, we start adding fragments to the
+ * wrong vmarea fragment lists.  This check should be roughly O(n log n) in the
+ * number of exec areas, so not too slow to run at the assertion check level.
+ */
 static void
 exec_area_bounds_match(dcontext_t *dcontext, thread_data_t *data)
 {
@@ -8270,46 +8276,31 @@ exec_area_bounds_match(dcontext_t *dcontext, thread_data_t *data)
          */
         if (!(thread_area->start >= exec_area->start &&
               thread_area->end <= exec_area->end)) {
-            LOG(THREAD, LOG_VMAREAS, 1,
-                "%s: bounds mismatch on %s vmvector\n", __FUNCTION__,
-                (TEST(VECTOR_SHARED, v->flags) ? "shared" : "private"));
-            print_file(STDERR,
-                "%s: bounds mismatch on %s vmvector\n", __FUNCTION__,
-                (TEST(VECTOR_SHARED, v->flags) ? "shared" : "private"));
-            print_vm_area(v, thread_area, THREAD, "thread area: ");
-            print_vm_area(v, exec_area, THREAD, "exec area: ");
-            print_vm_area(v, thread_area, STDERR, "thread area: ");
-            print_vm_area(v, exec_area, STDERR, "exec area: ");
-            print_file(THREAD, "executable_areas:\n");
-            print_vm_areas(executable_areas, THREAD);
-            print_file(THREAD, "thread areas:\n");
-            print_vm_areas(v, THREAD);
-            ASSERT(false && "vmvector does not match exec area bounds");
+            DOLOG(1, LOG_VMAREAS, {
+                LOG(THREAD, LOG_VMAREAS, 1,
+                    "%s: bounds mismatch on %s vmvector\n", __FUNCTION__,
+                    (TEST(VECTOR_SHARED, v->flags) ? "shared" : "private"));
+                print_vm_area(v, thread_area, THREAD, "thread area: ");
+                print_vm_area(v, exec_area, THREAD, "exec area: ");
+                print_file(THREAD, "executable_areas:\n");
+                print_vm_areas(executable_areas, THREAD);
+                print_file(THREAD, "thread areas:\n");
+                print_vm_areas(v, THREAD);
+                ASSERT(false && "vmvector does not match exec area bounds");
+            });
         }
     }
     read_unlock(&executable_areas->lock);
 }
-
 #endif /* DEBUG */
 
 /* Creates a list of also entries for each vmarea touched by f and prepends it
- * to vmlist.  The set of vmareas touched is computed with respect to
- * list_flags, not f->flags.  For example, f may be thread private, but
- * list_flags has FRAG_SHARED, as in the case of a temp private frag used for
- * shared trace building.
+ * to vmlist.
  *
  * Case 8419: this routine will fail and return false if f is marked as
  * FRAG_WAS_DELETED, since that means f's also entries have been deleted!
  * Caller can make an atomic no-fail region by holding f's vm area lock
  * and the change_linking_lock and passing true for have_locks.
- *
- * FIXME: Hypothetically, could we have a bug which is the opposite of i#942?
- * In i#942, we had a multi-area fragment where the source areas were more
- * fragmented than the target areas.  As a result, we got duplicate also entries
- * in the target area's fragment list.  See the loop on 'already' below to see
- * how it is handled.  Could we have the opposite bug, where target areas are
- * more fragmented than source?  If so, we could have a cache consistency bug,
- * in particular for traces.
  */
 bool
 vm_area_add_to_list(dcontext_t *dcontext, app_pc tag, void **vmlist,
@@ -9016,6 +9007,10 @@ vm_area_unlink_fragments(dcontext_t *dcontext, app_pc start, app_pc end,
                          int pending_delete_threads
                          _IF_DGCDIAG(app_pc written_pc))
 {
+    /* dcontext is for another thread, so don't use THREAD to log.  Cache the
+     * logfile instead of repeatedly calling THREAD_GET.
+     */
+    LOG_DECLARE(file_t thread_log = get_thread_private_logfile();)
     thread_data_t *data = GET_DATA(dcontext, 0);
     fragment_t *entry, *next;
     int num = 0, i;
@@ -9042,7 +9037,7 @@ vm_area_unlink_fragments(dcontext_t *dcontext, app_pc start, app_pc end,
         ASSERT_OWN_MUTEX(DYNAMO_OPTION(shared_deletion), &shared_cache_flush_lock);
     }
     
-    LOG(THREAD_GET, LOG_FRAGMENT|LOG_VMAREAS, 2,
+    LOG(thread_log, LOG_FRAGMENT|LOG_VMAREAS, 2,
         "vm_area_unlink_fragments "PFX".."PFX"\n", start, end);
 
     /* walk backwards to avoid O(n^2)
@@ -9051,7 +9046,7 @@ vm_area_unlink_fragments(dcontext_t *dcontext, app_pc start, app_pc end,
     for (i = data->areas.length - 1; i >= 0; i--) {
         /* look for overlap */
         if (start < data->areas.buf[i].end && end > data->areas.buf[i].start) {
-            LOG(THREAD_GET, LOG_FRAGMENT|LOG_VMAREAS, 2,
+            LOG(thread_log, LOG_FRAGMENT|LOG_VMAREAS, 2,
                 "\tmarking region "PFX".."PFX" for deletion & unlinking all its frags\n",
                 data->areas.buf[i].start, data->areas.buf[i].end);
             data->areas.buf[i].vm_flags |= VM_DELETE_ME;
@@ -9067,7 +9062,7 @@ vm_area_unlink_fragments(dcontext_t *dcontext, app_pc start, app_pc end,
                  * if the caller holds fragment_t pointers and expects them not
                  * to be flushed (e.g., a faulting write on a read-only code region).
                  */
-                LOG(THREAD_GET, LOG_FRAGMENT|LOG_VMAREAS, 2,
+                LOG(thread_log, LOG_FRAGMENT|LOG_VMAREAS, 2,
                     "\tWARNING: region "PFX".."PFX" is larger than "
                     "flush area "PFX".."PFX"\n",
                     data->areas.buf[i].start, data->areas.buf[i].end,
@@ -9094,7 +9089,7 @@ vm_area_unlink_fragments(dcontext_t *dcontext, app_pc start, app_pc end,
                  * is already unlinked 
                  */
                 if (!TEST(FRAG_WAS_DELETED, f->flags) || data == shared_data) {
-                    LOG(THREAD_GET, LOG_FRAGMENT|LOG_VMAREAS, 5,
+                    LOG(thread_log, LOG_FRAGMENT|LOG_VMAREAS, 5,
                         "\tunlinking "PFX"%s F%d("PFX")\n",
                         entry, FRAG_MULTI(entry) ? " multi": "", FRAG_ID(entry),
                         FRAG_PC(entry));
@@ -9132,24 +9127,24 @@ vm_area_unlink_fragments(dcontext_t *dcontext, app_pc start, app_pc end,
                     if (written_pc != NULL) {
                         app_pc bb;
                         DOLOG(2, LOG_VMAREAS, {
-                            LOG(THREAD_GET, LOG_VMAREAS, 1, "Flushing F%d "PFX":\n",
+                            LOG(thread_log, LOG_VMAREAS, 1, "Flushing F%d "PFX":\n",
                                 FRAG_ID(entry), FRAG_PC(entry));
                             disassemble_fragment(dcontext, entry, false);
-                            LOG(THREAD_GET, LOG_VMAREAS, 1, "First app bb for frag:\n");
-                            disassemble_app_bb(dcontext, FRAG_PC(entry), THREAD_GET);
+                            LOG(thread_log, LOG_VMAREAS, 1, "First app bb for frag:\n");
+                            disassemble_app_bb(dcontext, FRAG_PC(entry), thread_log);
                         });
                         if (fragment_overlaps(dcontext, entry, written_pc,
                                               written_pc+1, false, NULL, &bb)) {
-                            LOG(THREAD_GET, LOG_VMAREAS, 1,
+                            LOG(thread_log, LOG_VMAREAS, 1,
                                 "Write target is actually inside app bb @"PFX":\n",
                                 written_pc);
-                            disassemble_app_bb(dcontext, bb, THREAD_GET);
+                            disassemble_app_bb(dcontext, bb, thread_log);
                         }
                     }
 #endif
                     num++;
                 } else {
-                    LOG(THREAD_GET, LOG_FRAGMENT|LOG_VMAREAS, 5,
+                    LOG(thread_log, LOG_FRAGMENT|LOG_VMAREAS, 5,
                         "\tnot unlinking "PFX"%s F%d("PFX") (already unlinked)\n",
                         entry, FRAG_MULTI(entry) ? " multi": "", FRAG_ID(entry),
                         FRAG_PC(entry));
@@ -9178,14 +9173,14 @@ vm_area_unlink_fragments(dcontext_t *dcontext, app_pc start, app_pc end,
                 /* ASSUMPTION: remove_vm_area, given exact bounds, simply shifts later
                  * areas down in vector!
                  */
-                LOG(THREAD_GET, LOG_VMAREAS, 3, "Before removing vm area:\n");
-                DOLOG(3, LOG_VMAREAS, { print_vm_areas(&data->areas, THREAD_GET); });
-                LOG(THREAD_GET, LOG_VMAREAS, 2, "Removing shared vm area "PFX"-"PFX"\n",
+                LOG(thread_log, LOG_VMAREAS, 3, "Before removing vm area:\n");
+                DOLOG(3, LOG_VMAREAS, { print_vm_areas(&data->areas, thread_log); });
+                LOG(thread_log, LOG_VMAREAS, 2, "Removing shared vm area "PFX"-"PFX"\n",
                     data->areas.buf[i].start, data->areas.buf[i].end);
                 remove_vm_area(&data->areas, data->areas.buf[i].start,
                                data->areas.buf[i].end, false);
-                LOG(THREAD_GET, LOG_VMAREAS, 3, "After removing vm area:\n");
-                DOLOG(3, LOG_VMAREAS, { print_vm_areas(&data->areas, THREAD_GET); });
+                LOG(thread_log, LOG_VMAREAS, 3, "After removing vm area:\n");
+                DOLOG(3, LOG_VMAREAS, { print_vm_areas(&data->areas, thread_log); });
             }
         }
     }
@@ -9196,7 +9191,7 @@ vm_area_unlink_fragments(dcontext_t *dcontext, app_pc start, app_pc end,
         mutex_unlock(&shared_delete_lock);
     }
     
-    LOG(THREAD_GET, LOG_FRAGMENT|LOG_VMAREAS, 2, "  Unlinked %d frags\n", num);
+    LOG(thread_log, LOG_FRAGMENT|LOG_VMAREAS, 2, "  Unlinked %d frags\n", num);
     return num;
 }
 
@@ -10733,9 +10728,6 @@ vm_area_selfmod_check_clear_exec_count(dcontext_t *dcontext, fragment_t *f)
                 /* Re-do the lookup in case of merger. */
                 ok = lookup_addr(executable_areas, f->tag, &exec_area);
                 ASSERT(ok);
-                /* XXX NOCHECKIN: We need to go update all the thread areas to
-                 * be consistent!?  How can we do that without re-synching?
-                 */
                 LOG(THREAD, LOG_VMAREAS, 3,
                     "After marking "PFX"-"PFX" as NOT selfmod:\n",
                     exec_area->start, exec_area->end);
@@ -11417,7 +11409,7 @@ unit_test_vmareas(void)
     remove_vm_area(&v, INT_TO_PC(0), UNIVERSAL_REGION_END, false);
     print_file(STDERR, "\n");
 
-    /* TEST 5: Are adjacent areas merged?
+    /* TEST 5: Test merging adjacent areas.
      */
     add_vm_area(&v, INT_TO_PC(1), INT_TO_PC(2), 0, 0, NULL _IF_DEBUG("A"));
     add_vm_area(&v, INT_TO_PC(2), INT_TO_PC(3), 0, 0, NULL _IF_DEBUG("B"));
