@@ -8398,7 +8398,8 @@ vm_area_add_to_list(dcontext_t *dcontext, app_pc tag, void **vmlist,
         }
         entry = FRAG_ALSO(entry);
     }
-    ASSERT(frag_also_list_areas_unique(dcontext, tgt_data, vmlist));
+    ASSERT_MESSAGE(CHKLVL_DEFAULT, "fragment also list has duplicate entries",
+                   frag_also_list_areas_unique(dcontext, tgt_data, vmlist));
     DOLOG(6, LOG_VMAREAS, { print_frag_arealist(dcontext, (fragment_t *) *vmlist); });
     DOLOG(7, LOG_VMAREAS, { print_fraglists(dcontext); });
  vm_area_add_to_list_done:
@@ -8519,7 +8520,7 @@ remove_fraglist_entry(dcontext_t *dcontext, fragment_t *entry, vm_area_t *area)
 /* For every multi_entry_t fragment in the fraglist, make sure that neither the
  * real fragment nor any of the other also entries are in the same fraglist.
  * This should only ever happen after a merger, at which point we call
- * vm_area_clean_fraglist() to fix it.  Any other occurance is a bug.
+ * vm_area_clean_fraglist() to fix it.  Any other occurrence is a bug.
  */
 static void
 vm_area_check_clean_fraglist(vm_area_t *area)
@@ -8531,7 +8532,7 @@ vm_area_check_clean_fraglist(vm_area_t *area)
         if (FRAG_MULTI(entry)) {
             fragment_t *f = FRAG_FRAG(entry);
             /* Ideally we'd take FRAG_ALSO(f) to start also iteration, but that
-             * pointer isn't always valid.
+             * pointer isn't valid during bb building.
              */
             fragment_t *also = FRAG_ALSO(entry);
             ASSERT(f != FRAG_NEXT(entry));
@@ -8540,13 +8541,13 @@ vm_area_check_clean_fraglist(vm_area_t *area)
              * currently looking at.
              */
             while (also != NULL) {
-                ASSERT(FRAG_MULTI(also));
                 app_pc pc = FRAG_PC(also);
-                ASSERT(also == entry || !(pc >= area->start && pc < area->end));
+                ASSERT(FRAG_MULTI(also));
+                ASSERT(also == entry || !area_contains_frag_pc(area, also));
                 also = FRAG_ALSO(also);
             }
-            /* This is a multi area entry, so the real fragment shouldn't be in
-             * this area.
+            /* This is a multi area entry, so the real fragment shouldn't start
+             * in this area and therefore shouldn't be on this list.
              */
             ASSERT(FRAG_MULTI_INIT(entry) ||
                    !(f->tag >= area->start && f->tag < area->end));
@@ -8607,7 +8608,9 @@ vm_area_clean_fraglist(dcontext_t *dcontext, vm_area_t *area)
             }
         }
     }
-    DODEBUG(vm_area_check_clean_fraglist(area););
+    DOCHECK(CHKLVL_DEFAULT, {
+        vm_area_check_clean_fraglist(area);
+    });
     DOLOG(6, LOG_VMAREAS, { print_fraglist(dcontext, area, "after cleaning "); });
 }
 
@@ -9071,7 +9074,9 @@ vm_area_unlink_fragments(dcontext_t *dcontext, app_pc start, app_pc end,
             /* i#942: We can't flush a fragment list with multiple also entries
              * from the same fragment on it, or our iteration gets derailed.
              */
-            DODEBUG(vm_area_check_clean_fraglist(&data->areas.buf[i]););
+            DOCHECK(CHKLVL_DEFAULT, {
+                vm_area_check_clean_fraglist(&data->areas.buf[i]);
+            });
             ASSERT(!TEST(FRAG_COARSE_GRAIN, data->areas.buf[i].frag_flags));
             for (entry = data->areas.buf[i].custom.frags; entry != NULL; entry = next) {
                 fragment_t *f = FRAG_FRAG(entry);
