@@ -462,8 +462,6 @@ static void
 vmvector_free_vector(dcontext_t *dcontext, vm_area_vector_t *v);
 
 static void
-exec_area_bounds_match(dcontext_t *dcontext, thread_data_t *data);
-static void
 vm_area_clean_fraglist(dcontext_t *dcontext, vm_area_t *area);
 static bool
 lookup_addr(vm_area_vector_t *v, app_pc addr, vm_area_t **area);
@@ -472,6 +470,10 @@ static void
 print_fraglist(dcontext_t *dcontext, vm_area_t *area, char *prefix);
 static void
 print_written_areas(file_t outf);
+#endif
+#ifdef DEBUG
+static void
+exec_area_bounds_match(dcontext_t *dcontext, thread_data_t *data);
 #endif
 
 static void
