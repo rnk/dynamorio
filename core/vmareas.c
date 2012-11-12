@@ -8223,7 +8223,7 @@ release_vm_areas_lock(dcontext_t *dcontext, uint flags)
 #ifdef DEBUG
 /* i#942: Check that each also_vmarea entry in a multi-area fragment is in its
  * own vmarea.  If a fragment is on a vmarea fragment list twice, we can end up
- * deleting the that fragment twice while flushing.
+ * deleting that fragment twice while flushing.
  */
 static bool
 frag_also_list_areas_unique(dcontext_t *dcontext, thread_data_t *tgt_data,
@@ -8257,7 +8257,7 @@ frag_also_list_areas_unique(dcontext_t *dcontext, thread_data_t *tgt_data,
 }
 
 /* i#942: Check that the per-thread list of executed areas doesn't cross any
- * executable_area boundries.  If this happens, we start adding fragments to the
+ * executable_area boundaries.  If this happens, we start adding fragments to the
  * wrong vmarea fragment lists.  This check should be roughly O(n log n) in the
  * number of exec areas, so not too slow to run at the assertion check level.
  */
@@ -8282,9 +8282,9 @@ exec_area_bounds_match(dcontext_t *dcontext, thread_data_t *data)
                     (TEST(VECTOR_SHARED, v->flags) ? "shared" : "private"));
                 print_vm_area(v, thread_area, THREAD, "thread area: ");
                 print_vm_area(v, exec_area, THREAD, "exec area: ");
-                print_file(THREAD, "executable_areas:\n");
+                LOG(THREAD, 1, LOG_VMAREAS, "executable_areas:\n");
                 print_vm_areas(executable_areas, THREAD);
-                print_file(THREAD, "thread areas:\n");
+                LOG(THREAD, 1, LOG_VMAREAS, "thread areas:\n");
                 print_vm_areas(v, THREAD);
                 ASSERT(false && "vmvector does not match exec area bounds");
             });
@@ -8541,7 +8541,6 @@ vm_area_check_clean_fraglist(vm_area_t *area)
              * currently looking at.
              */
             while (also != NULL) {
-                app_pc pc = FRAG_PC(also);
                 ASSERT(FRAG_MULTI(also));
                 ASSERT(also == entry || !area_contains_frag_pc(area, also));
                 also = FRAG_ALSO(also);
@@ -9105,8 +9104,7 @@ vm_area_unlink_fragments(dcontext_t *dcontext, app_pc start, app_pc end,
                      * use of fragment_t.incoming_stubs as a union.  so we
                      * do this for all fragments.
                      */
-                    if (!TEST(FRAG_WAS_DELETED, entry->flags) &&
-                        (FRAG_ALSO(entry) != NULL || FRAG_MULTI(entry))) {
+                    if (FRAG_ALSO(entry) != NULL || FRAG_MULTI(entry)) {
                         if (FRAG_MULTI(entry)) {
                             vm_area_remove_fragment(dcontext, f);
                             /* move to this area's frags list so will get
@@ -11424,7 +11422,8 @@ unit_test_vmareas(void)
 
     remove_vm_area(&v, INT_TO_PC(1), INT_TO_PC(4), false);
     add_vm_area(&v, INT_TO_PC(1), INT_TO_PC(2), 0, 0, NULL _IF_DEBUG("A"));
-    add_vm_area(&v, INT_TO_PC(2), INT_TO_PC(3), 0, FRAG_SELFMOD_SANDBOXED, NULL _IF_DEBUG("B"));
+    add_vm_area(&v, INT_TO_PC(2), INT_TO_PC(3), 0, FRAG_SELFMOD_SANDBOXED, NULL
+                _IF_DEBUG("B"));
     add_vm_area(&v, INT_TO_PC(3), INT_TO_PC(4), 0, 0, NULL _IF_DEBUG("C"));
     print_vector_msg(&v, STDERR, "do areas merge with flags");
     check_vec(&v, 0, INT_TO_PC(1), INT_TO_PC(2), 0, 0, NULL);
