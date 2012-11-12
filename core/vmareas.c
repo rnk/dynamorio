@@ -5785,9 +5785,9 @@ print_frag_arealist(dcontext_t *dcontext, fragment_t *f)
 static bool
 area_contains_frag_pc(vm_area_t *area, fragment_t *f)
 {
+    app_pc pc = FRAG_PC(f);
     if (area == NULL)
         return true;
-    app_pc pc = FRAG_PC(f);
     return (pc >= area->start && pc < area->end);
 }
 #endif /* DEBUG */
