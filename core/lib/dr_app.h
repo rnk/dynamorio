@@ -107,4 +107,34 @@ DR_APP_API void dr_app_take_over(void);
  */
 DR_APP_API int dr_app_setup_and_start(void);
 
+/* XXX: No, this is dumb, just use exported routines.  It'll be immune to LIPO,
+ * FDO, post-link stuff.
+ */
+/**
+ * Struct listing app callbacks that the app has implemented.
+ */
+typedef struct _dr_app_annotations_t {
+    size_t struct_size;     /**< Struct size for back compat. */
+
+#ifdef AVOID_API_EXPORT
+    /* These are just ideas for callbacks that we haven't added yet. */
+    /**
+     * The app promises to handle cache consistency for a region of code by
+     * calling dr_app_managed_code_region() below after modifying code from the
+     * region but before executing it.
+     */
+    void (*dr_app_managed_code_region)(app_pc start, size_t end);
+    /**
+     * Flushes DR's code cache within the given region.  The app should call
+     * this after making changes but before executing modified code from the
+     * region.
+     */
+    void (*dr_app_flush_code_region)(app_pc start, size_t end);
+#endif /* AVOID_API_EXPORT */
+} dr_app_annotations_t;
+
+DR_EXPORT
+void
+dr_app_native_indcall(app_pc pc);
+
 #endif /* _DR_APP_H_ */
