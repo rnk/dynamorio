@@ -64,6 +64,7 @@
 # include "../nudge.h" /* for generic_nudge_target() address */
 #endif
 #include "../perscache.h"
+#include "../native_exec.h"
 
 #ifdef CHECK_RETURNS_SSE2
 #include <setjmp.h> /* for warning when see libc setjmp */

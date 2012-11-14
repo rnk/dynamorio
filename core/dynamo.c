@@ -62,6 +62,7 @@
 #include "moduledb.h"
 #include "module_shared.h"
 #include "synch.h"
+#include "native_exec.h"
 
 #include <string.h>
 
@@ -517,6 +518,7 @@ dynamorio_app_init(void)
         fragment_init();
         moduledb_init(); /* before vm_areas_init, after heap_init */
         perscache_init(); /* before vm_areas_init */
+        native_exec_init();
 
         if (!DYNAMO_OPTION(thin_client)) {
 #ifdef HOT_PATCHING_INTERFACE
@@ -1016,6 +1018,7 @@ dynamo_shared_exit(IF_WINDOWS_(thread_record_t *toexit)
 #endif
     os_fast_exit();
     os_slow_exit();
+    native_exec_exit();
     vm_areas_exit();
     perscache_slow_exit(); /* fast called in dynamo_process_exit_with_thread_info() */
     modules_exit(); /* after aslr_exit() from os_slow_exit(),
