@@ -255,7 +255,7 @@ extern const internal_options_t default_internal_options;
  * option value 
  */
 bool
-check_param_bounds(uint *val, uint min, uint max, char *name);
+check_param_bounds(uint *val, uint min, uint max, const char *name);
 
 int 
 options_init(void);
