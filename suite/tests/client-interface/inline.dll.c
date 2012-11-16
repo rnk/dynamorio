@@ -1049,13 +1049,13 @@ static instrlist_t *
 codegen_gcc47_inscount(void *dc)
 {
     instrlist_t *ilist = instrlist_create(dc);
-    opnd_t local;
     opnd_t global;
     opnd_t xax = opnd_create_reg(DR_REG_XAX);
     opnd_t xdx = opnd_create_reg(DR_REG_XDX);
 #ifdef X64
+    /* This local is past TOS.  That's OK by the sysv x64 ABI. */
+    opnd_t local = OPND_CREATE_MEMPTR(DR_REG_XBP, -(int)sizeof(reg_t));
     codegen_prologue(dc, ilist);
-    local = OPND_CREATE_MEMPTR(DR_REG_XBP, -(int)sizeof(reg_t));
     global = opnd_create_rel_addr(&global_count, OPSZ_PTR);
     APP(ilist, INSTR_CREATE_mov_st(dc, local, codegen_opnd_arg1()));
     APP(ilist, INSTR_CREATE_mov_ld(dc, xdx, global));
@@ -1067,18 +1067,19 @@ codegen_gcc47_inscount(void *dc)
     instr_t *pic_thunk = INSTR_CREATE_mov_ld
         (dc, opnd_create_reg(DR_REG_XCX), OPND_CREATE_MEMPTR(DR_REG_XSP, 0));
     codegen_prologue(dc, ilist);
-    local = OPND_CREATE_MEMPTR(DR_REG_XBP, sizeof(reg_t));
-    /* FIXME: How to create a real PIC style access?  relocate after encoding?
-     * */
+    /* XXX: Do a real 32-bit PIC-style access.  For now we just use an absolute
+     * reference since we're 32-bit and everything is reachable.
+     */
     global = opnd_create_abs_addr(&global_count, OPSZ_PTR);
     APP(ilist, INSTR_CREATE_call(dc, opnd_create_instr(pic_thunk)));
     APP(ilist, INSTR_CREATE_add(dc, opnd_create_reg(DR_REG_XCX),
                                 OPND_CREATE_INT32(0x0)));
     APP(ilist, INSTR_CREATE_mov_ld(dc, xdx, global));
-    APP(ilist, INSTR_CREATE_mov_ld(dc, xax, local));
+    APP(ilist, INSTR_CREATE_mov_ld(dc, xax, codegen_opnd_arg1()));
     APP(ilist, INSTR_CREATE_add(dc, xax, xdx));
     APP(ilist, INSTR_CREATE_mov_st(dc, global, xax));
     codegen_epilogue(dc, ilist);
+
     APP(ilist, pic_thunk);
     APP(ilist, INSTR_CREATE_ret(dc));
 #endif
