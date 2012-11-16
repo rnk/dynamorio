@@ -97,7 +97,11 @@ if (UNIX)
     "${libdynamorio_so}-gdb.py"
     WORKING_DIRECTORY "${CMAKE_LIBRARY_OUTPUT_DIRECTORY}"
     OUTPUT_QUIET)
-  configure_file(gdbinit ${CMAKE_BINARY_DIR}/.gdbinit)
+  DR_install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/libdynamorio.so-gdb.py"
+    DESTINATION "${INSTALL_LIB}"
+    RENAME "libdynamorio.so.${soversion}-gdb.py"
+    PERMISSIONS OWNER_READ OWNER_EXECUTE 
+    GROUP_READ GROUP_EXECUTE WORLD_READ WORLD_EXECUTE)
 
   # Links a target against a list of libraries, and adds relative rpaths
   # pointing to the directories of the libraries.
@@ -164,14 +168,14 @@ else (UNIX)
     add_executable(${tgt} ${tgt}.c ${RESOURCES})
 
     if ("${tgt}" STREQUAL "ldmp")
-      set(extra_lib "${ntimp_lib}")
+      set(extra_lib libcmt "${ntimp_lib}")
       if ("${CMAKE_GENERATOR}" MATCHES "Visual Studio")
         # for parallel build correctness we need a target dependence
         add_dependencies(${tgt} ntimp_tgt)
       endif ()
     endif ("${tgt}" STREQUAL "ldmp")
     target_link_libraries(${tgt}
-      policy_static user32 advapi32 pdh imagehlp shell32 "${extra_lib}")
+      policy_static user32 advapi32 pdh imagehlp shell32 ${extra_lib})
 
     string(REGEX MATCH "(closewnd|winstats|create_process)" no_unicode "${tgt}")
     if (no_unicode)

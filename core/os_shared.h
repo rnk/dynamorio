@@ -226,7 +226,9 @@ enum {
     DUMPCORE_DEADLOCK           = 0x0004,
     DUMPCORE_ASSERTION          = 0x0008,
     DUMPCORE_FATAL_USAGE_ERROR  = 0x0010,
-    DUMPCORE_UNSUPPORTED_APP    = 0x0020,
+#ifdef CLIENT_INTERFACE
+    DUMPCORE_CLIENT_EXCEPTION   = 0x0020,
+#endif
     DUMPCORE_TIMEOUT            = 0x0040,
     DUMPCORE_CURIOSITY          = 0x0080,
 #ifdef HOT_PATCHING_INTERFACE       /* Part of fix for 5357 & 5988. */
@@ -257,6 +259,7 @@ enum {
      * implement. */
     DUMPCORE_APP_EXCEPTION      = 0x40000,
     DUMPCORE_TRY_EXCEPT         = 0x80000, /* even when we do have a handler */
+    DUMPCORE_UNSUPPORTED_APP    = 0x100000,
 
 #ifdef LINUX
     DUMPCORE_OPTION_PAUSE       = DUMPCORE_WAIT_FOR_DEBUGGER  |
@@ -265,6 +268,9 @@ enum {
                                   DUMPCORE_DEADLOCK           |
                                   DUMPCORE_ASSERTION          |
                                   DUMPCORE_FATAL_USAGE_ERROR  |
+# ifdef CLIENT_INTERFACE
+                                  DUMPCORE_CLIENT_EXCEPTION   |
+# endif
                                   DUMPCORE_UNSUPPORTED_APP    |
                                   DUMPCORE_TIMEOUT            |
                                   DUMPCORE_CURIOSITY          |
@@ -333,6 +339,9 @@ char *get_dynamorio_library_path(void);
 #define DR_MEMPROT_READ  0x01 /**< Read privileges. */
 #define DR_MEMPROT_WRITE 0x02 /**< Write privileges. */
 #define DR_MEMPROT_EXEC  0x04 /**< Execute privileges. */
+#ifdef WINDOWS
+# define DR_MEMPROT_GUARD 0x08 /**< Guard page (Windows only) */
+#endif
 
 /**
  * Flags describing memory used by dr_query_memory_ex().
@@ -363,6 +372,9 @@ typedef struct _dr_mem_info_t {
 #define MEMPROT_READ  DR_MEMPROT_READ
 #define MEMPROT_WRITE DR_MEMPROT_WRITE
 #define MEMPROT_EXEC  DR_MEMPROT_EXEC
+#ifdef WINDOWS
+# define MEMPROT_GUARD DR_MEMPROT_GUARD
+#endif
 bool get_memory_info(const byte *pc, byte **base_pc, size_t *size, uint *prot);
 bool query_memory_ex(const byte *pc, OUT dr_mem_info_t *info);
 #ifdef LINUX
