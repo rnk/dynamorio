@@ -68,7 +68,7 @@ void evil_copy(void *start, int count, ptr_int_t value);
 #ifdef LINUX
 /* this used to be 44 prior to 1/24/06 commit, and 20 prior to Mar 11 2006 */
 # define DCONTEXT_TLS_OFFSET IF_X64_ELSE(32, 16)
-# define DSTACK_OFFSET_IN_DCONTEXT IF_X64_ELSE(0x2e0,0x164)
+# define DSTACK_OFFSET_IN_DCONTEXT IF_X64_ELSE(0x2e8,0x168)
 # ifdef X64
 # define GET_DCONTEXT(var)                                                \
     asm("mov  %%gs:"STRINGIFY(DCONTEXT_TLS_OFFSET)", %%rax" : : : "rax"); \
