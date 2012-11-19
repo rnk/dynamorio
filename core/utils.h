@@ -222,7 +222,7 @@ typedef struct _mutex_t {
     contention_event_t contended_event; /* handle to event object to wait on when contended */
 #ifdef DEADLOCK_AVOIDANCE
     /* These fields are initialized with the INIT_LOCK_NO_TYPE macro */
-    const char *    name;             /* set to variable lock name and location */
+    const char *name;            /* set to variable lock name and location */
     /* We flag as a violation if a lock with rank numerically smaller
      * or equal to the rank of a lock already held by the owning thread is acquired
      */

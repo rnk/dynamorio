@@ -84,7 +84,7 @@ wait_syscall(int *status)
 }
 
 static int
-execve_syscall(const char *exe, char **argv, char **envp)
+execve_syscall(const char *exe, const char **argv, const char **envp)
 {
     return dynamorio_syscall(SYS_execve, 3, exe, argv, envp);
 }
