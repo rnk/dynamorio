@@ -84,7 +84,7 @@ wait_syscall(int *status)
 }
 
 static int
-execve_syscall(const char *exe, const char **argv, const char **envp)
+execve_syscall(const char *exe, const char **argv, char **envp)
 {
     return dynamorio_syscall(SYS_execve, 3, exe, argv, envp);
 }
@@ -266,7 +266,7 @@ stackdump(void)
         argv[i++] = exec_name;
         argv[i++] = core_name;
         argv[i++] = NULL;
-        execve_errno = execve_syscall("/usr/bin/env", (char **)argv, our_environ);
+        execve_errno = execve_syscall("/usr/bin/env", argv, our_environ);
         SYSLOG_INTERNAL_ERROR("ERROR: execve failed for debugger: %d",
                               -execve_errno);
         exit_process_syscall(1);
