@@ -1169,6 +1169,8 @@ takeover_via_ptrace(ptrace_stack_args_t *args)
      */
     dynamorio_set_envp(fake_envp);
 
+    thread_sleep(300);
+
     dynamorio_app_init();
 
     print_file(STDERR, "ptrace inject: after dynamorio_app_init\n");
@@ -1207,6 +1209,7 @@ privload_early_inject(void **sp)
     if (*argc == ARGC_PTRACE_SENTINEL) {
         takeover_via_ptrace((ptrace_stack_args_t *) sp);
     }
+    ASSERT(false);
 
     dynamorio_set_envp(envp);
 

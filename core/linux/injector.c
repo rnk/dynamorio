@@ -864,7 +864,7 @@ inject_ptrace(dr_inject_info_t *info, const char *library_path)
 
     /* FIXME: Takeover other threads */
 
-    //op_exec_gdb = true;
+    op_exec_gdb = true;
     if (op_exec_gdb) {
         /* Initializing in the child will be tough, and we can't attach gdb to a
          * process under ptrace, so for now we re-exec ourselves as gdb and the
@@ -879,8 +879,8 @@ inject_ptrace(dr_inject_info_t *info, const char *library_path)
         argv[num_args++] = "--quiet";
         argv[num_args++] = "--pid";
         argv[num_args++] = pid_str;
-        argv[num_args++] = "-ex";
-        argv[num_args++] = "python execfile(\"drinject_add_syms\")";
+        //argv[num_args++] = "-ex";
+        //argv[num_args++] = "python execfile(\"drinject_add_syms\")";
         argv[num_args++] = NULL;
         execv("/usr/bin/gdb", argv);
         ASSERT(false && "failed to exec gdb?");
