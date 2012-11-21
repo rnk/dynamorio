@@ -255,6 +255,7 @@ const char * const size_names[] = {
     "OPSZ_4_of_16",
     "OPSZ_8_of_16",
     "OPSZ_8_of_16_vex32",
+    "OPSZ_16_of_32",
 };
 
 #if defined(DEBUG) && defined(INTERNAL) && !defined(STANDALONE_DECODER)
@@ -541,6 +542,9 @@ size_ok(decode_info_t *di/*prefixes field is IN/OUT; x86_mode is IN*/,
     case OPSZ_8_of_16: /* OPSZ_8_of_16_vex32 is kept */
         size_op = OPSZ_8;
         break;
+    case OPSZ_16_of_32:
+        size_op = OPSZ_16;
+        break;
     }
     switch (size_template) {
     case OPSZ_4_of_8:
@@ -549,6 +553,9 @@ size_ok(decode_info_t *di/*prefixes field is IN/OUT; x86_mode is IN*/,
         break;
     case OPSZ_8_of_16: /* OPSZ_8_of_16_vex32 is kept */
         size_template = OPSZ_8;
+        break;
+    case OPSZ_16_of_32:
+        size_template = OPSZ_16;
         break;
     }
 
@@ -711,6 +718,7 @@ size_ok(decode_info_t *di/*prefixes field is IN/OUT; x86_mode is IN*/,
         case OPSZ_4_of_16:
         case OPSZ_8_of_16:
         case OPSZ_8_of_16_vex32:
+        case OPSZ_16_of_32:
         case OPSZ_0:
             /* handled below */
             break;
@@ -796,12 +804,27 @@ reg_size_ok(decode_info_t *di/*prefixes field is IN/OUT; x86_mode is IN*/,
         }
         return false;
     }
+    if (opsize == OPSZ_16_of_32) {
+        if (reg >= REG_START_YMM && reg <= REG_STOP_YMM) {
+            /* Set VEX.L since required for some opcodes and the rest don't care */
+            di->prefixes |= PREFIX_VEX_L;
+            return true;
+        } else
+            return false;
+    }
     /* We assume that only type p uses OPSZ_6_irex10_short4: w/ data16, even though it's
      * 4 bytes and would fit in a register, this is invalid.
      */
     if (opsize == OPSZ_6_irex10_short4)
         return false; /* no register of size p */
-    return size_ok(di, reg_get_size(reg), resolve_var_reg_size(opsize, true), addr);
+    if (size_ok(di, reg_get_size(reg), resolve_var_reg_size(opsize, true), addr)) {
+        if (reg >= REG_START_YMM && reg <= REG_STOP_YMM) {
+            /* Set VEX.L since required for some opcodes and the rest don't care */
+            di->prefixes |= PREFIX_VEX_L;
+        }
+        return true;
+    }
+    return false;
 }
 
 static bool
@@ -1501,8 +1524,8 @@ encode_rel_addr(decode_info_t * di, opnd_t opnd)
      */
     if (use_addr_prefix_on_short_disp() &&
         (ptr_uint_t)di->disp_abs <= INT_MAX &&
-        (!REL32_REACHABLE(di->start_pc + MAX_INSTR_LENGTH, di->disp_abs) ||
-         !REL32_REACHABLE(di->start_pc + 4, di->disp_abs)))
+        (!REL32_REACHABLE(di->final_pc + MAX_INSTR_LENGTH, di->disp_abs) ||
+         !REL32_REACHABLE(di->final_pc + 4, di->disp_abs)))
         di->prefixes |= PREFIX_ADDR;
 }
 #endif
@@ -1690,7 +1713,7 @@ static byte *
 get_mem_instr_addr(decode_info_t *di, opnd_t opnd)
 {
     CLIENT_ASSERT(opnd_is_mem_instr(opnd), "internal encode error");
-    return di->start_pc + ((ptr_int_t)opnd_get_instr(opnd)->note - di->cur_note) +
+    return di->final_pc + ((ptr_int_t)opnd_get_instr(opnd)->note - di->cur_note) +
         opnd_get_mem_instr_disp(opnd);
 }
 
@@ -1898,7 +1921,7 @@ encode_operand(decode_info_t *di, int optype, opnd_size_t opsize, opnd_t opnd)
                 ptr_int_t source = (ptr_uint_t) di->cur_note;
                 instr_t *target_instr = opnd_get_instr(opnd);
                 ptr_int_t dest = (ptr_uint_t) target_instr->note;
-                ptr_uint_t encode_pc = (ptr_uint_t) di->start_pc;
+                ptr_uint_t encode_pc = (ptr_uint_t) di->final_pc;
                 /* A label shouldn't be very far away and thus we should not overflow
                  * (unless client asked to encode at very high address or sthg,
                  * which we won't support).
@@ -2349,6 +2372,7 @@ instr_encode_common(dcontext_t *dcontext, instr_t *instr, byte *copy_pc, byte *f
     /* fill out the other fields of di */
     /* used for PR 253327 addr32 rip-relative and instr_t targets */
     di.start_pc = cache_pc;
+    di.final_pc = final_pc;
 
     di.size_immed = OPSZ_NA;
     di.size_immed2 = OPSZ_NA;

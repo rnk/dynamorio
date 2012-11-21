@@ -64,7 +64,7 @@
 #define YMMH_SAVED_SIZE (NUM_XMM_SLOTS*YMMH_REG_SIZE)
 
 /* Number of slots for spills from inlined clean calls. */
-#define CLEANCALL_NUM_INLINE_SLOTS 4
+#define CLEANCALL_NUM_INLINE_SLOTS 5
 
 typedef enum {
     IBL_NONE = -1,
@@ -872,10 +872,27 @@ void disassemble_app_bb(dcontext_t *dcontext, app_pc tag, file_t outfile);
 /* dumps callstack for ebp stored in mcontext */
 void dump_mcontext_callstack(dcontext_t *dcontext);
 #endif
+
+/* flags for dump_callstack_to_buffer */
+enum {
+    CALLSTACK_USE_XML         = 0x00000001,
+    CALLSTACK_ADD_HEADER      = 0x00000002,
+    CALLSTACK_MODULE_INFO     = 0x00000004,
+    CALLSTACK_MODULE_PATH     = 0x00000008,
+    CALLSTACK_FRAME_PTR       = 0x00000010,
+};
+
 /* dumps callstack for current pc and ebp */
-void dump_dr_callstack(file_t outfile);
+void
+dump_dr_callstack(file_t outfile);
+
 /* user-specified ebp */
-void dump_callstack(app_pc pc, app_pc ebp, file_t outfile, bool dump_xml);
+void
+dump_callstack(app_pc pc, app_pc ebp, file_t outfile, bool dump_xml);
+
+void
+dump_callstack_to_buffer(char *buf, size_t bufsz, size_t *sofar,
+                         app_pc pc, app_pc ebp, uint flags /*CALLSTACK_ bitmask*/);
 
 #if defined(INTERNAL) || defined(DEBUG) || defined(CLIENT_INTERFACE)
 void disassemble_fragment_header(dcontext_t *dcontext, fragment_t *f, file_t outfile);
@@ -1333,8 +1350,8 @@ bb_build_abort(dcontext_t *dcontext, bool clean_vmarea);
  *   follow ubrs to the limit.  Currently used for
  *   record_translation_info() (case 3559).
  */
-instrlist_t * recreate_bb_ilist(dcontext_t *dcontext, byte *pc,  uint flags,
-                                uint *res_flags, uint *res_exit_type,
+instrlist_t * recreate_bb_ilist(dcontext_t *dcontext, byte *pc, byte *pretend_pc,
+                                uint flags, uint *res_flags, uint *res_exit_type,
                                 bool check_vm_area, bool mangle
                                 _IF_CLIENT(bool call_client)
                                 _IF_CLIENT(bool for_trace));

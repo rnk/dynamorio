@@ -3245,11 +3245,14 @@ DR_API
  * max characters are written and -1 is returned.  If an error
  * occurs, a negative value is returned.
  * \note This routine supports printing wide characters via the ls
- * or S format specifiers via simply dropping the high-order byte.
+ * or S format specifiers.  On Windows, they are assumed to be UTF-16,
+ * and are converted to UTF-8.  On Linux, they are converted by simply
+ * dropping the high-order bytes.
  * \note If the data to be printed is large it will be truncated to
  * an internal buffer size.
  * \note On Windows, you can use _snprintf() instead (though _snprintf() does
- * not support printing floating point values).
+ * not support printing floating point values and does not convert
+ * between UTF-16 and UTF-8).
  * \note When printing floating-point values, the caller's code should
  * use proc_save_fpstate() or be inside a clean call that
  * has requested to preserve the floating-point state.
@@ -3260,9 +3263,11 @@ dr_snprintf(char *buf, size_t max, const char *fmt, ...);
 DR_API
 /**
  * Wide character version of dr_snprintf().  All of the comments for
- * dr_snprintf() apply, except that the hs or S format specifiers will
- * widen a single-byte character string into a two-byte character
- * string with zero as the high-order byte.
+ * dr_snprintf() apply, except for the hs or S format specifiers.
+ * On Windows, these will assume that the input is UTF-8, and will
+ * convert to UTF-16.  On Linux, they will widen a single-byte
+ * character string into a wchar_t character string with zero as the
+ * high-order bytes.
  */
 int
 dr_snwprintf(wchar_t *buf, size_t max, const wchar_t *fmt, ...);
@@ -3280,6 +3285,53 @@ DR_API
  */
 int
 dr_vsnwprintf(wchar_t *buf, size_t max, const wchar_t *fmt, va_list ap);
+
+DR_API
+/**
+ * Utility routine to parse strings that match a pre-defined format string,
+ * similar to the sscanf() C routine.
+ *
+ * @param[in] str   String to parse.
+ * @param[in] fmt   Format string controlling parsing. 
+ * @param[out] ...  All remaining parameters interpreted as output parameter
+ *                  pointers.  The type of each parameter must match the type
+ *                  implied by the corresponding format specifier in \p fmt.
+ * \return The number of specifiers matched.
+ *
+ * The benefit of using dr_sscanf() over native sscanf() is that DR's
+ * implementation is standalone, signal-safe, and cross-platform.  On Linux,
+ * sscanf() has been observed to call malloc().  On Windows, sscanf() will call
+ * strlen(), which can break when using mapped files.
+ *
+ * The behavior of dr_sscanf() is mostly identical to that of the sscanf() C
+ * routine.
+ *
+ * Supported format specifiers:
+ * - \%s: Matches a sequence of non-whitespace characters.  The string is copied
+ *   into the provided output buffer.  To avoid buffer overflow, the caller
+ *   should use a width specifier.
+ * - \%c: Matches any single character.
+ * - \%d: Matches a signed decimal integer.
+ * - \%u: Matches an unsigned decimal integer.
+ * - \%x: Matches an unsigned hexadecimal integer, with or without a leading 0x.
+ * - \%p: Matches a pointer-sized hexadecimal integer as %x does.
+ * - \%%: Matches a literal % character.  Does not store output.
+ *
+ * Supported format modifiers:
+ * - *: The * modifier causes the scan to match the specifier, but not store any
+ *   output.  No output parameter is consumed for this specifier, and one should
+ *   not be passed.
+ * - 0-9: A decimal integer preceding the specifier gives the width to match.
+ *   For strings, this indicates the maximum number of characters to copy.  For
+ *   integers, this indicates the maximum number of digits to parse.
+ * - h: Marks an integer specifier as short.
+ * - l: Marks an integer specifier as long.
+ * - ll: Marks an integer specifier as long long.  Use this for 64-bit integers.
+ *
+ * \warning dr_sscanf() does \em not support parsing floating point numbers yet.
+ */
+int
+dr_sscanf(const char *str, const char *fmt, ...);
 
 DR_API 
 /** Prints \p msg followed by the instruction \p instr to file \p f. */

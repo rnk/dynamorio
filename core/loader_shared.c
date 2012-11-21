@@ -383,6 +383,62 @@ privload_insert(privmod_t *after, app_pc base, size_t size, const char *name,
     return (void *)mod;
 }
 
+/* i#955: we support a <basename>.drpath text file listing search paths.
+ * XXX: should we support something like DR_RPATH's $ORIGIN for relative
+ * entries in this file?
+ */
+static void
+privload_read_drpath_file(const char *libname)
+{
+    char path[MAXIMUM_PATH];
+    char *end = strrchr(libname, '.');
+    if (end == NULL)
+        return;
+    ASSERT_OWN_RECURSIVE_LOCK(true, &privload_lock);
+    snprintf(path, BUFFER_SIZE_ELEMENTS(path), "%.*s.%s",
+             end - libname, libname, DR_RPATH_SUFFIX);
+    NULL_TERMINATE_BUFFER(path);
+    LOG(GLOBAL, LOG_LOADER, 3, "%s: looking for %s\n", __FUNCTION__, path);
+    if (os_file_exists(path, false/*!is_dir*/)) {
+        /* Easiest to parse by mapping.  It's a newline-separated list of
+         * paths.  We support carriage returns as well.
+         */
+        file_t f = os_open(path, OS_OPEN_READ);
+        char *map;
+        size_t map_size = 0;
+        uint64 file_size;
+        if (f != INVALID_FILE &&
+            os_get_file_size_by_handle(f, &file_size)) {
+            LOG(GLOBAL, LOG_LOADER, 2, "%s: reading %s\n", __FUNCTION__, path);
+            map = (char *)
+                os_map_file(f, &map_size, 0, NULL, MEMPROT_READ, false, false, false);
+            if (map != NULL && map_size >= file_size) {
+                const char *s = (char *) map;
+                const char *nl;
+                while (s < map + file_size && search_paths_idx < SEARCH_PATHS_NUM) {
+                    for (nl = s; nl < map + file_size && *nl != '\r' && *nl != '\n';
+                         nl++) {
+                    }
+                    if (nl == s)
+                        break;
+                    snprintf(search_paths[search_paths_idx],
+                             BUFFER_SIZE_ELEMENTS(search_paths[search_paths_idx]),
+                             "%.*s", nl - s, s);
+                    NULL_TERMINATE_BUFFER(search_paths[search_paths_idx]);
+                    LOG(GLOBAL, LOG_LOADER, 1, "%s: added search dir \"%s\"\n",
+                        __FUNCTION__, search_paths[search_paths_idx]);
+                    search_paths_idx++;
+                    s = nl + 1;
+                    while (s < map + file_size && (*s == '\r' || *s == '\n'))
+                        s++;
+                }
+                os_unmap_file((byte *)map, map_size);
+            }
+            os_close(f);
+        }
+    }
+}
+
 privmod_t *
 privload_load(const char *filename, privmod_t *dependent)
 {
@@ -407,6 +463,9 @@ privload_load(const char *filename, privmod_t *dependent)
         LOG(GLOBAL, LOG_LOADER, 1, "%s: failed to map %s\n", __FUNCTION__, filename);
         return NULL;
     }
+
+    /* i#955: support a <basename>.rpath file for search paths */
+    privload_read_drpath_file(filename);
 
     /* Keep a copy of the lib path for use in searching: we'll strdup in loader_init.
      * This needs to come before privload_insert which will inc search_paths_idx.
@@ -521,7 +580,6 @@ privload_add_drext_path(void)
     }
 }
 
-
 /* most uses should call privload_load() instead
  * if it fails, unloads
  */
@@ -587,3 +645,25 @@ privload_first_module(void)
         return &privmod_static[privmod_static_idx - 1];
 
 }
+
+/* returns whether they all fit */
+bool
+privload_print_modules(bool path, bool lock, char *buf, size_t bufsz, size_t *sofar)
+{
+    privmod_t *mod;
+    if (lock)
+        acquire_recursive_lock(&privload_lock);
+    for (mod = modlist; mod != NULL; mod = mod->next) {
+        if (!mod->externally_loaded)
+            if (!print_to_buffer(buf, bufsz, sofar, "%s="PFX"\n",
+                                 path ? mod->path : mod->name, mod->base)) {
+                if (lock)
+                    release_recursive_lock(&privload_lock);
+                return false;
+            }
+    }
+    if (lock)
+        release_recursive_lock(&privload_lock);
+    return true;
+}
+

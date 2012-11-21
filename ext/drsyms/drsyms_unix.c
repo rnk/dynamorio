@@ -48,6 +48,12 @@
 #include "demangle.h"
 #include "libelftc.h"
 
+#ifdef WINDOWS
+# define IF_WINDOWS(x) x
+#else
+# define IF_WINDOWS(x)
+#endif
+
 /* For debugging */
 static bool verbose = false;
 
@@ -140,6 +146,7 @@ load_module(const char *modpath)
         char debug_modpath[MAXIMUM_PATH];
         NOTIFY("%s: looking for debuglink %s\n", __FUNCTION__, debuglink);
         if (follow_debuglink(modpath, mod, debuglink, debug_modpath)) {
+            NOTIFY("%s: loading debuglink %s\n", __FUNCTION__, debug_modpath);
             newmod = load_module(debug_modpath);
             if (newmod != NULL) {
                 /* We expect that DWARF sections will all be in
@@ -200,12 +207,16 @@ follow_debuglink(const char *modpath, dbg_module_t *mod, const char *debuglink,
                  char debug_modpath[MAXIMUM_PATH])
 {
     char mod_dir[MAXIMUM_PATH];
-    char *last_slash;
+    char *s, *last_slash = NULL;
 
     /* Get the module's directory. */
     strncpy(mod_dir, modpath, MAXIMUM_PATH);
     NULL_TERMINATE_BUFFER(mod_dir);
-    last_slash = strrchr(mod_dir, '/');
+    /* XXX: we want DR's double_strrchr */
+    for (s = mod_dir; *s != '\0'; s++) {
+        if (*s == '/' IF_WINDOWS(|| *s == '\\'))
+            last_slash = s;
+    }
     if (last_slash != NULL)
         *last_slash = '\0';
 
@@ -213,6 +224,7 @@ follow_debuglink(const char *modpath, dbg_module_t *mod, const char *debuglink,
     dr_snprintf(debug_modpath, MAXIMUM_PATH,
                 "%s/%s", mod_dir, debuglink);
     debug_modpath[MAXIMUM_PATH-1] = '\0';
+    NOTIFY("%s: looking for %s\n", __FUNCTION__, debug_modpath);
     /* If debuglink is the basename of modpath, this can point to the same file.
      * Infinite recursion is prevented with a depth check, but we would fail to
      * test the other paths, so we check here if these paths resolve to the same
@@ -225,6 +237,7 @@ follow_debuglink(const char *modpath, dbg_module_t *mod, const char *debuglink,
     dr_snprintf(debug_modpath, MAXIMUM_PATH,
                 "%s/.debug/%s", mod_dir, debuglink);
     debug_modpath[MAXIMUM_PATH-1] = '\0';
+    NOTIFY("%s: looking for %s\n", __FUNCTION__, debug_modpath);
     if (dr_file_exists(debug_modpath))
         return true;
 
@@ -232,15 +245,12 @@ follow_debuglink(const char *modpath, dbg_module_t *mod, const char *debuglink,
     dr_snprintf(debug_modpath, MAXIMUM_PATH,
                 "%s/%s/%s", drsym_obj_debug_path(), mod_dir, debuglink);
     debug_modpath[MAXIMUM_PATH-1] = '\0';
+    NOTIFY("%s: looking for %s\n", __FUNCTION__, debug_modpath);
     if (dr_file_exists(debug_modpath))
         return true;
 
     /* We couldn't find the debug file, so we make do with the original module
-     * instead.
-     *
-     * XXX: We should parse the .dynsym section so this is actually useful.
-     * Right now clients use a mix of dr_get_proc_address and drsyms, when we
-     * could handle all of that for them.
+     * instead.  We'll still find exports in .dynsym.
      */
     return false;
 }
@@ -268,8 +278,9 @@ unload_module(dbg_module_t *mod)
  */
 
 static drsym_error_t
-symsearch_symtab(dbg_module_t *mod, drsym_enumerate_cb callback, void *data,
-                 uint flags)
+symsearch_symtab(dbg_module_t *mod, drsym_enumerate_cb callback,
+                 drsym_enumerate_ex_cb callback_ex, size_t info_size,
+                 void *data, uint flags)
 {
     int num_syms;
     int i;
@@ -277,44 +288,71 @@ symsearch_symtab(dbg_module_t *mod, drsym_enumerate_cb callback, void *data,
     char *symbol_buf;
     size_t symbol_buf_size = 1024;  /* C++ symbols can be quite long. */
     drsym_error_t res = DRSYM_SUCCESS;
+    drsym_info_t *out;
 
     num_syms = drsym_obj_num_symbols(mod->obj_info);
     if (num_syms == 0)
         return DRSYM_ERROR;
 
-    symbol_buf = dr_global_alloc(symbol_buf_size);
+    out = (drsym_info_t *) dr_global_alloc(info_size + NAME_EXTRA_SZ(symbol_buf_size));
 
     for (i = 0; keep_searching && i < num_syms; i++) {
         const char *mangled = drsym_obj_symbol_name(mod->obj_info, i);
         const char *unmangled = mangled;  /* Points at mangled or symbol_buf. */
-        size_t modoffs;
-        if (mangled == NULL)
-            return DRSYM_ERROR;
+        size_t modoffs = 0;
+        if (mangled == NULL) {
+            res = DRSYM_ERROR;
+            break;
+        }
 
-        res = drsym_obj_symbol_offs(mod->obj_info, i, &modoffs, NULL);
+        if (callback_ex != NULL) {
+            res = drsym_obj_symbol_offs(mod->obj_info, i, &out->start_offs,
+                                        &out->end_offs);
+        } else
+            res = drsym_obj_symbol_offs(mod->obj_info, i, &modoffs, NULL);
         if (res != DRSYM_SUCCESS)
             break;
 
+        symbol_buf = (info_size == sizeof(drsym_info_t) ? out->name :
+                      ((drsym_info_legacy_t *)out)->name);
         if (TEST(DRSYM_DEMANGLE, flags)) {
             size_t len;
             /* Resize until it's big enough. */
             while ((len = drsym_demangle_symbol(symbol_buf, symbol_buf_size,
                                                 mangled, flags))
                    > symbol_buf_size) {
-                dr_global_free(symbol_buf, symbol_buf_size);
+                dr_global_free(out, info_size + NAME_EXTRA_SZ(symbol_buf_size));
                 symbol_buf_size = len;
-                symbol_buf = dr_global_alloc(symbol_buf_size);
+                out = (drsym_info_t *)
+                    dr_global_alloc(info_size + NAME_EXTRA_SZ(symbol_buf_size));
+                symbol_buf = (info_size == sizeof(drsym_info_t) ? out->name :
+                              ((drsym_info_legacy_t *)out)->name);
             }
             if (len != 0) {
                 /* Success. */
                 unmangled = symbol_buf;
             }
+        } else if (callback_ex != NULL) {
+            strncpy(symbol_buf, unmangled, symbol_buf_size);
+            symbol_buf[symbol_buf_size - 1] = '\0';
         }
 
-        keep_searching = callback(unmangled, modoffs, data);
+        if (callback_ex != NULL) {
+            out->struct_size = info_size;
+            out->name_size = symbol_buf_size;
+            out->name_available_size = strlen(symbol_buf);
+            out->debug_kind = mod->debug_kind;
+            if (info_size == sizeof(drsym_info_t))
+                out->type_id = 0; /* NYI */
+            /* We can't get line information w/o doing a separate addr lookup
+             * which may not be the same symbol as this one (not 1-to-1)
+             */
+            keep_searching = callback_ex(out, DRSYM_ERROR_LINE_NOT_AVAILABLE, data);
+        } else
+            keep_searching = callback(unmangled, modoffs, data);
     }
 
-    dr_global_free(symbol_buf, symbol_buf_size);
+    dr_global_free(out, info_size + NAME_EXTRA_SZ(symbol_buf_size));
 
     return res;
 }
@@ -380,11 +418,15 @@ drsym_unix_unload(void *mod_in)
 }
 
 drsym_error_t
-drsym_unix_enumerate_symbols(void *mod_in, drsym_enumerate_cb callback, void *data,
-                             uint flags)
+drsym_unix_enumerate_symbols(void *mod_in, drsym_enumerate_cb callback,
+                             drsym_enumerate_ex_cb callback_ex, size_t info_size,
+                             void *data, uint flags)
 {
     dbg_module_t *mod = (dbg_module_t *) mod_in;
-    return symsearch_symtab(mod, callback, data, flags);
+    if (info_size != sizeof(drsym_info_t) &&
+        info_size != sizeof(drsym_info_legacy_t))
+        return DRSYM_ERROR_INVALID_SIZE;
+    return symsearch_symtab(mod, callback, callback_ex, info_size, data, flags);
 }
 
 /* Params to sym_lookup_cb passed through data. */
@@ -458,7 +500,8 @@ drsym_unix_lookup_symbol(void *mod_in, const char *symbol, size_t *modoffs OUT,
         params.search_sym = sym_no_mod;
         params.search_sym_len = strlen(sym_no_mod);
         params.modoffs = modoffs;
-        r = drsym_unix_enumerate_symbols(mod, sym_lookup_cb, &params, flags);
+        r = drsym_unix_enumerate_symbols(mod, sym_lookup_cb, NULL, sizeof(drsym_info_t),
+                                         &params, flags);
         if (r != DRSYM_SUCCESS)
             return r;
     }

@@ -574,6 +574,10 @@
                        SYSLOG_NONE), SYSLOG_NONE),
                    "show messages onto stderr")
 
+    OPTION_DEFAULT(uint, appfault_mask, IF_CLIENT_INTERFACE_ELSE
+                   (IF_DEBUG_ELSE(APPFAULT_CRASH, 0), 0),
+                   "report diagnostic information on application faults")
+
 #ifdef LINUX
     /* Xref PR 258731 - options to duplicate stdout/stderr for our or client logging if
      * application tries to close them. */
@@ -608,7 +612,7 @@
     /* Disable diagnostics by default. -security turns it on */
     DYNAMIC_OPTION_DEFAULT(bool, diagnostics, false, "enable diagnostic reporting")
 
-    OPTION_DEFAULT(uint, max_supported_os_version, 61,
+    OPTION_DEFAULT(uint, max_supported_os_version, 62,
         /* case 447, defaults to supporting NT, 2000, XP, 2003, and Vista.
          * Windows 7 added with i#218
          * Windows 8 added with i#565

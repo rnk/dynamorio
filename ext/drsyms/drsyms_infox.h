@@ -1,6 +1,6 @@
 /* **********************************************************
- * Copyright (c) 2012 Google, Inc.  All rights reserved.
- * Copyright (c) 2010 VMware, Inc.  All rights reserved.
+ * Copyright (c) 2011-2012 Google, Inc.  All rights reserved.
+ * Copyright (c) 2009-2010 VMware, Inc.  All rights reserved.
  * **********************************************************/
 
 /*
@@ -31,50 +31,32 @@
  * DAMAGE.
  */
 
-#include "tools.h"
-#include <assert.h>
-#include <stdio.h>
-#include <unistd.h>
-#include <signal.h>
-#include <ucontext.h>
-#include <sys/time.h> /* itimer */
-#include <time.h>     /* for nanosleep */
+    /* INPUTS */
+    /** Input: should be set by caller to sizeof(drsym_info_t) */
+    size_t struct_size;
+    /** Input: should be set by caller to the size of the name[] buffer, in bytes */
+    size_t name_size;
 
-/* test PR 204556: support DR+client itimers in presence of app itimers
- * and  i#283/PR 368737: add client timer support
- */
+    /* OUTPUTS */
+    /** Output: file and line number */
+    const char *file;
+    uint64 line;
+    /** Output: offset from address that starts at line */
+    size_t line_offs;
+    /** Output: offset from module base of start of symbol */
+    size_t start_offs;
+    /**
+     * Output: offset from module base of end of symbol.
+     * \note For DRSYM_PECOFF_SYMTAB (Cygwin or MinGW) symbols, the end offset
+     * is not known precisely.
+     * The start address of the subsequent symbol will be stored here.
+     **/
+    size_t end_offs;
+    /** Output: type of the debug info available for this module */
+    drsym_debug_kind_t debug_kind;
 
-static void
-signal_handler(int sig, siginfo_t *siginfo, ucontext_t *ucxt)
-{
-    if (sig == SIGALRM)
-	print("app got SIGALRM\n");
-    else
-        assert(0);
-}
-
-int
-main(int argc, char *argv[])
-{
-    int rc;
-    struct itimerval t;
-    intercept_signal(SIGALRM, signal_handler, false);
-    t.it_interval.tv_sec = 0;
-    t.it_interval.tv_usec = 10000;
-    t.it_value.tv_sec = 0;
-    t.it_value.tv_usec = 10000;
-    rc = setitimer(ITIMER_REAL, &t, NULL);
-    assert(rc == 0);
-
-    struct timespec sleeptime;
-    sleeptime.tv_sec = 0;
-    sleeptime.tv_nsec = 25*1000*1000; /* 25ms */
-    /* Doing a few more syscalls makes the test more reliable than one long
-     * sleep, since we hit dispatch more often.
+    /**
+     * Output: size of data available for name.  Only name_size bytes will be
+     * copied to name.
      */
-    nanosleep(&sleeptime, NULL);
-    nanosleep(&sleeptime, NULL);
-    nanosleep(&sleeptime, NULL);
-
-    return 0;
-}
+    size_t name_available_size;

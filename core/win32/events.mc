@@ -1,4 +1,5 @@
 ;// **********************************************************
+;// Copyright (c) 2012 Google, Inc.  All rights reserved.
 ;// Copyright (c) 2003-2010 VMware, Inc.  All rights reserved.
 ;// **********************************************************
 
@@ -214,7 +215,15 @@ Severity = Error
 Facility = DRCore
 SymbolicName = MSG_CLIENT_EXCEPTION
 Language=English
-Application %1!s! (%2!s!).  Client exception at PC %3!s!.
+Application %1!s! (%2!s!).  Client exception at PC %3!s!.  Program aborted. %4!s!
+.
+
+MessageId = 
+Severity = Warning
+Facility = DRCore
+SymbolicName = MSG_APP_EXCEPTION
+Language=English
+Application %1!s! (%2!s!).  Application exception at PC %3!s!.  %4!s!
 .
 
 MessageId = 
@@ -372,19 +381,6 @@ Language=English
 Application %1!s! (%2!s!) %3!s! usage error : %4!s!
 .
 
-;#ifdef LINUX
-;// is ok to use x! d!, this won't be used on windows
-MessageId = 
-Severity = Error
-Facility = DRCore
-SymbolicName = MSG_SIGSEGV_IN_SECURE_CORE
-Language=English
-Application %1!s! (%2!s!) 
-** Received SIG%3!s! at %4!s! %5!s! pc %6!p! in thread %7!d!
-.
-
-;#endif
-
 MessageId = 
 Severity = Informational
 Facility = Security
@@ -476,6 +472,14 @@ Language=English
 Application %1!s! (%2!s!). Unable to load client library: %3!s!. %4!s!.
 .
 ;#endif
+
+MessageId =
+Severity = Error
+Facility = DRCore
+SymbolicName = MSG_WIN8_PRIVATE_KERNELBASE_NYI
+Language=English
+Application %1!s! (%2!s!). Private kernelbase.dll not yet supported on Windows 8.
+.
 
 ;#ifdef CLIENT_INTERFACE
 MessageId =

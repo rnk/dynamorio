@@ -79,6 +79,7 @@
 # define IMAGE_ORDINAL_FLAG IMAGE_ORDINAL_FLAG32
 #endif
 
+#define HEAP_CLASS_PRIVATE 0x00001000
 
 /* Not persistent across code cache execution, so not protected.
  * Synchronized by privload_lock.
@@ -340,6 +341,8 @@ static PEB *private_peb;
 static void *priv_fls_data;
 /* Isolate TEB->ReservedForNtRpc: for first thread we need to copy before have dcontext */
 static void *priv_nt_rpc;
+/* Isolate TEB->NlsCache: for first thread we need to copy before have dcontext */
+static void *priv_nls_cache;
 /* Only swap peb and teb fields if we've loaded WinAPI libraries */
 static bool loaded_windows_lib;
 /* Used to handle loading windows lib later during init */
@@ -411,7 +414,8 @@ os_loader_init_prologue(void)
         if (dr_earliest_injected) { /* FIXME i#812: need to delay RtlCreateHeap */
             private_peb->ProcessHeap = own_peb->ProcessHeap;
         } else {
-            private_peb->ProcessHeap = RtlCreateHeap(0, NULL, 0, 0, NULL, NULL);
+            private_peb->ProcessHeap = RtlCreateHeap(HEAP_GROWABLE | HEAP_CLASS_PRIVATE,
+                                                     NULL, 0, 0, NULL, NULL);
             if (private_peb->ProcessHeap == NULL) {
                 SYSLOG_INTERNAL_ERROR("private default heap creation failed");
                 /* fallback */
@@ -419,8 +423,11 @@ os_loader_init_prologue(void)
             }
         }
 
+        priv_nls_cache = get_tls(NLS_CACHE_TIB_OFFSET);
         priv_fls_data = get_tls(FLS_DATA_TIB_OFFSET);
         priv_nt_rpc = get_tls(NT_RPC_TIB_OFFSET);
+        LOG(GLOBAL, LOG_LOADER, 2, "initial thread TEB->NlsCache="PFX"\n",
+            priv_nls_cache);
         LOG(GLOBAL, LOG_LOADER, 2, "initial thread TEB->FlsData="PFX"\n", priv_fls_data);
         LOG(GLOBAL, LOG_LOADER, 2, "initial thread TEB->ReservedForNtRpc="PFX"\n",
             priv_nt_rpc);
@@ -527,20 +534,27 @@ os_loader_thread_init_prologue(dcontext_t *dcontext)
             /* For first thread use cached pre-priv-lib value for app and
              * whatever value priv libs have set for priv
              */
+            dcontext->priv_nls_cache = get_tls(NLS_CACHE_TIB_OFFSET);
             dcontext->priv_fls_data = get_tls(FLS_DATA_TIB_OFFSET);
             dcontext->priv_nt_rpc = get_tls(NT_RPC_TIB_OFFSET);
+            dcontext->app_nls_cache = NULL;
             dcontext->app_fls_data = NULL;
             dcontext->app_nt_rpc = NULL;
+            set_tls(NLS_CACHE_TIB_OFFSET, dcontext->app_nls_cache);
             set_tls(FLS_DATA_TIB_OFFSET, dcontext->app_fls_data);
             set_tls(NT_RPC_TIB_OFFSET, dcontext->app_nt_rpc);
         } else {
             /* The real value will be set by swap_peb_pointer */
+            dcontext->app_nls_cache = NULL;
             dcontext->app_fls_data = NULL;
             dcontext->app_nt_rpc = NULL;
             /* We assume clearing out any non-NULL value for priv is safe */
+            dcontext->priv_nls_cache = NULL;
             dcontext->priv_fls_data = NULL;
             dcontext->priv_nt_rpc = NULL;
         }
+        LOG(THREAD, LOG_LOADER, 2, "app nls_cache="PFX", priv nls_cache="PFX"\n",
+            dcontext->app_nls_cache, dcontext->priv_nls_cache);
         LOG(THREAD, LOG_LOADER, 2, "app fls="PFX", priv fls="PFX"\n",
             dcontext->app_fls_data, dcontext->priv_fls_data);
         LOG(THREAD, LOG_LOADER, 2, "app rpc="PFX", priv rpc="PFX"\n",
@@ -652,6 +666,7 @@ is_using_app_peb(dcontext_t *dcontext)
 {
     /* don't use get_own_peb() as we want what's actually pointed at by TEB */
     PEB *cur_peb = get_teb_field(dcontext, PEB_TIB_OFFSET);
+    void *cur_nls_cache;
     void *cur_fls;
     void *cur_rpc;
     ASSERT(dcontext != NULL && dcontext != GLOBAL_DCONTEXT);
@@ -660,13 +675,16 @@ is_using_app_peb(dcontext_t *dcontext)
         !should_swap_peb_pointer())
         return true;
     ASSERT(cur_peb != NULL);
+    cur_nls_cache = get_teb_field(dcontext, NLS_CACHE_TIB_OFFSET);
     cur_fls = get_teb_field(dcontext, FLS_DATA_TIB_OFFSET);
     cur_rpc = get_teb_field(dcontext, NT_RPC_TIB_OFFSET);
     if (cur_peb == get_private_peb()) {
+        ASSERT(cur_nls_cache == dcontext->priv_nls_cache);
         ASSERT(cur_fls == dcontext->priv_fls_data);
         ASSERT(cur_rpc == dcontext->priv_nt_rpc);
         return false;
     } else {
+        ASSERT(cur_nls_cache == dcontext->app_nls_cache);
         ASSERT(cur_fls == dcontext->app_fls_data);
         ASSERT(cur_rpc == dcontext->app_nt_rpc);
         return true;
@@ -687,6 +705,7 @@ swap_peb_pointer(dcontext_t *dcontext, bool to_priv)
         /* We preserve TEB->LastErrorValue and we swap TEB->FlsData and
          * TEB->ReservedForNtRpc
          */
+        void *cur_nls_cache = get_teb_field(dcontext, NLS_CACHE_TIB_OFFSET);
         void *cur_fls = get_teb_field(dcontext, FLS_DATA_TIB_OFFSET);
         void *cur_rpc = get_teb_field(dcontext, NT_RPC_TIB_OFFSET);
         if (to_priv) {
@@ -694,6 +713,10 @@ swap_peb_pointer(dcontext_t *dcontext, bool to_priv)
             dcontext->app_errno = (int)(ptr_int_t)
                 get_teb_field(dcontext, ERRNO_TIB_OFFSET);
 
+            if (dcontext->priv_nls_cache != cur_nls_cache) { /* handle two in a row */
+                dcontext->app_nls_cache = cur_nls_cache;
+                set_teb_field(dcontext, NLS_CACHE_TIB_OFFSET, dcontext->priv_nls_cache);
+            }
             if (dcontext->priv_fls_data != cur_fls) { /* handle two calls in a row */
                 dcontext->app_fls_data = cur_fls;
                 set_teb_field(dcontext, FLS_DATA_TIB_OFFSET, dcontext->priv_fls_data);
@@ -707,6 +730,10 @@ swap_peb_pointer(dcontext_t *dcontext, bool to_priv)
             set_teb_field(dcontext, ERRNO_TIB_OFFSET,
                           (void *)(ptr_int_t)dcontext->app_errno);
 
+            if (dcontext->app_nls_cache != cur_nls_cache) { /* handle two in a row */
+                dcontext->priv_nls_cache = cur_nls_cache;
+                set_teb_field(dcontext, NLS_CACHE_TIB_OFFSET, dcontext->app_nls_cache);
+            }
             if (dcontext->app_fls_data != cur_fls) { /* handle two calls in a row */
                 dcontext->priv_fls_data = cur_fls;
                 set_teb_field(dcontext, FLS_DATA_TIB_OFFSET, dcontext->app_fls_data);
@@ -716,12 +743,16 @@ swap_peb_pointer(dcontext_t *dcontext, bool to_priv)
                 set_teb_field(dcontext, NT_RPC_TIB_OFFSET, dcontext->app_nt_rpc);
             }
         }
+        ASSERT(!is_dynamo_address(dcontext->app_nls_cache));
         ASSERT(!is_dynamo_address(dcontext->app_fls_data));
         ASSERT(!is_dynamo_address(dcontext->app_nt_rpc));
         /* Once we have earier injection we should be able to assert
          * that priv_fls_data is either NULL or a DR address: but on
          * notepad w/ drinject it's neither: need to investigate.
          */
+        LOG(THREAD, LOG_LOADER, 3,
+            "cur nls_cache="PFX", app nls_cache="PFX", priv nls_cache="PFX"\n",
+            cur_nls_cache, dcontext->app_nls_cache, dcontext->priv_nls_cache);
         LOG(THREAD, LOG_LOADER, 3, "cur fls="PFX", app fls="PFX", priv fls="PFX"\n",
             cur_fls, dcontext->app_fls_data, dcontext->priv_fls_data);
         LOG(THREAD, LOG_LOADER, 3, "cur rpc="PFX", app rpc="PFX", priv rpc="PFX"\n",
@@ -746,6 +777,9 @@ restore_peb_pointer_for_thread(dcontext_t *dcontext)
     set_teb_field(dcontext, ERRNO_TIB_OFFSET, (void *)(ptr_int_t) dcontext->app_errno);
     LOG(THREAD, LOG_LOADER, 3, "restored app errno to "PIFX"\n", dcontext->app_errno);
     /* We also swap TEB->FlsData and TEB->ReservedForNtRpc */
+    set_teb_field(dcontext, NLS_CACHE_TIB_OFFSET, dcontext->app_nls_cache);
+    LOG(THREAD, LOG_LOADER, 3, "restored app nls_cache to "PFX"\n",
+        dcontext->app_nls_cache);
     set_teb_field(dcontext, FLS_DATA_TIB_OFFSET, dcontext->app_fls_data);
     LOG(THREAD, LOG_LOADER, 3, "restored app fls to "PFX"\n", dcontext->app_fls_data);
     set_teb_field(dcontext, NT_RPC_TIB_OFFSET, dcontext->app_nt_rpc);
@@ -1215,7 +1249,20 @@ privload_call_entry(privmod_t *privmod, uint reason)
         BOOL res;
         LOG(GLOBAL, LOG_LOADER, 2, "%s: calling %s entry "PFX" for %d\n",
             __FUNCTION__, privmod->name, entry, reason);
+
+        if (get_os_version() >= WINDOWS_VERSION_8 &&
+            str_case_prefix(privmod->name, "kernelbase")) {
+            /* FIXME i#915: win8 kernelbase entry fails on initial csrss setup,
+             * and on x64 it crashes.
+             * Currently we have no solution.  Xref i#364, i#440.
+             */
+            SYSLOG(SYSLOG_ERROR, WIN8_PRIVATE_KERNELBASE_NYI, 2,
+                   get_application_name(), get_application_pid());
+            os_terminate(NULL, TERMINATE_PROCESS);
+        }
+
         res = (*func)((HANDLE)privmod->base, reason, NULL);
+
         if (!res && get_os_version() >= WINDOWS_VERSION_7 &&
             str_case_prefix(privmod->name, "kernel32")) {
             /* i#364: win7 _BaseDllInitialize fails to initialize a new console
@@ -1250,7 +1297,9 @@ map_api_set_dll(const char *name, privmod_t *dependent)
      * But this is simpler than trying to parse that dll's table.
      * We ignore the version suffix ("-1-0", e.g.).
      */
-    if (str_case_prefix(name, "API-MS-Win-Core-Console-L1"))
+    if (str_case_prefix(name, "API-MS-Win-Core-APIQuery-L1"))
+        return "ntdll.dll";
+    else if (str_case_prefix(name, "API-MS-Win-Core-Console-L1"))
         return "kernel32.dll";
     else if (str_case_prefix(name, "API-MS-Win-Core-DateTime-L1"))
         return "kernel32.dll";
@@ -1306,9 +1355,12 @@ map_api_set_dll(const char *name, privmod_t *dependent)
             return "kernel32.dll";
     } else if (str_case_prefix(name, "API-MS-Win-Core-Profile-L1"))
         return "kernelbase.dll";
-    else if (str_case_prefix(name, "API-MS-Win-Core-RTLSupport-L1"))
-        return "kernel32.dll";
-    else if (str_case_prefix(name, "API-MS-Win-Core-String-L1"))
+    else if (str_case_prefix(name, "API-MS-Win-Core-RTLSupport-L1")) {
+        if (get_os_version() >= WINDOWS_VERSION_8)
+            return "ntdll.dll";
+        else
+            return "kernel32.dll";
+    } else if (str_case_prefix(name, "API-MS-Win-Core-String-L1"))
         return "kernelbase.dll";
     else if (str_case_prefix(name, "API-MS-Win-Core-Synch-L1"))
         return "kernelbase.dll";
@@ -1750,6 +1802,8 @@ redirect_RtlCreateHeap(ULONG flags, void *base, size_t reserve_sz,
 static bool
 redirect_heap_call(HANDLE heap)
 {
+    ASSERT(!dynamo_initialized || dynamo_exited ||
+           !os_using_app_state(get_thread_private_dcontext()));
 #ifdef CLIENT_INTERFACE
     if (!INTERNAL_OPTION(privlib_privheap))
         return false;
@@ -1762,7 +1816,7 @@ redirect_heap_call(HANDLE heap)
              */
             heap == private_peb->ProcessHeap ||
 #endif
-            get_peb(NT_CURRENT_PROCESS)->ProcessHeap ||
+            heap == get_peb(NT_CURRENT_PROCESS)->ProcessHeap ||
             is_dynamo_address((byte*)heap));
 }
 
@@ -1839,8 +1893,14 @@ redirect_RtlReAllocateHeap(HANDLE heap, ULONG flags, byte *ptr, SIZE_T size)
      * addresses go natively.  Xref the opposite problem with
      * RtlFreeUnicodeString, handled below.
      */
-    if (redirect_heap_call(heap) && (is_dynamo_address(ptr) || ptr == NULL)) {
+    if (ptr == NULL) /* unlike realloc(), HeapReAlloc fails on NULL */
+        return NULL;
+    if (redirect_heap_call(heap) && is_dynamo_address(ptr)) {
         byte *buf = NULL;
+        if (TEST(HEAP_REALLOC_IN_PLACE_ONLY, flags)) {
+            ASSERT_NOT_IMPLEMENTED(false);
+            return NULL;
+        }
         /* RtlReAllocateHeap does re-alloc 0-sized */
         LOG(GLOBAL, LOG_LOADER, 2, "%s "PFX" "PIFX"\n", __FUNCTION__, ptr, size);
         buf = redirect_RtlAllocateHeap(heap, flags, size);
@@ -1848,8 +1908,8 @@ redirect_RtlReAllocateHeap(HANDLE heap, ULONG flags, byte *ptr, SIZE_T size)
             size_t old_size = *((size_t *)(ptr - sizeof(size_t)));
             size_t min_size = MIN(old_size, size);
             memcpy(buf, ptr, min_size);
+            redirect_RtlFreeHeap(heap, flags, ptr);
         }
-        redirect_RtlFreeHeap(heap, flags, ptr);
         return (void *) buf;
     } else {
         void *res = RtlReAllocateHeap(heap, flags, ptr, size);

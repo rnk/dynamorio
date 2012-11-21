@@ -1,6 +1,5 @@
 # **********************************************************
-# Copyright (c) 2010-2012 Google, Inc.    All rights reserved.
-# Copyright (c) 2010 VMware, Inc.    All rights reserved.
+# Copyright (c) 2012 Google, Inc.    All rights reserved.
 # **********************************************************
 
 # Redistribution and use in source and binary forms, with or without
@@ -13,7 +12,7 @@
 #   this list of conditions and the following disclaimer in the documentation
 #   and/or other materials provided with the distribution.
 # 
-# * Neither the name of VMware, Inc. nor the names of its contributors may be
+# * Neither the name of Google, Inc. nor the names of its contributors may be
 #   used to endorse or promote products derived from this software without
 #   specific prior written permission.
 # 
@@ -29,36 +28,28 @@
 # OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH
 # DAMAGE.
 
-cmake_minimum_required(VERSION 2.6)
+# Ensures there are no dependencies other than ntdll.
+# Caller must set:
+# + DUMPBIN_EXECUTABLE
+# + lib
 
-# library of container utilities in C that use DR API for memory allocation
-# and synchronization
-add_library(drcontainers STATIC
-  hashtable.c
-  drvector.c
-  # add more here
+# Ensure output goes to std{out,err} (i#951)
+set(ENV{VS_UNICODE_OUTPUT} "")
+
+execute_process(COMMAND
+  ${DUMPBIN_EXECUTABLE} /dependents ${lib}
+  RESULT_VARIABLE deps_result
+  ERROR_VARIABLE deps_error
+  OUTPUT_VARIABLE deps_out
   )
-configure_DynamoRIO_client(drcontainers)
-if (UNIX)
-  # static containers must be PIC to be linked into clients: else requires
-  # relocations that run afoul of security policies, etc.
-  append_property_string(TARGET drcontainers COMPILE_FLAGS "-fPIC")
-endif (UNIX)
-# ensure we rebuild if includes change
-add_dependencies(drcontainers api_headers)
+if (deps_result OR deps_error)
+  message(FATAL_ERROR "*** ${DEPS_EXECUTABLE} failed: ***\n${deps_error}")
+endif (deps_result OR deps_error)
+string(REGEX MATCH "following dependencies:.*Summary" dlls "${deps_out}")
+string(REGEX REPLACE "\r?\n" "" dlls "${dlls}")
+string(REGEX REPLACE "following dependencies: *" "" dlls "${dlls}")
+string(REGEX REPLACE " *Summary" "" dlls "${dlls}")
+if (NOT dlls MATCHES "^ntdll.dll$")
+  message(FATAL_ERROR "*** Error: ${lib} depends on more than ntdll.dll: ${dlls}")
+endif ()
 
-if (WIN32 AND GENERATE_PDBS)
-  # I believe it's the lack of CMAKE_BUILD_TYPE that's eliminating this?
-  # In any case we make sure to add it (for release and debug, to get pdb):
-  append_property_string(TARGET drcontainers LINK_FLAGS "/debug")
-endif (WIN32 AND GENERATE_PDBS)
-
-# documentation is put into main DR docs/ dir
-
-DR_export_target(drcontainers)
-DR_install(TARGETS drcontainers EXPORT ${exported_targets_name}
-  DESTINATION ${INSTALL_EXT_LIB})
-DR_install(FILES
-  hashtable.h
-  # add more here
-  DESTINATION ${INSTALL_EXT_INCLUDE})

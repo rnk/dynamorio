@@ -74,6 +74,7 @@ else (UNIX)
   set(arg_use_make OFF) # use unix make instead of visual studio
 endif (UNIX)
 set(arg_use_ninja OFF)  # use ninja
+set(arg_generator "") # specify precise cmake generator (minus any "Win64")
 set(arg_long OFF)     # whether to run the long suite
 set(arg_already_built OFF) # for testing w/ already-built suite
 set(arg_exclude "")   # regex of tests to exclude
@@ -108,6 +109,9 @@ foreach (arg ${CTEST_SCRIPT_ARG})
   endif ()
   if (${arg} STREQUAL "use_ninja")
     set(arg_use_ninja ON)
+  endif ()
+  if (${arg} MATCHES "^generator=")
+    string(REGEX REPLACE "^generator=" "" arg_generator "${arg}")
   endif ()
   if (${arg} STREQUAL "long")
     set(arg_long ON)
@@ -256,6 +260,38 @@ set(CTEST_CMAKE_COMMAND "${CMAKE_EXECUTABLE_NAME}")
 # outer file should set CTEST_PROJECT_NAME
 set(CTEST_COMMAND "${CTEST_EXECUTABLE_NAME}")
 
+# Detect if the kernel is ia32 or x64.  If the kernel is ia32, there's no sense
+# in trying to run any x64 code.  On Windows, the x64 toolchain is built as x64
+# code, so we can't even build.  On Linux, it's possible to have an ia32
+# toolchain that targets x64, but we don't currently support it.
+if (NOT DEFINED KERNEL_IS_X64)  # Allow variable override.
+  if (WIN32)
+    # Check both PROCESSOR_ARCHITECTURE and PROCESSOR_ARCHITEW6432 in case CMake
+    # was built x64.
+    if ("$ENV{PROCESSOR_ARCHITECTURE}" MATCHES "AMD64" OR
+        "$ENV{PROCESSOR_ARCHITEW6432}" MATCHES "AMD64")
+      set(KERNEL_IS_X64 ON)
+    else ()
+      set(KERNEL_IS_X64 OFF)
+    endif ()
+  else ()
+    # uname -m is what the kernel supports.
+    execute_process(COMMAND uname -m
+      OUTPUT_VARIABLE machine
+      RESULT_VARIABLE cmd_result)
+    # If for some reason uname fails (not on PATH), assume the kernel is x64
+    # anyway.
+    if (cmd_result OR "${machine}" MATCHES "x86_64")
+      set(KERNEL_IS_X64 ON)
+    else ()
+      set(KERNEL_IS_X64 OFF)
+    endif ()
+  endif ()
+endif ()
+if (NOT KERNEL_IS_X64)
+  message("WARNING: Kernel is not x64, skipping x64 builds")
+endif ()
+
 if (arg_use_ninja)
   set(CTEST_CMAKE_GENERATOR "Ninja")
 elseif (arg_use_make)
@@ -271,23 +307,30 @@ elseif (arg_use_make)
 elseif (arg_use_nmake)
   set(CTEST_CMAKE_GENERATOR "NMake Makefiles")
 else ()
-  # we don't yet support VS2010 (i#401) so prefer the others
-  get_filename_component(vs_dir [HKEY_LOCAL_MACHINE\\SOFTWARE\\Microsoft\\VisualStudio\\9.0\\Setup\\VS;ProductDir] REALPATH)
-  # on failure getting weird results: "c:/registry", so we assume will have Studio
-  if ("${vs_dir}" MATCHES "Studio")
-    set(vs_generator "Visual Studio 9 2008")
+  if (arg_generator)
+    set(vs_generator ${arg_generator})
   else ()
-    get_filename_component(vs_dir [HKEY_LOCAL_MACHINE\\SOFTWARE\\Microsoft\\VisualStudio\\8.0\\Setup\\VS;ProductDir] REALPATH)
+    # Prefer the most recent version that's installed.  The user can use
+    # generator= to request an older version.
+    get_filename_component(vs_dir [HKEY_LOCAL_MACHINE\\SOFTWARE\\Microsoft\\VisualStudio\\11.0\\Setup\\VS;ProductDir] REALPATH)
+    # on failure getting weird results: "c:/registry", so we assume will have Studio
     if ("${vs_dir}" MATCHES "Studio")
-      set(vs_generator "Visual Studio 8 2005")
+      set(vs_generator "Visual Studio 11")
     else ()
       get_filename_component(vs_dir [HKEY_LOCAL_MACHINE\\SOFTWARE\\Microsoft\\VisualStudio\\10.0\\Setup\\VS;ProductDir] REALPATH)
       if ("${vs_dir}" MATCHES "Studio")
         set(vs_generator "Visual Studio 10")
       else ()
-        get_filename_component(vs_dir [HKEY_LOCAL_MACHINE\\SOFTWARE\\Microsoft\\VisualStudio\\11.0\\Setup\\VS;ProductDir] REALPATH)
+        get_filename_component(vs_dir [HKEY_LOCAL_MACHINE\\SOFTWARE\\Microsoft\\VisualStudio\\9.0\\Setup\\VS;ProductDir] REALPATH)
         if ("${vs_dir}" MATCHES "Studio")
-          set(vs_generator "Visual Studio 11")
+          set(vs_generator "Visual Studio 9 2008")
+        else ()
+          get_filename_component(vs_dir [HKEY_LOCAL_MACHINE\\SOFTWARE\\Microsoft\\VisualStudio\\8.0\\Setup\\VS;ProductDir] REALPATH)
+          if ("${vs_dir}" MATCHES "Studio")
+            set(vs_generator "Visual Studio 8 2005")
+          else ()
+            message(FATAL_ERROR "Cannot determine Visual Studio version")
+          endif ()
         endif ()
       endif ()
     endif ()
@@ -341,6 +384,12 @@ endfunction(get_default_config)
 function(testbuild_ex name is64 initial_cache test_only_in_long 
     add_to_package build_args)
   set(CTEST_BUILD_NAME "${name}")
+
+  # Skip x64 builds on a true ia32 machine.
+  if (is64 AND NOT KERNEL_IS_X64)
+    return()
+  endif ()
+
   if (NOT arg_use_nmake AND NOT arg_use_make AND NOT arg_use_ninja)
     # we need a separate generator for 64-bit as well as the PATH
     # env var changes below (since we run cl directly)
