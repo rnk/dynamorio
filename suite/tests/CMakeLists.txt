@@ -1400,7 +1400,7 @@ if (CLIENT_INTERFACE)
   tobuild_api(api.dis api/dis.c "-syntax_intel"
     "${CMAKE_CURRENT_SOURCE_DIR}/api/dis-udis86-randtest.raw" OFF)
   tobuild_api(api.ir api/ir.c "" "" OFF)
-  tobuild_api(api.startstop_FLAKY api/startstop.c "" "" OFF) # FIXME i#813
+  tobuild_api(api.startstop api/startstop.c "" "" OFF)
   # test static decoder library
   tobuild_api(api.ir-static api/ir.c "" "" ON)
   tobuild_api(api.static api/static.c "" "" ON)
@@ -1499,7 +1499,7 @@ if (UNIX)
   tobuild(pthreads.pthreads pthreads/pthreads.c)
   tobuild(pthreads.pthreads_exit pthreads/pthreads_exit.c)
   tobuild(pthreads.ptsig_FLAKY pthreads/ptsig.c)
-  tobuild(pthreads.pthreads_fork_FLAKY pthreads/pthreads_fork.c) # FIXME i#951
+  tobuild(pthreads.pthreads_fork pthreads/pthreads_fork.c)
 
   # Clang will likely never support gcc nested functions:
   # http://llvm.org/PR9206
