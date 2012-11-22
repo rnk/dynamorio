@@ -338,11 +338,11 @@ static HMODULE (WINAPI *priv_kernel32_LoadLibraryW)(const wchar_t *);
 /* Isolate the app's PEB by making a copy for use by private libs (i#249) */
 static PEB *private_peb;
 /* Isolate TEB->FlsData: for first thread we need to copy before have dcontext */
-static void *priv_fls_data;
+static void *pre_fls_data;
 /* Isolate TEB->ReservedForNtRpc: for first thread we need to copy before have dcontext */
-static void *priv_nt_rpc;
-/* Only swap peb and teb fields if we've loaded WinAPI libraries */
-static bool loaded_windows_lib;
+static void *pre_nt_rpc;
+/* Isolate TEB->NlsCache: for first thread we need to copy before have dcontext */
+static void *pre_nls_cache;
 /* Used to handle loading windows lib later during init */
 static bool swapped_to_app_peb;
 /* FIXME i#875: we do not have ntdll!RtlpFlsLock isolated.  Living w/ it for now. */
@@ -421,11 +421,24 @@ os_loader_init_prologue(void)
             }
         }
 
-        priv_fls_data = get_tls(FLS_DATA_TIB_OFFSET);
-        priv_nt_rpc = get_tls(NT_RPC_TIB_OFFSET);
-        LOG(GLOBAL, LOG_LOADER, 2, "initial thread TEB->FlsData="PFX"\n", priv_fls_data);
+        pre_nls_cache = get_tls(NLS_CACHE_TIB_OFFSET);
+        pre_fls_data = get_tls(FLS_DATA_TIB_OFFSET);
+        pre_nt_rpc = get_tls(NT_RPC_TIB_OFFSET);
+        /* Clear state to separate priv from app.
+         * XXX: if we attach or something it seems possible that ntdll or user32
+         * or some other shared resource might set these and we want to share
+         * the value between app and priv.  In that case we should not clear here
+         * and should relax the asserts in dispatch and is_using_app_peb to
+         * allow app==priv if both ==pre.
+         */
+        set_tls(NLS_CACHE_TIB_OFFSET, NULL);
+        set_tls(FLS_DATA_TIB_OFFSET, NULL);
+        set_tls(NT_RPC_TIB_OFFSET, NULL);
+        LOG(GLOBAL, LOG_LOADER, 2, "initial thread TEB->NlsCache="PFX"\n",
+            pre_nls_cache);
+        LOG(GLOBAL, LOG_LOADER, 2, "initial thread TEB->FlsData="PFX"\n", pre_fls_data);
         LOG(GLOBAL, LOG_LOADER, 2, "initial thread TEB->ReservedForNtRpc="PFX"\n",
-            priv_nt_rpc);
+            pre_nt_rpc);
     }
 #endif
 
@@ -529,20 +542,27 @@ os_loader_thread_init_prologue(dcontext_t *dcontext)
             /* For first thread use cached pre-priv-lib value for app and
              * whatever value priv libs have set for priv
              */
+            dcontext->priv_nls_cache = get_tls(NLS_CACHE_TIB_OFFSET);
             dcontext->priv_fls_data = get_tls(FLS_DATA_TIB_OFFSET);
             dcontext->priv_nt_rpc = get_tls(NT_RPC_TIB_OFFSET);
-            dcontext->app_fls_data = NULL;
-            dcontext->app_nt_rpc = NULL;
+            dcontext->app_nls_cache = pre_nls_cache;
+            dcontext->app_fls_data = pre_fls_data;
+            dcontext->app_nt_rpc = pre_nt_rpc;
+            set_tls(NLS_CACHE_TIB_OFFSET, dcontext->app_nls_cache);
             set_tls(FLS_DATA_TIB_OFFSET, dcontext->app_fls_data);
             set_tls(NT_RPC_TIB_OFFSET, dcontext->app_nt_rpc);
         } else {
             /* The real value will be set by swap_peb_pointer */
+            dcontext->app_nls_cache = NULL;
             dcontext->app_fls_data = NULL;
             dcontext->app_nt_rpc = NULL;
             /* We assume clearing out any non-NULL value for priv is safe */
+            dcontext->priv_nls_cache = NULL;
             dcontext->priv_fls_data = NULL;
             dcontext->priv_nt_rpc = NULL;
         }
+        LOG(THREAD, LOG_LOADER, 2, "app nls_cache="PFX", priv nls_cache="PFX"\n",
+            dcontext->app_nls_cache, dcontext->priv_nls_cache);
         LOG(THREAD, LOG_LOADER, 2, "app fls="PFX", priv fls="PFX"\n",
             dcontext->app_fls_data, dcontext->priv_fls_data);
         LOG(THREAD, LOG_LOADER, 2, "app rpc="PFX", priv rpc="PFX"\n",
@@ -587,42 +607,19 @@ get_private_peb(void)
     return private_peb;
 }
 
-/* For performance reasons we avoid the swap if there are no private WinAPI libs:
- * we assume libs not in the system dir will not write to PEB or TEB fields we
- * care about (mainly Fls ones).
+/* For performance reasons we avoid the swap if there's no client.
+ * We'd like to do so if there are no private WinAPI libs
+ * (we assume libs not in the system dir will not write to PEB or TEB fields we
+ * care about (mainly Fls ones)), but kernel32 can be loaded in dr_init()
+ * (which is after arch_init()) via dr_enable_console_printing(); plus,
+ * a client could load kernel32 via dr_load_aux_library(), or a 3rd-party
+ * priv lib could load anything at any time.  Xref i#984.
  */
 bool
 should_swap_peb_pointer(void)
 {
-    return INTERNAL_OPTION(private_peb) && loaded_windows_lib;
-}
-
-static void
-set_loaded_windows_lib(void)
-{
-    if (!loaded_windows_lib) {
-        if (!dynamo_initialized) {
-            loaded_windows_lib = true;
-            LOG(GLOBAL, LOG_LOADER, 1,
-                "loaded a Windows system library => isolating PEB+TEB\n");
-#ifdef CLIENT_INTERFACE
-            if (INTERNAL_OPTION(private_peb) && swapped_to_app_peb &&
-                should_swap_peb_pointer()) {
-                /* os_loader_init_epilogue() already swapped to app */
-                swap_peb_pointer(NULL, true/*to priv*/);
-            }
-#endif
-            /* attempt to catch init re-ordering (see comment below and i#338) */
-#ifndef CLIENT_INTERFACE /* dr_enable_console_printing() loads kernel32.dll */
-            ASSERT(get_thread_private_dcontext() == NULL);
-#endif
-        } else {
-            /* We've already emitted context switch code that does not swap peb/teb.
-             * Basically we don't support this.  (Should really check for post-emit.)
-             */
-            ASSERT_NOT_REACHED();
-        }
-    }
+    return (INTERNAL_OPTION(private_peb) &&
+            !IS_INTERNAL_STRING_OPTION_EMPTY(client_lib));
 }
 
 static void *
@@ -645,6 +642,7 @@ set_teb_field(dcontext_t *dcontext, ushort offs, void *value)
         set_tls(offs, value);
     } else {
         byte *teb = dcontext->teb_base;
+        ASSERT(dcontext->teb_base != NULL);
         *((void **)(teb + offs)) = value;
     }
 }
@@ -654,6 +652,7 @@ is_using_app_peb(dcontext_t *dcontext)
 {
     /* don't use get_own_peb() as we want what's actually pointed at by TEB */
     PEB *cur_peb = get_teb_field(dcontext, PEB_TIB_OFFSET);
+    void *cur_nls_cache;
     void *cur_fls;
     void *cur_rpc;
     ASSERT(dcontext != NULL && dcontext != GLOBAL_DCONTEXT);
@@ -662,15 +661,30 @@ is_using_app_peb(dcontext_t *dcontext)
         !should_swap_peb_pointer())
         return true;
     ASSERT(cur_peb != NULL);
+    cur_nls_cache = get_teb_field(dcontext, NLS_CACHE_TIB_OFFSET);
     cur_fls = get_teb_field(dcontext, FLS_DATA_TIB_OFFSET);
     cur_rpc = get_teb_field(dcontext, NT_RPC_TIB_OFFSET);
     if (cur_peb == get_private_peb()) {
-        ASSERT(cur_fls == dcontext->priv_fls_data);
-        ASSERT(cur_rpc == dcontext->priv_nt_rpc);
+        /* won't nec equal the priv_ value since could have changed: but should
+         * not have the app value!
+         */
+        ASSERT(cur_nls_cache == NULL ||
+               cur_nls_cache != dcontext->app_nls_cache);
+        ASSERT(cur_fls == NULL ||
+               cur_fls != dcontext->app_fls_data);
+        ASSERT(cur_rpc == NULL ||
+               cur_rpc != dcontext->app_nt_rpc);
         return false;
     } else {
-        ASSERT(cur_fls == dcontext->app_fls_data);
-        ASSERT(cur_rpc == dcontext->app_nt_rpc);
+        /* won't nec equal the app_ value since could have changed: but should
+         * not have the priv value!
+         */
+        ASSERT(cur_nls_cache == NULL ||
+               cur_nls_cache != dcontext->priv_nls_cache);
+        ASSERT(cur_fls == NULL ||
+               cur_fls != dcontext->priv_fls_data);
+        ASSERT(cur_rpc == NULL ||
+               cur_rpc != dcontext->priv_nt_rpc);
         return true;
     }
 }
@@ -686,9 +700,10 @@ swap_peb_pointer(dcontext_t *dcontext, bool to_priv)
     set_teb_field(dcontext, PEB_TIB_OFFSET, (void *) tgt_peb);
     LOG(THREAD, LOG_LOADER, 2, "set teb->peb to "PFX"\n", tgt_peb);
     if (dcontext != NULL && dcontext != GLOBAL_DCONTEXT) {
-        /* We preserve TEB->LastErrorValue and we swap TEB->FlsData and
-         * TEB->ReservedForNtRpc
+        /* We preserve TEB->LastErrorValue and we swap TEB->FlsData,
+         * TEB->ReservedForNtRpc, and TEB->NlsCache.
          */
+        void *cur_nls_cache = get_teb_field(dcontext, NLS_CACHE_TIB_OFFSET);
         void *cur_fls = get_teb_field(dcontext, FLS_DATA_TIB_OFFSET);
         void *cur_rpc = get_teb_field(dcontext, NT_RPC_TIB_OFFSET);
         if (to_priv) {
@@ -696,6 +711,10 @@ swap_peb_pointer(dcontext_t *dcontext, bool to_priv)
             dcontext->app_errno = (int)(ptr_int_t)
                 get_teb_field(dcontext, ERRNO_TIB_OFFSET);
 
+            if (dcontext->priv_nls_cache != cur_nls_cache) { /* handle two in a row */
+                dcontext->app_nls_cache = cur_nls_cache;
+                set_teb_field(dcontext, NLS_CACHE_TIB_OFFSET, dcontext->priv_nls_cache);
+            }
             if (dcontext->priv_fls_data != cur_fls) { /* handle two calls in a row */
                 dcontext->app_fls_data = cur_fls;
                 set_teb_field(dcontext, FLS_DATA_TIB_OFFSET, dcontext->priv_fls_data);
@@ -709,6 +728,10 @@ swap_peb_pointer(dcontext_t *dcontext, bool to_priv)
             set_teb_field(dcontext, ERRNO_TIB_OFFSET,
                           (void *)(ptr_int_t)dcontext->app_errno);
 
+            if (dcontext->app_nls_cache != cur_nls_cache) { /* handle two in a row */
+                dcontext->priv_nls_cache = cur_nls_cache;
+                set_teb_field(dcontext, NLS_CACHE_TIB_OFFSET, dcontext->app_nls_cache);
+            }
             if (dcontext->app_fls_data != cur_fls) { /* handle two calls in a row */
                 dcontext->priv_fls_data = cur_fls;
                 set_teb_field(dcontext, FLS_DATA_TIB_OFFSET, dcontext->app_fls_data);
@@ -718,12 +741,16 @@ swap_peb_pointer(dcontext_t *dcontext, bool to_priv)
                 set_teb_field(dcontext, NT_RPC_TIB_OFFSET, dcontext->app_nt_rpc);
             }
         }
+        ASSERT(!is_dynamo_address(dcontext->app_nls_cache));
         ASSERT(!is_dynamo_address(dcontext->app_fls_data));
         ASSERT(!is_dynamo_address(dcontext->app_nt_rpc));
         /* Once we have earier injection we should be able to assert
          * that priv_fls_data is either NULL or a DR address: but on
          * notepad w/ drinject it's neither: need to investigate.
          */
+        LOG(THREAD, LOG_LOADER, 3,
+            "cur nls_cache="PFX", app nls_cache="PFX", priv nls_cache="PFX"\n",
+            cur_nls_cache, dcontext->app_nls_cache, dcontext->priv_nls_cache);
         LOG(THREAD, LOG_LOADER, 3, "cur fls="PFX", app fls="PFX", priv fls="PFX"\n",
             cur_fls, dcontext->app_fls_data, dcontext->priv_fls_data);
         LOG(THREAD, LOG_LOADER, 3, "cur rpc="PFX", app rpc="PFX", priv rpc="PFX"\n",
@@ -748,6 +775,9 @@ restore_peb_pointer_for_thread(dcontext_t *dcontext)
     set_teb_field(dcontext, ERRNO_TIB_OFFSET, (void *)(ptr_int_t) dcontext->app_errno);
     LOG(THREAD, LOG_LOADER, 3, "restored app errno to "PIFX"\n", dcontext->app_errno);
     /* We also swap TEB->FlsData and TEB->ReservedForNtRpc */
+    set_teb_field(dcontext, NLS_CACHE_TIB_OFFSET, dcontext->app_nls_cache);
+    LOG(THREAD, LOG_LOADER, 3, "restored app nls_cache to "PFX"\n",
+        dcontext->app_nls_cache);
     set_teb_field(dcontext, FLS_DATA_TIB_OFFSET, dcontext->app_fls_data);
     LOG(THREAD, LOG_LOADER, 3, "restored app fls to "PFX"\n", dcontext->app_fls_data);
     set_teb_field(dcontext, NT_RPC_TIB_OFFSET, dcontext->app_nt_rpc);
@@ -1425,9 +1455,6 @@ privload_locate_and_load(const char *impname, privmod_t *dependent)
         NULL_TERMINATE_BUFFER(modpath);
         LOG(GLOBAL, LOG_LOADER, 2, "%s: looking for %s\n", __FUNCTION__, modpath);
         if (os_file_exists(modpath, false/*!is_dir*/)) {
-#ifdef CLIENT_INTERFACE
-            set_loaded_windows_lib();
-#endif
             mod = privload_load(modpath, dependent);
             return mod; /* if fails to load, don't keep searching */
         }
@@ -1437,9 +1464,6 @@ privload_locate_and_load(const char *impname, privmod_t *dependent)
         NULL_TERMINATE_BUFFER(modpath);
         LOG(GLOBAL, LOG_LOADER, 2, "%s: looking for %s\n", __FUNCTION__, modpath);
         if (os_file_exists(modpath, false/*!is_dir*/)) {
-#ifdef CLIENT_INTERFACE
-            set_loaded_windows_lib();
-#endif
             mod = privload_load(modpath, dependent);
             return mod; /* if fails to load, don't keep searching */
         }
@@ -1770,6 +1794,9 @@ redirect_RtlCreateHeap(ULONG flags, void *base, size_t reserve_sz,
 static bool
 redirect_heap_call(HANDLE heap)
 {
+    ASSERT(!dynamo_initialized || dynamo_exited ||
+           get_thread_private_dcontext() == NULL /*thread exiting*/ ||
+           !os_using_app_state(get_thread_private_dcontext()));
 #ifdef CLIENT_INTERFACE
     if (!INTERNAL_OPTION(privlib_privheap))
         return false;
@@ -1782,7 +1809,7 @@ redirect_heap_call(HANDLE heap)
              */
             heap == private_peb->ProcessHeap ||
 #endif
-            get_peb(NT_CURRENT_PROCESS)->ProcessHeap ||
+            heap == get_peb(NT_CURRENT_PROCESS)->ProcessHeap ||
             is_dynamo_address((byte*)heap));
 }
 

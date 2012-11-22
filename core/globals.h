@@ -690,6 +690,8 @@ struct _dcontext_t {
     void *         priv_fls_data;
     void *         app_nt_rpc;
     void *         priv_nt_rpc;
+    void *         app_nls_cache;
+    void *         priv_nls_cache;
     /* we need this to restore ptrs for other threads on detach */
     byte *         teb_base;
 # endif
@@ -979,6 +981,8 @@ int our_sscanf(const char *str, const char *format, ...);
 int our_vsscanf(const char *str, const char *fmt, va_list ap);
 const char * parse_int(const char *sp, uint64 *res_out, uint base, uint width,
                        bool is_signed);
+ssize_t
+utf16_to_utf8_size(const wchar_t *src, size_t max_chars, size_t *written/*unicode chars*/);
 #define sscanf our_sscanf
 
 /* string.c */
