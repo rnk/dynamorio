@@ -301,7 +301,7 @@ has_pcache_dynamo_options(options_t *options, op_pcache_t pcache_effect);
 void
 set_dynamo_options_defaults(options_t *options);
 int
-set_dynamo_options(options_t *options, char *optstr);
+set_dynamo_options(options_t *options, const char *optstr);
 #else /* !NOT_DYNAMORIO_CORE */
 
 #include "utils.h"
