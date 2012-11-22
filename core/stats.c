@@ -181,8 +181,8 @@ kstats_main_logfile_name(void)
     return "process-kstats";
 }
 
-static char *
-kstats_thread_logfile_name()
+static const char *
+kstats_thread_logfile_name(void)
 {
     return "kstats";
 }

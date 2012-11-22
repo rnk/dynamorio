@@ -2867,7 +2867,7 @@ free_nonexec_coarse_and_unlock()
  */
 static bool
 add_futureexec_vm_area(app_pc start, app_pc end, bool once_only
-                       _IF_DEBUG(char *comment))
+                       _IF_DEBUG(const char *comment))
 {
     /* FIXME: don't add portions that overlap w/ exec areas */
     LOG(GLOBAL, LOG_VMAREAS, 2, "new FUTURE executable vm area: "PFX"-"PFX" %s%s\n",
@@ -11069,7 +11069,7 @@ apc_thread_policy_helper(app_pc *apc_target_location, /* IN/OUT */
         bool squashed = false;
         char injected_threat_buf[MAXIMUM_VIOLATION_NAME_LENGTH]
             = "APCS.XXXX.B";
-        char *name = injected_threat_buf;
+        const char *name = injected_threat_buf;
 
         bool block = TEST(OPTION_BLOCK, target_policy);
 
@@ -11087,9 +11087,10 @@ apc_thread_policy_helper(app_pc *apc_target_location, /* IN/OUT */
                     /* (injected) shellcode thread */
                     ASSERT_NOT_TESTED();
                     /* gcc warns if we use the string "INJT" directly */
-                    strncpy(name, INJT, 4);
+                    strncpy(injected_threat_buf, INJT, 4);
                 }
-                fill_security_violation_target(name, (const byte*)&injected_code);
+                fill_security_violation_target(injected_threat_buf,
+                                               (const byte*)&injected_code);
             }
 
             /* we allow -exempt_threat_list to override our action */
