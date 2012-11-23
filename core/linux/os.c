@@ -673,10 +673,14 @@ dynamorio_set_envp(char **envp)
     our_environ = envp;
 }
 
-#if !defined(STATIC_LIBRARY) && !defined(STANDALONE_UNIT_TEST)
+#if !defined(STANDALONE_UNIT_TEST)
 /* shared library init and exit */
+/* We used to use the special _init and _fini symbols, but with STATIC_LIBRARY
+ * that conflicts with the definition in crt0.o.
+ */
 int
-_init(int argc, char **argv, char **envp)
+__attribute__((constructor))
+our_init(int argc, char **argv, char **envp)
 {
     /* if do not want to use drpreload.so, we can take over here */
     extern void dynamorio_app_take_over(void);
@@ -703,7 +707,8 @@ _init(int argc, char **argv, char **envp)
 }
 
 int
-_fini()
+__attribute__((destructor))
+our_fini()
 {
     return 0;
 }
@@ -7425,6 +7430,7 @@ get_library_bounds(const char *name, app_pc *start/*IN/OUT*/, app_pc *end/*OUT*/
     return count;
 }
 
+#ifndef STATIC_LIBRARY
 /* initializes dynamorio library bounds.
  * does not use any heap.
  * assumed to be called prior to find_executable_vm_areas.
@@ -7459,11 +7465,7 @@ get_dynamo_library_bounds(void)
     ASSERT(check_start == dynamo_dll_start && check_end == dynamo_dll_end);
     LOG(GLOBAL, LOG_VMAREAS, 1, "DR library bounds: "PFX" to "PFX"\n",
         dynamo_dll_start, dynamo_dll_end);
-#ifdef STATIC_LIBRARY
-    dynamorio_library_path[0] = '\0';
-#else
     ASSERT(res > 0);
-#endif
 
     /* Issue 20: we need the path to the alt arch */
     strncpy(dynamorio_alt_arch_path, dynamorio_library_path,
@@ -7483,14 +7485,17 @@ get_dynamo_library_bounds(void)
 
     return res;
 }
+#endif /* !STATIC_LIBRARY */
 
 /* get full path to our own library, (cached), used for forking and message file name */
-char*
+char *
 get_dynamorio_library_path(void)
 {
+#ifndef STATIC_LIBRARY
     if (!dynamorio_library_path[0]) { /* not cached */
         get_dynamo_library_bounds();
     }
+#endif
     return dynamorio_library_path;
 }
 
@@ -7555,10 +7560,16 @@ mem_stats_snapshot()
 }
 #endif
 
+/* XXX: For STATIC_LIBRARY, our code is mixed into the executable.  We pretend
+ * DR has bounds of [0, 0), so nothing is in those bounds.
+ */
+
 bool
 is_in_dynamo_dll(app_pc pc)
 {
+#ifndef STATIC_LIBRARY
     ASSERT(dynamo_dll_start != NULL);
+#endif
 #ifdef VMX86_SERVER
     /* We want to consider vmklib as part of the DR lib for allowing
      * execution (_init calls os_in_vmkernel_classic()) and for
@@ -7573,18 +7584,22 @@ is_in_dynamo_dll(app_pc pc)
 app_pc
 get_dynamorio_dll_start()
 {
+#ifndef STATIC_LIBRARY
     if (dynamo_dll_start == NULL)
         get_dynamo_library_bounds();
     ASSERT(dynamo_dll_start != NULL);
+#endif
     return dynamo_dll_start;
 }
 
 app_pc
 get_dynamorio_dll_end()
 {
+#ifndef STATIC_LIBRARY
     if (dynamo_dll_end == NULL)
         get_dynamo_library_bounds();
     ASSERT(dynamo_dll_end != NULL);
+#endif
     return dynamo_dll_end;
 }
 
@@ -8063,9 +8078,11 @@ find_dynamo_library_vm_areas(void)
      * We don't bother to break down the sub-regions.
      * Assumption: we don't need to have the protection flags for DR sub-regions.
      */
+#ifndef STATIC_LIBRARY
     add_dynamo_vm_area(get_dynamorio_dll_start(), get_dynamorio_dll_end(),
                        MEMPROT_READ|MEMPROT_WRITE|MEMPROT_EXEC,
                        true /* from image */ _IF_DEBUG(dynamorio_library_path));
+#endif
 #ifdef VMX86_SERVER
     if (os_in_vmkernel_userworld())
         vmk_add_vmklib_to_dynamo_areas();
