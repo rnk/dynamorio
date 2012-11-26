@@ -432,7 +432,7 @@ if (UNIX)
   get_filename_component(binutils_path ${CMAKE_LINKER} PATH)
   find_program(READELF_EXECUTABLE readelf HINTS "${binutils_path}" DOC "path to readelf")
   if (STATIC_LIBRARY)
-    message(STATUS "skipping readelf check for STATIC_LIBRARY")
+    # Skipping readelf check for STATIC_LIBRARY.
   elseif (NOT READELF_EXECUTABLE)
     message("readelf not found: not checking SElinux or execstack")
   else ()

@@ -517,6 +517,20 @@ function(add_exe test source)
       "${CMAKE_GENERATOR}" MATCHES "Visual Studio")
     add_dependencies(${test} ${gen_asm_tgt})
   endif ()
+
+  if (STATIC_LIBRARY)
+    # Link DR into every test exe.
+    target_link_libraries(${test} dynamorio)
+    if (UNIX)
+      # For non-API tests, DR won't be referenced by the exe, so the
+      # linker won't link us in.  Bracketing DR in --whole-archive
+      # gets us linked in.  The linker removes duplicate entries, so we
+      # keep the target_link_libraries above for correct dependencies.
+      get_target_property(drloc dynamorio LOCATION${location_suffix})
+      append_property_string(TARGET ${test} LINK_FLAGS
+        "-Wl,--whole-archive,${drloc},--no-whole-archive")
+    endif ()
+  endif ()
 endfunction(add_exe)
 
 # normal app
