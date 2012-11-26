@@ -147,15 +147,13 @@ join_thread(thread_handle th)
 #endif
 }
 
+#ifndef LINUX
 void
-thread_yield()
+thread_yield(void)
 {
-#ifdef LINUX
-    ASSERT_NOT_IMPLEMENTED();
-#else
     Sleep(0); /* stay ready */
-#endif
 }
+#endif /* LINUX */
 
 int
 get_os_prot_word(int prot)
