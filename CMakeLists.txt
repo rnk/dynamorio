@@ -193,6 +193,11 @@ if (VPS)
 endif (VPS)
 
 option(STATIC_LIBRARY "build DR statically (not supported yet)")
+if (STATIC_LIBRARY)
+  set(SHARED_OR_STATIC STATIC)
+else ()
+  set(SHARED_OR_STATIC SHARED)
+endif ()
 
 # temporary: once build+support issues fixed, remove and add HOT_PATCHING_INTERFACE
 # to VMAP by default

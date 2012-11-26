@@ -236,7 +236,7 @@ else (UNIX)
     )
 endif (UNIX)
 
-add_library(dynamorio SHARED 
+add_library(dynamorio ${SHARED_OR_STATIC}
   ${CORE_SRCS} ${ARCH_SRCS} ${OS_SRCS}
   # FIXME: any other way to add a dependence?  this is for export_list,
   # where the PRE_LINK custom command doesn't support DEPENDS.
@@ -419,7 +419,9 @@ if (UNIX)
   set_target_properties(dynamorio PROPERTIES
     VERSION "${VERSION_MAJOR_MINOR}" SOVERSION "${VERSION_MAJOR_MINOR}")
   # We assume we're still on 3.x
-  generate_soversions(${OLDEST_COMPATIBLE_VERSION} ${VERSION_NUMBER_INTEGER})
+  if (NOT STATIC_LIBRARY)
+    generate_soversions(${OLDEST_COMPATIBLE_VERSION} ${VERSION_NUMBER_INTEGER})
+  endif ()
 
   # Note that we can't locate readelf inside CMake_readelf.cmake as that
   # would disallow pointing externally at a readelf location, so we make it
@@ -429,9 +431,11 @@ if (UNIX)
   # readelf is a binutils app just like ld
   get_filename_component(binutils_path ${CMAKE_LINKER} PATH)
   find_program(READELF_EXECUTABLE readelf HINTS "${binutils_path}" DOC "path to readelf")
-  if (NOT READELF_EXECUTABLE)
+  if (STATIC_LIBRARY)
+    message(STATUS "skipping readelf check for STATIC_LIBRARY")
+  elseif (NOT READELF_EXECUTABLE)
     message("readelf not found: not checking SElinux or execstack")
-  else (NOT READELF_EXECUTABLE)
+  else ()
     get_target_property(lib_to_check dynamorio LOCATION)
     add_custom_command(TARGET dynamorio
       POST_BUILD
@@ -452,7 +456,7 @@ if (UNIX)
            -P ${CMAKE_CURRENT_SOURCE_DIR}/CMake_readelf.cmake
       VERBATIM # recommended: p260
       )
-  endif (NOT READELF_EXECUTABLE)
+  endif ()
 
   # we used to run size on libdynamorio.so for info purposes
 
