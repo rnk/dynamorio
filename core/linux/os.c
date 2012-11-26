@@ -712,13 +712,6 @@ our_init(int argc, char **argv, char **envp)
     }
     return 0;
 }
-
-int
-__attribute__((destructor))
-our_fini()
-{
-    return 0;
-}
 #endif
 
 bool

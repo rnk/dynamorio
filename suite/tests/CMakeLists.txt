@@ -175,7 +175,8 @@ if (LINKCOUNT AND TEST_SUITE)
 elseif (CALLPROF AND TEST_SUITE)
   set(run_list "ONLY::^common::")
 elseif (STATIC_LIBRARY)
-  # Traces don't seem to with STATIC_LIBRARY and !CLIENT_INTERFACE.
+  # FIXME i#975: Traces don't seem to with STATIC_LIBRARY and
+  # !CLIENT_INTERFACE.
   set(run_list
     "SHORT::-disable_traces"
     "-disable_traces")
@@ -1509,9 +1510,11 @@ if (UNIX)
   tobuild_ops(linux.app_tls linux/app_tls.c "-native_exec_list libfoo.so" "")
 
   # FIXME i#125: bugs in these, were disabled in the past
-  tobuild_ops(linux.vfork linux/vfork.c ""
-    "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/linux.execve-sub")
-  #tobuild(linux.vfork-fib linux/vfork-fib.c)
+  if (NOT STATIC_LIBRARY)
+    tobuild_ops(linux.vfork linux/vfork.c ""
+      "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/linux.execve-sub")
+    #tobuild(linux.vfork-fib linux/vfork-fib.c)
+  endif ()
 
   # runs of other builds with custom DR options
   torunonly(linux.thread-reset linux.thread linux/thread.c
