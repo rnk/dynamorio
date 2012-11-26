@@ -393,9 +393,11 @@ static void os_dir_iterator_start(dir_iterator_t *iter, file_t fd);
 static bool os_dir_iterator_next(dir_iterator_t *iter);
 /* XXX: If we generalize to Windows, will we need os_dir_iterator_stop()? */
 
+#if defined(CLIENT_INTERFACE) || !defined(STATIC_LIBRARY)
 static int
 get_library_bounds(const char *name, app_pc *start/*IN/OUT*/, app_pc *end/*OUT*/,
                    char *fullpath/*OPTIONAL OUT*/, size_t path_size);
+#endif
 
 /* vsyscall page.  hardcoded at 0xffffe000 in earlier kernels, but
  * randomly placed since fedora2.
@@ -662,9 +664,8 @@ getenv(const char *name)
 /* Work around drpreload's _init going first.  We can get envp in our own _init
  * routine down below, but drpreload.so comes first and calls
  * dynamorio_app_init before our own _init routine gets called.  Apps using the
- * app API are unaffected because our _init routine will have run by then.
- * FIXME: If we decide to support STATIC_LIBRARY we'll need to document this API
- * or make sure we get envp some other way.
+ * app API are unaffected because our _init routine will have run by then.  For
+ * STATIC_LIBRARY, we simply set our_environ below in our_init().
  */
 DYNAMORIO_EXPORT
 void
@@ -702,7 +703,6 @@ our_init(int argc, char **argv, char **envp)
         const char *takeover_env = getenv("DYNAMORIO_TAKEOVER_IN_INIT");
         if (takeover_env != NULL && strcmp(takeover_env, "1") == 0) {
             takeover = true;
-            print_file(STDERR, "ASDF\n");
         }
     }
     if (takeover) {
@@ -4692,6 +4692,24 @@ handle_execve(dcontext_t *dcontext)
         }
     }
 
+    /* i#237/PR 498284: If we're a vfork "thread" we're really in a different
+     * process and if we exec then the parent process will still be alive.  We
+     * can't easily clean our own state (dcontext, dstack, etc.) up in our
+     * parent process: we need it to invoke the syscall and the syscall might
+     * fail.  We could expand cleanup_and_terminate to also be able to invoke
+     * SYS_execve: but execve seems more likely to fail than termination
+     * syscalls.  Our solution is to mark this thread as "execve" and hide it
+     * from regular thread queries; we clean it up in the process-exiting
+     * synch_with_thread(), or if the same parent thread performs another vfork
+     * (to prevent heap accumulation from repeated vfork+execve).  Since vfork
+     * on linux suspends the parent, there cannot be any races with the execve
+     * syscall completing: there can't even be peer vfork threads, so we could
+     * set a flag and clean up in dispatch, but that seems overkill.  (If vfork
+     * didn't suspend the parent we'd need to touch a marker file or something
+     * to know the execve was finished.)
+     */
+    mark_thread_execve(dcontext->thread_record, true);
+
 #ifdef STATIC_LIBRARY
     /* no way we can inject, we just lose control */
     SYSLOG_INTERNAL_WARNING("WARNING: static DynamoRIO library, losing control on execve");
@@ -4710,24 +4728,6 @@ handle_execve(dcontext_t *dcontext)
     int num_new;
     char **new_envp;
     uint logdir_length;
-
-    /* i#237/PR 498284: If we're a vfork "thread" we're really in a different
-     * process and if we exec then the parent process will still be alive.  We
-     * can't easily clean our own state (dcontext, dstack, etc.) up in our
-     * parent process: we need it to invoke the syscall and the syscall might
-     * fail.  We could expand cleanup_and_terminate to also be able to invoke
-     * SYS_execve: but execve seems more likely to fail than termination
-     * syscalls.  Our solution is to mark this thread as "execve" and hide it
-     * from regular thread queries; we clean it up in the process-exiting
-     * synch_with_thread(), or if the same parent thread performs another vfork
-     * (to prevent heap accumulation from repeated vfork+execve).  Since vfork
-     * on linux suspends the parent, there cannot be any races with the execve
-     * syscall completing: there can't even be peer vfork threads, so we could
-     * set a flag and clean up in dispatch, but that seems overkill.  (If vfork
-     * didn't suspend the parent we'd need to touch a marker file or something
-     * to know the execve was finished.)
-     */
-    mark_thread_execve(dcontext->thread_record, true);
 
     num_new = 
         2 + /* execve indicator var plus final NULL */
@@ -7269,6 +7269,7 @@ dl_iterate_get_path_cb(struct dl_phdr_info *info, size_t size, void *data)
 }
 #endif
 
+#if defined(CLIENT_INTERFACE) || !defined(STATIC_LIBRARY)
 /* Finds the bounds of the library with name "name".  If "name" is NULL,
  * "start" must be non-NULL and must be an address within the library.
  * Note that we can't just walk backward and look for is_elf_so_header() b/c
@@ -7436,6 +7437,7 @@ get_library_bounds(const char *name, app_pc *start/*IN/OUT*/, app_pc *end/*OUT*/
         *end = cur_end;
     return count;
 }
+#endif /* CLIENT_INTERFACE || !STATIC_LIBRARY */
 
 #ifndef STATIC_LIBRARY
 /* initializes dynamorio library bounds.
@@ -8245,10 +8247,15 @@ query_memory_ex(const byte *pc, OUT dr_mem_info_t *out_info)
              * are holes in all_memory_areas
              */
             from_os_prot != MEMPROT_NONE) {
-            SYSLOG_INTERNAL_ERROR("all_memory_areas is missing region "PFX"-"PFX"!",
-                                  from_os_base_pc, from_os_base_pc + from_os_size);
-            DOLOG(4, LOG_VMAREAS, print_all_memory_areas(THREAD_GET););
-            ASSERT_NOT_REACHED();
+#ifndef STATIC_LIBRARY
+            //if (all_memory_areas_initialized())
+#endif
+            {
+                SYSLOG_INTERNAL_ERROR("all_memory_areas is missing region "PFX"-"PFX"!",
+                                      from_os_base_pc, from_os_base_pc + from_os_size);
+                DOLOG(4, LOG_VMAREAS, print_all_memory_areas(THREAD_GET););
+                ASSERT_NOT_REACHED();
+            }
             /* be paranoid */
             out_info->base_pc = from_os_base_pc;
             out_info->size = from_os_size;
@@ -8272,12 +8279,10 @@ get_memory_info(const byte *pc, byte **base_pc, size_t *size,
                 uint *prot /* OUT optional, returns MEMPROT_* value */)
 {
     dr_mem_info_t info;
-#ifdef CLIENT_INTERFACE
     if (is_vmm_reserved_address((byte*)pc, 1)) {
         if (!query_memory_ex_from_os(pc, &info) || info.type == DR_MEMTYPE_FREE)
             return false;
     } else
-#endif
         if (!query_memory_ex(pc, &info) || info.type == DR_MEMTYPE_FREE)
             return false;
     if (base_pc != NULL)

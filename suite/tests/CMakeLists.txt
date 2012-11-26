@@ -174,6 +174,11 @@ if (LINKCOUNT AND TEST_SUITE)
   set(run_list "ONLY::^common::-prof_counts -tracedump_binary -no_inline_trace_ibl -indirect_stubs")
 elseif (CALLPROF AND TEST_SUITE)
   set(run_list "ONLY::^common::")
+elseif (STATIC_LIBRARY)
+  # Traces don't seem to with STATIC_LIBRARY and !CLIENT_INTERFACE.
+  set(run_list
+    "SHORT::-disable_traces"
+    "-disable_traces")
 elseif (VMAP)
   if (TEST_SUITE)
     # if running multiple builds we don't redo all tests for later builds
@@ -933,18 +938,24 @@ function(rundr_cmd outcmd outops native dr_ops_aux is_runall)
     # can't escape quotes, so we have to use a list variable
     set(cmd ${MAIN_RUNTIME_OUTPUT_DIRECTORY}/runstats -s ${TEST_SECONDS} -killpg -silent)
     if (NOT native)
-      set(cmd ${cmd} ${MAIN_RUNTIME_OUTPUT_DIRECTORY}/drrun)
-      if (TEST_SUITE)  # Use install dir in the suite for cross-arch execve.
-        set(cmd ${cmd} -dr_home "${CMAKE_INSTALL_PREFIX}")
+      if (NOT STATIC_LIBRARY)
+        set(cmd ${cmd} ${MAIN_RUNTIME_OUTPUT_DIRECTORY}/drrun)
+        if (TEST_SUITE)  # Use install dir in the suite for cross-arch execve.
+          set(cmd ${cmd} -dr_home "${CMAKE_INSTALL_PREFIX}")
+        endif ()
+        if (DEBUG)
+          set(cmd ${cmd} -debug)
+        endif ()
+        if (LINUX AND "${dr_ops}" MATCHES "-early_inject")
+          set(cmd ${cmd} -early)
+        endif()
+        # add dr_ops last to avoid needing extra \ on ;
+        set(${outcmd} ${cmd} -ops "${dr_ops}" PARENT_SCOPE)
+      else ()
+        set(cmd ${cmd} -env DYNAMORIO_TAKEOVER_IN_INIT 1)
+        # add dr_ops last to avoid needing extra \ on ;
+        set(${outcmd} ${cmd} -env DYNAMORIO_OPTIONS "${dr_ops}" PARENT_SCOPE)
       endif ()
-      if (DEBUG)
-        set(cmd ${cmd} -debug)
-      endif ()
-      if (LINUX AND "${dr_ops}" MATCHES "-early_inject")
-        set(cmd ${cmd} -early)
-      endif()
-      # add dr_ops last to avoid needing extra \ on ;
-      set(${outcmd} ${cmd} -ops "${dr_ops}" PARENT_SCOPE)
     else ()
       # We set LD_LIBRARY_PATH for native api/ apps since we're not setting
       # rpath (to make it easier to try different trees)
@@ -1247,14 +1258,12 @@ tobuild_dll(common.nativeexec common/nativeexec.c
   "-native_exec_list ${native_dll_name}")
 
 # app seg mangling makes dstack test fail so we disable such mangling
-if (UNIX)
+set(ops "-no_mangle_app_seg")
+if (UNIX AND CLIENT_INTERFACE)
   # private loader requires the mangling
-  tobuild_ops(common.protect-dstack common/protect-dstack.c
-    "-no_mangle_app_seg -no_private_loader" "")
-else (UNIX)
-  tobuild_ops(common.protect-dstack common/protect-dstack.c
-    "-no_mangle_app_seg" "")
-endif (UNIX)
+  set (ops "${ops} -no_private_loader")
+endif ()
+tobuild_ops(common.protect-dstack common/protect-dstack.c "${ops}" "")
 
 tobuild(common.segfault common/segfault.c)
 # PR 217255: these 4 removed to shorten the regression suite since not
@@ -1531,7 +1540,9 @@ if (UNIX)
   # XXX: should all these infloop tests be made cross-platform?
   # or rely on runall tests that run calc covering this on Windows?
   add_exe(linux.infloop linux/infloop.c)
-  torunonly(linux.reset linux/infloop linux/reset.runall "" "-v")
+  if (NOT STATIC_LIBRARY)  # FIXME i#975
+    torunonly(linux.reset linux/infloop linux/reset.runall "" "-v")
+  endif ()
   if (NOT X64)
     # XXX: 64-bit support not quite there yet
     torunonly(linux.freeze_FLAKY linux/infloop linux/freeze.runall
