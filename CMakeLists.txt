@@ -195,6 +195,20 @@ endif (VPS)
 option(STATIC_LIBRARY "build DR statically (not supported yet)")
 if (STATIC_LIBRARY)
   set(SHARED_OR_STATIC STATIC)
+  # Build all extensions statically.  This overrides any CMake option
+  # the user set.
+  set(DR_EXT_DRMGR_STATIC ON)
+  set(DR_EXT_DRSYMS_STATIC ON)
+  set(DR_EXT_DRUTIL_STATIC ON)
+  set(DR_EXT_DRWRAP_STATIC ON)
+  # FIXME i#975: Port the test suite to STATIC_LIBRARY.  For non-client
+  # tests, link DR directly.  For client tests, link the client, which
+  # will link against DR.  Most client tests will fail without excluding
+  # or modifying them.
+  if (BUILD_TESTS)
+    message(STATUS "FIXME i#975: not building tests for STATIC_LIBRARY")
+  endif ()
+  set(BUILD_TESTS OFF)
 else ()
   set(SHARED_OR_STATIC SHARED)
 endif ()

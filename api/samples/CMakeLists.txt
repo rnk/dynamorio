@@ -136,7 +136,7 @@ foreach (src ${srcs})
         VERBATIM)
     endif ()
   else ("${tgt}" STREQUAL "tracedump")
-    add_library(${tgt} SHARED ${src})
+    add_library(${tgt} ${SHARED_OR_STATIC} ${src})
     if (SHOW_SYMBOLS AND "${tgt}" STREQUAL "instrcalls" AND DR_EXT_DRSYMS_STATIC)
       # required for using drsyms built as a static library
       set(DynamoRIO_USE_LIBC ON)

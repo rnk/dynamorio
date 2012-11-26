@@ -7430,7 +7430,6 @@ get_library_bounds(const char *name, app_pc *start/*IN/OUT*/, app_pc *end/*OUT*/
     return count;
 }
 
-#ifndef STATIC_LIBRARY
 /* initializes dynamorio library bounds.
  * does not use any heap.
  * assumed to be called prior to find_executable_vm_areas.
@@ -7438,6 +7437,14 @@ get_library_bounds(const char *name, app_pc *start/*IN/OUT*/, app_pc *end/*OUT*/
 static int
 get_dynamo_library_bounds(void)
 {
+#ifdef STATIC_LIBRARY
+    /* With STATIC_LIBRARY, our code is mixed into the executable.  By doing
+     * nothing here, we pretend DR has bounds of [0, 0), and nothing is in those
+     * bounds.
+     */
+    return 0;
+#else /* !STATIC_LIBRARY */
+
     /* Note that we're not counting DYNAMORIO_PRELOAD_NAME as a DR area, to match
      * Windows, so we should unload it like we do there. The other reason not to
      * count it is so is_in_dynamo_dll() can be the only exception to the
@@ -7484,18 +7491,16 @@ get_dynamo_library_bounds(void)
         dynamorio_alt_arch_path);
 
     return res;
-}
 #endif /* !STATIC_LIBRARY */
+}
 
 /* get full path to our own library, (cached), used for forking and message file name */
 char *
 get_dynamorio_library_path(void)
 {
-#ifndef STATIC_LIBRARY
     if (!dynamorio_library_path[0]) { /* not cached */
         get_dynamo_library_bounds();
     }
-#endif
     return dynamorio_library_path;
 }
 
@@ -7560,10 +7565,6 @@ mem_stats_snapshot()
 }
 #endif
 
-/* XXX: For STATIC_LIBRARY, our code is mixed into the executable.  We pretend
- * DR has bounds of [0, 0), so nothing is in those bounds.
- */
-
 bool
 is_in_dynamo_dll(app_pc pc)
 {
@@ -7584,22 +7585,18 @@ is_in_dynamo_dll(app_pc pc)
 app_pc
 get_dynamorio_dll_start()
 {
-#ifndef STATIC_LIBRARY
     if (dynamo_dll_start == NULL)
         get_dynamo_library_bounds();
     ASSERT(dynamo_dll_start != NULL);
-#endif
     return dynamo_dll_start;
 }
 
 app_pc
 get_dynamorio_dll_end()
 {
-#ifndef STATIC_LIBRARY
     if (dynamo_dll_end == NULL)
         get_dynamo_library_bounds();
     ASSERT(dynamo_dll_end != NULL);
-#endif
     return dynamo_dll_end;
 }
 
@@ -8074,11 +8071,11 @@ find_executable_vm_areas(void)
 int
 find_dynamo_library_vm_areas(void)
 {
+#ifndef STATIC_LIBRARY
     /* We didn't add inside get_dynamo_library_bounds b/c it was called pre-alloc.
      * We don't bother to break down the sub-regions.
      * Assumption: we don't need to have the protection flags for DR sub-regions.
      */
-#ifndef STATIC_LIBRARY
     add_dynamo_vm_area(get_dynamorio_dll_start(), get_dynamorio_dll_end(),
                        MEMPROT_READ|MEMPROT_WRITE|MEMPROT_EXEC,
                        true /* from image */ _IF_DEBUG(dynamorio_library_path));
