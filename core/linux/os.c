@@ -393,11 +393,9 @@ static void os_dir_iterator_start(dir_iterator_t *iter, file_t fd);
 static bool os_dir_iterator_next(dir_iterator_t *iter);
 /* XXX: If we generalize to Windows, will we need os_dir_iterator_stop()? */
 
-#if defined(CLIENT_INTERFACE) || !defined(STATIC_LIBRARY)
 static int
 get_library_bounds(const char *name, app_pc *start/*IN/OUT*/, app_pc *end/*OUT*/,
                    char *fullpath/*OPTIONAL OUT*/, size_t path_size);
-#endif
 
 /* vsyscall page.  hardcoded at 0xffffe000 in earlier kernels, but
  * randomly placed since fedora2.
@@ -704,6 +702,7 @@ our_init(int argc, char **argv, char **envp)
         const char *takeover_env = getenv("DYNAMORIO_TAKEOVER_IN_INIT");
         if (takeover_env != NULL && strcmp(takeover_env, "1") == 0) {
             takeover = true;
+            print_file(STDERR, "ASDF\n");
         }
     }
     if (takeover) {
@@ -7270,7 +7269,6 @@ dl_iterate_get_path_cb(struct dl_phdr_info *info, size_t size, void *data)
 }
 #endif
 
-#if defined(CLIENT_INTERFACE) || !defined(STATIC_LIBRARY)
 /* Finds the bounds of the library with name "name".  If "name" is NULL,
  * "start" must be non-NULL and must be an address within the library.
  * Note that we can't just walk backward and look for is_elf_so_header() b/c
@@ -7438,7 +7436,6 @@ get_library_bounds(const char *name, app_pc *start/*IN/OUT*/, app_pc *end/*OUT*/
         *end = cur_end;
     return count;
 }
-#endif /* CLIENT_INTERFACE || !STATIC_LIBRARY */
 
 #ifndef STATIC_LIBRARY
 /* initializes dynamorio library bounds.
@@ -8248,15 +8245,10 @@ query_memory_ex(const byte *pc, OUT dr_mem_info_t *out_info)
              * are holes in all_memory_areas
              */
             from_os_prot != MEMPROT_NONE) {
-#ifndef STATIC_LIBRARY
-            //if (all_memory_areas_initialized())
-#endif
-            {
-                SYSLOG_INTERNAL_ERROR("all_memory_areas is missing region "PFX"-"PFX"!",
-                                      from_os_base_pc, from_os_base_pc + from_os_size);
-                DOLOG(4, LOG_VMAREAS, print_all_memory_areas(THREAD_GET););
-                ASSERT_NOT_REACHED();
-            }
+            SYSLOG_INTERNAL_ERROR("all_memory_areas is missing region "PFX"-"PFX"!",
+                                  from_os_base_pc, from_os_base_pc + from_os_size);
+            DOLOG(4, LOG_VMAREAS, print_all_memory_areas(THREAD_GET););
+            ASSERT_NOT_REACHED();
             /* be paranoid */
             out_info->base_pc = from_os_base_pc;
             out_info->size = from_os_size;
@@ -8280,10 +8272,12 @@ get_memory_info(const byte *pc, byte **base_pc, size_t *size,
                 uint *prot /* OUT optional, returns MEMPROT_* value */)
 {
     dr_mem_info_t info;
+#ifdef CLIENT_INTERFACE
     if (is_vmm_reserved_address((byte*)pc, 1)) {
         if (!query_memory_ex_from_os(pc, &info) || info.type == DR_MEMTYPE_FREE)
             return false;
     } else
+#endif
         if (!query_memory_ex(pc, &info) || info.type == DR_MEMTYPE_FREE)
             return false;
     if (base_pc != NULL)
