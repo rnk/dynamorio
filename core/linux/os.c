@@ -419,7 +419,7 @@ app_pc vsyscall_sysenter_return_pc = NULL;
 # define VSYSCALL_REGION_MAPS_NAME "[vsyscall]"
 #endif
 
-#ifndef STANDALONE_UNIT_TEST
+#if !defined(STANDALONE_UNIT_TEST) && !defined(STATIC_LIBRARY)
 /* The pthreads library keeps errno in its pthread_descr data structure,
  * which it looks up by dispatching on the stack pointer.  This doesn't work
  * when within dynamo.  Thus, we define our own __errno_location() for use both
@@ -446,7 +446,7 @@ __errno_location(void) {
         return &(dcontext->upcontext_ptr->errno);
     }
 }
-#endif /* !STANDALONE_UNIT_TEST */
+#endif /* !STANDALONE_UNIT_TEST && !STATIC_LIBRARY */
 
 #if defined(HAVE_TLS) && defined(CLIENT_INTERFACE)
 /* i#598 
@@ -3404,9 +3404,16 @@ unload_shared_library(shlib_handle_t lib)
 void
 shared_library_error(char *buf, int maxlen)
 {
-    char *err;
-    ASSERT(!DYNAMO_OPTION(early_inject));
-    err = dlerror();
+    const char *err;
+    if (IF_CLIENT_INTERFACE_ELSE(INTERNAL_OPTION(private_loader), false)) {
+        err = "error in private loader";
+    } else {
+        ASSERT(!DYNAMO_OPTION(early_inject));
+        err = dlerror();
+        if (err == NULL) {
+            err = "dlerror returned NULL";
+        }
+    }
     strncpy(buf, err, maxlen-1);
     buf[maxlen-1] = '\0'; /* strncpy won't put on trailing null if maxes out */
 }
