@@ -275,7 +275,6 @@ include_directories(${PROJECT_SOURCE_DIR}/core/x86) # asm_defines.asm
 # FIXME i#98: improve code so can set Wall/W4
 if (UNIX)
   string(REGEX REPLACE "-Wall" "" CMAKE_C_FLAGS "${CMAKE_C_FLAGS}")
-  string(REGEX REPLACE "-std=gnu99" "" CMAKE_C_FLAGS "${CMAKE_C_FLAGS}")
   # some tests rely on specific "nop;nop" patterns that optimization ruins
   # we should probably move the -O from top level into core/CMakeLists.txt
   string(REGEX REPLACE "-O[0-9]? " " " CMAKE_C_FLAGS "${CMAKE_C_FLAGS}")
@@ -432,6 +431,10 @@ function (set_cflags source)
   else ()
     set(cflags "${ORIG_CMAKE_C_FLAGS}")
   endif ()
+  if ("${source}" MATCHES ".cpp$")
+    # Our C files need -std=gnu99, but that's an invalid flag for C++.
+    string(REGEX REPLACE "-std=gnu99" "" cflags "${cflags}")
+  endif ()
   if ("${source}" MATCHES ".dll.(c|cpp)$")
     # do nothing
   else ("${source}" MATCHES ".dll.(c|cpp)$")
@@ -467,6 +470,21 @@ function(append_link_flags target newflags)
   set_target_properties(${target} PROPERTIES
     LINK_FLAGS "${cur_ldflags} ${newflags}")
 endfunction(append_link_flags)
+
+# On Linux, the individual object files contained by an archive are
+# garbage collected by the linker if they are not referenced.  To avoid
+# this, we have to use the --whole-archive option with ld.
+function(force_static_link target lib)
+  if (UNIX)
+    # CMake ignores libraries starting with '-' and preserves the
+    # ordering, so we can pass flags through target_link_libraries.
+    # This ensures we have the right dependencies on lib and avoids
+    # duplicates.
+    target_link_libraries(${target} -Wl,--whole-archive ${lib} -Wl,--no-whole-archive)
+  else ()
+    target_link_libraries(${target} ${lib})
+  endif ()
+endfunction(force_static_link)
 
 function(add_exe test source)
   get_filename_component(srcbase ${source} NAME_WE)
@@ -526,16 +544,7 @@ function(add_exe test source)
 
   if (STATIC_LIBRARY)
     # Link DR into every test exe.
-    target_link_libraries(${test} dynamorio)
-    if (UNIX)
-      # For non-API tests, DR won't be referenced by the exe, so the
-      # linker won't link us in.  Bracketing DR in --whole-archive
-      # gets us linked in.  The linker removes duplicate entries, so we
-      # keep the target_link_libraries above for correct dependencies.
-      get_target_property(drloc dynamorio LOCATION${location_suffix})
-      append_property_string(TARGET ${test} LINK_FLAGS
-        "-Wl,--whole-archive,${drloc},--no-whole-archive")
-    endif ()
+    force_static_link(${test} dynamorio)
   endif ()
 endfunction(add_exe)
 
@@ -587,9 +596,11 @@ function(tobuild_ci test source client_ops dr_ops exe_ops)
 
   if (NOT "${source}" MATCHES "\\.runall$")
     add_exe(${test} ${source})
-  endif (NOT "${source}" MATCHES "\\.runall$")
+  elseif (STATIC_LIBRARY)
+    return()  # FIXME i#975: Add support for STATIC_LIBRARY runall tests.
+  endif ()
 
-  add_library(${test}.dll SHARED ${client_source})
+  add_library(${test}.dll ${SHARED_OR_STATIC} ${client_source})
   set_target_properties(${test}.dll PROPERTIES LINK_FLAGS "${ARCH_DEBUG}")
   if (NOT "${source}" MATCHES "cpp\\.cpp")
     # to avoid changing all the REG_ constants we ask for compatibility
@@ -598,6 +609,13 @@ function(tobuild_ci test source client_ops dr_ops exe_ops)
   configure_DynamoRIO_client(${test}.dll)
   add_dependencies(${test}.dll api_headers)
   get_target_property(client_path ${test}.dll LOCATION${location_suffix})
+  if (STATIC_LIBRARY)
+    # For STATIC_LIBRARY, we support a single client by linking the client into
+    # the exe.
+    force_static_link(${test} ${test}.dll)
+    # Let clients know if they're being built statically.
+    append_property_string(TARGET ${test}.dll COMPILE_FLAGS "-DSTATIC_LIBRARY")
+  endif ()
 
   set(testlist_ci ${testlist_ci} ${test} PARENT_SCOPE)
   set(${test}_source ${source} PARENT_SCOPE)
@@ -1209,8 +1227,17 @@ function(torun_ci name test ops)
     endif ()
   endif ("${test}" MATCHES "client\\.flush")
   # note that we cannot use double quotes as they'll be stripped out
-  torun("${name}" ${test} ${${test}_source} OFF
-    " -code_api -client_lib '${${test}_client_path}\;0\;${cli_ops}' ${${test}_dr_ops} ${ops}" "${${test}_exe_ops}")
+  if (NOT STATIC_LIBRARY)
+    torun("${name}" ${test} ${${test}_source} OFF
+      " -code_api -client_lib '${${test}_client_path}\;0\;${cli_ops}' ${${test}_dr_ops} ${ops}" "${${test}_exe_ops}")
+  else ()
+    if (cli_ops)
+      # FIXME i#975: Support passing in client options.
+      return()
+    endif ()
+    torun("${name}" ${test} ${${test}_source} OFF
+      " -code_api ${${test}_dr_ops} ${ops}" "${${test}_exe_ops}")
+  endif ()
   if (DEFINED ${test}_depends)
     ops2testprefix(prefix "${ops}")
     set_property(TEST ${name} APPEND PROPERTY DEPENDS "${prefix}${${test}_depends}")
@@ -1402,25 +1429,27 @@ if (CLIENT_INTERFACE)
     target_link_libraries(client.drutil-test ${libpthread})
   endif (UNIX)
 
-  # We need to load w/ the same base so the test passes
-  set(DynamoRIO_SET_PREFERRED_BASE ON)
-  set(PREFERRED_BASE 0x6f000000)
-  # Pass extra options to first run so this will pass when run repeatedly in local
-  # build dir w/o loading any pcache
-  tobuild_ci(client.pcache client-interface/pcache.c ""
-    "-persist -no_use_persisted -no_coarse_disk_merge -no_coarse_lone_merge" "")
-  use_DynamoRIO_extension(client.pcache.dll drcontainers)
-  if (WIN32)
-    append_link_flags(client.pcache "/dynamicbase:no")
+  if (NOT STATIC_LIBRARY)
+    # We need to load w/ the same base so the test passes
+    set(DynamoRIO_SET_PREFERRED_BASE ON)
+    set(PREFERRED_BASE 0x6f000000)
+    # Pass extra options to first run so this will pass when run repeatedly in local
+    # build dir w/o loading any pcache
+    tobuild_ci(client.pcache client-interface/pcache.c ""
+      "-persist -no_use_persisted -no_coarse_disk_merge -no_coarse_lone_merge" "")
+    use_DynamoRIO_extension(client.pcache.dll drcontainers)
+    if (WIN32)
+      append_link_flags(client.pcache "/dynamicbase:no")
+    endif ()
+    set(DynamoRIO_SET_PREFERRED_BASE OFF)
+    torunonly_ci(client.pcache-use client.pcache client.pcache
+      client-interface/pcache.c "" "-persist" "")
+    # XXX: we should have the key be the default for the .expect but
+    # currently that's not the case (thread-reset, etc.).
+    set(client.pcache-use_expectbase "pcache-use")
+    # when running tests in parallel: have to generate pcaches first
+    set(client.pcache-use_depends client.pcache)
   endif ()
-  set(DynamoRIO_SET_PREFERRED_BASE OFF)
-  torunonly_ci(client.pcache-use client.pcache client.pcache
-    client-interface/pcache.c "" "-persist" "")
-  # XXX: we should have the key be the default for the .expect but
-  # currently that's not the case (thread-reset, etc.).
-  set(client.pcache-use_expectbase "pcache-use")
-  # when running tests in parallel: have to generate pcaches first
-  set(client.pcache-use_depends client.pcache)
 
   tobuild_api(api.dis api/dis.c "-syntax_intel"
     "${CMAKE_CURRENT_SOURCE_DIR}/api/dis-udis86-randtest.raw" OFF)

@@ -158,6 +158,7 @@ void module_unload_event(void *dcontext, const module_data_t *data)
 static void
 test_aux_lib(client_id_t id)
 {
+#ifndef STATIC_LIBRARY
     const char *auxname = IF_WINDOWS_ELSE("client.events.dll.dll",
                                           "libclient.events.dll.so");
     char buf[MAXIMUM_PATH];
@@ -194,6 +195,7 @@ test_aux_lib(client_id_t id)
         dr_fprintf(STDERR, "ERROR: unable to load %s\n", buf);
     if (!dr_unload_aux_library(lib))
         dr_fprintf(STDERR, "ERROR: unable to unload %s\n", buf);
+#endif /* !STATIC_LIBRARY */
 }
 
 #ifdef WINDOWS

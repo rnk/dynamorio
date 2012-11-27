@@ -201,13 +201,6 @@ if (STATIC_LIBRARY)
   set(DR_EXT_DRSYMS_STATIC ON)
   set(DR_EXT_DRUTIL_STATIC ON)
   set(DR_EXT_DRWRAP_STATIC ON)
-  # FIXME i#975: Port the test suite to STATIC_LIBRARY.  For non-client
-  # tests, link DR directly.  For client tests, link the client, which
-  # will link against DR.  Most client tests will fail without excluding
-  # or modifying them.
-  if (CLIENT_INTERFACE AND BUILD_TESTS)
-    message(FATAL_ERROR "Can't build the the test suite with STATIC_LIBRARY and CLIENT_INTERFACE!")
-  endif ()
 else ()
   set(SHARED_OR_STATIC SHARED)
 endif ()

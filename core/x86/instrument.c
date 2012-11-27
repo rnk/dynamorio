@@ -535,12 +535,13 @@ void
 instrument_init(void)
 {
     size_t i;
+    void (*init)(client_id_t);
 
     init_client_aux_libs();
 
     /* Iterate over the client libs and call each dr_init */
     for (i=0; i<num_client_libs; i++) {
-        void (*init)(client_id_t) = (void (*)(client_id_t))
+        init = (void (*)(client_id_t))
             (lookup_library_routine(client_libs[i].lib, INSTRUMENT_INIT_NAME));
 
         /* we can't do this in instrument_load_client_libs() b/c vmheap
@@ -565,6 +566,27 @@ instrument_init(void)
                       "client library does not export a dr_init routine");
         (*init)(client_libs[i].id);
     }
+
+#ifdef STATIC_LIBRARY
+    /* i#975: We support a single client linked into the main exe in
+     * STATIC_LIBRARY mode.  If the exe wants to link multiple clients, it can
+     * initialize them individually between dr_app_setup() and dr_app_start().
+     */
+    if (num_client_libs == 0) {
+        app_pc base = get_module_base((app_pc)instrument_init);
+        init = (void (*)(client_id_t))
+            get_proc_address(base, INSTRUMENT_INIT_NAME);
+        if (init != NULL) {
+            num_client_libs++;
+            client_libs[0].id = 0;
+            client_libs[0].lib = base;
+            client_libs[0].start = base;
+            client_libs[0].end = base;
+            client_libs[0].options[0] = '\0';
+            init(0);
+        }
+    }
+#endif
 
     /* If the client just registered the module-load event, let's
      * assume it wants to be informed of *all* modules and tell it
@@ -1682,7 +1704,7 @@ instrument_module_load_trigger(app_pc modbase)
      * in consistent state in case client acts on it, even though
      * we have to re-look-up the data here.
      */
-    if (!IS_STRING_OPTION_EMPTY(client_lib)) {
+    if (module_load_callbacks.num > 0) {
         module_area_t *ma;
         module_data_t *client_data = NULL;
         os_get_module_info_lock();
