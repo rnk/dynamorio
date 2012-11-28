@@ -170,6 +170,8 @@ typedef enum {
 #define ALIGN_FORWARD(x, alignment) \
         ((((ptr_uint_t)x) + (((ptr_uint_t)alignment)-1)) & \
          (~(((ptr_uint_t)alignment)-1)))
+#define ALIGNED(x, alignment) \
+        (ALIGN_BACKWARD(x, alignment) == (ptr_uint_t)(x))
 
 #ifndef __cplusplus
 # ifndef true

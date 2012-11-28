@@ -99,6 +99,9 @@ int
 sandbox_last_byte(void);
 
 void
+last_byte_jmp(void);
+
+void
 make_last_byte_selfmod(void);
 
 void
@@ -195,9 +198,13 @@ static void
 test_sandbox_last_byte(void)
 {
     int r;
-    byte *last_byte = (byte *)ALIGN_BACKWARD((byte *)make_last_byte_selfmod, 4096);
+    byte *last_byte = (byte *)last_byte_jmp + 1;
+    if (!ALIGNED(last_byte, PAGE_SIZE)) {
+        print("laste_byte is not page-aligned!\n"
+              "Instruction sizes in sandbox_last_byte must be wrong.\n");
+    }
     print("start last byte test\n");
-    protect_mem(last_byte, 4096, ALLOW_READ|ALLOW_WRITE|ALLOW_EXEC);
+    protect_mem(last_byte, PAGE_SIZE, ALLOW_READ|ALLOW_WRITE|ALLOW_EXEC);
     /* Execute self-modifying code to create a sandboxed page. */
     make_last_byte_selfmod();
     r = sandbox_last_byte();
@@ -333,6 +340,9 @@ ALIGN_WITH_NOPS(4096)
  */
 FILL_WITH_NOPS(4096 - 6)
 
+/* We use last_byte_jmp in C code to overwrite the offset. */
+DECLARE_GLOBAL(last_byte_jmp)
+
 #define FUNCNAME sandbox_last_byte
         DECLARE_FUNC(FUNCNAME)
 GLOBAL_LABEL(FUNCNAME:)
@@ -340,7 +350,7 @@ GLOBAL_LABEL(FUNCNAME:)
 last_byte_ret_zero:
         xor      eax, eax       /* 2 bytes */
         ret                     /* 1 byte */
-last_byte_jmp:
+ADDRTAKEN_LABEL(last_byte_jmp:)
         jmp last_byte_ret_zero  /* 1 byte opcode + 1 byte rel offset */
 last_byte_ret_one:
         mov      eax, HEX(1)
