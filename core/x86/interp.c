@@ -679,8 +679,7 @@ check_new_page_contig(dcontext_t *dcontext, build_bb_t *bb, app_pc new_pc)
         update_overlap_info(dcontext, bb, new_pc, false/*not jmp*/);
     if (bb->checked_end == NULL) {
         ASSERT(new_pc == bb->start_pc);
-    } /* Use >= since new_pc is closed and checked_end is open. */
-    else if (new_pc >= bb->checked_end) {
+    } else if (new_pc >= bb->checked_end) {
         if (!check_thread_vm_area(dcontext, new_pc, bb->start_pc,
                                   (bb->record_vmlist ? &bb->vmlist : NULL),
                                   &bb->flags, &bb->checked_end,
