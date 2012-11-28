@@ -200,8 +200,9 @@ test_sandbox_last_byte(void)
     int r;
     byte *last_byte = (byte *)last_byte_jmp + 1;
     if (!ALIGNED(last_byte, PAGE_SIZE)) {
-        print("laste_byte is not page-aligned!\n"
-              "Instruction sizes in sandbox_last_byte must be wrong.\n");
+        print("laste_byte is not page-aligned: "PFX"\n"
+              "Instruction sizes in sandbox_last_byte must be wrong.\n",
+              last_byte);
     }
     print("start last byte test\n");
     protect_mem(last_byte, PAGE_SIZE, ALLOW_READ|ALLOW_WRITE|ALLOW_EXEC);
@@ -333,12 +334,10 @@ ADDRTAKEN_LABEL(immediate_addr_plus_four:)
         END_FUNC(FUNCNAME)
 #undef FUNCNAME
 
-ALIGN_WITH_NOPS(4096)
 /* Get last_byte_jmp to have one byte in the selfmod page.
- * XXX: We rely on the assembler to use the short jmp opcode.  If that's a
- * problem we could switch to RAW(eb) RAW(offset).
  */
-FILL_WITH_NOPS(4096 - 6)
+ALIGN_WITH_NOPS(4096)
+FILL_WITH_NOPS(4096 - 6)  /* 6 bytes from instr sizes below. */
 
 /* We use last_byte_jmp in C code to overwrite the offset. */
 DECLARE_GLOBAL(last_byte_jmp)
@@ -346,12 +345,18 @@ DECLARE_GLOBAL(last_byte_jmp)
 #define FUNCNAME sandbox_last_byte
         DECLARE_FUNC(FUNCNAME)
 GLOBAL_LABEL(FUNCNAME:)
-        jmp      last_byte_jmp  /* 2 bytes */
+        /* All these jmps have to be short for the test to pass.  Both gas and
+         * masm get it right, so long as we always use local labels.  In
+         * particular, avoid last_byte_jmp because it's global and can be
+         * relocated.
+         */
+        jmp      local_last_byte_jmp    /* 2 bytes */
 last_byte_ret_zero:
-        xor      eax, eax       /* 2 bytes */
-        ret                     /* 1 byte */
+        xor      eax, eax               /* 2 bytes */
+        ret                             /* 1 byte */
 ADDRTAKEN_LABEL(last_byte_jmp:)
-        jmp last_byte_ret_zero  /* 1 byte opcode + 1 byte rel offset */
+local_last_byte_jmp:
+        jmp last_byte_ret_zero          /* 1 byte opcode + 1 byte rel offset */
 last_byte_ret_one:
         mov      eax, HEX(1)
         ret
