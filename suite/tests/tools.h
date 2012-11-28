@@ -165,8 +165,11 @@ typedef enum {
     COPY_CROSS_PAGE,
 } Copy_Mode;
 
-#define ALIGN_FORWARD(x, alignment) ((((uint)x) + ((alignment)-1)) & (~((alignment)-1)))
-#define ALIGN_BACKWARD(x, alignment) (((uint)x) & (~((alignment)-1)))
+#define ALIGN_BACKWARD(x, alignment) \
+        (((ptr_uint_t)x) & (~((ptr_uint_t)(alignment)-1)))
+#define ALIGN_FORWARD(x, alignment) \
+        ((((ptr_uint_t)x) + (((ptr_uint_t)alignment)-1)) & \
+         (~(((ptr_uint_t)alignment)-1)))
 
 #ifndef __cplusplus
 # ifndef true
