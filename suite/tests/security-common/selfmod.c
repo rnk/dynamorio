@@ -188,6 +188,9 @@ test_sandbox_cross_page(void)
     print("end cross-page test\n");
 }
 
+/* i#993: Test case for a bug where the last byte of a fragment was in a
+ * different vmarea.
+ */
 static void
 test_sandbox_last_byte(void)
 {
