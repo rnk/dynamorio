@@ -674,16 +674,24 @@ static inline bool
 check_new_page_contig(dcontext_t *dcontext, build_bb_t *bb, app_pc new_pc)
 {
     if (!bb->check_vm_area)
-        return;
+        return true;
     if (bb->overlap_info != NULL)
         update_overlap_info(dcontext, bb, new_pc, false/*not jmp*/);
     if (bb->checked_end == NULL) {
         ASSERT(new_pc == bb->start_pc);
     } else if (new_pc >= bb->checked_end) {
+        /* We pass true for xfer for everything except the first instruction.
+         * If the first instruction is straddling two vmareas, we have to add
+         * both vmareas and keep going.  We can't stop because we'll create an
+         * empty bb.  For subsequent instructions, we don't want to fall through
+         * to an incompatible vmarea (fine to coarse or readonly to sandbox), so
+         * we treat it like a transfer.
+         */
+        bool is_first_instr = (bb->instr_start != bb->start_pc);
         if (!check_thread_vm_area(dcontext, new_pc, bb->start_pc,
                                   (bb->record_vmlist ? &bb->vmlist : NULL),
                                   &bb->flags, &bb->checked_end,
-                                  false/*!xfer*/)) {
+                                  is_first_instr/*xfer*/)) {
             return false;
         }
     }
@@ -830,8 +838,8 @@ follow_direct_jump(dcontext_t *dcontext, build_bb_t *bb,
     if (bb->follow_direct &&
         bb->num_elide_jmp < DYNAMO_OPTION(max_elide_jmp) &&
         (DYNAMO_OPTION(elide_back_jmps) || bb->cur_pc <= target)) {
-        check_new_page_contig(dcontext, bb, bb->cur_pc-1);
-        if (check_new_page_jmp(dcontext, bb, target)) {
+        if (check_new_page_contig(dcontext, bb, bb->cur_pc-1) &&
+            check_new_page_jmp(dcontext, bb, target)) {
             /* Elide unconditional branch and follow target */
             bb->num_elide_jmp++;
             STATS_INC(total_elided_jmps);
@@ -915,8 +923,8 @@ bb_process_ubr(dcontext_t *dcontext, build_bb_t *bb)
         if (bb->follow_direct &&
             bb->num_elide_jmp < DYNAMO_OPTION(max_elide_jmp) &&
             (DYNAMO_OPTION(elide_back_jmps) || bb->cur_pc <= tgt)) {
-            check_new_page_contig(dcontext, bb, bb->cur_pc-1);
-            if (check_new_page_jmp(dcontext, bb, tgt)) {
+            if (check_new_page_contig(dcontext, bb, bb->cur_pc-1) &&
+                check_new_page_jmp(dcontext, bb, tgt)) {
                 /* Elide unconditional branch and follow target */
                 bb->num_elide_jmp++;
                 STATS_INC(total_elided_jmps);
@@ -952,8 +960,8 @@ follow_direct_call(dcontext_t *dcontext, build_bb_t *bb, app_pc callee)
     if (bb->follow_direct &&
         bb->num_elide_call < DYNAMO_OPTION(max_elide_call) &&
         (DYNAMO_OPTION(elide_back_calls) || bb->cur_pc <= callee)) {
-        check_new_page_contig(dcontext, bb, bb->cur_pc-1);
-        if (check_new_page_jmp(dcontext, bb, callee)) {
+        if (check_new_page_contig(dcontext, bb, bb->cur_pc-1) &&
+            check_new_page_jmp(dcontext, bb, callee)) {
             bb->num_elide_call++;
             STATS_INC(total_elided_calls);
             STATS_TRACK_MAX(max_elided_calls, bb->num_elide_call);
@@ -1024,8 +1032,8 @@ bb_process_call_direct(dcontext_t *dcontext, build_bb_t *bb)
         if (bb->follow_direct &&
             bb->num_elide_call < DYNAMO_OPTION(max_elide_call) &&
             (DYNAMO_OPTION(elide_back_calls) || bb->cur_pc <= callee)) {
-            check_new_page_contig(dcontext, bb, bb->cur_pc-1);
-            if (check_new_page_jmp(dcontext, bb, callee)) {
+            if (check_new_page_contig(dcontext, bb, bb->cur_pc-1) &&
+                check_new_page_jmp(dcontext, bb, callee)) {
                 bb->num_elide_call++;
                 STATS_INC(total_elided_calls);
                 STATS_TRACK_MAX(max_elided_calls, bb->num_elide_call);
@@ -1987,7 +1995,6 @@ bb_process_convertible_indcall(dcontext_t *dcontext, build_bb_t *bb)
     if (bb->follow_direct &&
         bb->num_elide_call < DYNAMO_OPTION(max_elide_call) &&
         (DYNAMO_OPTION(elide_back_calls) || bb->cur_pc <= callee)) {
-        check_new_page_contig(dcontext, bb, bb->cur_pc-1);
         /* FIXME This is identical to the code for evaluating a
          * direct call's callee. If such code appears in another
          * (3rd) place, we should outline it.
@@ -2000,7 +2007,8 @@ bb_process_convertible_indcall(dcontext_t *dcontext, build_bb_t *bb)
             ASSERT(!TEST(FRAG_HAS_SYSCALL, bb->flags));
             bb->flags |= FRAG_HAS_SYSCALL;
         }
-        if (check_new_page_jmp(dcontext, bb, callee)) {
+        if (check_new_page_contig(dcontext, bb, bb->cur_pc-1) &&
+            check_new_page_jmp(dcontext, bb, callee)) {
             if (vsyscall) /* Restore */
                 bb->flags &= ~FRAG_HAS_SYSCALL;
             bb->num_elide_call++;
@@ -2791,8 +2799,6 @@ build_bb_ilist(dcontext_t *dcontext, build_bb_t *bb)
      */
     dcontext_t *my_dcontext = get_thread_private_dcontext();
     DEBUG_DECLARE(bool regenerated = false;)
-    bool stop_for_selfmod = false;
-    uint old_flags;
 
     ASSERT(bb->initialized);
     /* note that it's ok for bb->start_pc to be NULL as our check_new_page_start
@@ -2932,11 +2938,8 @@ build_bb_ilist(dcontext_t *dcontext, build_bb_t *bb)
                  * mechanisms to handle faults while decoding, which we need
                  * anyway to handle racy unmaps by the app.
                  */
-                old_flags = bb->flags;
-                check_new_page_contig(dcontext, bb, bb->cur_pc-1);
-                if (!TEST(FRAG_SELFMOD_SANDBOXED, old_flags) &&
-                    TEST(FRAG_SELFMOD_SANDBOXED, bb->flags)) {
-                    stop_for_selfmod = true;
+                if (!check_new_page_contig(dcontext, bb, bb->cur_pc-1)) {
+                    bb_stop_prior_to_instr(dcontext, bb, false/*!appended*/);
                     break;
                 }
             }
@@ -3008,6 +3011,11 @@ build_bb_ilist(dcontext_t *dcontext, build_bb_t *bb)
             bb->cur_pc = bb->instr_start;
         }
 
+        if (bb->instr == NULL) {
+            /* We stopped bb building in the decode loop. */
+            break;
+        }
+
         /* We need the translation when mangling calls and jecxz/loop*.
          * May as well set it for all cti's since there's
          * really no extra overhead in doing so.  Note that we go
@@ -3016,22 +3024,6 @@ build_bb_ilist(dcontext_t *dcontext, build_bb_t *bb)
          */
         if (instr_opcode_valid(bb->instr) && instr_is_cti(bb->instr))
             instr_set_translation(bb->instr, bb->instr_start);
-
-        if (stop_for_selfmod) {
-            /* i#989: Don't fallthrough into sandboxed areas.  This has been a
-             * great source of bugs in the past.  Removing the sandboxing flag
-             * is safe because we're not actually including the instruction that
-             * needs it.
-             */
-            /* NOCHECKIN: can't reason through corner cases!  instruction
-             * straddling the page boundary.  Might need actual tests.
-             * Other test case: > 5 writes, followed by selfmod page.  If we
-             * don't mask out the flag, it won't be deterministic.
-             */
-            //bb->flags &= ~FRAG_SELFMOD_SANDBOXED;
-            bb_stop_prior_to_instr(dcontext, bb, false/*not added to bb->ilist*/);
-            break;
-        }
 
 #ifdef HOT_PATCHING_INTERFACE
         /* If this lookup succeeds then the current bb needs to be patched.
@@ -3351,11 +3343,8 @@ build_bb_ilist(dcontext_t *dcontext, build_bb_t *bb)
             bb->instr->bytes != (byte *) HEAP_PAD_PTR_UINT));
 #endif
 
-    old_flags = bb->flags;
-    check_new_page_contig(dcontext, bb, bb->cur_pc-1);
-    if (!TEST(FRAG_SELFMOD_SANDBOXED, old_flags) &&
-        TEST(FRAG_SELFMOD_SANDBOXED, bb->flags)) {
-        stop_for_selfmod = true;
+    if (!check_new_page_contig(dcontext, bb, bb->cur_pc-1)) {
+        ASSERT(false && "Should have checked cur_pc-1 in decode loop");
     }
     bb->end_pc = bb->cur_pc;
     BBPRINT(bb, 3, "end_pc = "PFX"\n\n", bb->end_pc);
@@ -3413,36 +3402,24 @@ build_bb_ilist(dcontext_t *dcontext, build_bb_t *bb)
     }
 #endif
 
-    if (
-        (TEST(FRAG_SELFMOD_SANDBOXED, bb->flags) &&
-         (TEST(FRAG_HAS_DIRECT_CTI, bb->flags) || !bb->full_decode))) {
-        if (stop_for_selfmod) {
-            /* i#989: If we fallthrough onto a contiguous selfmod page, we
-             * have to restart bb building with full_decode to count the
-             * number of writes.  Otherwise bb rebuilding isn't
-             * deterministic when we start with the final fragment flags.
-             * Alternatively, we could stop the current bb here.
-             */
-            BBPRINT(bb, 2,
-                    "*** must rebuild bb to count writes from beginning\n");
-        } else {
-            /* Sandbox requires that bb have no direct cti followings, and
-             * had full decode from the start for -selfmod_max_writes!
-             * check_thread_vm_area should have ensured this for us, except
-             * there is a pathological case where a direct cti occurs, and
-             * then we walk over a page boundary onto a selfmod page -- no
-             * choice but to back out, which for now we do by rebuilding.
-             * FIXME: find better way
-             */
-            /* FIXME: a better assert is needed because this can trigger if 
-             * hot patching turns off follow_direct, the current bb was elided 
-             * earlier and is marked as selfmod.  hotp_num_frag_direct_cti will 
-             * track this for now.
-             */
-            ASSERT(bb->follow_direct == true); /* else, infinite loop possible */
-            BBPRINT(bb, 2,
-                    "*** must rebuild bb to avoid following direct cti for selfmod\n");
-        }
+    if (TEST(FRAG_SELFMOD_SANDBOXED, bb->flags) &&
+        (TEST(FRAG_HAS_DIRECT_CTI, bb->flags) || !bb->full_decode)) {
+        /* Sandbox requires that bb have no direct cti followings, and
+         * had full decode from the start for -selfmod_max_writes!
+         * check_thread_vm_area should have ensured this for us, except
+         * there is a pathological case where a direct cti occurs, and
+         * then we walk over a page boundary onto a selfmod page -- no
+         * choice but to back out, which for now we do by rebuilding.
+         * FIXME: find better way
+         */
+        /* FIXME: a better assert is needed because this can trigger if 
+         * hot patching turns off follow_direct, the current bb was elided 
+         * earlier and is marked as selfmod.  hotp_num_frag_direct_cti will 
+         * track this for now.
+         */
+        ASSERT(bb->follow_direct == true); /* else, infinite loop possible */
+        BBPRINT(bb, 2,
+                "*** must rebuild bb to avoid following direct cti for selfmod\n");
         reset_bb_for_selfmod(dcontext, bb);
         build_bb_ilist(dcontext, bb);
         return;
