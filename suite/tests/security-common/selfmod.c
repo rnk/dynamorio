@@ -304,6 +304,8 @@ GLOBAL_LABEL(FUNCNAME:)
         push     REG_XDX
         push     REG_XDI  /* for 16-alignment on x64 */
 
+        ALIGN_WITH_NOPS(4096)
+
         /* Do enough writes to cause the sandboxing code to split the block. */
         mov      [REG_XCX + 0], al
         mov      [REG_XCX + 1], al

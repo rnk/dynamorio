@@ -617,9 +617,6 @@ emit_fragment_common(dcontext_t *dcontext, app_pc tag,
          * the original full range can only result in a false positive selfmod
          * event, which is a performance issue only.
          */
-        /* XXX: Re-building the bb is expensive.  The end pc is actually stored
-         * in the ilist, so we could go search for it instead.
-         */
         end_bb_pc = find_app_bb_end(dcontext, tag, flags);
         ASSERT(end_bb_pc > tag);
         ASSERT_TRUNCATE(copy_sz, uint, (ptr_uint_t)(end_bb_pc - tag) + sizeof(uint));
