@@ -64,7 +64,7 @@
 #define YMMH_SAVED_SIZE (NUM_XMM_SLOTS*YMMH_REG_SIZE)
 
 /* Number of slots for spills from inlined clean calls. */
-#define CLEANCALL_NUM_INLINE_SLOTS 4
+#define CLEANCALL_NUM_INLINE_SLOTS 5
 
 typedef enum {
     IBL_NONE = -1,
@@ -1352,7 +1352,7 @@ bb_build_abort(dcontext_t *dcontext, bool clean_vmarea);
  */
 instrlist_t * recreate_bb_ilist(dcontext_t *dcontext, byte *pc, byte *pretend_pc,
                                 uint flags, uint *res_flags, uint *res_exit_type,
-                                bool check_vm_area, bool mangle
+                                bool check_vm_area, bool mangle, void **vmlist
                                 _IF_CLIENT(bool call_client)
                                 _IF_CLIENT(bool for_trace));
 

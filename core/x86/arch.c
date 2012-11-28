@@ -578,7 +578,7 @@ arch_init()
     /* Try to catch errors in x86.asm offsets for dcontext_t */
     ASSERT(sizeof(unprotected_context_t) == sizeof(priv_mcontext_t) + 
            IF_WINDOWS_ELSE(IF_X64_ELSE(8, 4), 8) +
-           IF_CLIENT_INTERFACE_ELSE(4 * sizeof(reg_t), 0));
+           IF_CLIENT_INTERFACE_ELSE(5 * sizeof(reg_t), 0));
 
     interp_init();
 
@@ -3161,7 +3161,7 @@ recreate_selfmod_ilist(dcontext_t *dcontext, fragment_t *f)
      */
     ilist = recreate_bb_ilist(dcontext, selfmod_copy, (byte *) f->tag,
                               FRAG_SELFMOD_SANDBOXED, NULL, NULL,
-                              false/*don't check vm areas!*/, true/*mangle*/
+                              false/*don't check vm areas!*/, true/*mangle*/, NULL
                               _IF_CLIENT(true/*call client*/)
                               _IF_CLIENT(false/*!for_trace*/));
     ASSERT(ilist != NULL); /* shouldn't fail: our own code is always readable! */
