@@ -259,7 +259,10 @@ GLOBAL_LABEL(FUNCNAME:)
         push     REG_XDI  /* for 16-alignment on x64 */
 
 #if defined(ASSEMBLE_WITH_GAS)
-        .align 4096
+        //.align 4096
+        nop
+        nop
+        nop
 #elif defined(ASSEMBLE_WITH_MASM)
         ALIGN 4096
 #else

@@ -667,7 +667,7 @@ check_new_page_start(dcontext_t *dcontext, build_bb_t *bb)
  * walk_app_bb reasons for keeping those contig() calls and see if we can
  * optimize them away for bb building at least.
  */
-static inline void
+static inline bool
 check_new_page_contig(dcontext_t *dcontext, build_bb_t *bb, app_pc new_pc)
 {
     if (!bb->check_vm_area)
@@ -676,19 +676,21 @@ check_new_page_contig(dcontext_t *dcontext, build_bb_t *bb, app_pc new_pc)
         update_overlap_info(dcontext, bb, new_pc, false/*not jmp*/);
     if (bb->checked_end == NULL) {
         ASSERT(new_pc == bb->start_pc);
-    } else if (new_pc > bb->checked_end) {
-        DEBUG_DECLARE(bool ok =)
-            check_thread_vm_area(dcontext, new_pc, bb->start_pc,
-                                 (bb->for_cache ? &bb->vmlist : NULL),
-                                 &bb->flags, &bb->checked_end,
-                                 false/*!xfer*/);
-        ASSERT(ok); /* cannot return false on non-xfer */
+    } /* Use >= since new_pc is closed and checked_end is open. */
+    else if (new_pc >= bb->checked_end) {
+        if (!check_thread_vm_area(dcontext, new_pc, bb->start_pc,
+                                  (bb->for_cache ? &bb->vmlist : NULL),
+                                  &bb->flags, &bb->checked_end,
+                                  false/*!xfer*/)) {
+            return false;
+        }
     }
     DOLOG(4, LOG_INTERP, {
         if (PAGE_START(bb->last_page) != PAGE_START(new_pc))
             LOG(THREAD, LOG_INTERP, 4, "page boundary crossed\n");
     });
     bb->last_page = new_pc; /* update even if not new page, for walk_app_bb */
+    return true;
 }
 
 /* Direct cti from prev_pc to new_pc */
@@ -2697,6 +2699,26 @@ client_process_bb(dcontext_t *dcontext, build_bb_t *bb)
 }
 #endif /* CLIENT_INTERFACE */
 
+/* Restarts bb building from the top with only FRAG_SELFMOD_SANDBOXED in the
+ * flags.
+ */
+static void
+reset_bb_for_selfmod(dcontext_t *dcontext, build_bb_t *bb)
+{
+    STATS_INC(num_bb_end_early);
+    instrlist_clear_and_destroy(dcontext, bb->ilist);
+    if (bb->vmlist != NULL) {
+        vm_area_destroy_list(dcontext, bb->vmlist);
+        bb->vmlist = NULL;
+    }
+    bb->flags = FRAG_SELFMOD_SANDBOXED; /* lose all other flags */
+    bb->full_decode = true; /* full decode -- see comment at top of build_bb_ilist */
+    bb->follow_direct = false;
+    bb->exit_type = 0; /* i#577 */
+    bb->exit_target = NULL; /* i#928 */
+    /* overlap info will be reset by check_new_page_start */
+}
+
 /* Interprets the application's instructions until the end of a basic
  * block is found, and prepares the resulting instrlist for creation of
  * a fragment, but does not create the fragment, just returns the instrlist.
@@ -2746,6 +2768,8 @@ build_bb_ilist(dcontext_t *dcontext, build_bb_t *bb)
      */
     dcontext_t *my_dcontext = get_thread_private_dcontext();
     DEBUG_DECLARE(bool regenerated = false;)
+    bool stop_for_selfmod = false;
+    uint old_flags;
 
     ASSERT(bb->initialized);
     /* note that it's ok for bb->start_pc to be NULL as our check_new_page_start
@@ -2875,7 +2899,7 @@ build_bb_ilist(dcontext_t *dcontext, build_bb_t *bb)
 
             ASSERT(!bb->check_vm_area || bb->checked_end != NULL);
             if (bb->check_vm_area &&
-                bb->cur_pc != NULL && bb->cur_pc-1 > bb->checked_end) {
+                bb->cur_pc != NULL && bb->cur_pc-1 >= bb->checked_end) {
                 /* We're beyond the vmarea allowed -- so check again.
                  * Ideally we'd want to check BEFORE we decode from the
                  * subsequent page, as it could be inaccessible, but not worth
@@ -2884,7 +2908,13 @@ build_bb_ilist(dcontext_t *dcontext, build_bb_t *bb)
                  * mechanisms to handle faults while decoding, which we need
                  * anyway to handle racy unmaps by the app.
                  */
+                old_flags = bb->flags;
                 check_new_page_contig(dcontext, bb, bb->cur_pc-1);
+                if (!TEST(FRAG_SELFMOD_SANDBOXED, old_flags) &&
+                    TEST(FRAG_SELFMOD_SANDBOXED, bb->flags)) {
+                    stop_for_selfmod = true;
+                    break;
+                }
             }
 
             total_instrs++;
@@ -2962,6 +2992,22 @@ build_bb_ilist(dcontext_t *dcontext, build_bb_t *bb)
          */
         if (instr_opcode_valid(bb->instr) && instr_is_cti(bb->instr))
             instr_set_translation(bb->instr, bb->instr_start);
+
+        if (stop_for_selfmod) {
+            /* i#989: Don't fallthrough into sandboxed areas.  This has been a
+             * great source of bugs in the past.  Removing the sandboxing flag
+             * is safe because we're not actually including the instruction that
+             * needs it.
+             */
+            /* NOCHECKIN: can't reason through corner cases!  instruction
+             * straddling the page boundary.  Might need actual tests.
+             * Other test case: > 5 writes, followed by selfmod page.  If we
+             * don't mask out the flag, it won't be deterministic.
+             */
+            //bb->flags &= ~FRAG_SELFMOD_SANDBOXED;
+            bb_stop_prior_to_instr(dcontext, bb, false/*not added to bb->ilist*/);
+            break;
+        }
 
 #ifdef HOT_PATCHING_INTERFACE
         /* If this lookup succeeds then the current bb needs to be patched.
@@ -3281,7 +3327,12 @@ build_bb_ilist(dcontext_t *dcontext, build_bb_t *bb)
             bb->instr->bytes != (byte *) HEAP_PAD_PTR_UINT));
 #endif
 
+    old_flags = bb->flags;
     check_new_page_contig(dcontext, bb, bb->cur_pc-1);
+    if (!TEST(FRAG_SELFMOD_SANDBOXED, old_flags) &&
+        TEST(FRAG_SELFMOD_SANDBOXED, bb->flags)) {
+        stop_for_selfmod = true;
+    }
     bb->end_pc = bb->cur_pc;
     BBPRINT(bb, 3, "end_pc = "PFX"\n\n", bb->end_pc);
 
@@ -3338,36 +3389,37 @@ build_bb_ilist(dcontext_t *dcontext, build_bb_t *bb)
     }
 #endif
 
-    if (TEST(FRAG_SELFMOD_SANDBOXED, bb->flags) &&
-        (TEST(FRAG_HAS_DIRECT_CTI, bb->flags) || !bb->full_decode)) {
-        /* Sandbox requires that bb have no direct cti followings, and
-         * had full decode from the start for -selfmod_max_writes!
-         * check_thread_vm_area should have ensured this for us, except
-         * there is a pathological case where a direct cti occurs, and
-         * then we walk over a page boundary onto a selfmod page -- no
-         * choice but to back out, which for now we do by rebuilding.
-         * FIXME: find better way
-         */
-        /* FIXME: a better assert is needed because this can trigger if 
-         * hot patching turns off follow_direct, the current bb was elided 
-         * earlier and is marked as selfmod.  hotp_num_frag_direct_cti will 
-         * track this for now.
-         */
-        ASSERT(bb->follow_direct == true); /* else, infinite loop possible */
-        BBPRINT(bb, 2,
-                "*** must rebuild bb to avoid following direct cti for selfmod ***\n");
-        STATS_INC(num_bb_end_early);
-        instrlist_clear_and_destroy(dcontext, bb->ilist);
-        if (bb->vmlist != NULL) {
-            vm_area_destroy_list(dcontext, bb->vmlist);
-            bb->vmlist = NULL;
+    if (
+        (TEST(FRAG_SELFMOD_SANDBOXED, bb->flags) &&
+         (TEST(FRAG_HAS_DIRECT_CTI, bb->flags) || !bb->full_decode))) {
+        if (stop_for_selfmod) {
+            /* i#989: If we fallthrough onto a contiguous selfmod page, we
+             * have to restart bb building with full_decode to count the
+             * number of writes.  Otherwise bb rebuilding isn't
+             * deterministic when we start with the final fragment flags.
+             * Alternatively, we could stop the current bb here.
+             */
+            BBPRINT(bb, 2,
+                    "*** must rebuild bb to count writes from beginning\n");
+        } else {
+            /* Sandbox requires that bb have no direct cti followings, and
+             * had full decode from the start for -selfmod_max_writes!
+             * check_thread_vm_area should have ensured this for us, except
+             * there is a pathological case where a direct cti occurs, and
+             * then we walk over a page boundary onto a selfmod page -- no
+             * choice but to back out, which for now we do by rebuilding.
+             * FIXME: find better way
+             */
+            /* FIXME: a better assert is needed because this can trigger if 
+             * hot patching turns off follow_direct, the current bb was elided 
+             * earlier and is marked as selfmod.  hotp_num_frag_direct_cti will 
+             * track this for now.
+             */
+            ASSERT(bb->follow_direct == true); /* else, infinite loop possible */
+            BBPRINT(bb, 2,
+                    "*** must rebuild bb to avoid following direct cti for selfmod\n");
         }
-        bb->flags = FRAG_SELFMOD_SANDBOXED; /* lose all other flags */
-        bb->full_decode = true; /* full decode -- see comment at top of routine */
-        bb->follow_direct = false; 
-        bb->exit_type = 0; /* i#577 */
-        bb->exit_target = NULL; /* i#928 */
-        /* overlap info will be reset by check_new_page_start */
+        reset_bb_for_selfmod(dcontext, bb);
         build_bb_ilist(dcontext, bb);
         return;
     }
@@ -3725,18 +3777,7 @@ mangle_bb_ilist(dcontext_t *dcontext, build_bb_t *bb)
             ASSERT(!bb->full_decode); /* else, how did we get here??? */
             LOG(THREAD, LOG_INTERP, 2,
                 "*** must rebuild bb to avoid invalid instr in middle ***\n");
-            STATS_INC(num_bb_end_early);
-            instrlist_clear_and_destroy(dcontext, bb->ilist);
-            if (bb->vmlist != NULL) {
-                vm_area_destroy_list(dcontext, bb->vmlist);
-                bb->vmlist = NULL;
-            }
-            bb->flags = FRAG_SELFMOD_SANDBOXED; /* lose all other flags */
-            bb->full_decode = true; /* full decode this time! */
-            bb->follow_direct = false; 
-            bb->exit_type = 0; /* i#577 */
-            bb->exit_target = NULL; /* i#928 */
-            /* overlap info will be reset by check_new_page_start */
+            reset_bb_for_selfmod(dcontext, bb);
             return false;
         }
         STATS_INC(num_sandboxed_fragments);

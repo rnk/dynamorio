@@ -7601,7 +7601,7 @@ check_thread_vm_area(dcontext_t *dcontext, app_pc pc, app_pc tag, void **vmlist,
      * in the same bb as previous areas, as dictated by old flags
      * N.B.: we only care about FRAG_ flags here, not VM_ flags
      */
-    if (xfer) {
+    if (xfer || true) {
         uint src_cmp = *flags & frag_flags_cmp;
         uint tgt_cmp = frag_flags & frag_flags_cmp;
         bool allow = (src_cmp == tgt_cmp) ||
