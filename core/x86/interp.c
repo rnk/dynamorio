@@ -677,8 +677,6 @@ check_new_page_contig(dcontext_t *dcontext, build_bb_t *bb, app_pc new_pc)
 {
     if (!bb->check_vm_area)
         return true;
-    if (bb->overlap_info != NULL)
-        update_overlap_info(dcontext, bb, new_pc, false/*not jmp*/);
     if (bb->checked_end == NULL) {
         ASSERT(new_pc == bb->start_pc);
     } else if (new_pc >= bb->checked_end) {
@@ -689,14 +687,20 @@ check_new_page_contig(dcontext_t *dcontext, build_bb_t *bb, app_pc new_pc)
          * to an incompatible vmarea (fine to coarse or readonly to sandbox), so
          * we treat it like a transfer.
          */
-        bool is_first_instr = (bb->instr_start != bb->start_pc);
+        //bool is_first_instr = (bb->instr_start == bb->start_pc);
         if (!check_thread_vm_area(dcontext, new_pc, bb->start_pc,
                                   (bb->record_vmlist ? &bb->vmlist : NULL),
                                   &bb->flags, &bb->checked_end,
-                                  is_first_instr/*xfer*/)) {
+                                  /* i#989: We treat fallthrough as a transfer
+                                   * to prevent falling through to incompatible
+                                   * vmareas.
+                                   */
+                                  true/*xfer*/)) {
             return false;
         }
     }
+    if (bb->overlap_info != NULL)
+        update_overlap_info(dcontext, bb, new_pc, false/*not jmp*/);
     DOLOG(4, LOG_INTERP, {
         if (PAGE_START(bb->last_page) != PAGE_START(new_pc))
             LOG(THREAD, LOG_INTERP, 4, "page boundary crossed\n");
@@ -2730,26 +2734,6 @@ client_process_bb(dcontext_t *dcontext, build_bb_t *bb)
 }
 #endif /* CLIENT_INTERFACE */
 
-/* Restarts bb building from the top with only FRAG_SELFMOD_SANDBOXED in the
- * flags.
- */
-static void
-reset_bb_for_selfmod(dcontext_t *dcontext, build_bb_t *bb)
-{
-    STATS_INC(num_bb_end_early);
-    instrlist_clear_and_destroy(dcontext, bb->ilist);
-    if (bb->vmlist != NULL) {
-        vm_area_destroy_list(dcontext, bb->vmlist);
-        bb->vmlist = NULL;
-    }
-    bb->flags = FRAG_SELFMOD_SANDBOXED; /* lose all other flags */
-    bb->full_decode = true; /* full decode -- see comment at top of build_bb_ilist */
-    bb->follow_direct = false;
-    bb->exit_type = 0; /* i#577 */
-    bb->exit_target = NULL; /* i#928 */
-    /* overlap info will be reset by check_new_page_start */
-}
-
 /* Interprets the application's instructions until the end of a basic
  * block is found, and prepares the resulting instrlist for creation of
  * a fragment, but does not create the fragment, just returns the instrlist.
@@ -2886,8 +2870,10 @@ build_bb_ilist(dcontext_t *dcontext, build_bb_t *bb)
     /* avoid discrepancy in finding invalid instructions between fast decode
      * and the full decode of sandboxing by doing full decode up front
      */
-    if (TEST(FRAG_SELFMOD_SANDBOXED, bb->flags))
+    if (TEST(FRAG_SELFMOD_SANDBOXED, bb->flags)) {
         bb->full_decode = true;
+        bb->follow_direct = false;
+    }
     if (TEST(FRAG_HAS_TRANSLATION_INFO, bb->flags)) {
         bb->full_decode = true;
         bb->record_translation = true;
@@ -2942,9 +2928,39 @@ build_bb_ilist(dcontext_t *dcontext, build_bb_t *bb)
                  * anyway to handle racy unmaps by the app.
                  */
                 if (!check_new_page_contig(dcontext, bb, bb->cur_pc-1)) {
-                    bb->cur_pc = NULL;
-                    stop_bb_on_fallthrough = true;
-                    break;
+                    bool is_first_instr = (bb->instr_start == bb->start_pc);
+                    if (!is_first_instr) {
+                        /* i#989: Stop bb building before falling through to an
+                         * incompatible vmarea.
+                         */
+                        bb->cur_pc = NULL;
+                        stop_bb_on_fallthrough = true;
+                        break;
+                    } else {
+                        /* We can't stop bb building on the first instruction,
+                         * so keep building and force check_thread_vm_area() to
+                         * succeed by passing false for xfer.
+                         */
+                        DEBUG_DECLARE(bool ok =)
+                            check_thread_vm_area(dcontext, bb->cur_pc-1,
+                                                 bb->start_pc,
+                                                 (bb->record_vmlist ?
+                                                  &bb->vmlist : NULL),
+                                                 &bb->flags, &bb->checked_end,
+                                                 false/*xfer*/);
+                        ASSERT(ok);
+                        if (TEST(FRAG_SELFMOD_SANDBOXED, bb->flags)) {
+                            /* Restart the decode loop with full_decode and
+                             * !follow_direct, which are needed for sandboxing.
+                             */
+                            bb->full_decode = true;
+                            bb->follow_direct = false;
+                            bb->cur_pc = bb->instr_start;
+                            /* Have to invalidate instr to continue. */
+                            instr_reset(dcontext, bb->instr);
+                            continue;
+                        }
+                    }
                 }
             }
 
@@ -3109,6 +3125,7 @@ build_bb_ilist(dcontext_t *dcontext, build_bb_t *bb)
         }
 
         if (stop_bb_on_fallthrough) {
+            bb_stop_prior_to_instr(dcontext, bb, false/*not appended*/);
             break;
         }
 
@@ -3409,9 +3426,10 @@ build_bb_ilist(dcontext_t *dcontext, build_bb_t *bb)
 
     if (stop_bb_on_fallthrough && TEST(FRAG_HAS_DIRECT_CTI, bb->flags)) {
         /* If we followed a direct cti to an instruction straddling a vmarea
-         * boundary, we can't actually do the elision.  Restart bb building
-         * without follow_direct.  Alternatively, we could test for this before
-         * performing elision.
+         * boundary, we can't actually do the elision.  See the
+         * sandbox_last_byte() test case in security-common/sandbox.c.  Restart
+         * bb building without follow_direct.  Alternatively, we could check the
+         * vmareas of targeted instruction before performing elision.
          */
         ASSERT(bb->follow_direct == true); /* else, infinite loop possible */
         BBPRINT(bb, 2,
@@ -3422,11 +3440,6 @@ build_bb_ilist(dcontext_t *dcontext, build_bb_t *bb)
             vm_area_destroy_list(dcontext, bb->vmlist);
             bb->vmlist = NULL;
         }
-        if (bb->instr != NULL) {
-            instr_destroy(bb->instr);
-            bb->instr = NULL;
-        }
-        /* NOCHECKIN: WTF? leak? */
         bb->follow_direct = false;
         bb->exit_type = 0; /* i#577 */
         bb->exit_target = NULL; /* i#928 */
@@ -3434,28 +3447,10 @@ build_bb_ilist(dcontext_t *dcontext, build_bb_t *bb)
         return;
     }
 
-    ASSERT(!TESTALL(FRAG_SELFMOD_SANDBOXED|FRAG_HAS_DIRECT_CTI, bb->flags) &&
-           "sandboxed bbs cannot follow direct cti");
-    if (TEST(FRAG_SELFMOD_SANDBOXED, bb->flags) && !bb->full_decode) {
-        /* Sandbox requires that bb have no direct cti followings, and
-         * had full decode from the start for -selfmod_max_writes!
-         * check_thread_vm_area should have ensured this for us, except
-         * there is a pathological case where a direct cti occurs, and
-         * then we walk over a page boundary onto a selfmod page -- no
-         * choice but to back out, which for now we do by rebuilding.
-         * FIXME: find better way
-         */
-        /* FIXME: a better assert is needed because this can trigger if 
-         * hot patching turns off follow_direct, the current bb was elided 
-         * earlier and is marked as selfmod.  hotp_num_frag_direct_cti will 
-         * track this for now.
-         */
-        ASSERT(bb->follow_direct == true); /* else, infinite loop possible */
-        BBPRINT(bb, 2,
-                "*** must rebuild bb to avoid following direct cti for selfmod\n");
-        reset_bb_for_selfmod(dcontext, bb);
-        build_bb_ilist(dcontext, bb);
-        return;
+    if (TEST(FRAG_SELFMOD_SANDBOXED, bb->flags)) {
+        ASSERT(bb->full_decode);
+        ASSERT(!bb->follow_direct);
+        ASSERT(!TEST(FRAG_HAS_DIRECT_CTI, bb->flags));
     }
 
 #ifdef HOT_PATCHING_INTERFACE
@@ -3811,7 +3806,18 @@ mangle_bb_ilist(dcontext_t *dcontext, build_bb_t *bb)
             ASSERT(!bb->full_decode); /* else, how did we get here??? */
             LOG(THREAD, LOG_INTERP, 2,
                 "*** must rebuild bb to avoid invalid instr in middle ***\n");
-            reset_bb_for_selfmod(dcontext, bb);
+            STATS_INC(num_bb_end_early);
+            instrlist_clear_and_destroy(dcontext, bb->ilist);
+            if (bb->vmlist != NULL) {
+                vm_area_destroy_list(dcontext, bb->vmlist);
+                bb->vmlist = NULL;
+            }
+            bb->flags = FRAG_SELFMOD_SANDBOXED; /* lose all other flags */
+            bb->full_decode = true; /* full decode -- see comment at top of build_bb_ilist */
+            bb->follow_direct = false;
+            bb->exit_type = 0; /* i#577 */
+            bb->exit_target = NULL; /* i#928 */
+            /* overlap info will be reset by check_new_page_start */
             return false;
         }
         STATS_INC(num_sandboxed_fragments);
