@@ -2799,6 +2799,7 @@ build_bb_ilist(dcontext_t *dcontext, build_bb_t *bb)
      */
     dcontext_t *my_dcontext = get_thread_private_dcontext();
     DEBUG_DECLARE(bool regenerated = false;)
+    bool stop_bb_on_fallthrough = false;
 
     ASSERT(bb->initialized);
     /* note that it's ok for bb->start_pc to be NULL as our check_new_page_start
@@ -2939,7 +2940,8 @@ build_bb_ilist(dcontext_t *dcontext, build_bb_t *bb)
                  * anyway to handle racy unmaps by the app.
                  */
                 if (!check_new_page_contig(dcontext, bb, bb->cur_pc-1)) {
-                    bb_stop_prior_to_instr(dcontext, bb, false/*!appended*/);
+                    bb->cur_pc = NULL;
+                    stop_bb_on_fallthrough = true;
                     break;
                 }
             }
@@ -3007,13 +3009,10 @@ build_bb_ilist(dcontext_t *dcontext, build_bb_t *bb)
                  total_instrs <= DYNAMO_OPTION(max_bb_instrs));
 
         if (bb->cur_pc == NULL) {
-            /* invalid instr: reset bb->cur_pc, will end bb after updating stats */
+            /* invalid instr or vmarea change: reset bb->cur_pc, will end bb
+             * after updating stats
+             */
             bb->cur_pc = bb->instr_start;
-        }
-
-        if (bb->instr == NULL) {
-            /* We stopped bb building in the decode loop. */
-            break;
         }
 
         /* We need the translation when mangling calls and jecxz/loop*.
@@ -3104,6 +3103,10 @@ build_bb_ilist(dcontext_t *dcontext, build_bb_t *bb)
 
         if (!instr_valid(bb->instr)) {
             bb_process_invalid_instr(dcontext, bb);
+            break;
+        }
+
+        if (stop_bb_on_fallthrough) {
             break;
         }
 
@@ -3402,8 +3405,36 @@ build_bb_ilist(dcontext_t *dcontext, build_bb_t *bb)
     }
 #endif
 
-    if (TEST(FRAG_SELFMOD_SANDBOXED, bb->flags) &&
-        (TEST(FRAG_HAS_DIRECT_CTI, bb->flags) || !bb->full_decode)) {
+    if (stop_bb_on_fallthrough && TEST(FRAG_HAS_DIRECT_CTI, bb->flags)) {
+        /* If we followed a direct cti to an instruction straddling a vmarea
+         * boundary, we can't actually do the elision.  Restart bb building
+         * without follow_direct.  Alternatively, we could test for this before
+         * performing elision.
+         */
+        ASSERT(bb->follow_direct == true); /* else, infinite loop possible */
+        BBPRINT(bb, 2,
+                "*** must rebuild bb to avoid following direct cti to bad vmarea\n");
+        STATS_INC(num_bb_end_early);
+        instrlist_clear_and_destroy(dcontext, bb->ilist);
+        if (bb->vmlist != NULL) {
+            vm_area_destroy_list(dcontext, bb->vmlist);
+            bb->vmlist = NULL;
+        }
+        if (bb->instr != NULL) {
+            instr_destroy(bb->instr);
+            bb->instr = NULL;
+        }
+        /* NOCHECKIN: WTF? leak? */
+        bb->follow_direct = false;
+        bb->exit_type = 0; /* i#577 */
+        bb->exit_target = NULL; /* i#928 */
+        build_bb_ilist(dcontext, bb);
+        return;
+    }
+
+    ASSERT(!TESTALL(FRAG_SELFMOD_SANDBOXED|FRAG_HAS_DIRECT_CTI, bb->flags) &&
+           "sandboxed bbs cannot follow direct cti");
+    if (TEST(FRAG_SELFMOD_SANDBOXED, bb->flags) && !bb->full_decode) {
         /* Sandbox requires that bb have no direct cti followings, and
          * had full decode from the start for -selfmod_max_writes!
          * check_thread_vm_area should have ensured this for us, except
