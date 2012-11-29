@@ -4685,7 +4685,7 @@ insert_selfmod_sandbox(dcontext_t *dcontext, instrlist_t *ilist, uint flags,
     instrlist_set_our_mangling(ilist, true); /* PR 267260 */
     if (record_translation) {
         /* make sure inserted instrs translate to the proper original instr */
-        instrlist_set_translation_target(ilist, instr_get_raw_bits(instr));
+        instrlist_set_translation_target(ilist, instr_get_translation(instr));
     }
 
     sandbox_top_of_bb(dcontext, ilist,
@@ -4717,7 +4717,7 @@ insert_selfmod_sandbox(dcontext_t *dcontext, instrlist_t *ilist, uint flags,
                 continue;
             if (record_translation) {
                 /* make sure inserted instrs translate to the proper original instr */
-                instrlist_set_translation_target(ilist, instr_get_raw_bits(instr));
+                instrlist_set_translation_target(ilist, instr_get_translation(instr));
             }
 
             if (opcode == OP_rep_ins || opcode == OP_rep_movs || opcode == OP_rep_stos) {
