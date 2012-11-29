@@ -680,20 +680,12 @@ check_new_page_contig(dcontext_t *dcontext, build_bb_t *bb, app_pc new_pc)
     if (bb->checked_end == NULL) {
         ASSERT(new_pc == bb->start_pc);
     } else if (new_pc >= bb->checked_end) {
-        /* We pass true for xfer for everything except the first instruction.
-         * If the first instruction is straddling two vmareas, we have to add
-         * both vmareas and keep going.  We can't stop because we'll create an
-         * empty bb.  For subsequent instructions, we don't want to fall through
-         * to an incompatible vmarea (fine to coarse or readonly to sandbox), so
-         * we treat it like a transfer.
-         */
-        //bool is_first_instr = (bb->instr_start == bb->start_pc);
         if (!check_thread_vm_area(dcontext, new_pc, bb->start_pc,
                                   (bb->record_vmlist ? &bb->vmlist : NULL),
                                   &bb->flags, &bb->checked_end,
-                                  /* i#989: We treat fallthrough as a transfer
-                                   * to prevent falling through to incompatible
-                                   * vmareas.
+                                  /* i#989: We don't want to fall through to an
+                                   * incompatible vmarea, so we treat fall
+                                   * through like a transfer.
                                    */
                                   true/*xfer*/)) {
             return false;
@@ -3433,16 +3425,19 @@ build_bb_ilist(dcontext_t *dcontext, build_bb_t *bb)
          */
         ASSERT(bb->follow_direct == true); /* else, infinite loop possible */
         BBPRINT(bb, 2,
-                "*** must rebuild bb to avoid following direct cti to bad vmarea\n");
+                "*** must rebuild bb to avoid following direct cti to "
+                "incompatible vmarea\n");
         STATS_INC(num_bb_end_early);
         instrlist_clear_and_destroy(dcontext, bb->ilist);
         if (bb->vmlist != NULL) {
             vm_area_destroy_list(dcontext, bb->vmlist);
             bb->vmlist = NULL;
         }
+        bb->flags &= ~FRAG_HAS_DIRECT_CTI;  /* keep most flags */
         bb->follow_direct = false;
         bb->exit_type = 0; /* i#577 */
         bb->exit_target = NULL; /* i#928 */
+        /* overlap info will be reset by check_new_page_start */
         build_bb_ilist(dcontext, bb);
         return;
     }
@@ -3813,8 +3808,8 @@ mangle_bb_ilist(dcontext_t *dcontext, build_bb_t *bb)
                 bb->vmlist = NULL;
             }
             bb->flags = FRAG_SELFMOD_SANDBOXED; /* lose all other flags */
-            bb->full_decode = true; /* full decode -- see comment at top of build_bb_ilist */
-            bb->follow_direct = false;
+            bb->full_decode = true; /* full decode this time! */
+            bb->follow_direct = false; 
             bb->exit_type = 0; /* i#577 */
             bb->exit_target = NULL; /* i#928 */
             /* overlap info will be reset by check_new_page_start */
