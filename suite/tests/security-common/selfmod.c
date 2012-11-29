@@ -356,7 +356,7 @@ ADDRTAKEN_LABEL(immediate_addr_plus_four:)
         END_FUNC(FUNCNAME)
 #undef FUNCNAME
 
-/* Get last_byte_jmp to have one byte in the selfmod page. */
+/* Get last_byte_jmp to have one byte in a sandboxed page. */
 ALIGN_WITH_NOPS(4096)
 FILL_WITH_NOPS(4096 - 6)  /* 6 bytes from instr sizes below. */
 
@@ -365,7 +365,7 @@ FILL_WITH_NOPS(4096 - 6)  /* 6 bytes from instr sizes below. */
 GLOBAL_LABEL(FUNCNAME:)
         /* All these jmps have to be short for the test to pass.  Both gas and
          * masm get it right, so long as we always use local labels.  In
-         * particular, global labels get 4-byte offsets in case they are
+         * particular, global labels get 4 byte offsets in case they are
          * relocated.
          */
         jmp      last_byte_jmp          /* 2 bytes */
