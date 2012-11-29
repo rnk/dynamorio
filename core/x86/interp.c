@@ -669,6 +669,8 @@ check_new_page_start(dcontext_t *dcontext, build_bb_t *bb)
  * while bb building like we used to.  Should revisit the overlap info and
  * walk_app_bb reasons for keeping those contig() calls and see if we can
  * optimize them away for bb building at least.
+ * i#993: new_pc points to the last byte of the current instruction and is not
+ * an open-ended endpoint.
  */
 static inline void
 check_new_page_contig(dcontext_t *dcontext, build_bb_t *bb, app_pc new_pc)

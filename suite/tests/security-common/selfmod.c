@@ -272,10 +272,13 @@ DECL_EXTERN(cross_page_check)
 DECL_EXTERN(print_int)
 
 #if defined(ASSEMBLE_WITH_GAS)
-# define ALIGN_WITH_NOPS(bytes) .align (bytes)
+# define ALIGN(bytes) .align (bytes)
 # define FILL_WITH_NOPS(bytes)  .fill  (bytes), 1, 0x90
 #elif defined(ASSEMBLE_WITH_MASM)
-# define ALIGN_WITH_NOPS(bytes) ALIGN bytes
+/* Cannot align to a value greater than the section alignment.  See .mytext
+ * below.
+ */
+# define ALIGN(bytes) ALIGN bytes
 # define FILL_WITH_NOPS(bytes) \
     REPEAT (bytes) @N@\
         nop @N@\
@@ -284,15 +287,18 @@ DECL_EXTERN(print_int)
 # error NASM NYI
 #endif
 
-    /* The following code needs to cross a page boundary. */
 #if defined(ASSEMBLE_WITH_MASM)
-/* MASM thinks the .text segment is not 4096 byte aligned.  If we use plain
- * ALIGN, we get error A2189.  Declaring our own segment seems to work.
+/* The .text section on Windows is only 16 byte aligned.  If we use plain
+ * ALIGN(), we get error A2189.  We can't re-declare .text, but we can declare a
+ * new section with greater alignment.  The .CODE directive keeps the section
+ * executable and makes ALIGN() do nop fill.
  */
 _MYTEXT SEGMENT ALIGN(4096) ALIAS(".mytext")
+.CODE
 #endif
 
-ALIGN_WITH_NOPS(4096)
+    /* The following code needs to cross a page boundary. */
+ALIGN(4096)
 FILL_WITH_NOPS(4080)
 
 #define FUNCNAME sandbox_cross_page
@@ -304,7 +310,7 @@ GLOBAL_LABEL(FUNCNAME:)
         push     REG_XDX
         push     REG_XDI  /* for 16-alignment on x64 */
 
-        ALIGN_WITH_NOPS(4096)
+        ALIGN(4096)
 
         /* Do enough writes to cause the sandboxing code to split the block. */
         mov      [REG_XCX + 0], al
@@ -334,9 +340,8 @@ ADDRTAKEN_LABEL(immediate_addr_plus_four:)
         END_FUNC(FUNCNAME)
 #undef FUNCNAME
 
-/* Get last_byte_jmp to have one byte in the selfmod page.
- */
-ALIGN_WITH_NOPS(4096)
+/* Get last_byte_jmp to have one byte in the selfmod page. */
+ALIGN(4096)
 FILL_WITH_NOPS(4096 - 6)  /* 6 bytes from instr sizes below. */
 
 /* We use last_byte_jmp in C code to overwrite the offset. */
@@ -356,27 +361,27 @@ last_byte_ret_zero:
         ret                             /* 1 byte */
 ADDRTAKEN_LABEL(last_byte_jmp:)
 local_last_byte_jmp:
-        jmp last_byte_ret_zero          /* 1 byte opcode + 1 byte rel offset */
+        jmp      last_byte_ret_zero     /* 1 byte opcode + 1 byte rel offset */
 last_byte_ret_one:
         mov      eax, HEX(1)
         ret
         END_FUNC(FUNCNAME)
 #undef FUNCNAME
 
-ALIGN_WITH_NOPS(16)
+ALIGN(16)
 
 #define FUNCNAME make_last_byte_selfmod
         DECLARE_FUNC(FUNCNAME)
 GLOBAL_LABEL(FUNCNAME:)
         lea      REG_XAX, SYMREF(last_byte_immed_plus_four - 4)
-        mov      DWORD [REG_XAX], HEX(0)        /* selfmod write */
+        mov      DWORD [REG_XAX], HEX(0)     /* selfmod write */
         mov      REG_XAX, HEX(0)             /* mov_imm to modify */
 ADDRTAKEN_LABEL(last_byte_immed_plus_four:)
         ret
         END_FUNC(FUNCNAME)
 #undef FUNCNAME
 
-ALIGN_WITH_NOPS(4096)
+ALIGN(4096)
 
 #ifdef ASSEMBLE_WITH_MASM
 _MYTEXT ENDS
