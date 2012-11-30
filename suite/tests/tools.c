@@ -101,6 +101,7 @@ is_wow64(HANDLE hProcess)
 }
 #endif
 
+#ifndef STATIC_LIBRARY  /* FIXME i#935: Conflicts with DR's symbols. */
 /* Thread related functions */
 thread_handle
 create_thread(fptr f)
@@ -116,6 +117,7 @@ create_thread(fptr f)
 #endif
     return th;
 }
+#endif
 
 void
 suspend_thread(thread_handle th)
@@ -147,13 +149,17 @@ join_thread(thread_handle th)
 #endif
 }
 
-#ifndef LINUX
+#ifndef STATIC_LIBRARY  /* FIXME i#935: Conflicts with DR's symbols. */
 void
-thread_yield(void)
+thread_yield()
 {
+#ifdef LINUX
+    ASSERT_NOT_IMPLEMENTED();
+#else
     Sleep(0); /* stay ready */
+#endif
 }
-#endif /* LINUX */
+#endif
 
 int
 get_os_prot_word(int prot)

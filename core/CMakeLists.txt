@@ -566,17 +566,32 @@ else (UNIX)
 
   set_target_properties(dynamorio PROPERTIES LINK_FLAGS "${dynamorio_link_flags}")
 
-  # ensure there are no dependencies other than ntdll
-  find_program(DUMPBIN_EXECUTABLE dumpbin.exe DOC "path to dumpbin.exe")
-  if (DUMPBIN_EXECUTABLE)
-    add_custom_command(TARGET dynamorio POST_BUILD
-      COMMAND ${CMAKE_COMMAND}
-      ARGS -D lib=${drout}
-           -D DUMPBIN_EXECUTABLE=${DUMPBIN_EXECUTABLE}
-           -P ${CMAKE_CURRENT_SOURCE_DIR}/CMake_checkdeps.cmake
-      VERBATIM)
+  # I'm adding libcmt to attempt to make sure we have multithreaded C lib:
+  if (DEBUG)
+    set(WIN32_C_LIB libcmtd)
+  else (DEBUG)
+    set(WIN32_C_LIB libcmt)
+  endif (DEBUG)
+
+  if (NOT STATIC_LIBRARY)
+    # ensure there are no dependencies other than ntdll
+    find_program(DUMPBIN_EXECUTABLE dumpbin.exe DOC "path to dumpbin.exe")
+    if (DUMPBIN_EXECUTABLE)
+      add_custom_command(TARGET dynamorio POST_BUILD
+        COMMAND ${CMAKE_COMMAND}
+        ARGS -D lib=${drout}
+             -D DUMPBIN_EXECUTABLE=${DUMPBIN_EXECUTABLE}
+             -P ${CMAKE_CURRENT_SOURCE_DIR}/CMake_checkdeps.cmake
+        VERBATIM)
+    else ()
+      message(STATUS "Cannot find dumpbin so not performing dependence check")
+    endif ()
   else ()
-    message(STATUS "Cannot find dumpbin so not performing dependence check")
+    # i#975: If we're building static, none of those link flags above are going
+    # to make it through.  But target_link_libraries will.  We name a C library
+    # here to make sure things get linked in the right order to avoid duplicate
+    # definitions.
+    target_link_libraries(dynamorio ${WIN32_C_LIB} ${ntimp_lib})
   endif ()
 
 
@@ -620,12 +635,6 @@ if (WIN32)
     # for parallel build correctness we need a target dependence
     add_dependencies(drinjectlib ${x86_noncore_asm_tgt} ntimp_tgt)
   endif ()
-  # I'm adding libcmt to attempt to make sure we have multithreaded C lib:
-  if (DEBUG)
-    set(WIN32_C_LIB libcmtd)
-  else (DEBUG)
-    set(WIN32_C_LIB libcmt)
-  endif (DEBUG)
   set(drinjectlib_link_flags
     # not bothering with map files
     "${LD_FLAGS} /incremental:no /subsystem:console /NODEFAULTLIB")
