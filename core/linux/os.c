@@ -3373,6 +3373,10 @@ get_num_processors(void)
 shlib_handle_t 
 load_shared_library(const char *name)
 {
+#ifdef STATIC_LIBRARY
+    if (os_files_same(name, get_application_name()))
+        return dlopen(NULL, RTLD_LAZY);  /* Gets a handle to the exe. */
+#endif
     if (IF_CLIENT_INTERFACE_ELSE(INTERNAL_OPTION(private_loader), false))
         return (shlib_handle_t)load_private_library(name);
     ASSERT(!DYNAMO_OPTION(early_inject));
@@ -3483,6 +3487,25 @@ os_file_exists(const char *fname, bool is_dir)
         return false;
     }
     return (!is_dir || S_ISDIR(st.st_mode));
+}
+
+/* Returns true if two paths point to the same file.  Follows symlinks.
+ */
+bool
+os_files_same(const char *path1, const char *path2)
+{
+    struct stat64 st1, st2;
+    ptr_int_t res = dynamorio_syscall(SYSNUM_STAT, 2, path1, &st1);
+    if (res != 0) {
+        LOG(THREAD_GET, LOG_SYSCALLS, 2, "%s failed: "PIFX"\n", __func__, res);
+        return false;
+    }
+    res = dynamorio_syscall(SYSNUM_STAT, 2, path2, &st2);
+    if (res != 0) {
+        LOG(THREAD_GET, LOG_SYSCALLS, 2, "%s failed: "PIFX"\n", __func__, res);
+        return false;
+    }
+    return st1.st_ino == st2.st_ino;
 }
 
 bool

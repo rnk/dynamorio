@@ -589,6 +589,16 @@ function(tobuild_dll test source dr_ops)
   set(${test}_dr_ops ${dr_ops} PARENT_SCOPE)
 endfunction(tobuild_dll)
 
+function(get_client_path client_path_out realclient realexe)
+  if (STATIC_LIBRARY)
+    set(tgt ${realexe})
+  else()
+    set(tgt ${realclient})
+  endif ()
+  get_target_property(client_path ${tgt} LOCATION${location_suffix})
+  set(${client_path_out} "${client_path}" PARENT_SCOPE)
+endfunction(get_client_path)
+
 # client interface app with client
 # note that we can't easily have a routine that takes no ops
 # and calls this one w/ "" "" "" b/c the PARENT_SCOPE won't make
@@ -611,7 +621,7 @@ function(tobuild_ci test source client_ops dr_ops exe_ops)
   endif (NOT "${source}" MATCHES "cpp\\.cpp")
   configure_DynamoRIO_client(${test}.dll)
   add_dependencies(${test}.dll api_headers)
-  get_target_property(client_path ${test}.dll LOCATION${location_suffix})
+  get_client_path(client_path ${test}.dll ${test})
   if (STATIC_LIBRARY)
     # For STATIC_LIBRARY, we support a single client by linking the client into
     # the exe.
@@ -678,7 +688,7 @@ function(tobuild_gcc exe source depender extra_args)
 endfunction(tobuild_gcc)
 
 function(torunonly_ci test realexe realclient source client_ops dr_ops exe_ops)
-  get_target_property(client_path ${realclient}.dll LOCATION${location_suffix})
+  get_client_path(client_path ${realclient} ${realexe})
 
   # note that b/c of cmake's ridiculous scoping we can't easily share this code
   # w/ tobuild_ci: still have to propagate out of there, so we dup.
@@ -1226,17 +1236,8 @@ function(torun_ci name test ops)
     endif ()
   endif ("${test}" MATCHES "client\\.flush")
   # note that we cannot use double quotes as they'll be stripped out
-  if (NOT STATIC_LIBRARY)
-    torun("${name}" ${test} ${${test}_source} OFF
-      " -code_api -client_lib '${${test}_client_path}\;0\;${cli_ops}' ${${test}_dr_ops} ${ops}" "${${test}_exe_ops}")
-  else ()
-    if (cli_ops)
-      # FIXME i#975: Support passing in client options.
-      return()
-    endif ()
-    torun("${name}" ${test} ${${test}_source} OFF
-      " -code_api ${${test}_dr_ops} ${ops}" "${${test}_exe_ops}")
-  endif ()
+  torun("${name}" ${test} ${${test}_source} OFF
+    " -code_api -client_lib '${${test}_client_path}\;0\;${cli_ops}' ${${test}_dr_ops} ${ops}" "${${test}_exe_ops}")
   if (DEFINED ${test}_depends)
     ops2testprefix(prefix "${ops}")
     set_property(TEST ${name} APPEND PROPERTY DEPENDS "${prefix}${${test}_depends}")

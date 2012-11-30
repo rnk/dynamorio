@@ -567,27 +567,6 @@ instrument_init(void)
         (*init)(client_libs[i].id);
     }
 
-#ifdef STATIC_LIBRARY
-    /* i#975: We support a single client linked into the main exe in
-     * STATIC_LIBRARY mode.  If the exe wants to link multiple clients, it can
-     * initialize them individually between dr_app_setup() and dr_app_start().
-     */
-    if (num_client_libs == 0) {
-        app_pc base = get_module_base((app_pc)instrument_init);
-        init = (void (*)(client_id_t))
-            get_proc_address(base, INSTRUMENT_INIT_NAME);
-        if (init != NULL) {
-            num_client_libs++;
-            client_libs[0].id = 0;
-            client_libs[0].lib = base;
-            client_libs[0].start = base;
-            client_libs[0].end = base;
-            client_libs[0].options[0] = '\0';
-            init(0);
-        }
-    }
-#endif
-
     /* If the client just registered the module-load event, let's
      * assume it wants to be informed of *all* modules and tell it
      * which modules are already loaded.  If the client registers the
@@ -679,7 +658,7 @@ instrument_exit(void)
 
     /* we guarantee we're in DR state at all callbacks and clean calls */
     CLIENT_ASSERT(IF_WINDOWS(!should_swap_peb_pointer() ||)
-                  IF_LINUX(!INTERNAL_OPTION(mangle_app_seg) ||)
+                  IF_LINUX(!INTERNAL_OPTION(private_loader) ||)
                   !dr_using_app_state(get_thread_private_dcontext()), "state error");
 
     /* support dr_get_mcontext() from the exit event */
