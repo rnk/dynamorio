@@ -176,12 +176,6 @@ if (LINKCOUNT AND TEST_SUITE)
   set(run_list "ONLY::^common::-prof_counts -tracedump_binary -no_inline_trace_ibl -indirect_stubs")
 elseif (CALLPROF AND TEST_SUITE)
   set(run_list "ONLY::^common::")
-elseif (STATIC_LIBRARY)
-  # FIXME i#975: Traces don't seem to with STATIC_LIBRARY and
-  # !CLIENT_INTERFACE.
-  set(run_list
-    "SHORT::-disable_traces"
-    "-disable_traces")
 elseif (VMAP)
   if (TEST_SUITE)
     # if running multiple builds we don't redo all tests for later builds
@@ -966,24 +960,24 @@ function(rundr_cmd outcmd outops native dr_ops_aux is_runall)
     # can't escape quotes, so we have to use a list variable
     set(cmd ${MAIN_RUNTIME_OUTPUT_DIRECTORY}/runstats -s ${TEST_SECONDS} -killpg -silent)
     if (NOT native)
-      if (NOT STATIC_LIBRARY)
-        set(cmd ${cmd} ${MAIN_RUNTIME_OUTPUT_DIRECTORY}/drrun)
-        if (TEST_SUITE)  # Use install dir in the suite for cross-arch execve.
-          set(cmd ${cmd} -dr_home "${CMAKE_INSTALL_PREFIX}")
-        endif ()
-        if (DEBUG)
-          set(cmd ${cmd} -debug)
-        endif ()
-        if (LINUX AND "${dr_ops}" MATCHES "-early_inject")
-          set(cmd ${cmd} -early)
-        endif()
-        # add dr_ops last to avoid needing extra \ on ;
-        set(${outcmd} ${cmd} -ops "${dr_ops}" PARENT_SCOPE)
-      else ()
+      if (STATIC_LIBRARY)
         set(cmd ${cmd} -env DYNAMORIO_TAKEOVER_IN_INIT 1)
-        # add dr_ops last to avoid needing extra \ on ;
-        set(${outcmd} ${cmd} -env DYNAMORIO_OPTIONS "${dr_ops}" PARENT_SCOPE)
       endif ()
+      set(cmd ${cmd} ${MAIN_RUNTIME_OUTPUT_DIRECTORY}/drrun)
+      if (STATIC_LIBRARY)
+        set(cmd ${cmd} -norun)  # Don't try to takeover as with shared DR.
+      endif ()
+      if (TEST_SUITE)  # Use install dir in the suite for cross-arch execve.
+        set(cmd ${cmd} -dr_home "${CMAKE_INSTALL_PREFIX}")
+      endif ()
+      if (DEBUG)
+        set(cmd ${cmd} -debug)
+      endif ()
+      if (LINUX AND "${dr_ops}" MATCHES "-early_inject")
+        set(cmd ${cmd} -early)
+      endif()
+      # add dr_ops last to avoid needing extra \ on ;
+      set(${outcmd} ${cmd} -ops "${dr_ops}" PARENT_SCOPE)
     else ()
       # We set LD_LIBRARY_PATH for native api/ apps since we're not setting
       # rpath (to make it easier to try different trees)
@@ -1037,6 +1031,9 @@ function(torun test key source native dr_ops exe_ops)
   endif ()
   if ("${dr_ops}" MATCHES "-early_inject" AND
       "${dr_ops}" MATCHES "-no_private_loader")
+    return()
+  endif ()
+  if (STATIC_LIBRARY AND "${dr_ops}" MATCHES "-early_inject")
     return()
   endif ()
 
@@ -1286,12 +1283,14 @@ tobuild_dll(common.nativeexec common/nativeexec.c
   "-native_exec_list ${native_dll_name}")
 
 # app seg mangling makes dstack test fail so we disable such mangling
-set(ops "-no_mangle_app_seg")
-if (UNIX AND CLIENT_INTERFACE)
+if (UNIX)
   # private loader requires the mangling
-  set (ops "${ops} -no_private_loader")
-endif ()
-tobuild_ops(common.protect-dstack common/protect-dstack.c "${ops}" "")
+  tobuild_ops(common.protect-dstack common/protect-dstack.c
+    "-no_mangle_app_seg -no_private_loader" "")
+else (UNIX)
+  tobuild_ops(common.protect-dstack common/protect-dstack.c
+    "-no_mangle_app_seg" "")
+endif (UNIX)
 
 tobuild(common.segfault common/segfault.c)
 # PR 217255: these 4 removed to shorten the regression suite since not

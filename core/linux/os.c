@@ -8274,15 +8274,10 @@ query_memory_ex(const byte *pc, OUT dr_mem_info_t *out_info)
              * are holes in all_memory_areas
              */
             from_os_prot != MEMPROT_NONE) {
-#ifndef STATIC_LIBRARY
-            //if (all_memory_areas_initialized())
-#endif
-            {
-                SYSLOG_INTERNAL_ERROR("all_memory_areas is missing region "PFX"-"PFX"!",
-                                      from_os_base_pc, from_os_base_pc + from_os_size);
-                DOLOG(4, LOG_VMAREAS, print_all_memory_areas(THREAD_GET););
-                ASSERT_NOT_REACHED();
-            }
+            SYSLOG_INTERNAL_ERROR("all_memory_areas is missing region "PFX"-"PFX"!",
+                                  from_os_base_pc, from_os_base_pc + from_os_size);
+            DOLOG(4, LOG_VMAREAS, print_all_memory_areas(THREAD_GET););
+            ASSERT_NOT_REACHED();
             /* be paranoid */
             out_info->base_pc = from_os_base_pc;
             out_info->size = from_os_size;
