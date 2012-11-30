@@ -544,8 +544,9 @@ function(add_exe test source)
     add_dependencies(${test} ${gen_asm_tgt})
   endif ()
 
-  if (STATIC_LIBRARY)
-    # Link DR into every test exe.
+  if (STATIC_LIBRARY AND NOT "${test}" MATCHES "api")
+    # Link DR into every test exe except the api tests, which already link
+    # against DR or the standalone decoder.
     force_static_link(${test} dynamorio)
   endif ()
 endfunction(add_exe)
@@ -712,17 +713,13 @@ function(tobuild_api test source dr_ops exe_ops decoder)
     set(prop_cflags "")
   endif ()
   set(prop_cflags "${prop_cflags} ${extra_flags}")
-  # we don't set -DUSE_DYNAMO on the target to avoid setting
-  # it for tools.c and thus adding dependencies on api headers
-  # to other tests
-  set_source_files_properties(${source} PROPERTIES
-    COMPILE_FLAGS "-DUSE_DYNAMO")
+  set(prop_cflags "${prop_cflags} -DUSE_DYNAMO")
   # since we're including configure.h we do not want any default defines
   string(REGEX REPLACE "-DX64" "" prop_cflags "${prop_cflags}")
   string(REGEX REPLACE "-DLINUX" "" prop_cflags "${prop_cflags}")
   string(REGEX REPLACE "-DWINDOWS" "" prop_cflags "${prop_cflags}")
   # FIXME: apparently moving cflags to a target property makes it show up
-  # in the cpp run for tools_asm, where it doesn't if in global var.
+  # in the cpp run for asm targets, where it doesn't if in global var.
   # This causes compilation failure.  Removing -g3 manually as a workaround.
   string(REGEX REPLACE "-g3" "" prop_cflags "${prop_cflags}")
   get_target_property(prop_lflags ${test} LINK_FLAGS)
