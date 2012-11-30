@@ -7524,7 +7524,7 @@ get_dynamo_library_bounds(void)
 #endif /* !STATIC_LIBRARY */
 
 /* get full path to our own library, (cached), used for forking and message file name */
-char *
+char*
 get_dynamorio_library_path(void)
 {
 #ifndef STATIC_LIBRARY
@@ -8301,10 +8301,12 @@ get_memory_info(const byte *pc, byte **base_pc, size_t *size,
                 uint *prot /* OUT optional, returns MEMPROT_* value */)
 {
     dr_mem_info_t info;
+#ifdef CLIENT_INTERFACE
     if (is_vmm_reserved_address((byte*)pc, 1)) {
         if (!query_memory_ex_from_os(pc, &info) || info.type == DR_MEMTYPE_FREE)
             return false;
     } else
+#endif
         if (!query_memory_ex(pc, &info) || info.type == DR_MEMTYPE_FREE)
             return false;
     if (base_pc != NULL)

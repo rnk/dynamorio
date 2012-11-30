@@ -1683,7 +1683,7 @@ instrument_module_load_trigger(app_pc modbase)
      * in consistent state in case client acts on it, even though
      * we have to re-look-up the data here.
      */
-    if (module_load_callbacks.num > 0) {
+    if (!IS_STRING_OPTION_EMPTY(client_lib)) {
         module_area_t *ma;
         module_data_t *client_data = NULL;
         os_get_module_info_lock();
