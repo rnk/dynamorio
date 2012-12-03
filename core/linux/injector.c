@@ -712,9 +712,9 @@ injectee_map_file(file_t f, size_t *size INOUT, uint64 offs, app_pc addr,
     r = (ptr_int_t)injectee_mmap(injected_info, addr, *size,
                                  memprot_to_osprot(prot), flags, fd, offs);
     if (r < 0 && r >= -4096) {
-        printf("injectee_mmap(%d, %p, %p, 0x%x, 0x%llx, 0x%x) -> (%d): %s\n",
-               fd, addr, (void*)*size, memprot_to_osprot(prot), offs, flags,
-               -r, strerror(-r));
+        printf("injectee_mmap(%d, %p, %p, 0x%x, 0x%lx, 0x%x) -> (%d): %s\n",
+               fd, addr, (void*)*size, memprot_to_osprot(prot), (long)offs, flags,
+               (int)-r, strerror(-r));
         return NULL;
     }
     return (byte*)r;
