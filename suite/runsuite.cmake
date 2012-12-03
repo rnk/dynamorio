@@ -173,17 +173,20 @@ if (DO_ALL_BUILDS)
     DEBUG:BOOL=ON
     INTERNAL:BOOL=ON
     ")
-  # i#975: Revived support for STATIC_LIBRARY.
-  testbuild("static-debug-internal-64" ON "
-    STATIC_LIBRARY:BOOL=ON
-    DEBUG:BOOL=ON
-    INTERNAL:BOOL=ON
-    ")
-  testbuild("static-debug-internal-32" OFF "
-    STATIC_LIBRARY:BOOL=ON
-    DEBUG:BOOL=ON
-    INTERNAL:BOOL=ON
-    ")
+  if (UNIX)
+    # i#975: Revived support for STATIC_LIBRARY.
+    # FIXME: We need a takeover mechanism on Windows to run the tests.
+    testbuild("static-debug-internal-64" ON "
+      STATIC_LIBRARY:BOOL=ON
+      DEBUG:BOOL=ON
+      INTERNAL:BOOL=ON
+      ")
+    testbuild("static-debug-internal-32" OFF "
+      STATIC_LIBRARY:BOOL=ON
+      DEBUG:BOOL=ON
+      INTERNAL:BOOL=ON
+      ")
+  endif ()
 endif (DO_ALL_BUILDS)
 
 # FIXME: what about these builds?
