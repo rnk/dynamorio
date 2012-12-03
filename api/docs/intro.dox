@@ -82,8 +82,11 @@ This document describes the DynamoRIO system and the various API's that it
 exports for building custom tools.  It is divided into the following
 sections:
 
+- \subpage page_deploy
+  <br>How to run DynamoRIO.
+
 - \subpage using
-  <br>How to deploy and make use of DynamoRIO.
+  <br>How to make use of DynamoRIO.
 
 \if vmsafe
 - \subpage API_security
@@ -242,63 +245,7 @@ Other publications describing DynamoRIO include:
 
 \image html favicon.ico
 
-****************************************************************************
-****************************************************************************
-*/
-/* It's good to use separate C comments: we've hit some sort of doxygen
- * internal buffering error before if one comment gets too long.
- */
-/**
-***************************************************************************
-***************************************************************************
-\page using Usage Model for DynamoRIO
-
-This section gives an overview of how to use DynamoRIO, divided into the
-following sub-sections:
-
-\if vmsafe 
- - \ref sec_deploy
- - \ref dr_api
- - \ref dr_modes
- - \ref sec_events
- - \ref sec_utils
- - \ref sec_extlibs
- - \ref sec_comm
- - \ref sec_options
- - \ref sec_debugging
-\else
- - \ref sec_deploy
- - \ref sec_events
- - \ref sec_utils
- - \ref sec_build
- - \ref sec_extlibs
- - \ref sec_extensions
- - \ref sec_comm
- - \ref sec_64bit_reach
- - \ref sec_utf8
- - \ref sec_options
- - \ref sec_debugging
-\endif
-
-\ifnot vmsafe
-DynamoRIO exports a rich Application Programming Interface (API) to the
-user for building a DynamoRIO <em>client</em>. A DynamoRIO client is a
-library that is coupled with DynamoRIO in order to jointly operate on an
-input program binary:
-
-  \image html client.png
-  \image rtf client.png
-  \image latex client.eps "DynamoRIO client" width=10cm
-
-To interact with the client, DynamoRIO provides specific events that a
-client can intercept.  Event interception functions, if supplied by a user
-client, are called by DynamoRIO at appropriate times.
-
-DynamoRIO can alternatively be used as a third-party disassembly library
-(see \ref page_standalone).
-\endif
-
-\section sec_deploy Deployment
+\page page_deploy Deployment
 \if vmsafe
 A DynamoRIO application consists of a guest agent and one or more clients.  Each of
 these must be linked against the necessary DynamoRIO dynamic libraries, which
@@ -354,7 +301,7 @@ target application when used as a regular library.
 \endif
 
 \if linux
-\subsection win_deploy Windows Deployment
+\section win_deploy Windows Deployment
 \endif
 
 There are two methods for running a process under DynamoRIO: the one-time
@@ -397,11 +344,11 @@ your current directory is its base directory.  Run \c calc.exe with the
 bbsize sample client using the following configure-and-run command:
 \if vmsafe
 \code
-bin32/drrun.exe -mode code -client samples/bin32/bbsize.dll 0 "" -- calc
+bin32/drrun.exe -mode code -c samples/bin32/bbsize.dll -- calc
 \endcode
 \else
 \code
-bin32/drrun.exe -client samples/bin32/bbsize.dll 0 "" -- calc
+bin32/drrun.exe -c samples/bin32/bbsize.dll -- calc
 \endcode
 \endif
 
@@ -410,11 +357,11 @@ under DynamoRIO regardless of how it is invoked, configure the application
 first (-syswide_on requires administrative privileges):
 \if vmsafe
 \code
-bin32/drconfig.exe -reg calc.exe -syswide_on -mode code -client samples/bin32/bbsize.dll 0 ""
+bin32/drconfig.exe -reg calc.exe -syswide_on -mode code -c samples/bin32/bbsize.dll
 \endcode
 \else
 \code
-bin32/drconfig.exe -reg calc.exe -syswide_on -client samples/bin32/bbsize.dll 0 ""
+bin32/drconfig.exe -reg calc.exe -syswide_on -c samples/bin32/bbsize.dll
 \endcode
 \endif
 
@@ -477,7 +424,7 @@ process. When using \c drconfig.exe and \c drrun.exe in these scenarios, be
 sure that the cmd shell being used was started with elevated permissions.
 
 \if linux
-\subsection lin_deploy Linux Deployment
+\section lin_deploy Linux Deployment
 
 Once DynamoRIO has been unpacked, a set of three scripts provide
 flexibility in configuring and executing applications.
@@ -493,7 +440,7 @@ There are two methods for invoking an application under DynamoRIO:
 As an example of the simpler method, the following command runs \c ls
 under DynamoRIO with the bbsize sample client:
 \code
-% bin32/drrun -client samples/bin32/libbbsize.so 0 "" -- ls
+% bin32/drrun -c samples/bin32/libbbsize.so -- ls
 \endcode
 Run \c drrun with no options to get a list of the options and
 environment variable shortcuts it supports.  To disable following across
@@ -540,34 +487,42 @@ This will result in a nudge event with argument=5 delivered to the
 client callback registered with dr_register_nudge_event() in the
 target process.  The 0 argument is an ID supplied at registration which
 uniquely identifies the target client (see dr_deploy.h for details).
+If you used the -c argument to drrun or drconfig to register the client, the
+client's id defaults to 0.
 
 \endif
 \endif
 
-\subsection client_ops Passing Options to Clients
+\section client_ops Passing Options to Clients
 
-All of the earlier examples passed an empty string after the client path
-and client id to \p drrun and \p drconfig.  The purpose of that string is
-to pass options to a client.  For example:
+All of the earlier examples did not need to pass any arguments to the client.
+When using the -c argument to set the client, all arguments between the client
+path and the double dash are passed to the client.  When using the -client
+argument to drrun, the third argument following -client is passed through to
+the client.  For example, all these invocations of drrun pass "-client_op1
+-client_op2" to the client:
 
 \code
+bin32/drrun.exe -c libmyclient.dll -client_op1 -client_op2 -- calc
 bin32/drrun.exe -client myclient.dll 0 "-client_op1 -client_op2" -- calc
 \endcode
 
 On Linux:
 
 \code
+bin32/drrun -c libmyclient.so client_op1 -client_op2 -- ls
 bin32/drrun -client libmyclient.so 0 "-client_op1 -client_op2" -- ls
 \endcode
 
 When using a two-step model, the options are passed to \p drconfig:
 
 \code
+bin32/drconfig.exe -reg calc.exe -c myclient.dll -client_op1 -client_op2
 bin32/drconfig.exe -reg calc.exe -client myclient.dll 0 "-client_op1 -client_op2"
 \endcode
 
 
-\subsection multi_client Multiple Clients
+\section multi_client Multiple Clients
 
 DynamoRIO does support multiple clients.  It is each client's
 responsibility, however, to ensure compatibility with other clients.
@@ -588,6 +543,60 @@ registered callback is called \em last.  This scheme gives precedence
 to the first registered callback since that callback is given the final
 opportunity to modify the instruction stream or influence DynamoRIO's
 operation. 
+
+****************************************************************************
+****************************************************************************
+*/
+/* It's good to use separate C comments: we've hit some sort of doxygen
+ * internal buffering error before if one comment gets too long.
+ */
+/**
+***************************************************************************
+***************************************************************************
+\page using Usage Model for DynamoRIO
+
+This section gives an overview of how to use DynamoRIO, divided into the
+following sub-sections:
+
+\if vmsafe 
+ - \ref dr_api
+ - \ref dr_modes
+ - \ref sec_events
+ - \ref sec_utils
+ - \ref sec_extlibs
+ - \ref sec_comm
+ - \ref sec_options
+ - \ref sec_debugging
+\else
+ - \ref sec_events
+ - \ref sec_utils
+ - \ref sec_build
+ - \ref sec_extlibs
+ - \ref sec_extensions
+ - \ref sec_comm
+ - \ref sec_64bit_reach
+ - \ref sec_utf8
+ - \ref sec_options
+ - \ref sec_debugging
+\endif
+
+\ifnot vmsafe
+DynamoRIO exports a rich Application Programming Interface (API) to the
+user for building a DynamoRIO <em>client</em>. A DynamoRIO client is a
+library that is coupled with DynamoRIO in order to jointly operate on an
+input program binary:
+
+  \image html client.png
+  \image rtf client.png
+  \image latex client.eps "DynamoRIO client" width=10cm
+
+To interact with the client, DynamoRIO provides specific events that a
+client can intercept.  Event interception functions, if supplied by a user
+client, are called by DynamoRIO at appropriate times.
+
+DynamoRIO can alternatively be used as a third-party disassembly library
+(see \ref page_standalone).
+\endif
 
 \if vmsafe
 ***************************************************************************
@@ -1012,8 +1021,8 @@ loader is used to load dynamic Extensions.
 
 Current Extensions provide symbol access and container data structures.
 Each Extension has its own documentation and has its functions and data
-structures documented separately from the main API.  See <a
-href="page_ext.html">the full list of Extensions here</a>.
+structures documented separately from the main API.
+See the full list of Extensions here: \ref page_ext.
 
 Be aware that some of the DynamoRIO Extensions have LGPL licenses instead
 of the BSD license of the rest of DynamoRIO.  Such Extensions are built as
@@ -1025,10 +1034,11 @@ their license in their documentation.
 
 Clients are free to use external libraries as long as those libraries
 do not use any global user-mode resources that would interfere with
-the running application.  Furthermore, clients must either link statically
-to all libraries or load them using a private loader separate from the
-application's loader in order to prevent re-entrancy problems (see \ref
-sec_trans_resource).
+the running application.  For example, native threading libraries such
+as \p libpthread.so on Linux are known to cause problems.  Furthermore,
+clients must either link statically to all libraries or load them using
+DynamoRIO's private loader separate from the application's loader in
+order to prevent re-entrancy problems (see \ref sec_trans_resource).
 
 Currently we provide a private loader for both Windows and Linux.  
 With private loading, the client
@@ -1148,7 +1158,7 @@ Due to transparency limitations (see \ref transparency),
 DynamoRIO can only support certain communication channels in and out of the
 target application process.  These include:
 
- - DynamoRIO deployment control and runtime options: see \ref sec_deploy
+ - DynamoRIO deployment control and runtime options: see \ref page_deploy
    and \ref sec_options.  In particular, the deployment API allows users to
    pass up-front runtime information to the client.
  - Nudges: Since polling requires extra threads, and DynamoRIO tries not
@@ -1167,13 +1177,13 @@ target application process.  These include:
 DynamoRIO's behavior can be fine-tuned using runtime parameters.  Options
 are specified via \c drconfig.exe, \c drrun.exe, or dr_register_process()
 \if linux on Windows and via the \c drconfig and \c drrun scripts on
-Linux\endif.  See \ref sec_deploy.
+Linux\endif.  See \ref page_deploy.
 
  - \b -no_follow_children: \anchor op_children
    By default, DynamoRIO follows all child processes.  When this option
    is disabled via \p -no_follow_children, DynamoRIO follows only
    into child processes for which a configuration file exists (typically
-   created by \c drconfig; see \ref sec_deploy).  On Linux,
+   created by \c drconfig; see \ref page_deploy).  On Linux,
    forked children are always followed and this option only affects execve.
 
    To follow all children in general but exclude certain children, leave \p
@@ -1216,16 +1226,14 @@ Linux\endif.  See \ref sec_deploy.
         and aflags usage analysis on the instruction list to be inserted.
    - 3: more aggressive, but potentially unsafe, optimizations.
 
-\if expose_opt_speed
  - \b -opt_speed: \anchor op_speed
    By default, DynamoRIO provides a more straightforward code stream to
    clients in lieu of performance optimizations.  This option attempts
    to obtain higher performance with potential loss of client simplicity.
-   In particular, unconditional branches and in some cases indirect calls
-   may be elided in basic blocks.  See also \ref sec_limit_perf.
+   In particular, unconditional branches (both jumps and calls) and in some
+   cases indirect calls may be elided in basic blocks.  See also \ref sec_limit_perf.
    Note that dr_insert_mbr_instrumentation() is not supported when -opt_speed
    is specified.
-\endif
 
  - \b -stack_size \e \<number\>: \anchor op_stack_size 
    DynamoRIO's per-thread stack is limited to 56KB by default (this may

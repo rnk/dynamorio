@@ -120,12 +120,22 @@ find . -name \*.dll -exec chmod ugo+rx {} \; -o -name \*.exe -exec chmod ugo+rx 
 
 The current version is \DR_VERSION.  
 
-The changes between version \DR_VERSION and 3.2.0 include a binary
-compatibilty change in the drsyms Extension:
+The changes between version \DR_VERSION and 3.2.0 include a
+compatibility change in the drsyms Extension:
 
  - Changed the drsyms type query data structures (#drsym_type_t,
    #drsym_func_type_t, #drsym_int_type_t, #drsym_ptr_type_t).
    This is a binary compatibility change for drsym_get_func_type().
+
+And in the drmgr Extension:
+
+ - The post-syscall, module load, and module unload events are now mediated
+   and ordered by drmgr.
+   Thus, clients should call drmgr_register_post_syscall_event()
+   or drmgr_register_post_syscall_event_ex() rather than
+   dr_register_post_syscall_event(); ditto for
+   drmgr_register_module_load_event() and
+   drmgr_register_module_unload_event().
 
 And in the core API:
 
@@ -208,6 +218,9 @@ Further non-compatibility-affecting changes include:
    on client faults
  - Added conversion between UTF-16 and UTF-8 to dr_snprintf() and
    dr_snwprintf()
+ - Added simplified -c client argument form to drrun, drconfig, and drinject.
+ - Added official support for the \ref op_speed "-opt_speed" option
+   to prioritize speed over a simple code stream.
  - Deprecated dr_save_arith_flags() and dr_restore_arith_flags()
  - Fixed performance regression involving inlined clean calls
  - Fixed bug involving 32-bit Linux support on a 64-bit Linux
@@ -875,7 +888,9 @@ not supported.
     System-call-heavy applications are the ones most likely to be affected.
     Future releases may allow clients to choose performance versus
     visibility.  This release does provide the \ref op_memory "-opt_memory option"
-    to enable prioritizing memory usage.
+    to enable prioritizing memory usage and the \ref op_speed "-opt_speed option"
+    to prioritize performance at the cost of more complex basic blocks that
+    cross control transfers.
   - The performance \if vmsafe of Code Manipulation Mode and Memory 
     Firewall Mode \endif when starting up large desktop applications
     may be noticeably worse than native.  Upcoming releases will
@@ -966,6 +981,8 @@ not supported.
     Don't forget to run drconfig to create a configuration for the
     application first; otherwise, libdrpreload.so will refuse to take
     control.
+  - On Linux, the private loader will fail to load libpthread.so.  Therefore
+    clients and the libraries they use cannot link against libpthread.so.
 \endif
 
 \ifnot vmsafe 

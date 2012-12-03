@@ -1,4 +1,5 @@
 /* **********************************************************
+ * Copyright (c) 2011-2012 Google, Inc.  All rights reserved.
  * Copyright (c) 2007-2010 VMware, Inc.  All rights reserved.
  * **********************************************************/
 
@@ -32,61 +33,20 @@
 
 #include "dr_api.h"
 
-static
-void security_event(void *drcontext, void *source_tag,
-                    app_pc source_pc, app_pc target_pc,
-                    dr_security_violation_type_t violation,
-                    dr_mcontext_t *mcontext,
-                    dr_security_violation_action_t *action)
+static void
+exit_event(void)
 {
-    static int violations = 0;
-
-    const char *violation_str = NULL;
-    switch (violation) {
-    case DR_RCO_STACK_VIOLATION:
-        violation_str = "stack execution violation";
-        break;
-    case DR_RCO_HEAP_VIOLATION:
-        violation_str = "heap execution violation";
-        break;
-    case DR_RCT_RETURN_VIOLATION:
-        violation_str = "return target violation";
-        break;
-    case DR_RCT_INDIRECT_CALL_VIOLATION:
-        violation_str = "call rct violation";
-        break;
-    case DR_RCT_INDIRECT_JUMP_VIOLATION:
-        violation_str = "jump rct violation";
-        break;
-    default:
-        violation_str = "unknown";
-        break;
-    }
-
-    dr_fprintf(STDERR, "security violation: \"%s\"\n", violation_str);
-#if 0
-    dr_fprintf(STDERR, "Source tag="PFX" pc="PFX" Target pc="PFX"\n",
-              source_tag, source_pc, target_pc);
-#endif
-
-    violations++;
-
-    if (violations == 1) {
-        dr_fprintf(STDERR, "continuing...\n");
-        *action = DR_VIOLATION_ACTION_CONTINUE;
-    }
-    else {
-        dr_fprintf(STDERR, "terminating...\n");
-        *action = DR_VIOLATION_ACTION_KILL_PROCESS;
-#if 0
-        dr_write_forensics_report(drcontext, dr_get_stdout_file(), violation,
-                                  *action, "Fatal Violation");
-#endif
-    }
+    dr_fprintf(STDERR, "Aborting in client exit event\n");
+    /* we want to also test end-to-end w/ core dump being generated but 
+     * that's hard to do in a test suite so we abort here: but that can
+     * mask errors.
+     */
+    dr_abort();
 }
 
 DR_EXPORT
 void dr_init(client_id_t id)
 {
-    dr_register_security_event(security_event);
+    dr_register_exit_event(exit_event);
 }
+

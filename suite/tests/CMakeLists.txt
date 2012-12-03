@@ -94,12 +94,14 @@ set(vmap_run_list
   "SHORT::-code_api"
   # sanity check: run single app to make sure these options aren't totally broken
   "SHORT::ONLY::client.events$::-code_api -opt_memory"
+  "SHORT::ONLY::client.events$::-code_api -opt_speed"
   "SHORT::ONLY::client.events$::-code_api -thread_private"
   "SHORT::ONLY::client.events$::-code_api -disable_traces"
   "SHORT::ONLY::client.events$::-code_api -thread_private -disable_traces"
   "SHORT::LIN::ONLY::client.events$::-code_api -early_inject"
   # maybe this should be SHORT as -coarse_units will eventually be the default?
   "-code_api -opt_memory"
+  "-code_api -opt_speed"
   "-code_api -thread_private"
   "-code_api -disable_traces"
   "-code_api -thread_private -disable_traces"
@@ -1259,6 +1261,7 @@ if (CLIENT_INTERFACE)
   tobuild_ci(client.count-bbs client-interface/count-bbs.c "" "" "")
   tobuild_ci(client.syscall client-interface/syscall.c "" "-no_follow_children" "")
   tobuild_ci(client.modules client-interface/modules.c "" "" "")
+  tobuild_ci(client.segfault client-interface/segfault.c "" "" "")
   tobuild_appdll(client.events client-interface/events.c)
   get_target_property(events_appdll_path client.events.appdll LOCATION${location_suffix})
   if (UNIX)
@@ -1413,8 +1416,9 @@ if (CLIENT_INTERFACE)
       "" "-thread_private -cache_bb_unit_init 4K" "")
   endif ()
 
-  tobuild_ci(client.nudge_ex client-interface/nudge_ex.c "" "" "")
-  use_DynamoRIO_extension(client.nudge_ex.dll drmgr)
+  # FIXME i#953: flaky, uses sleeps
+  tobuild_ci(client.nudge_ex_FLAKY client-interface/nudge_ex.c "" "" "")
+  use_DynamoRIO_extension(client.nudge_ex_FLAKY.dll drmgr)
 
   tobuild_ci(client.retaddr client-interface/retaddr.c "" "" "")
 endif (CLIENT_INTERFACE)
