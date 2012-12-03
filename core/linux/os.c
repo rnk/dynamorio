@@ -4220,6 +4220,13 @@ make_writable(byte *pc, size_t size)
      * this is crucial on modern linux kernels which refuse to mark stack +x.
      */
     if (!is_in_dynamo_dll(pc)/*avoid allmem assert*/ &&
+#ifdef STATIC_LIBRARY
+        /* FIXME i#975: is_in_dynamo_dll() is always false for STATIC_LIBRARY,
+         * but we can't call get_memory_info() until allmem is initialized.  Our
+         * uses before then are for patching x86.asm, which is OK.
+         */
+        all_memory_areas_initialized() &&
+#endif
         get_memory_info(pc, NULL, NULL, &prot))
         prot |= PROT_WRITE;
 
@@ -4274,6 +4281,13 @@ make_unwritable(byte *pc, size_t size)
      * this is crucial on modern linux kernels which refuse to mark stack +x.
      */
     if (!is_in_dynamo_dll(pc)/*avoid allmem assert*/ &&
+#ifdef STATIC_LIBRARY
+        /* FIXME i#975: is_in_dynamo_dll() is always false for STATIC_LIBRARY,
+         * but we can't call get_memory_info() until allmem is initialized.  Our
+         * uses before then are for patching x86.asm, which is OK.
+         */
+        all_memory_areas_initialized() &&
+#endif
         get_memory_info(pc, NULL, NULL, &prot))
         prot &= ~PROT_WRITE;
 

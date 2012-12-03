@@ -1577,25 +1577,25 @@ if (UNIX)
   add_exe(linux.infloop linux/infloop.c)
   if (NOT STATIC_LIBRARY)  # FIXME i#975
     torunonly(linux.reset linux/infloop linux/reset.runall "" "-v")
-  endif ()
-  if (NOT X64)
-    # XXX: 64-bit support not quite there yet
-    torunonly(linux.freeze_FLAKY linux/infloop linux/freeze.runall
-      "-coarse_units -coarse_enable_freeze" "-v")
-  endif (NOT X64)
+    if (NOT X64)
+      # XXX: 64-bit support not quite there yet
+      torunonly(linux.freeze_FLAKY linux/infloop linux/freeze.runall
+        "-coarse_units -coarse_enable_freeze" "-v")
+    endif (NOT X64)
 
-  # persistent cache nudge tests with shared cache
-  file(MAKE_DIRECTORY "${PCACHE_DIR}")
-  file(MAKE_DIRECTORY "${PCACHE_SHARED_DIR}")
-  if (NOT X64)
-    # XXX: 64-bit support not quite there yet
-    torunonly(linux.persist_FLAKY linux/infloop linux/persist.runall
-      "-coarse_units -coarse_split_calls -coarse_enable_freeze -coarse_freeze_min_size 0 -no_persist_per_user -no_validate_owner_dir" "-v")
-    torunonly(linux.persist-use_FLAKY linux/infloop linux/persist-use.runall
-      "-use_persisted -coarse_units -coarse_split_calls -no_persist_per_user -no_validate_owner_dir" "-v")
-  endif (NOT X64)
-  # when running tests in parallel: have to generate pcaches first
-  set(linux.persist-use_FLAKY_depends linux.persist_FLAKY)
+    # persistent cache nudge tests with shared cache
+    file(MAKE_DIRECTORY "${PCACHE_DIR}")
+    file(MAKE_DIRECTORY "${PCACHE_SHARED_DIR}")
+    if (NOT X64)
+      # XXX: 64-bit support not quite there yet
+      torunonly(linux.persist_FLAKY linux/infloop linux/persist.runall
+        "-coarse_units -coarse_split_calls -coarse_enable_freeze -coarse_freeze_min_size 0 -no_persist_per_user -no_validate_owner_dir" "-v")
+      torunonly(linux.persist-use_FLAKY linux/infloop linux/persist-use.runall
+        "-use_persisted -coarse_units -coarse_split_calls -no_persist_per_user -no_validate_owner_dir" "-v")
+      # when running tests in parallel: have to generate pcaches first
+      set(linux.persist-use_FLAKY_depends linux.persist_FLAKY)
+    endif (NOT X64)
+  endif ()
 else (UNIX)
   if (VPS)
     # too flaky across platforms so we limit to VPS only: not too useful
