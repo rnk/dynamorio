@@ -567,7 +567,7 @@ gen_print(void *dc, instrlist_t *ilist, const char *msg)
     args[1] = OPND_CREATE_MEMPTR(DR_REG_XSP, 0);  /* msg is on TOS. */
     args[2] = OPND_CREATE_INTPTR(strlen(msg));
     gen_push_string(dc, ilist, msg);
-    gen_syscall(dc, ilist, SYS_write, BUFFER_SIZE_ELEMENTS(args), args);
+    gen_syscall(dc, ilist, SYS_write, 3, args);
 }
 #endif
 
