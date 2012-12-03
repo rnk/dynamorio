@@ -963,13 +963,7 @@ function(rundr_cmd outcmd outops native dr_ops_aux is_runall)
     # can't escape quotes, so we have to use a list variable
     set(cmd ${MAIN_RUNTIME_OUTPUT_DIRECTORY}/runstats -s ${TEST_SECONDS} -killpg -silent)
     if (NOT native)
-      if (STATIC_LIBRARY)
-        set(cmd ${cmd} -env DYNAMORIO_TAKEOVER_IN_INIT 1)
-      endif ()
       set(cmd ${cmd} ${MAIN_RUNTIME_OUTPUT_DIRECTORY}/drrun)
-      if (STATIC_LIBRARY)
-        set(cmd ${cmd} -norun)  # Don't try to takeover as with shared DR.
-      endif ()
       if (TEST_SUITE)  # Use install dir in the suite for cross-arch execve.
         set(cmd ${cmd} -dr_home "${CMAKE_INSTALL_PREFIX}")
       endif ()

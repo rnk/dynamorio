@@ -106,8 +106,7 @@ set_exe_and_argv(dr_inject_info_t *info, const char *exe, const char **argv)
     info->exe = exe;
     info->argv = argv;
     info->image_name = strrchr(exe, '/');
-    if (info->image_name == NULL)
-        info->image_name = exe;
+    info->image_name = (info->image_name == NULL ? exe : info->image_name + 1);
 }
 
 /* Returns 0 on success.
@@ -120,6 +119,10 @@ dr_inject_process_create(const char *exe, const char **argv, void **data OUT)
     int fds[2];
     dr_inject_info_t *info = malloc(sizeof(*info));
     set_exe_and_argv(info, exe, argv);
+
+#ifdef STATIC_LIBRARY
+    setenv("DYNAMORIO_TAKEOVER_IN_INIT", "1", true/*overwrite*/);
+#endif
 
     /* Create a pipe to a forked child and have it block on the pipe. */
     r = pipe(fds);
@@ -150,6 +153,9 @@ dr_inject_prepare_to_exec(const char *exe, const char **argv, void **data OUT)
     info->pipe_fd = 0;  /* No pipe. */
     info->exec_self = true;
     *data = info;
+#ifdef STATIC_LIBRARY
+    setenv("DYNAMORIO_TAKEOVER_IN_INIT", "1", true/*overwrite*/);
+#endif
     return 0;
 }
 
@@ -178,6 +184,10 @@ dr_inject_process_inject(void *data, bool force_injection,
     ssize_t towrite;
     ssize_t written = 0;
     char dr_path_buf[MAXIMUM_PATH];
+
+#ifdef STATIC_LIBRARY
+    return true;  /* Do nothing.  DR will takeover by itself. */
+#endif
 
     /* Read the autoinject var from the config file if the caller didn't
      * override it.
@@ -221,7 +231,7 @@ dr_inject_process_run(void *data)
     dr_inject_info_t *info = (dr_inject_info_t *) data;
     if (info->exec_self) {
         /* Let the app run natively if we haven't already injected. */
-        execv(info->image_name, (char **) info->argv);
+        execv(info->exe, (char **) info->argv);
         return false;  /* if execv returns, there was an error */
     } else {
         /* Close the pipe. */
