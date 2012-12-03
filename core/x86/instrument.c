@@ -535,13 +535,12 @@ void
 instrument_init(void)
 {
     size_t i;
-    void (*init)(client_id_t);
 
     init_client_aux_libs();
 
     /* Iterate over the client libs and call each dr_init */
     for (i=0; i<num_client_libs; i++) {
-        init = (void (*)(client_id_t))
+        void (*init)(client_id_t) = (void (*)(client_id_t))
             (lookup_library_routine(client_libs[i].lib, INSTRUMENT_INIT_NAME));
 
         /* we can't do this in instrument_load_client_libs() b/c vmheap
