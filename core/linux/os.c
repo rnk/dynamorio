@@ -7353,7 +7353,7 @@ get_library_bounds(const char *name, app_pc *start/*IN/OUT*/, app_pc *end/*OUT*/
         }
  
         if ((name_cmp != NULL && (strstr(iter.comment, name_cmp) != NULL ||
-                                  iter.comment[0] == '\0')) ||
+                                  (found_library && iter.comment[0] == '\0'))) ||
             (name == NULL && *start >= iter.vm_start && *start < iter.vm_end)) {
             if (!found_library) {
                 size_t mod_readable_sz;

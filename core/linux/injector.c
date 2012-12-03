@@ -86,6 +86,10 @@ inject_ptrace(dr_inject_info_t *info, const char *library_path);
 static long
 os_ptrace(enum __ptrace_request request, pid_t pid, void *addr, void *data);
 
+/*******************************************************************************
+ * Core compatibility layer
+ */
+
 /* Never actually called, but needed to link in config.c. */
 const char *
 get_application_short_name(void)
@@ -106,7 +110,7 @@ safe_read(const void *base, size_t size, void *out_buf)
  * installed, so it will segfault before it prints our error.
  */
 void
-internal_error(char *file, int line, char *expr)
+internal_error(const char *file, int line, const char *expr)
 {
     fprintf(stderr, "ASSERT failed: %s:%d (%s)\n", file, line, expr);
     fflush(stderr);
@@ -133,6 +137,10 @@ report_dynamorio_problem(dcontext_t *dcontext, uint dumpcore_flag,
     fflush(stderr);
     abort();
 }
+
+/*******************************************************************************
+ * Injection implementation
+ */
 
 static process_id_t
 fork_suspended_child(const char *exe, const char **argv, int fds[2])
@@ -361,10 +369,17 @@ dr_inject_process_exit(void *data, bool terminate)
 }
 
 /*******************************************************************************
- * PTRACE INJECTION CODE
+ * ptrace injection code
  */
 
 enum { MAX_SYSCALL_ARGS = 6 };
+
+enum { REG_PC_OFFSET = offsetof(struct user_regs_struct, IF_X64_ELSE(rip, eip)) };
+
+#define REG_PC_FIELD IF_X64_ELSE(rip, eip)
+#define REG_SP_FIELD IF_X64_ELSE(rsp, esp)
+
+#define APP  instrlist_append
 
 static bool op_exec_gdb = false;
 
@@ -414,7 +429,10 @@ static long
 os_ptrace(enum __ptrace_request request, pid_t pid, void *addr, void *data)
 {
     long r = dynamorio_syscall(SYS_ptrace, 4, request, pid, addr, data);
-    if (r < 0 || verbose) {
+    if (r < 0 || (verbose &&
+                  /* Don't log reads and writes. */
+                  request != PTRACE_POKEDATA &&
+                  request != PTRACE_PEEKDATA)) {
         const enum_name_pair_t *pair = NULL;
         int i;
         for (i = 0; pt_req_map[i].enum_name != NULL; i++) {
@@ -465,8 +483,6 @@ ptrace_write_memory(pid_t pid, void *dst, void *src, size_t len)
     }
     return true;
 }
-
-#define APP  instrlist_append
 
 /* Push a pointer to a string to the stack.  We create a fake instruction with
  * raw bytes equal to the string we want to put in the injectee.  The call will
@@ -521,12 +537,12 @@ gen_syscall(void *dc, instrlist_t *ilist, int sysnum, uint num_opnds,
                 (dc, opnd_create_reg(syscall_parms[i]), args[i]));
         }
     }
+#ifdef X64
     APP(ilist, INSTR_CREATE_syscall(dc));
+#else
+    APP(ilist, INSTR_CREATE_int(dc, OPND_CREATE_INT8((char)0x80)));
+#endif
 }
-
-enum {
-    REG_PC_OFFSET = offsetof(struct user_regs_struct, IF_X64_ELSE(rip, eip))
-};
 
 static bool
 wait_until_signal(process_id_t pid, int sig)
@@ -625,7 +641,8 @@ injectee_run_get_xax(dr_inject_info_t *info, void *dc, instrlist_t *ilist)
     /* Get xax. */
     xax = -EUNATCH;
     r = os_ptrace(PTRACE_PEEKUSER, info->pid,
-                  (void*)offsetof(struct user_regs_struct, rax), &xax);
+                  (void*)offsetof(struct user_regs_struct,
+                                  IF_X64_ELSE(rax, eax)), &xax);
     if (r < 0)
         return r;
 
@@ -639,7 +656,7 @@ injectee_run_get_xax(dr_inject_info_t *info, void *dc, instrlist_t *ilist)
 }
 
 /* Call sys_open in the child. */
-static ptr_int_t
+static int
 injectee_open(dr_inject_info_t *info, const char *path, int flags, mode_t mode)
 {
     void *dc = GLOBAL_DCONTEXT;
@@ -667,8 +684,9 @@ injectee_mmap(dr_inject_info_t *info, void *addr, size_t sz, int prot,
     args[num_args++] = OPND_CREATE_INTPTR(prot);
     args[num_args++] = OPND_CREATE_INTPTR(flags); /* flags */
     args[num_args++] = OPND_CREATE_INTPTR(fd); /* fd from open */
-    args[num_args++] = OPND_CREATE_INTPTR(offset); /* offset */
-    gen_syscall(dc, ilist, SYS_mmap, num_args, args);
+    args[num_args++] = OPND_CREATE_INTPTR(IF_X64_ELSE(offset, offset >> 12)); /* offset */
+    /* XXX: Only mmap2 works for me. */
+    gen_syscall(dc, ilist, IF_X64_ELSE(SYS_mmap, SYS_mmap2), num_args, args);
     return (void*)injectee_run_get_xax(info, dc, ilist);
 }
 
@@ -694,7 +712,9 @@ injectee_map_file(file_t f, size_t *size INOUT, uint64 offs, app_pc addr,
     r = (ptr_int_t)injectee_mmap(injected_info, addr, *size,
                                  memprot_to_osprot(prot), flags, fd, offs);
     if (r < 0 && r >= -4096) {
-        printf("injectee_mmap(%p, %p) -> %p\n", addr, (void*)*size, (void*)r);
+        printf("injectee_mmap(%d, %p, %p, 0x%x, 0x%llx, 0x%x) -> (%d): %s\n",
+               fd, addr, (void*)*size, memprot_to_osprot(prot), offs, flags,
+               -r, strerror(-r));
         return NULL;
     }
     return (byte*)r;
@@ -838,16 +858,18 @@ inject_ptrace(dr_inject_info_t *info, const char *library_path)
         write_pipe_cmd(info->pipe_fd, "ptrace");
         close(info->pipe_fd);
         info->pipe_fd = 0;
-        os_ptrace(PTRACE_SETOPTIONS, info->pid, NULL,
-                  (void*)PTRACE_O_TRACEEXEC);
-        continue_until_break(info->pid);
+        if (os_ptrace(PTRACE_SETOPTIONS, info->pid, NULL,
+                      (void*)PTRACE_O_TRACEEXEC) < 0)
+            return false;
+        if (!continue_until_break(info->pid))
+            return false;
     }
 
     /* Open libdynamorio.so as readonly in the child. */
     int dr_fd = injectee_open(info, library_path, O_RDONLY, 0);
     if (dr_fd < 0) {
-        fprintf(stderr, "unable to open libdynamorio.so in injectee. "
-                "errno %d msg %s\n", -dr_fd, strerror(-dr_fd));
+        fprintf(stderr, "Unable to open libdynamorio.so in injectee (%d): %s\n",
+                -dr_fd, strerror(-dr_fd));
         return false;
     }
 
@@ -892,11 +914,11 @@ inject_ptrace(dr_inject_info_t *info, const char *library_path)
     strncpy(args.home_dir, getenv("HOME"), BUFFER_SIZE_ELEMENTS(args.home_dir));
     NULL_TERMINATE_BUFFER(args.home_dir);
 
-    regs.rsp -= 128;  /* Need to preserve x64 red zone. */
-    regs.rsp -= sizeof(args); /* Allocate space for args. */
-    regs.rsp = ALIGN_BACKWARD(regs.rsp, 16);  /* Align stack. */
-    ptrace_write_memory(info->pid, (void*)regs.rsp, &args, sizeof(args));
-    regs.rip = injected_dr_start;
+    regs.REG_SP_FIELD -= 128;  /* Need to preserve x64 red zone. */
+    regs.REG_SP_FIELD -= sizeof(args); /* Allocate space for args. */
+    regs.REG_SP_FIELD = ALIGN_BACKWARD(regs.REG_SP_FIELD, 16);  /* Align stack. */
+    ptrace_write_memory(info->pid, (void*)regs.REG_SP_FIELD, &args, sizeof(args));
+    regs.REG_PC_FIELD = injected_dr_start;
     os_ptrace(PTRACE_SETREGS, info->pid, NULL, &regs);
 
     if (op_exec_gdb) {
