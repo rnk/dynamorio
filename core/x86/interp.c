@@ -675,6 +675,7 @@ check_new_page_start(dcontext_t *dcontext, build_bb_t *bb)
 static inline bool
 check_new_page_contig(dcontext_t *dcontext, build_bb_t *bb, app_pc new_pc)
 {
+    bool is_first_instr = (bb->instr_start == bb->start_pc);
     if (!bb->check_vm_area)
         return true;
     if (bb->checked_end == NULL) {
@@ -685,9 +686,12 @@ check_new_page_contig(dcontext_t *dcontext, build_bb_t *bb, app_pc new_pc)
                                   &bb->flags, &bb->checked_end,
                                   /* i#989: We don't want to fall through to an
                                    * incompatible vmarea, so we treat fall
-                                   * through like a transfer.
+                                   * through like a transfer.  We can't end the
+                                   * bb before the first instruction, so we pass
+                                   * false to forcibly merge in the vmarea
+                                   * flags.
                                    */
-                                  true/*xfer*/)) {
+                                  !is_first_instr/*xfer*/)) {
             return false;
         }
     }
@@ -705,6 +709,11 @@ check_new_page_contig(dcontext_t *dcontext, build_bb_t *bb, app_pc new_pc)
 static bool
 check_new_page_jmp(dcontext_t *dcontext, build_bb_t *bb, app_pc new_pc)
 {
+    /* For tracking purposes, check the last byte of the cti. */
+    bool ok = check_new_page_contig(dcontext, bb, bb->cur_pc-1);
+    ASSERT(ok && "should have checked cur_pc-1 in decode loop");
+    if (!ok)  /* Don't follow the jmp in release build. */
+        return false;
     /* cur sandboxing doesn't handle direct cti
      * not good enough to only check this at top of interp -- could walk contig
      * from non-selfmod to selfmod page, and then do a direct cti, which
@@ -836,8 +845,7 @@ follow_direct_jump(dcontext_t *dcontext, build_bb_t *bb,
     if (bb->follow_direct &&
         bb->num_elide_jmp < DYNAMO_OPTION(max_elide_jmp) &&
         (DYNAMO_OPTION(elide_back_jmps) || bb->cur_pc <= target)) {
-        if (check_new_page_contig(dcontext, bb, bb->cur_pc-1) &&
-            check_new_page_jmp(dcontext, bb, target)) {
+        if (check_new_page_jmp(dcontext, bb, target)) {
             /* Elide unconditional branch and follow target */
             bb->num_elide_jmp++;
             STATS_INC(total_elided_jmps);
@@ -921,8 +929,7 @@ bb_process_ubr(dcontext_t *dcontext, build_bb_t *bb)
         if (bb->follow_direct &&
             bb->num_elide_jmp < DYNAMO_OPTION(max_elide_jmp) &&
             (DYNAMO_OPTION(elide_back_jmps) || bb->cur_pc <= tgt)) {
-            if (check_new_page_contig(dcontext, bb, bb->cur_pc-1) &&
-                check_new_page_jmp(dcontext, bb, tgt)) {
+            if (check_new_page_jmp(dcontext, bb, tgt)) {
                 /* Elide unconditional branch and follow target */
                 bb->num_elide_jmp++;
                 STATS_INC(total_elided_jmps);
@@ -958,8 +965,7 @@ follow_direct_call(dcontext_t *dcontext, build_bb_t *bb, app_pc callee)
     if (bb->follow_direct &&
         bb->num_elide_call < DYNAMO_OPTION(max_elide_call) &&
         (DYNAMO_OPTION(elide_back_calls) || bb->cur_pc <= callee)) {
-        if (check_new_page_contig(dcontext, bb, bb->cur_pc-1) &&
-            check_new_page_jmp(dcontext, bb, callee)) {
+        if (check_new_page_jmp(dcontext, bb, callee)) {
             bb->num_elide_call++;
             STATS_INC(total_elided_calls);
             STATS_TRACK_MAX(max_elided_calls, bb->num_elide_call);
@@ -1030,8 +1036,7 @@ bb_process_call_direct(dcontext_t *dcontext, build_bb_t *bb)
         if (bb->follow_direct &&
             bb->num_elide_call < DYNAMO_OPTION(max_elide_call) &&
             (DYNAMO_OPTION(elide_back_calls) || bb->cur_pc <= callee)) {
-            if (check_new_page_contig(dcontext, bb, bb->cur_pc-1) &&
-                check_new_page_jmp(dcontext, bb, callee)) {
+            if (check_new_page_jmp(dcontext, bb, callee)) {
                 bb->num_elide_call++;
                 STATS_INC(total_elided_calls);
                 STATS_TRACK_MAX(max_elided_calls, bb->num_elide_call);
@@ -2005,8 +2010,7 @@ bb_process_convertible_indcall(dcontext_t *dcontext, build_bb_t *bb)
             ASSERT(!TEST(FRAG_HAS_SYSCALL, bb->flags));
             bb->flags |= FRAG_HAS_SYSCALL;
         }
-        if (check_new_page_contig(dcontext, bb, bb->cur_pc-1) &&
-            check_new_page_jmp(dcontext, bb, callee)) {
+        if (check_new_page_jmp(dcontext, bb, callee)) {
             if (vsyscall) /* Restore */
                 bb->flags &= ~FRAG_HAS_SYSCALL;
             bb->num_elide_call++;
@@ -2919,40 +2923,30 @@ build_bb_ilist(dcontext_t *dcontext, build_bb_t *bb)
                  * mechanisms to handle faults while decoding, which we need
                  * anyway to handle racy unmaps by the app.
                  */
+                uint old_flags = bb->flags;
+                DEBUG_DECLARE(bool is_first_instr = (bb->instr_start ==
+                                                     bb->start_pc));
                 if (!check_new_page_contig(dcontext, bb, bb->cur_pc-1)) {
-                    bool is_first_instr = (bb->instr_start == bb->start_pc);
-                    if (!is_first_instr) {
-                        /* i#989: Stop bb building before falling through to an
-                         * incompatible vmarea.
-                         */
-                        bb->cur_pc = NULL;
-                        stop_bb_on_fallthrough = true;
-                        break;
-                    } else {
-                        /* We can't stop bb building on the first instruction,
-                         * so keep building and force check_thread_vm_area() to
-                         * succeed by passing false for xfer.
-                         */
-                        DEBUG_DECLARE(bool ok =)
-                            check_thread_vm_area(dcontext, bb->cur_pc-1,
-                                                 bb->start_pc,
-                                                 (bb->record_vmlist ?
-                                                  &bb->vmlist : NULL),
-                                                 &bb->flags, &bb->checked_end,
-                                                 false/*xfer*/);
-                        ASSERT(ok);
-                        if (TEST(FRAG_SELFMOD_SANDBOXED, bb->flags)) {
-                            /* Restart the decode loop with full_decode and
-                             * !follow_direct, which are needed for sandboxing.
-                             */
-                            bb->full_decode = true;
-                            bb->follow_direct = false;
-                            bb->cur_pc = bb->instr_start;
-                            /* Have to invalidate instr to continue. */
-                            instr_reset(dcontext, bb->instr);
-                            continue;
-                        }
-                    }
+                    /* i#989: Stop bb building before falling through to an
+                     * incompatible vmarea.
+                     */
+                    ASSERT(!is_first_instr);
+                    bb->cur_pc = NULL;
+                    stop_bb_on_fallthrough = true;
+                    break;
+                }
+                if (!TEST(FRAG_SELFMOD_SANDBOXED, old_flags) &&
+                    TEST(FRAG_SELFMOD_SANDBOXED, bb->flags)) {
+                    /* Restart the decode loop with full_decode and
+                     * !follow_direct, which are needed for sandboxing.  This
+                     * can't happen more than once because sandboxing is now on.
+                     */
+                    bb->full_decode = true;
+                    bb->follow_direct = false;
+                    bb->cur_pc = bb->instr_start;
+                    /* Have to invalidate instr to continue. */
+                    instr_reset(dcontext, bb->instr);
+                    continue;
                 }
             }
 
@@ -3423,7 +3417,12 @@ build_bb_ilist(dcontext_t *dcontext, build_bb_t *bb)
          * bb building without follow_direct.  Alternatively, we could check the
          * vmareas of targeted instruction before performing elision.
          */
-        ASSERT(bb->follow_direct == true); /* else, infinite loop possible */
+        /* FIXME: a better assert is needed because this can trigger if 
+         * hot patching turns off follow_direct, the current bb was elided 
+         * earlier and is marked as selfmod.  hotp_num_frag_direct_cti will 
+         * track this for now.
+         */
+        ASSERT(bb->follow_direct); /* else, infinite loop possible */
         BBPRINT(bb, 2,
                 "*** must rebuild bb to avoid following direct cti to "
                 "incompatible vmarea\n");
@@ -3433,7 +3432,11 @@ build_bb_ilist(dcontext_t *dcontext, build_bb_t *bb)
             vm_area_destroy_list(dcontext, bb->vmlist);
             bb->vmlist = NULL;
         }
-        bb->flags &= ~FRAG_HAS_DIRECT_CTI;  /* keep most flags */
+        /* Remove FRAG_HAS_DIRECT_CTI, since we're turning off follow_direct.
+         * Try to keep the known flags.  We stopped the bb before merging in any
+         * incompatible flags.
+         */
+        bb->flags &= ~FRAG_HAS_DIRECT_CTI;
         bb->follow_direct = false;
         bb->exit_type = 0; /* i#577 */
         bb->exit_target = NULL; /* i#928 */
