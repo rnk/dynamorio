@@ -129,8 +129,9 @@ enum { ARGC_PTRACE_SENTINEL = -1 };
 
 /* This data is pushed on the stack by the ptrace injection code. */
 typedef struct ptrace_stack_args_t {
-    ptr_int_t argc;             /* Set to ARGC_PTRACE_SENTINEL */
-    priv_mcontext_t mc;         /* Registers at attach time */
+    ptr_int_t argc;              /* Set to ARGC_PTRACE_SENTINEL */
+    priv_mcontext_t mc;          /* Registers at attach time */
+    char home_dir[MAXIMUM_PATH]; /* In case the user of the injectee is not us. */
 } ptrace_stack_args_t;
 
 
@@ -139,6 +140,9 @@ void os_thread_take_over(priv_mcontext_t *mc);
 
 void
 set_executable_path(const char *);
+
+uint
+memprot_to_osprot(uint prot);
 
 /* in signal.c */
 struct _kernel_sigaction_t;

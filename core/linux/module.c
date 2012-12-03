@@ -1862,6 +1862,8 @@ module_relocate_rela(app_pc modbase,
         module_relocate_symbol((ELF_REL_TYPE *)rela, pd, true);
 }
 
+#endif /* !NOT_DYNAMORIO_CORE_PROPER */
+
 /* Get the module text section from the mapped image file, 
  * Note that it must be the image file, not the loaded module.
  */
@@ -1888,6 +1890,8 @@ module_get_text_section(app_pc file_map, size_t file_size)
     ASSERT_CURIOSITY(false);
     return 0;
 }
+
+#ifndef NOT_DYNAMORIO_CORE_PROPER
 
 /* This routine allocates memory from DR's global memory pool.  Unlike
  * dr_global_alloc(), however, we store the size of the allocation in

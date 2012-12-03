@@ -514,6 +514,10 @@ get_libc_errno_location(bool do_init)
         return NULL;
 
     if (do_init) {
+        print_file(STDERR, "early_inject: %d\n", DYNAMO_OPTION(early_inject));
+    }
+
+    if (do_init) {
         module_iterator_t *mi = module_iterator_start();
         while (module_iterator_hasnext(mi)) {
             module_area_t *area = module_iterator_next(mi);
@@ -2686,7 +2690,7 @@ permstr_to_memprot(const char * const perm)
 }
 
 /* translate platform independent protection bits to native flags */
-static inline uint
+uint
 memprot_to_osprot(uint prot)
 {
     uint mmap_prot = 0;
@@ -7344,7 +7348,8 @@ get_library_bounds(const char *name, app_pc *start/*IN/OUT*/, app_pc *end/*OUT*/
             NULL_TERMINATE_BUFFER(libname);
         }
  
-        if ((name_cmp != NULL && strstr(iter.comment, name_cmp) != NULL) ||
+        if ((name_cmp != NULL && (strstr(iter.comment, name_cmp) != NULL ||
+                                  iter.comment[0] == '\0')) ||
             (name == NULL && *start >= iter.vm_start && *start < iter.vm_end)) {
             if (!found_library) {
                 size_t mod_readable_sz;

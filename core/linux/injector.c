@@ -60,7 +60,7 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
-static bool verbose = true;
+static bool verbose = false;
 
 typedef enum _inject_method_t {
     INJECT_EXEC_DR,     /* Works with self or child. */
@@ -156,9 +156,10 @@ fork_suspended_child(const char *exe, const char **argv, int fds[2])
             /* If nothing was written to the pipe, let it run natively. */
             real_exe = (char *) exe;
         } else if (strcmp("ptrace", pipe_cmd) == 0) {
+            /* If using ptrace, we're already attached and will walk across the
+             * execv.
+             */
             real_exe = (char *) exe;
-            printf("would call PTRACE_TRACEME\n");
-            //os_ptrace(PTRACE_TRACEME, 0, NULL, NULL);
         } else if (strncmp("exec_dr ", pipe_cmd, 8) == 0) {
             setenv(DYNAMORIO_VAR_EXE_PATH, exe, true/*overwrite*/);
             real_exe = pipe_cmd;
@@ -271,7 +272,6 @@ dr_inject_use_ptrace(void *data)
     if (info->exec_self)
         return false;
     info->method = INJECT_PTRACE;
-    printf("method: %d\n", info->method);
     return true;
 }
 
@@ -312,7 +312,6 @@ dr_inject_process_inject(void *data, bool force_injection,
         library_path = dr_path_buf;
     }
 
-    printf("method: %d\n", info->method);
     switch (info->method) {
     case INJECT_EXEC_DR:
         return inject_exec_dr(info, library_path);
@@ -364,6 +363,8 @@ dr_inject_process_exit(void *data, bool terminate)
 /*******************************************************************************
  * PTRACE INJECTION CODE
  */
+
+enum { MAX_SYSCALL_ARGS = 6 };
 
 static bool op_exec_gdb = false;
 
@@ -484,7 +485,7 @@ gen_push_string(void *dc, instrlist_t *ilist, const char *msg)
     APP(ilist, after_msg);
 }
 
-static const reg_id_t syscall_parms[] = {
+static const reg_id_t syscall_parms[MAX_SYSCALL_ARGS+1] = {
 #ifdef X64
     DR_REG_RDI,
     DR_REG_RSI,
@@ -523,12 +524,45 @@ gen_syscall(void *dc, instrlist_t *ilist, int sysnum, uint num_opnds,
     APP(ilist, INSTR_CREATE_syscall(dc));
 }
 
+enum {
+    REG_PC_OFFSET = offsetof(struct user_regs_struct, IF_X64_ELSE(rip, eip))
+};
+
+static bool
+wait_until_signal(process_id_t pid, int sig)
+{
+    int status;
+    waitpid(pid, &status, 0);
+    if (WIFSTOPPED(status) && WSTOPSIG(status) == sig) {
+        return true;
+    } else {
+        ptr_int_t err_pc;
+        os_ptrace(PTRACE_PEEKUSER, pid, (void*)REG_PC_OFFSET, &err_pc);
+        fprintf(stderr, "Unexpected trace event, expected %s, got:\n"
+                "status: 0x%x, stopped by signal: %d, at pc: %p\n",
+                strsignal(sig), status, WSTOPSIG(status), (void*)err_pc);
+        return false;
+    }
+}
+
+/* Continue until the next SIGTRAP.  Returns false and prints an error message
+ * if the next trap is not a breakpoint.
+ */
+static bool
+continue_until_break(process_id_t pid)
+{
+    long r = os_ptrace(PTRACE_CONT, pid, NULL, NULL);
+    if (r < 0)
+        return false;
+    return wait_until_signal(pid, SIGTRAP);
+}
+
 /* Useful for debugging gen_syscall and gen_push_string. */
 #if 0
 static void
 gen_print(void *dc, instrlist_t *ilist, const char *msg)
 {
-    opnd_t args[3];
+    opnd_t args[MAX_SYSCALL_ARGS];
     args[0] = OPND_CREATE_INTPTR(2);
     args[1] = OPND_CREATE_MEMPTR(DR_REG_XSP, 0);  /* msg is on TOS. */
     args[2] = OPND_CREATE_INTPTR(strlen(msg));
@@ -540,7 +574,8 @@ gen_print(void *dc, instrlist_t *ilist, const char *msg)
 #define MAX_SHELL_CODE 4096
 
 /* Injects the code in ilist into the injectee and runs it, returning the value
- * left in xax at the end of ilist execution.  Frees ilist.
+ * left in xax at the end of ilist execution.  Frees ilist.  Returns -EUNATCH
+ * if anything fails before executing the syscall.
  */
 static ptr_int_t
 injectee_run_get_xax(dr_inject_info_t *info, void *dc, instrlist_t *ilist)
@@ -551,53 +586,54 @@ injectee_run_get_xax(dr_inject_info_t *info, void *dc, instrlist_t *ilist)
     app_pc end_pc;
     size_t code_size;
     ptr_int_t xax;
-    int status;
+    app_pc pc;
+    long r;
+
+    /* Get register state before executing the shellcode. */
+    r = os_ptrace(PTRACE_GETREGS, info->pid, NULL, &regs);
+    if (r < 0)
+        return r;
+
+    /* Use the current PC's page, since it's executable.  Our shell code is
+     * always less than one page, so we won't overflow.
+     */
+    pc = (app_pc)ALIGN_BACKWARD(regs.IF_X64_ELSE(rip, eip), 4096);
 
     /* Append an int3 so we can catch the break. */
     APP(ilist, INSTR_CREATE_int3(dc));
     if (verbose) {
         fprintf(stderr, "injecting code:\n");
-        instrlist_disassemble(dc, (void*)regs.rip, ilist, STDERR);
+        instrlist_disassemble(dc, pc, ilist, STDERR);
     }
 
-    /* Get register state before executing the shellcode. */
-    os_ptrace(PTRACE_GETREGS, info->pid, NULL, &regs);
-
     /* Encode ilist into shellcode. */
-    end_pc = instrlist_encode_to_copy(dc, ilist, shellcode, (app_pc)regs.rip,
+    end_pc = instrlist_encode_to_copy(dc, ilist, shellcode, pc,
                                       &shellcode[MAX_SHELL_CODE], true/*jmp*/);
     code_size = end_pc - &shellcode[0];
     code_size = ALIGN_FORWARD(code_size, sizeof(reg_t));
     instrlist_clear_and_destroy(dc, ilist);
 
-    /* Copy shell code into injectee at the current PC.
-     * XXX: We could inspect /proc/pid/maps to find some executable memory, but
-     * this is easier.
-     */
-    ptrace_read_memory(info->pid, orig_code, (void*)regs.rip, code_size);
-    ptrace_write_memory(info->pid, (void*)regs.rip, shellcode, code_size);
+    /* Copy shell code into injectee at the current PC. */
+    ptrace_read_memory(info->pid, orig_code, pc, code_size);
+    ptrace_write_memory(info->pid, pc, shellcode, code_size);
 
-    /* Continue until breakpoint. */
-    os_ptrace(PTRACE_CONT, info->pid, NULL, NULL);
-    waitpid(info->pid, &status, 0);
-    if (!WIFSTOPPED(status) || WSTOPSIG(status) != SIGTRAP) {
-        ptr_int_t pc;
-        os_ptrace(PTRACE_PEEKUSER, info->pid,
-                  (void*)offsetof(struct user_regs_struct, rip), &pc);
-        fprintf(stderr, "Unexpected trace event, expected SIGTRAP, got:\n"
-                   "status: 0x%x, stopped by signal: %d, at pc: %p\n",
-                   status, WSTOPSIG(status), (void*)pc);
-        return -EUNATCH;  /* Some unique errno value. */
-    }
+    /* Run it! */
+    os_ptrace(PTRACE_POKEUSER, info->pid, (void *)REG_PC_OFFSET, pc);
+    if (!continue_until_break(info->pid))
+        return -EUNATCH;  /* Unlikely to be used by most syscalls. */
 
     /* Get xax. */
     xax = -EUNATCH;
-    os_ptrace(PTRACE_PEEKUSER, info->pid,
-              (void*)offsetof(struct user_regs_struct, rax), &xax);
+    r = os_ptrace(PTRACE_PEEKUSER, info->pid,
+                  (void*)offsetof(struct user_regs_struct, rax), &xax);
+    if (r < 0)
+        return r;
 
     /* Put back original code and registers. */
-    ptrace_write_memory(info->pid, (void*)regs.rip, orig_code, code_size);
-    os_ptrace(PTRACE_SETREGS, info->pid, NULL, &regs);
+    ptrace_write_memory(info->pid, pc, orig_code, code_size);
+    r = os_ptrace(PTRACE_SETREGS, info->pid, NULL, &regs);
+    if (r < 0)
+        return r;
 
     return xax;
 }
@@ -608,16 +644,13 @@ injectee_open(dr_inject_info_t *info, const char *path, int flags, mode_t mode)
 {
     void *dc = GLOBAL_DCONTEXT;
     instrlist_t *ilist = instrlist_create(dc);
-    opnd_t args[3];
-    int num_args;
-
+    opnd_t args[MAX_SYSCALL_ARGS];
+    int num_args = 0;
     gen_push_string(dc, ilist, path);
-    num_args = 0;
     args[num_args++] = OPND_CREATE_MEMPTR(DR_REG_XSP, 0);
     args[num_args++] = OPND_CREATE_INTPTR(flags);
     args[num_args++] = OPND_CREATE_INTPTR(mode);
     gen_syscall(dc, ilist, SYS_open, num_args, args);
-
     return injectee_run_get_xax(info, dc, ilist);
 }
 
@@ -627,10 +660,8 @@ injectee_mmap(dr_inject_info_t *info, void *addr, size_t sz, int prot,
 {
     void *dc = GLOBAL_DCONTEXT;
     instrlist_t *ilist = instrlist_create(dc);
-    opnd_t args[6];
-    int num_args;
-
-    num_args = 0;
+    opnd_t args[MAX_SYSCALL_ARGS];
+    int num_args = 0;
     args[num_args++] = OPND_CREATE_INTPTR(addr);
     args[num_args++] = OPND_CREATE_INTPTR(sz);
     args[num_args++] = OPND_CREATE_INTPTR(prot);
@@ -638,22 +669,7 @@ injectee_mmap(dr_inject_info_t *info, void *addr, size_t sz, int prot,
     args[num_args++] = OPND_CREATE_INTPTR(fd); /* fd from open */
     args[num_args++] = OPND_CREATE_INTPTR(offset); /* offset */
     gen_syscall(dc, ilist, SYS_mmap, num_args, args);
-
     return (void*)injectee_run_get_xax(info, dc, ilist);
-}
-
-/* translate platform independent protection bits to native flags */
-static inline uint
-memprot_to_osprot(uint prot)
-{
-    uint mmap_prot = 0;
-    if (TEST(MEMPROT_EXEC, prot))
-        mmap_prot |= PROT_EXEC;
-    if (TEST(MEMPROT_READ, prot))
-        mmap_prot |= PROT_READ;
-    if (TEST(MEMPROT_WRITE, prot))
-        mmap_prot |= PROT_WRITE;
-    return mmap_prot;
 }
 
 static byte *
@@ -690,7 +706,7 @@ injectee_unmap(byte *addr, size_t size)
 {
     void *dc = GLOBAL_DCONTEXT;
     instrlist_t *ilist = instrlist_create(dc);
-    opnd_t args[2];
+    opnd_t args[MAX_SYSCALL_ARGS];
     ptr_int_t r;
     int num_args = 0;
     args[num_args++] = OPND_CREATE_INTPTR(addr);
@@ -710,7 +726,7 @@ injectee_prot(byte *addr, size_t size, uint prot/*MEMPROT_*/)
 {
     void *dc = GLOBAL_DCONTEXT;
     instrlist_t *ilist = instrlist_create(dc);
-    opnd_t args[3];
+    opnd_t args[MAX_SYSCALL_ARGS];
     ptr_int_t r;
     int num_args = 0;
     args[num_args++] = OPND_CREATE_INTPTR(addr);
@@ -725,11 +741,14 @@ injectee_prot(byte *addr, size_t size, uint prot/*MEMPROT_*/)
     return true;
 }
 
+/* Convert a user_regs_struct used by the ptrace API into DR's priv_mcontext_t
+ * struct.
+ */
 static void
 user_regs_to_mc(priv_mcontext_t *mc, struct user_regs_struct *regs)
 {
-    /* Convert from ptrace regs style to mcontext style. */
 #ifdef X64
+    mc->rip = (app_pc)regs->rip;
     mc->rax = regs->rax;
     mc->rcx = regs->rcx;
     mc->rdx = regs->rdx;
@@ -747,6 +766,7 @@ user_regs_to_mc(priv_mcontext_t *mc, struct user_regs_struct *regs)
     mc->r14 = regs->r14;
     mc->r15 = regs->r15;
 #else
+    mc->eip = (app_pc)regs->eip;
     mc->eax = regs->eax;
     mc->ecx = regs->ecx;
     mc->edx = regs->edx;
@@ -758,48 +778,76 @@ user_regs_to_mc(priv_mcontext_t *mc, struct user_regs_struct *regs)
 #endif
 }
 
+/* Detach from the injectee and re-exec ourselves as gdb with --pid.  This is
+ * useful for debugging initialization in the injectee.
+ * XXX: This is racy.  I have to insert thread_sleep(500) in takeover_ptrace()
+ * in order for this to work.
+ */
+static void
+detach_and_exec_gdb(process_id_t pid, const char *library_path)
+{
+    char pid_str[10];
+    const char *argv[20];
+    int num_args = 0;
+    char add_symfile[MAXIMUM_PATH];
+
+    /* Get the text start, quick and dirty. */
+    file_t f = os_open(library_path, OS_OPEN_READ);
+    uint64 size64;
+    os_get_file_size_by_handle(f, &size64);
+    size_t size = (size_t)size64;
+    byte *base = os_map_file(f, &size, 0, NULL, MEMPROT_READ, true, false, false);
+    app_pc text_start = (app_pc)module_get_text_section(base, size);
+    os_unmap_file(base, size);
+    os_close(f);
+
+    os_ptrace(PTRACE_DETACH, pid, NULL, NULL);
+    snprintf(pid_str, sizeof(pid_str), "%d", pid);
+    argv[num_args++] = "/usr/bin/gdb";
+    argv[num_args++] = "--quiet";
+    argv[num_args++] = "--pid";
+    argv[num_args++] = pid_str;
+    argv[num_args++] = "-ex";
+    argv[num_args++] = "set confirm off";
+    argv[num_args++] = "-ex";
+    snprintf(add_symfile, BUFFER_SIZE_ELEMENTS(add_symfile),
+             "add-symbol-file %s "PFX, library_path, text_start);
+    NULL_TERMINATE_BUFFER(add_symfile);
+    argv[num_args++] = add_symfile;
+    argv[num_args++] = NULL;
+    execv("/usr/bin/gdb", (char **)argv);
+    ASSERT(false && "failed to exec gdb?");
+}
+
 bool
 inject_ptrace(dr_inject_info_t *info, const char *library_path)
 {
     /* Attach to the process in question. */
-    int status;
-    os_ptrace(PTRACE_ATTACH, info->pid, NULL, NULL);
-    waitpid(info->pid, &status, 0);
-    if (!WIFSTOPPED(status) || WSTOPSIG(status) != SIGTRAP) {
-        ptr_int_t pc;
-        os_ptrace(PTRACE_PEEKUSER, info->pid,
-                  (void*)offsetof(struct user_regs_struct, rip), &pc);
-        fprintf(stderr, "status: 0x%x, stopped: %d, by signal: %d, at pc: %p\n",
-                   status, WIFSTOPPED(status), WSTOPSIG(status), (void*)pc);
+    long r = os_ptrace(PTRACE_ATTACH, info->pid, NULL, NULL);
+    if (r < 0) {
+        if (verbose)
+            fprintf(stderr, "PTRACE_ATTACH failed with error: %s\n",
+                    strerror(-r));
+        return false;
     }
+    if (!wait_until_signal(info->pid, SIGSTOP))
+        return false;
 
     if (info->pipe_fd != 0) {
         /* For children we created, walk it across the execve call. */
         write_pipe_cmd(info->pipe_fd, "ptrace");
         close(info->pipe_fd);
         info->pipe_fd = 0;
-        os_ptrace(PTRACE_SETOPTIONS, info->pid, NULL, (void*)PTRACE_O_TRACEEXEC);
-        os_ptrace(PTRACE_CONT, info->pid, NULL, NULL);
-        waitpid(info->pid, &status, 0);
-        if (!WIFSTOPPED(status) || WSTOPSIG(status) != SIGTRAP) {
-            ptr_int_t pc;
-            os_ptrace(PTRACE_PEEKUSER, info->pid,
-                      (void*)offsetof(struct user_regs_struct, rip), &pc);
-            fprintf(stderr, "Unexpected trace event, expected SIGTRAP, got:\n"
-                       "status: 0x%x, stopped: %d, by signal: %d, at pc: %p\n",
-                       status, WIFSTOPPED(status), WSTOPSIG(status), (void*)pc);
-            return false;
-        }
-
-    } else {
-        /* FIXME: NYI */
+        os_ptrace(PTRACE_SETOPTIONS, info->pid, NULL,
+                  (void*)PTRACE_O_TRACEEXEC);
+        continue_until_break(info->pid);
     }
 
     /* Open libdynamorio.so as readonly in the child. */
     int dr_fd = injectee_open(info, library_path, O_RDONLY, 0);
     if (dr_fd < 0) {
         fprintf(stderr, "unable to open libdynamorio.so in injectee. "
-                   "errno %d msg %s\n", -dr_fd, strerror(-dr_fd));
+                "errno %d msg %s\n", -dr_fd, strerror(-dr_fd));
         return false;
     }
 
@@ -811,42 +859,22 @@ inject_ptrace(dr_inject_info_t *info, const char *library_path)
     /* XXX: Have to use globals to communicate to injectee_map_file. =/ */
     injected_dr_fd = dr_fd;
     injected_info = info;
-    if (!elf_loader_read_headers(&loader, library_path)) {
+    if (!elf_loader_read_headers(&loader, library_path))
         return false;
-    }
     injected_base = elf_loader_map_phdrs(&loader, true/*fixed*/,
                                          injectee_map_file, injectee_unmap,
                                          injectee_prot);
-    if (injected_base == NULL) {
+    if (injected_base == NULL)
         return false;
-    }
-    /* Looking up exports through ptrace is hard, so we use the same entry
-     * point as early injection with different arguments.
+    /* Looking up exports through ptrace is hard, so we use the e_entry from
+     * the ELF header with different arguments.
+     * XXX: Actually look up an export.
      */
     reg_t injected_dr_start = loader.ehdr->e_entry + loader.load_delta;
     elf_loader_destroy(&loader);
 
     struct user_regs_struct regs;
     os_ptrace(PTRACE_GETREGS, info->pid, NULL, &regs);
-
-    if (verbose) {
-        printf("regs.r15: 0x%lx\n", regs.r15);
-        printf("regs.r14: 0x%lx\n", regs.r14);
-        printf("regs.r13: 0x%lx\n", regs.r13);
-        printf("regs.r12: 0x%lx\n", regs.r12);
-        printf("regs.rbp: 0x%lx\n", regs.rbp);
-        printf("regs.rbx: 0x%lx\n", regs.rbx);
-        printf("regs.r11: 0x%lx\n", regs.r11);
-        printf("regs.r10: 0x%lx\n", regs.r10);
-        printf("regs.r9 : 0x%lx\n", regs.r9);
-        printf("regs.r8 : 0x%lx\n", regs.r8);
-        printf("regs.rax: 0x%lx\n", regs.rax);
-        printf("regs.rcx: 0x%lx\n", regs.rcx);
-        printf("regs.rdx: 0x%lx\n", regs.rdx);
-        printf("regs.rsi: 0x%lx\n", regs.rsi);
-        printf("regs.rdi: 0x%lx\n", regs.rdi);
-        printf("regs.rsp: 0x%lx\n", regs.rsp);
-    }
 
     /* Create an injection context and "push" it onto the stack of the injectee.
      * If you need to pass more info to the injected child process, this is a
@@ -856,55 +884,34 @@ inject_ptrace(dr_inject_info_t *info, const char *library_path)
     memset(&args, 0, sizeof(args));
     user_regs_to_mc(&args.mc, &regs);
     args.argc = ARGC_PTRACE_SENTINEL;
+
+    /* We need to send the home directory over.  It's hard to find the
+     * environment in the injectee, and even if we did it might be a different
+     * user or might not have HOME set.
+     */
+    strncpy(args.home_dir, getenv("HOME"), BUFFER_SIZE_ELEMENTS(args.home_dir));
+    NULL_TERMINATE_BUFFER(args.home_dir);
+
+    regs.rsp -= 128;  /* Need to preserve x64 red zone. */
     regs.rsp -= sizeof(args); /* Allocate space for args. */
     regs.rsp = ALIGN_BACKWARD(regs.rsp, 16);  /* Align stack. */
     ptrace_write_memory(info->pid, (void*)regs.rsp, &args, sizeof(args));
     regs.rip = injected_dr_start;
     os_ptrace(PTRACE_SETREGS, info->pid, NULL, &regs);
 
-    /* FIXME: Takeover other threads */
-
-    op_exec_gdb = true;
     if (op_exec_gdb) {
-        /* Initializing in the child will be tough, and we can't attach gdb to a
-         * process under ptrace, so for now we re-exec ourselves as gdb and the
-         * child does another PTRACE_TRACEME.
-         */
-        char pid_str[10];
-        char *argv[10];
-        int num_args = 0;
-        os_ptrace(PTRACE_DETACH, info->pid, NULL, NULL);
-        snprintf(pid_str, sizeof(pid_str), "%d", info->pid);
-        argv[num_args++] = "/usr/bin/gdb";
-        argv[num_args++] = "--quiet";
-        argv[num_args++] = "--pid";
-        argv[num_args++] = pid_str;
-        //argv[num_args++] = "-ex";
-        //argv[num_args++] = "python execfile(\"drinject_add_syms\")";
-        argv[num_args++] = NULL;
-        execv("/usr/bin/gdb", argv);
-        ASSERT(false && "failed to exec gdb?");
+        detach_and_exec_gdb(info->pid, library_path);
+        ASSERT_NOT_REACHED();
     }
 
     /* This should run something equivalent to dynamorio_app_init(), and then
      * return.
      */
-    os_ptrace(PTRACE_CONT, info->pid, NULL, NULL);
-    waitpid(info->pid, &status, 0);
-    if (!WIFSTOPPED(status) || WSTOPSIG(status) != SIGTRAP) {
-        ptr_int_t pc;
-        os_ptrace(PTRACE_PEEKUSER, info->pid,
-                  (void*)offsetof(struct user_regs_struct, rip), &pc);
-        fprintf(stderr, "Unexpected trace event, expected SIGTRAP, got:\n"
-                   "status: 0x%x, stopped: %d, by signal: %d, at pc: %p\n",
-                   status, WIFSTOPPED(status), WSTOPSIG(status), (void*)pc);
+    if (!continue_until_break(info->pid))
         return false;
-    }
 
-    /* Reset back to initial state (for now, eventually adjust state to start in
-     * DR).
+    /* We've stopped the injectee prior to dynamo_start.  If we detach now, it
+     * will continue into dynamo_start().
      */
-    //os_ptrace(PTRACE_SETREGS, info->pid, NULL, &regs);
-
     return true;
 }

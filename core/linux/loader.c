@@ -1153,30 +1153,34 @@ privload_setup_auxv(char **envp, app_pc map, ptr_int_t delta)
     }
 }
 
-/* NOCHECKIN: os.c? */
+/* NOCHECKIN: os.c? inject.c? */
 void
-takeover_via_ptrace(ptrace_stack_args_t *args)
+takeover_ptrace(ptrace_stack_args_t *args)
 {
-    static char *fake_envp[] = {NULL};
-    print_file(STDERR, "ptrace inject: before dynamorio_app_init\n");
+    static char home_var[MAXIMUM_PATH+5];
+    static char *fake_envp[] = {home_var, NULL};
 
     /* When we come in via ptrace, we have no idea where the environment
      * pointer is.  We could use /proc/self/environ to read it or go searching
      * near the stack base.  However, both are fragile and we don't really need
      * the environment for anything except for option passing.  In the initial
      * ptraced process, we can assume our options are in a config file and not
-     * the environment, so we just set an empty environment.
+     * the environment, so we just set an environment with HOME.
      */
+    snprintf(home_var, BUFFER_SIZE_ELEMENTS(home_var),
+             "HOME=%s", args->home_dir);
+    NULL_TERMINATE_BUFFER(home_var);
     dynamorio_set_envp(fake_envp);
-
-    thread_sleep(300);
 
     dynamorio_app_init();
 
-    print_file(STDERR, "ptrace inject: after dynamorio_app_init\n");
-    asm ("int3");  /* return control to injector.c */
+    /* FIXME: Takeover other threads */
 
-    print_file(STDERR, "ptrace inject: before dynamorio_app_init\n");
+    /* We need to wait until dr_inject_process_run() is called to finish
+     * takeover, and this is an easy way to stop and return control to the
+     * injector.
+     */
+    asm ("int3");  /* return control to injector.c */
 
     dynamo_start(&args->mc);
 }
@@ -1200,16 +1204,13 @@ privload_early_inject(void **sp)
     priv_mcontext_t mc;
     bool success;
 
-    print_file(STDERR, "ptrace inject: *argc %d\n", *argc);
-    int i;
-    for (i = 0; i < 20; i++) {
-        print_file(STDERR, "ptrace inject: sp[i]: %p-> %p\n", &sp[i], sp[i]);
-    }
-
     if (*argc == ARGC_PTRACE_SENTINEL) {
-        takeover_via_ptrace((ptrace_stack_args_t *) sp);
+        /* XXX: Teach the injector to look up takeover_ptrace() and call it
+         * directly instead of using this sentinel.  We come here because we
+         * can easily find the address of _start in the ELF header.
+         */
+        takeover_ptrace((ptrace_stack_args_t *) sp);
     }
-    ASSERT(false);
 
     dynamorio_set_envp(envp);
 
