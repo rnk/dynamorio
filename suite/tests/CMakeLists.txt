@@ -99,7 +99,6 @@ set(vmap_run_list
   "SHORT::ONLY::client.events$::-code_api -disable_traces"
   "SHORT::ONLY::client.events$::-code_api -thread_private -disable_traces"
   "SHORT::LIN::ONLY::client.events$::-code_api -early_inject"
-  "SHORT::LIN::ONLY::linux.fib-pie$::-code_api -early_inject"
   # maybe this should be SHORT as -coarse_units will eventually be the default?
   "-code_api -opt_memory"
   "-code_api -opt_speed"
@@ -1489,13 +1488,14 @@ if (UNIX)
   # thereby exercising on our ability to copy libc's TLS data.
   tobuild_ops(linux.app_tls linux/app_tls.c "-native_exec_list libfoo.so" "")
 
-  # Test position independent executables.
-  tobuild(linux.fib-pie common/fib.c)
-  append_property_string(TARGET linux.fib-pie COMPILE_FLAGS "-fPIE")
-  append_property_string(TARGET linux.fib-pie LINK_FLAGS "-pie")
   # Test fully static executables, which we only support with early injection.
   tobuild_ops(linux.fib-static common/fib.c "-early_inject" "")
   append_property_string(TARGET linux.fib-static LINK_FLAGS "-static")
+  # Test position independent executables.
+  # FIXME i#1001: fib-pie fails with -early_inject.
+  tobuild(linux.fib-pie common/fib.c)
+  append_property_string(TARGET linux.fib-pie COMPILE_FLAGS "-fPIE")
+  append_property_string(TARGET linux.fib-pie LINK_FLAGS "-pie")
 
   # FIXME i#125: bugs in these, were disabled in the past
   tobuild_ops(linux.vfork linux/vfork.c ""

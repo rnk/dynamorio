@@ -291,6 +291,8 @@ static mutex_t memory_info_buf_lock = INIT_LOCK_FREE(memory_info_buf_lock);
 /* lock for iterator where user needs to allocate memory */
 static mutex_t maps_iter_buf_lock = INIT_LOCK_FREE(maps_iter_buf_lock);
 
+DEBUG_DECLARE(static app_pc initial_brk;)
+
 /* Xref PR 258731, dup of STDOUT/STDERR in case app wants to close them. */
 DR_API file_t our_stdout = STDOUT_FILENO;
 DR_API file_t our_stderr = STDERR_FILENO;
@@ -793,6 +795,7 @@ os_init(void)
 #ifdef DEBUG
     if (GLOBAL != INVALID_FILE)
         fd_table_add(GLOBAL, OS_OPEN_CLOSE_ON_FORK);
+    initial_brk = (app_pc) dynamorio_syscall(SYS_brk, 1, 0);
 #endif
 }
 
@@ -5541,6 +5544,7 @@ pre_system_call(dcontext_t *dcontext)
         /* i#91/PR 396352: need to watch SYS_brk to maintain all_memory_areas.
          * We store the old break in the param1 slot.
          */
+        DODEBUG(dcontext->sys_param0 = (reg_t) sys_param(dcontext, 0););
         dcontext->sys_param1 = dynamorio_syscall(SYS_brk, 1, 0);
         break;
     }
@@ -6779,8 +6783,14 @@ post_system_call(dcontext_t *dcontext)
          * the old break in sys_param1 in pre-syscall.
          */
         /* i#851: the brk might not be page aligned */
-        app_pc old_brk = (app_pc) ALIGN_FORWARD(dcontext->sys_param1, PAGE_SIZE);
-        app_pc new_brk = (app_pc) ALIGN_FORWARD(result, PAGE_SIZE);
+        app_pc old_brk = (app_pc) dcontext->sys_param1;
+        app_pc new_brk = (app_pc) result;
+        DEBUG_DECLARE(app_pc req_brk = (app_pc) dcontext->sys_param0;);
+        ASSERT_CURIOSITY((new_brk >= initial_brk + 4 * PAGE_SIZE ||
+                          req_brk == NULL || old_brk != new_brk) &&
+                         "i#1004: initial brk() failed with -early_inject");
+        old_brk = (app_pc) ALIGN_FORWARD(old_brk, PAGE_SIZE);
+        new_brk = (app_pc) ALIGN_FORWARD(new_brk, PAGE_SIZE);
         if (new_brk < old_brk) {
             all_memory_areas_lock();
             DEBUG_DECLARE(ok =)
