@@ -2940,10 +2940,10 @@ build_bb_ilist(dcontext_t *dcontext, build_bb_t *bb)
                      * !follow_direct, which are needed for sandboxing.  This
                      * can't happen more than once because sandboxing is now on.
                      */
+                    ASSERT(is_first_instr);
                     bb->full_decode = true;
                     bb->follow_direct = false;
                     bb->cur_pc = bb->instr_start;
-                    /* Have to invalidate instr to continue. */
                     instr_reset(dcontext, bb->instr);
                     continue;
                 }
@@ -3414,7 +3414,7 @@ build_bb_ilist(dcontext_t *dcontext, build_bb_t *bb)
          * boundary, we can't actually do the elision.  See the
          * sandbox_last_byte() test case in security-common/sandbox.c.  Restart
          * bb building without follow_direct.  Alternatively, we could check the
-         * vmareas of targeted instruction before performing elision.
+         * vmareas of the targeted instruction before performing elision.
          */
         /* FIXME: a better assert is needed because this can trigger if 
          * hot patching turns off follow_direct, the current bb was elided 
