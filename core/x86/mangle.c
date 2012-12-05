@@ -4684,7 +4684,7 @@ insert_selfmod_sandbox(dcontext_t *dcontext, instrlist_t *ilist, uint flags,
     instr = instrlist_first_expanded(dcontext, ilist);
     instrlist_set_our_mangling(ilist, true); /* PR 267260 */
     if (record_translation) {
-        /* skip client instrumentation, if any */
+        /* skip client instrumentation, if any, as is done below */
         while (instr != NULL && !instr_ok_to_mangle(instr))
             instr = instr_get_next_expanded(dcontext, ilist, instr);
         /* make sure inserted instrs translate to the proper original instr */
