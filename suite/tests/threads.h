@@ -33,6 +33,11 @@
 #ifndef THREADS_H
 #define THREADS_H
 
+/* FIXME: This should be folded into tools.c, but tools.c has Windows thread
+ * routines with a different API.  One possibility is to remove the stack out
+ * param and simply leak stack threads in these test apps.
+ */
+
 /***************************************************************************/
 #ifdef LINUX
 
@@ -88,7 +93,7 @@ stack_free(void *p, int size)
  * Returns the tid of the new thread.
  */
 thread_t
-create_thread(int (*run_func)(void *), void *arg, void **stack)
+stack_create_thread(int (*run_func)(void *), void *arg, void **stack)
 {
     thread_t newpid; 
     int flags;
@@ -116,7 +121,7 @@ create_thread(int (*run_func)(void *), void *arg, void **stack)
 }
 
 void 
-delete_thread(thread_t pid, void *stack)
+stack_delete_thread(thread_t pid, void *stack)
 {
     thread_t result;
     /* do not print out pids to make diff easy */
@@ -124,7 +129,7 @@ delete_thread(thread_t pid, void *stack)
     result = waitpid(pid, NULL, 0);
     VERBOSE_PRINT("Child has exited\n");
     if (result == -1 || result != pid)
-	perror("delete_thread waitpid");
+	perror("stack_delete_thread waitpid");
     stack_free(stack, THREAD_STACK_SIZE);
 }
 
@@ -149,14 +154,14 @@ typedef HANDLE thread_t;
  * Returns the tid of the new thread.
  */
 thread_t
-create_thread(int (WINAPI *run_func)(void *), void *arg, void **stack)
+stack_create_thread(int (WINAPI *run_func)(void *), void *arg, void **stack)
 {
     int tid;
     return (thread_t) _beginthreadex(NULL, 0, run_func, NULL, 0, &tid);
 }
 
 void 
-delete_thread(thread_t thread, void *stack)
+stack_delete_thread(thread_t thread, void *stack)
 {
     VERBOSE_PRINT("Waiting for child to exit\n");
     WaitForSingleObject(thread, INFINITE);
