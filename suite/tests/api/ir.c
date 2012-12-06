@@ -939,6 +939,28 @@ test_instr_opnds(void *dc)
     instrlist_destroy(dc, ilist);
 }
 
+void
+test_instr_compute_address(void *dc)
+{
+    instr_t *instr;
+    app_pc target;
+    bool is_write;
+    bool success;
+    dr_mcontext_t mc;
+    memset(&mc, 0, sizeof(mc));
+    mc.size = sizeof(mc);
+    mc.flags = DR_MC_ALL;
+    mc.xdx = 0xdeadbeef;
+
+    instr = INSTR_CREATE_mov_st(dc, OPND_CREATE_MEM8(REG_XDX, 0),
+                                opnd_create_reg(REG_AL));
+    success = instr_compute_address_ex(instr, &mc, 0, &target, &is_write);
+    ASSERT(success);
+    ASSERT(is_write);
+    ASSERT(target == (app_pc)mc.xdx);
+    instr_free(dc, instr);
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -989,6 +1011,8 @@ main(int argc, char *argv[])
     test_regs(dcontext);
 
     test_instr_opnds(dcontext);
+
+    test_instr_compute_address(dcontext);
 
     print("all done\n");
     return 0;

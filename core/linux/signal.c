@@ -1060,10 +1060,11 @@ signal_thread_init(dcontext_t *dcontext)
 #endif
     thread_sig_info_t *info = HEAP_TYPE_ALLOC(dcontext, thread_sig_info_t,
                                               ACCT_OTHER, PROTECTED);
-    dcontext->signal_field = (void *) info;
 
     /* all fields want to be initialized to 0 */
+    /* XXX: Some, like restorer_valid, should be -1. */
     memset(info, 0, sizeof(thread_sig_info_t));
+    dcontext->signal_field = (void *) info;
 
     /* our special heap to avoid reentrancy problems
      * composed entirely of sigpending_t units
@@ -1323,7 +1324,8 @@ signal_thread_inherit(dcontext_t *dcontext, void *clone_record)
                 handler_alloc(dcontext, SIGARRAY_SIZE * sizeof(kernel_sigaction_t *));
             memset(info->app_sigaction, 0, SIGARRAY_SIZE * sizeof(kernel_sigaction_t *));
             for (i = 1; i <= MAX_SIGNUM; i++) {
-                ASSERT(record->info.restorer_valid[i] == -1);
+                /* clear cache */
+                info->restorer_valid[i] = -1;
                 if (record->info.app_sigaction[i] != NULL) {
                     info->app_sigaction[i] = (kernel_sigaction_t *)
                         handler_alloc(dcontext, sizeof(kernel_sigaction_t));
@@ -3658,7 +3660,7 @@ compute_memory_target(dcontext_t *dcontext, cache_pc instr_cache_pc,
     bool found_target = false;
     bool in_maps;
     bool use_allmem = false;
-    uint prot;
+    uint prot = MEMPROT_NONE;  /* NOCHECKIN: This is a true uninit bug. */
 
     LOG(THREAD, LOG_ALL, 2, "computing memory target for "PFX" causing SIGSEGV\n",
         instr_cache_pc);
@@ -3697,6 +3699,8 @@ compute_memory_target(dcontext_t *dcontext, cache_pc instr_cache_pc,
          instr_compute_address_ex_priv(&instr, &mc, memopidx, 
                                        &target, write, NULL);
          memopidx++) {
+        LOG(THREAD, 2, LOG_ALL, "memopidx: %d, target: "PFX"\n", memopidx,
+            target);
         if (use_allmem) {
             in_maps = get_memory_info(target, NULL, NULL, &prot);
         } else {
@@ -3724,6 +3728,51 @@ compute_memory_target(dcontext_t *dcontext, cache_pc instr_cache_pc,
             instr_cache_pc, *write ? "write" : "read", target);
         loginst(dcontext, 2, &instr, "\tfaulting instr");
     });
+    if (target == NULL) {
+        extern void instr_disassemble(dcontext_t *dcontext, instr_t *instr, file_t outfile);
+        print_file(STDERR,
+            "For SIGSEGV at cache pc "PFX", computed target %s "PFX"\n",
+            instr_cache_pc, *write ? "write" : "read", target);
+        print_file(STDERR, "faulting instr: ");
+        instr_disassemble(dcontext, &instr, STDERR);
+        print_file(STDERR, "\n");
+        print_file(STDERR, "use_allmem: %d\n", use_allmem);
+        print_file(STDERR, "in_maps: %d\n", in_maps);
+        print_file(STDERR, "*write: %d\n", *write);
+        print_file(STDERR, "prot: 0x%x\n", prot);
+        for (memopidx = 0;
+             instr_compute_address_ex_priv(&instr, &mc, memopidx, 
+                                           &target, write, NULL);
+             memopidx++) {
+            print_file(STDERR, "memopidx: %d, target: "PFX"\n", memopidx,
+                target);
+            if (use_allmem) {
+                in_maps = get_memory_info(target, NULL, NULL, &prot);
+            } else {
+                in_maps = get_memory_info_from_os(target, NULL, NULL, &prot);
+            }
+            print_file(STDERR, "in_maps: %d\n", in_maps);
+            print_file(STDERR, "*write: %d\n", *write);
+            print_file(STDERR, "prot: 0x%x\n", prot);
+            if ((!in_maps || !TEST(MEMPROT_READ, prot)) ||
+                (*write && !TEST(MEMPROT_WRITE, prot))) {
+                found_target = true;
+                break;
+            }
+        }
+        dump_mcontext(&mc, THREAD, false);
+        dump_mcontext(&mc, STDERR, false);
+        print_file(STDERR,
+            "For SIGSEGV at cache pc "PFX", computed target %s "PFX"\n",
+            instr_cache_pc, *write ? "write" : "read", target);
+        print_file(STDERR, "faulting instr: ");
+        instr_disassemble(dcontext, &instr, STDERR);
+        print_file(STDERR, "\n");
+        if (!found_target)
+            target = NULL;
+        ASSERT(target != NULL);  /* NOCHECKIN */
+        ASSERT(false);
+    }
     instr_free(dcontext, &instr);
     return target;
 }
