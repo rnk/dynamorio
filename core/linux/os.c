@@ -4922,6 +4922,9 @@ cleanup_after_vfork_execve(dcontext_t *dcontext)
 {
     thread_record_t **threads;
     int num_threads, i;
+    if (num_execve_threads == 0)
+        return;
+
     mutex_lock(&thread_initexit_lock);
     get_list_of_threads_ex(&threads, &num_threads, true/*include execve*/);
     for (i=0; i<num_threads; i++) {
