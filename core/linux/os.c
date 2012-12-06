@@ -3373,10 +3373,14 @@ get_num_processors(void)
 shlib_handle_t 
 load_shared_library(const char *name)
 {
-#ifdef STATIC_LIBRARY
-    if (os_files_same(name, get_application_name()))
+# ifdef STATIC_LIBRARY
+    if (os_files_same(name, get_application_name())) {
+        /* The private loader falls back to dlsym() and friends for modules it
+         * does't recognize, so this works without disabling the private loader.
+         */
         return dlopen(NULL, RTLD_LAZY);  /* Gets a handle to the exe. */
-#endif
+    }
+# endif
     if (IF_CLIENT_INTERFACE_ELSE(INTERNAL_OPTION(private_loader), false))
         return (shlib_handle_t)load_private_library(name);
     ASSERT(!DYNAMO_OPTION(early_inject));
@@ -3413,9 +3417,12 @@ void
 shared_library_error(char *buf, int maxlen)
 {
     const char *err;
-    if (IF_CLIENT_INTERFACE_ELSE(INTERNAL_OPTION(private_loader), false)) {
+#if defined(CLIENT_INTERFACE) && !defined(STATIC_LIBRARY)
+    if (INTERNAL_OPTION(private_loader, false)) {
         err = "error in private loader";
-    } else {
+    } else
+#endif
+    {
         ASSERT(!DYNAMO_OPTION(early_inject));
         err = dlerror();
         if (err == NULL) {

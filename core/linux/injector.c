@@ -93,6 +93,9 @@ fork_suspended_child(const char *exe, const char **argv, int fds[2])
             real_exe = libdr_path;
         }
         setenv(DYNAMORIO_VAR_EXE_PATH, exe, true/*overwrite*/);
+#ifdef STATIC_LIBRARY
+        setenv("DYNAMORIO_TAKEOVER_IN_INIT", "1", true/*overwrite*/);
+#endif
         execv(real_exe, (char **) argv);
         /* If execv returns, there was an error. */
         exit(-1);
@@ -119,10 +122,6 @@ dr_inject_process_create(const char *exe, const char **argv, void **data OUT)
     int fds[2];
     dr_inject_info_t *info = malloc(sizeof(*info));
     set_exe_and_argv(info, exe, argv);
-
-#ifdef STATIC_LIBRARY
-    setenv("DYNAMORIO_TAKEOVER_IN_INIT", "1", true/*overwrite*/);
-#endif
 
     /* Create a pipe to a forked child and have it block on the pipe. */
     r = pipe(fds);
@@ -230,7 +229,9 @@ dr_inject_process_run(void *data)
 {
     dr_inject_info_t *info = (dr_inject_info_t *) data;
     if (info->exec_self) {
-        /* Let the app run natively if we haven't already injected. */
+        /* If we're injecting with LD_PRELOAD or STATIC_LIBRARY, we already set
+         * up the environment.  If not, then let the app run natively.
+         */
         execv(info->exe, (char **) info->argv);
         return false;  /* if execv returns, there was an error */
     } else {

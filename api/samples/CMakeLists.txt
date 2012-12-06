@@ -82,6 +82,12 @@ if (NOT DEFINED GENERATE_PDBS)
   set(GENERATE_PDBS ON)
 endif (NOT DEFINED GENERATE_PDBS)
 
+if (STATIC_LIBRARY)
+  set(libtype STATIC)
+else()
+  set(libtype SHARED)
+endif ()
+
 # i#379: add CLIENT_DEBUG to allow user to enable debug build.
 # It is OFF by default to make client build with optimization on
 # so that auto-inlining is more likely to happen.
@@ -155,7 +161,7 @@ foreach (src ${srcs})
         VERBATIM)
     endif ()
   else ("${tgt}" STREQUAL "tracedump")
-    add_library(${tgt} ${SHARED_OR_STATIC} ${src})
+    add_library(${tgt} ${libtype} ${src})
     if (SHOW_SYMBOLS AND "${tgt}" STREQUAL "instrcalls" AND DR_EXT_DRSYMS_STATIC)
       # required for using drsyms built as a static library
       set(DynamoRIO_USE_LIBC ON)

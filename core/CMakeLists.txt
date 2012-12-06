@@ -356,8 +356,10 @@ if (UNIX)
 
   set(dynamorio_link_flags "${dynamorio_link_flags} -nostdlib")
 
-  # i#47: Set the ELF header entry point to _start for early injection.
-  set(dynamorio_link_flags "${dynamorio_link_flags} -Wl,--entry,_start")
+  if (NOT STATIC_LIBRARY)
+    # i#47: Set the ELF header entry point to _start for early injection.
+    set(dynamorio_link_flags "${dynamorio_link_flags} -Wl,--entry,_start")
+  endif ()
 
   if (NOT HAVE_FVISIBILITY)
     set(export_list ${CMAKE_CURRENT_BINARY_DIR}/exportlist)
@@ -566,7 +568,6 @@ else (UNIX)
 
   set_target_properties(dynamorio PROPERTIES LINK_FLAGS "${dynamorio_link_flags}")
 
-  # I'm adding libcmt to attempt to make sure we have multithreaded C lib:
   if (DEBUG)
     set(WIN32_C_LIB libcmtd)
   else (DEBUG)
@@ -590,7 +591,8 @@ else (UNIX)
     # i#975: If we're building static, none of those link flags above are going
     # to make it through.  But target_link_libraries will.  We name a C library
     # here to make sure things get linked in the right order to avoid duplicate
-    # definitions.
+    # definitions.  See the cast 4125 msvcrt comment above about why we need a C
+    # library.
     target_link_libraries(dynamorio ${WIN32_C_LIB} ${ntimp_lib})
   endif ()
 
@@ -643,6 +645,8 @@ if (WIN32)
   # symbols atoi and iswctype from libcmtd and ntdll.  Unlike dynamorio.dll we're
   # ok w/ libc syms so we re-order and take the static syms first.
   set_target_properties(drinjectlib PROPERTIES LINK_FLAGS "${drinjectlib_link_flags}")
+  # We're using libcmt from WIN32_C_LIB to attempt to make sure we have
+  # multithreaded C lib.
   target_link_libraries(drinjectlib drdecode ${WIN32_C_LIB} ${ntimp_lib}
     kernel32 advapi32 imagehlp)
   # drinject.exe needs a copy in the bin dir

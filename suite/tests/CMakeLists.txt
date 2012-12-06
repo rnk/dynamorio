@@ -1424,27 +1424,25 @@ if (CLIENT_INTERFACE)
     target_link_libraries(client.drutil-test ${libpthread})
   endif (UNIX)
 
-  if (NOT STATIC_LIBRARY)
-    # We need to load w/ the same base so the test passes
-    set(DynamoRIO_SET_PREFERRED_BASE ON)
-    set(PREFERRED_BASE 0x6f000000)
-    # Pass extra options to first run so this will pass when run repeatedly in local
-    # build dir w/o loading any pcache
-    tobuild_ci(client.pcache client-interface/pcache.c ""
-      "-persist -no_use_persisted -no_coarse_disk_merge -no_coarse_lone_merge" "")
-    use_DynamoRIO_extension(client.pcache.dll drcontainers)
-    if (WIN32)
-      append_link_flags(client.pcache "/dynamicbase:no")
-    endif ()
-    set(DynamoRIO_SET_PREFERRED_BASE OFF)
-    torunonly_ci(client.pcache-use client.pcache client.pcache
-      client-interface/pcache.c "" "-persist" "")
-    # XXX: we should have the key be the default for the .expect but
-    # currently that's not the case (thread-reset, etc.).
-    set(client.pcache-use_expectbase "pcache-use")
-    # when running tests in parallel: have to generate pcaches first
-    set(client.pcache-use_depends client.pcache)
+  # We need to load w/ the same base so the test passes
+  set(DynamoRIO_SET_PREFERRED_BASE ON)
+  set(PREFERRED_BASE 0x6f000000)
+  # Pass extra options to first run so this will pass when run repeatedly in local
+  # build dir w/o loading any pcache
+  tobuild_ci(client.pcache client-interface/pcache.c ""
+    "-persist -no_use_persisted -no_coarse_disk_merge -no_coarse_lone_merge" "")
+  use_DynamoRIO_extension(client.pcache.dll drcontainers)
+  if (WIN32)
+    append_link_flags(client.pcache "/dynamicbase:no")
   endif ()
+  set(DynamoRIO_SET_PREFERRED_BASE OFF)
+  torunonly_ci(client.pcache-use client.pcache client.pcache
+    client-interface/pcache.c "" "-persist" "")
+  # XXX: we should have the key be the default for the .expect but
+  # currently that's not the case (thread-reset, etc.).
+  set(client.pcache-use_expectbase "pcache-use")
+  # when running tests in parallel: have to generate pcaches first
+  set(client.pcache-use_depends client.pcache)
 
   tobuild_api(api.dis api/dis.c "-syntax_intel"
     "${CMAKE_CURRENT_SOURCE_DIR}/api/dis-udis86-randtest.raw" OFF)
@@ -1535,11 +1533,9 @@ if (UNIX)
   tobuild_ops(linux.app_tls linux/app_tls.c "-native_exec_list libfoo.so" "")
 
   # FIXME i#125: bugs in these, were disabled in the past
-  if (NOT STATIC_LIBRARY)
-    tobuild_ops(linux.vfork linux/vfork.c ""
-      "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/linux.execve-sub")
-    #tobuild(linux.vfork-fib linux/vfork-fib.c)
-  endif ()
+  tobuild_ops(linux.vfork linux/vfork.c ""
+    "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/linux.execve-sub")
+  #tobuild(linux.vfork-fib linux/vfork-fib.c)
 
   # runs of other builds with custom DR options
   torunonly(linux.thread-reset linux.thread linux/thread.c
@@ -1568,27 +1564,25 @@ if (UNIX)
   # XXX: should all these infloop tests be made cross-platform?
   # or rely on runall tests that run calc covering this on Windows?
   add_exe(linux.infloop linux/infloop.c)
-  if (NOT STATIC_LIBRARY)  # FIXME i#975
-    torunonly(linux.reset linux/infloop linux/reset.runall "" "-v")
-    if (NOT X64)
-      # XXX: 64-bit support not quite there yet
-      torunonly(linux.freeze_FLAKY linux/infloop linux/freeze.runall
-        "-coarse_units -coarse_enable_freeze" "-v")
-    endif (NOT X64)
+  torunonly(linux.reset linux/infloop linux/reset.runall "" "-v")
+  if (NOT X64)
+    # XXX: 64-bit support not quite there yet
+    torunonly(linux.freeze_FLAKY linux/infloop linux/freeze.runall
+      "-coarse_units -coarse_enable_freeze" "-v")
+  endif (NOT X64)
 
-    # persistent cache nudge tests with shared cache
-    file(MAKE_DIRECTORY "${PCACHE_DIR}")
-    file(MAKE_DIRECTORY "${PCACHE_SHARED_DIR}")
-    if (NOT X64)
-      # XXX: 64-bit support not quite there yet
-      torunonly(linux.persist_FLAKY linux/infloop linux/persist.runall
-        "-coarse_units -coarse_split_calls -coarse_enable_freeze -coarse_freeze_min_size 0 -no_persist_per_user -no_validate_owner_dir" "-v")
-      torunonly(linux.persist-use_FLAKY linux/infloop linux/persist-use.runall
-        "-use_persisted -coarse_units -coarse_split_calls -no_persist_per_user -no_validate_owner_dir" "-v")
-      # when running tests in parallel: have to generate pcaches first
-      set(linux.persist-use_FLAKY_depends linux.persist_FLAKY)
-    endif (NOT X64)
-  endif ()
+  # persistent cache nudge tests with shared cache
+  file(MAKE_DIRECTORY "${PCACHE_DIR}")
+  file(MAKE_DIRECTORY "${PCACHE_SHARED_DIR}")
+  if (NOT X64)
+    # XXX: 64-bit support not quite there yet
+    torunonly(linux.persist_FLAKY linux/infloop linux/persist.runall
+      "-coarse_units -coarse_split_calls -coarse_enable_freeze -coarse_freeze_min_size 0 -no_persist_per_user -no_validate_owner_dir" "-v")
+    torunonly(linux.persist-use_FLAKY linux/infloop linux/persist-use.runall
+      "-use_persisted -coarse_units -coarse_split_calls -no_persist_per_user -no_validate_owner_dir" "-v")
+    # when running tests in parallel: have to generate pcaches first
+    set(linux.persist-use_FLAKY_depends linux.persist_FLAKY)
+  endif (NOT X64)
 else (UNIX)
   if (VPS)
     # too flaky across platforms so we limit to VPS only: not too useful

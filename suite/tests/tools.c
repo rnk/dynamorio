@@ -101,7 +101,7 @@ is_wow64(HANDLE hProcess)
 }
 #endif
 
-#ifndef STATIC_LIBRARY  /* FIXME i#935: Conflicts with DR's symbols. */
+#ifndef STATIC_LIBRARY  /* FIXME i#975: Conflicts with DR's symbols. */
 /* Thread related functions */
 thread_handle
 create_thread(fptr f)
@@ -149,7 +149,7 @@ join_thread(thread_handle th)
 #endif
 }
 
-#ifndef STATIC_LIBRARY  /* FIXME i#935: Conflicts with DR's symbols. */
+#ifndef STATIC_LIBRARY  /* FIXME i#975: Conflicts with DR's symbols. */
 void
 thread_yield()
 {

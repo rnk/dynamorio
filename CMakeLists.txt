@@ -195,12 +195,6 @@ endif (VPS)
 option(STATIC_LIBRARY "build DR statically (not supported yet)")
 if (STATIC_LIBRARY)
   set(SHARED_OR_STATIC STATIC)
-  # Build all extensions statically.  This overrides any CMake option
-  # the user set.
-  set(DR_EXT_DRMGR_STATIC ON)
-  set(DR_EXT_DRSYMS_STATIC ON)
-  set(DR_EXT_DRUTIL_STATIC ON)
-  set(DR_EXT_DRWRAP_STATIC ON)
 else ()
   set(SHARED_OR_STATIC SHARED)
 endif ()
