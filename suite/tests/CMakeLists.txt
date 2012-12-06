@@ -1208,6 +1208,9 @@ function(torun test key source native dr_ops exe_ops)
 endfunction(torun)
 
 function(torun_normal name test ops)
+  if (STATIC_LIBRARY AND "${ops}" MATCHES "-early_inject")
+    return()
+  endif ()
   torun("${name}" ${test} ${${test}_source} OFF "${${test}_dr_ops} ${ops}"
     "${${test}_exe_ops}")
   if (DEFINED ${test}_depends)
@@ -1228,6 +1231,9 @@ function(torun_ci name test ops)
       set(cli_ops "use_unlink")
     endif ()
   endif ("${test}" MATCHES "client\\.flush")
+  if (STATIC_LIBRARY AND "${${test}_dr_ops} ${ops}" MATCHES "-early_inject")
+    return()
+  endif ()
   # note that we cannot use double quotes as they'll be stripped out
   torun("${name}" ${test} ${${test}_source} OFF
     " -code_api -client_lib '${${test}_client_path}\;0\;${cli_ops}' ${${test}_dr_ops} ${ops}" "${${test}_exe_ops}")
