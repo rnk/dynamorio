@@ -5616,6 +5616,8 @@ pre_system_call(dcontext_t *dcontext)
 
         /* i#1010: If we have private fds open (usually logfiles), we should
          * clean those up before they get reused by a new thread.
+         * XXX: Ideally we'd do this in fd_table_add(), but we can't acquire
+         * thread_initexit_lock there.
          */
         cleanup_after_vfork_execve(dcontext);
 
