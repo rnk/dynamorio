@@ -10,5 +10,5 @@ parent waiting for child
 it_worked
 child has exited
 trying clone() after vfork()
-child is running under DynamoRIO
+child thread running
 child has exited
