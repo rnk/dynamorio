@@ -451,7 +451,8 @@ function (configure_DynamoRIO_common target is_client x64_var defs_var link_var)
     # i#379: optimization + inlining of clean calls works best w/ optimized 
     # clients. if DEBUG or CMAKE_BUILD_TYPE=Debug is asked for explicitly, honor
     # it, but if default, add -O2.
-    if (NOT DEBUG AND NOT "${CMAKE_BUILD_TYPE}" MATCHES "Debug")
+    if (NOT "${tgt_cflags}" MATCHES "-O" AND
+	NOT DEBUG AND NOT "${CMAKE_BUILD_TYPE}" MATCHES "Debug")
       set(tgt_cflags "${tgt_cflags} -O2")
     endif ()
 
