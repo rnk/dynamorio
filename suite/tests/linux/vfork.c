@@ -137,11 +137,11 @@ int main(int argc, char** argv)
      */
     print("trying clone() after vfork()\n");
     stack = NULL;
-    child = stack_create_thread(run_child, NULL, &stack);
+    child = create_thread(run_child, NULL, &stack);
     if (child < 0) {
-        perror("ERROR on stack_create_thread");
+        perror("ERROR on create_thread");
     }
-    stack_delete_thread(child, stack);
+    delete_thread(child, stack);
     print("child has exited\n");
 
 #ifdef USE_DYNAMO

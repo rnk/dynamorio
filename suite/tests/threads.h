@@ -93,7 +93,7 @@ stack_free(void *p, int size)
  * Returns the tid of the new thread.
  */
 thread_t
-stack_create_thread(int (*run_func)(void *), void *arg, void **stack)
+create_thread(int (*run_func)(void *), void *arg, void **stack)
 {
     thread_t newpid; 
     int flags;
@@ -121,7 +121,7 @@ stack_create_thread(int (*run_func)(void *), void *arg, void **stack)
 }
 
 void 
-stack_delete_thread(thread_t pid, void *stack)
+delete_thread(thread_t pid, void *stack)
 {
     thread_t result;
     /* do not print out pids to make diff easy */
@@ -129,7 +129,7 @@ stack_delete_thread(thread_t pid, void *stack)
     result = waitpid(pid, NULL, 0);
     VERBOSE_PRINT("Child has exited\n");
     if (result == -1 || result != pid)
-        perror("stack_delete_thread waitpid");
+        perror("delete_thread waitpid");
     stack_free(stack, THREAD_STACK_SIZE);
 }
 
@@ -154,14 +154,14 @@ typedef HANDLE thread_t;
  * Returns the tid of the new thread.
  */
 thread_t
-stack_create_thread(int (WINAPI *run_func)(void *), void *arg, void **stack)
+create_thread(int (WINAPI *run_func)(void *), void *arg, void **stack)
 {
     int tid;
     return (thread_t) _beginthreadex(NULL, 0, run_func, NULL, 0, &tid);
 }
 
 void 
-stack_delete_thread(thread_t thread, void *stack)
+delete_thread(thread_t thread, void *stack)
 {
     VERBOSE_PRINT("Waiting for child to exit\n");
     WaitForSingleObject(thread, INFINITE);
