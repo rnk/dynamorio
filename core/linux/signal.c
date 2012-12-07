@@ -624,7 +624,8 @@ static void
 signal_info_init_sigaction(dcontext_t *dcontext, thread_sig_info_t *info);
 
 static void
-signal_info_exit_sigaction(dcontext_t *dcontext, thread_sig_info_t *info);
+signal_info_exit_sigaction(dcontext_t *dcontext, thread_sig_info_t *info,
+                           bool other_thread);
 
 static void
 execute_handler_from_cache(dcontext_t *dcontext, int sig, sigframe_rt_t *our_frame,
@@ -1231,7 +1232,8 @@ signal_info_init_sigaction(dcontext_t *dcontext, thread_sig_info_t *info)
 
 /* Cleans up info's app_sigaction, restorer_valid, and we_intercept fields */
 static void
-signal_info_exit_sigaction(dcontext_t *dcontext, thread_sig_info_t *info)
+signal_info_exit_sigaction(dcontext_t *dcontext, thread_sig_info_t *info,
+                           bool other_thread)
 {
     int i;
     kernel_sigaction_t act;
@@ -1239,27 +1241,28 @@ signal_info_exit_sigaction(dcontext_t *dcontext, thread_sig_info_t *info)
     act.handler = (handler_t) SIG_DFL;
     kernel_sigemptyset(&act.mask); /* does mask matter for SIG_DFL? */
     for (i = 1; i <= MAX_SIGNUM; i++) {
-        if (info->app_sigaction[i] != NULL) {
-            /* restore to old handler, but not if exiting whole
-             * process: else may get itimer during cleanup, so we
-             * set to SIG_IGN (we'll have to fix once we impl detach)
-             */
-            if (dynamo_exited) {
-                info->app_sigaction[i]->handler = (handler_t) SIG_IGN;
-                sigaction_syscall(i, info->app_sigaction[i], NULL);
-            }
-            LOG(THREAD, LOG_ASYNCH, 2, "\trestoring "PFX" as handler for %d\n",
-                info->app_sigaction[i]->handler, i);
-            sigaction_syscall(i, info->app_sigaction[i], NULL);
-            handler_free(dcontext, info->app_sigaction[i], sizeof(kernel_sigaction_t));
-        } else if (info->we_intercept[i]) {
-            /* restore to default */
-            LOG(THREAD, LOG_ASYNCH, 2, "\trestoring SIG_DFL as handler for %d\n", i);
-            sigaction_syscall(i, &act, NULL);
+        if (!other_thread) {
             if (info->app_sigaction[i] != NULL) {
-                handler_free(dcontext, info->app_sigaction[i],
-                             sizeof(kernel_sigaction_t));
+                /* restore to old handler, but not if exiting whole
+                 * process: else may get itimer during cleanup, so we
+                 * set to SIG_IGN (we'll have to fix once we impl detach)
+                 */
+                if (dynamo_exited) {
+                    info->app_sigaction[i]->handler = (handler_t) SIG_IGN;
+                    sigaction_syscall(i, info->app_sigaction[i], NULL);
+                }
+                LOG(THREAD, LOG_ASYNCH, 2, "\trestoring "PFX" as handler for %d\n",
+                    info->app_sigaction[i]->handler, i);
+                sigaction_syscall(i, info->app_sigaction[i], NULL);
+            } else if (info->we_intercept[i]) {
+                /* restore to default */
+                LOG(THREAD, LOG_ASYNCH, 2, "\trestoring SIG_DFL as handler for %d\n", i);
+                sigaction_syscall(i, &act, NULL);
             }
+        }
+        if (info->app_sigaction[i] != NULL) {
+            handler_free(dcontext, info->app_sigaction[i],
+                         sizeof(kernel_sigaction_t));
         }
     }
     handler_free(dcontext, info->app_sigaction,
@@ -1384,7 +1387,8 @@ signal_thread_inherit(dcontext_t *dcontext, void *clone_record)
         /* initialize in isolation */
         if (!dynamo_initialized) {
             /* Undo the early-init handler */
-            signal_info_exit_sigaction(GLOBAL_DCONTEXT, &init_info);
+            signal_info_exit_sigaction(GLOBAL_DCONTEXT, &init_info,
+                                       false/*!other_thread*/);
         }
 
         if (APP_HAS_SIGSTACK(info)) {
@@ -1579,7 +1583,7 @@ signal_fork_init(dcontext_t *dcontext)
 }
 
 void
-signal_thread_exit(dcontext_t *dcontext)
+signal_thread_exit(dcontext_t *dcontext, bool other_thread)
 {
     thread_sig_info_t *info = (thread_sig_info_t *) dcontext->signal_field;
     int i;
@@ -1607,7 +1611,7 @@ signal_thread_exit(dcontext_t *dcontext)
     }
     if (!info->shared_app_sigaction || *info->shared_refcount == 0) {
         LOG(THREAD, LOG_ASYNCH, 2, "signal handler cleanup:\n");
-        signal_info_exit_sigaction(dcontext, info);
+        signal_info_exit_sigaction(dcontext, info, other_thread);
         if (info->shared_lock != NULL) {
             DELETE_LOCK(*info->shared_lock);
             global_heap_free(info->shared_lock, sizeof(mutex_t) HEAPACCT(ACCT_OTHER));
@@ -1792,6 +1796,15 @@ intercept_signal(dcontext_t *dcontext, thread_sig_info_t *info, int sig)
     
     LOG(THREAD, LOG_ASYNCH, 3, "\twe intercept signal %d\n", sig);
     info->we_intercept[sig] = true;
+}
+
+bool
+sigsegv_handler_is_ours(void)
+{
+    int rc;
+    kernel_sigaction_t oldact;
+    rc = sigaction_syscall(SIGSEGV, NULL, &oldact);
+    return (rc == 0 && oldact.handler == (handler_t)master_signal_handler);
 }
 
 /**** system call handlers ***********************************************/
@@ -4243,10 +4256,12 @@ master_signal_handler_C(byte *xsp)
         LOG(THREAD, LOG_ALL, 1,
             "** Received SIG%s at cache pc "PFX" in thread %d\n",
             (sig == SIGSEGV) ? "SEGV" : "BUS", pc, get_thread_id());
-        print_file(STDERR,
-            "** Received SIG%s at cache pc "PFX" in thread %d\n",
-            (sig == SIGSEGV) ? "SEGV" : "BUS", pc, get_thread_id());
-        ASSERT(false);
+        if (true) {
+            print_file(STDERR,
+                "** Received SIG%s at cache pc "PFX" in thread %d\n",
+                (sig == SIGSEGV) ? "SEGV" : "BUS", pc, get_thread_id());
+            ASSERT(false);
+        }
         ASSERT(syscall_signal || safe_is_in_fcache(dcontext, pc, (byte *)sc->SC_XSP));
         /* we do not call trace_abort() here since we may need to
          * translate from a temp private bb (i#376): but all paths
