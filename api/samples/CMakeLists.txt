@@ -85,7 +85,6 @@ endif (NOT DEFINED GENERATE_PDBS)
 # i#379: add CLIENT_DEBUG to allow user to enable debug build.
 # It is OFF by default to make client build with optimization on
 # so that auto-inlining is more likely to happen.
-# XXX: maybe we should use CMAKE_BUILD_TYPE instead?
 option(CLIENT_DEBUG
   "Build client with debug symbols and without optimizations (this may affect performance, including auto-inlining of clean calls)"
   OFF)
