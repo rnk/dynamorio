@@ -183,7 +183,7 @@ typedef enum {
 # define VERBOSE_PRINT print
 #else
 /* FIXME: varargs for windows...for now since we don't care about efficiency we do this: */
-static void VERBOSE_PRINT(char *fmt, ...) {}
+static void VERBOSE_PRINT(const char *fmt, ...) {}
 #endif
 
 #ifdef WINDOWS
@@ -687,6 +687,8 @@ __asm {             \
 #ifdef LINUX
 /* Forward decl for nanosleep. */
 struct timespec;
+
+bool find_dynamo_library(void);
 
 /* Staticly linked versions of libc routines that don't touch globals or errno.
  */

@@ -35,6 +35,7 @@
  */
 
 #include "tools.h"
+#include "threads.h"
 
 #include <sys/types.h>
 #include <unistd.h>
@@ -48,62 +49,6 @@
 #ifdef USE_DYNAMO
 #include "dynamorio.h"
 #endif
-
-/***************************************************************************/
-/* a hopefuly portable /proc/@self/maps reader */
-
-/* these are defined in /usr/src/linux/fs/proc/array.c */
-#define MAPS_LINE_LENGTH        4096
-/* for systems with sizeof(void*) == 4: */
-#define MAPS_LINE_FORMAT4         "%08lx-%08lx %s %*x %*s %*u %4096s"
-#define MAPS_LINE_MAX4  49 /* sum of 8  1  8  1 4 1 8 1 5 1 10 1 */
-/* for systems with sizeof(void*) == 8: */
-#define MAPS_LINE_FORMAT8         "%016lx-%016lx %s %*x %*s %*u %4096s"
-#define MAPS_LINE_MAX8  73 /* sum of 16  1  16  1 4 1 16 1 5 1 10 1 */
-
-#define MAPS_LINE_MAX   MAPS_LINE_MAX8
-
-int
-find_dynamo_library()
-{
-    pid_t pid = getpid();
-    char        proc_pid_maps[64];      /* file name */
-
-    FILE *maps;
-    char        line[MAPS_LINE_LENGTH];
-    int         count = 0;
-
-    // open file's /proc/id/maps virtual map description
-    int n = snprintf(proc_pid_maps, sizeof(proc_pid_maps),
-                     "/proc/%d/maps", pid);
-    if (n<0 || n==sizeof(proc_pid_maps))
-        assert(0); /* paranoia */
-  
-    maps=fopen(proc_pid_maps,"r");
-
-    while(!feof(maps)){
-        void * vm_start, * vm_end;
-        char perm[16];
-        char comment_buffer[MAPS_LINE_LENGTH];
-        int len;
-    
-        if (NULL==fgets(line, sizeof(line), maps))
-            break;
-        len = sscanf(line,
-                     sizeof(void*) == 4 ? MAPS_LINE_FORMAT4 : MAPS_LINE_FORMAT8,
-                     (unsigned long*)&vm_start, (unsigned long*)&vm_end, perm,
-                     comment_buffer);
-        if (len<4)
-            comment_buffer[0]='\0';
-        if (strstr(comment_buffer, "dynamorio") != 0) {
-            fclose(maps);
-            return 1;
-        }
-    }
-  
-    fclose(maps);
-    return 0;
-}
 
 /***************************************************************************/
 
@@ -126,9 +71,17 @@ do_execve(const char *path)
         perror("ERROR in execve");
 }
 
+static int
+run_child(void *arg)
+{
+    /* i#500: Avoid libc in the child. */
+    nolibc_print("child thread running\n");
+}
+
 int main(int argc, char** argv)
 {
     pid_t child;
+    void *stack;
 
 #ifdef USE_DYNAMO
     dynamorio_app_init();
@@ -176,8 +129,22 @@ int main(int argc, char** argv)
         do_execve(argv[1]);
     }   
 
+    /* i#1010: clone() after vfork reuses our private fds.  Have to run this
+     * manually with -loglevel N to trigger this.
+     */
+    print("trying clone() after vfork()\n");
+    stack = NULL;
+    child = create_thread(run_child, NULL, &stack);
+    if (child < 0) {
+        perror("ERROR on create_thread");
+    }
+    delete_thread(child, stack);
+    print("child has exited\n");
+
 #ifdef USE_DYNAMO
     dynamorio_app_stop();
     dynamorio_app_exit();
 #endif
+
+    return 0;
 }
