@@ -138,7 +138,7 @@ typedef struct _kernel_sigaction_t kernel_sigaction_t;
 void signal_init(void);
 void signal_exit(void);
 void signal_thread_init(dcontext_t *dcontext);
-void signal_thread_exit(dcontext_t *dcontext);
+void signal_thread_exit(dcontext_t *dcontext, bool other_thread);
 void handle_clone(dcontext_t *dcontext, uint flags);
 bool handle_sigaction(dcontext_t *dcontext, int sig,
                       const kernel_sigaction_t *act, 
@@ -169,6 +169,7 @@ share_siginfo_after_take_over(dcontext_t *dcontext, dcontext_t *takeover_dc);
 
 void start_itimer(dcontext_t *dcontext);
 void stop_itimer(dcontext_t *dcontext);
+bool sigsegv_handler_is_ours(void);
 
 /* handle app itimer syscalls */
 void

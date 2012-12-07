@@ -2279,7 +2279,7 @@ os_thread_init(dcontext_t *dcontext)
 }
 
 void
-os_thread_exit(dcontext_t *dcontext)
+os_thread_exit(dcontext_t *dcontext, bool other_thread)
 {
     os_thread_data_t *ostd = (os_thread_data_t *) dcontext->os_field;
 
@@ -2291,7 +2291,7 @@ os_thread_exit(dcontext_t *dcontext)
 
     DELETE_LOCK(ostd->suspend_lock);
 
-    signal_thread_exit(dcontext);
+    signal_thread_exit(dcontext, other_thread);
 
     /* for non-debug we do fast exit path and don't free local heap */
     DODEBUG({
@@ -7000,6 +7000,11 @@ post_system_call(dcontext_t *dcontext)
     /* after restore of xbp so client sees it as though was sysenter */
     instrument_post_syscall(dcontext, sysnum);
 #endif
+
+    /* i#1012: DR's signal handler should always be installed.  We check
+     * post-syscall instead of in dispatch to keep the overhead down.
+     */
+    ASSERT(sigsegv_handler_is_ours());
 
     dcontext->whereami = old_whereami;
 }
