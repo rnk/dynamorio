@@ -82,10 +82,12 @@ if (NOT DEFINED GENERATE_PDBS)
   set(GENERATE_PDBS ON)
 endif (NOT DEFINED GENERATE_PDBS)
 
-# i#379: We usually want to build the samples with optimizations to improve
-# the chances of inlining, but it's nice to be able to turn that off easily.
+# i#379: We usually want to build the samples with optimizations to improve the
+# chances of inlining, but it's nice to be able to turn that off easily.  A
+# release build should already have optimizations, so this should only really
+# affect debug builds.
 option(OPTIMIZE_SAMPLES
-  "Build samples with optimizations to increase the chances of clean call inlining"
+  "Build samples with optimizations to increase the chances of clean call inlining (overrides debug flags)"
   ON)
 if (WIN32)
   set(OPT_CFLAGS "/O2")
