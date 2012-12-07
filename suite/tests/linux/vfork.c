@@ -130,11 +130,8 @@ do_execve(const char *path)
 static int
 run_child(void *arg)
 {
-    /* Just do a little bit of work in the child. */
-    if (find_dynamo_library())
-        print("child is running under DynamoRIO\n");
-    else
-        print("child is running natively\n");
+    /* i#500: Avoid libc in the child. */
+    nolibc_print("child thread running\n");
 }
 
 int main(int argc, char** argv)
