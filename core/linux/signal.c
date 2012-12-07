@@ -4243,6 +4243,10 @@ master_signal_handler_C(byte *xsp)
         LOG(THREAD, LOG_ALL, 1,
             "** Received SIG%s at cache pc "PFX" in thread %d\n",
             (sig == SIGSEGV) ? "SEGV" : "BUS", pc, get_thread_id());
+        print_file(STDERR,
+            "** Received SIG%s at cache pc "PFX" in thread %d\n",
+            (sig == SIGSEGV) ? "SEGV" : "BUS", pc, get_thread_id());
+        ASSERT(false);
         ASSERT(syscall_signal || safe_is_in_fcache(dcontext, pc, (byte *)sc->SC_XSP));
         /* we do not call trace_abort() here since we may need to
          * translate from a temp private bb (i#376): but all paths
