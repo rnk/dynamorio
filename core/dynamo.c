@@ -87,8 +87,8 @@ bool    dynamo_initialized = false;
 bool    dynamo_heap_initialized = false;
 bool    automatic_startup = false;
 bool    control_all_threads = false;
-bool    dr_early_injected = false;
 #ifdef WINDOWS
+bool    dr_early_injected = false;
 int     dr_early_injected_location = INJECT_LOCATION_Invalid;
 bool    dr_earliest_injected = false;
 static void * dr_earliest_inject_args;
@@ -369,7 +369,7 @@ dynamorio_app_init(void)
         DODEBUG(starttime = query_time_seconds(););
 
 #ifdef LINUX
-        if (!dr_early_injected && getenv(DYNAMORIO_VAR_EXECVE) != NULL) {
+        if (getenv(DYNAMORIO_VAR_EXECVE) != NULL) {
             post_execve = true;
 # ifdef VMX86_SERVER
             /* PR 458917: our gdt slot was not cleared on exec so we need to

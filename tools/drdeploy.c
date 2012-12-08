@@ -687,7 +687,7 @@ int main(int argc, char *argv[])
 # ifdef WINDOWS
     time_t start_time, end_time;
 # else
-    bool use_ptrace = false;  /* no ptrace by default on Linux */
+    bool use_ptrace = false;
 # endif
     char *app_name;
     char full_app_name[MAXIMUM_PATH];

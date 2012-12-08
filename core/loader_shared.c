@@ -336,11 +336,6 @@ privload_insert(privmod_t *after, app_pc base, size_t size, const char *name,
             return NULL;
         }
         mod = &privmod_static[privmod_static_idx];
-        /* NOCHECKIN: Hack so we can iterate loaded modules before putting them
-         * on modlist.
-         */
-        if (privmod_static_idx > 0)
-            mod->next = &privmod_static[privmod_static_idx - 1];
         ++privmod_static_idx;
         ++search_paths_idx;
     }
@@ -641,11 +636,7 @@ privmod_t *
 privload_first_module(void)
 {
     ASSERT_OWN_RECURSIVE_LOCK(true, &privload_lock);
-    if (privload_modlist_initialized())
-        return modlist;
-    else
-        return &privmod_static[privmod_static_idx - 1];
-
+    return modlist;
 }
 
 /* returns whether they all fit */
