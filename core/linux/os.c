@@ -154,7 +154,9 @@ char **our_environ;
 # define ASSERT_NOT_IMPLEMENTED(x) /* nothing */
 # define ASSERT_NOT_TESTED(x) /* nothing */
 # undef LOG
+# undef DOSTATS
 # define LOG(...) /* nothing */
+# define DOSTATS(...) /* nothing */
 #else /* !NOT_DYNAMORIO_CORE_PROPER: around most of file, to exclude preload */
 
 #include <asm/ldt.h>
@@ -2669,6 +2671,8 @@ replace_thread_id(thread_id_t old, thread_id_t new)
 #endif
 }
 
+#endif /* !NOT_DYNAMORIO_CORE_PROPER */
+
 /* translate permission string to platform independent protection bits */
 static inline uint
 permstr_to_memprot(const char * const perm)
@@ -2766,6 +2770,8 @@ munmap_syscall(byte *addr, size_t len)
 {
     return dynamorio_syscall(SYS_munmap, 2, addr, len);
 }
+
+#ifndef NOT_DYNAMORIO_CORE_PROPER
 
 /* caller is required to handle thread synchronization and to update dynamo vm areas */
 void
@@ -3739,11 +3745,13 @@ os_close_protected(file_t f)
 }
 #endif /* !NOT_DYNAMORIO_CORE_PROPER */
 
+#ifndef NOT_DYNAMORIO_CORE_PROPER /* so drinject can use drdecode's copy */
 ssize_t
 os_write(file_t f, const void *buf, size_t count)
 {
     return write_syscall(f, buf, count);
 }
+#endif /* !NOT_DYNAMORIO_CORE_PROPER */
 
 ssize_t 
 os_read(file_t f, void *buf, size_t count)
@@ -3819,9 +3827,6 @@ os_delete_mapped_file(const char *filename)
     return os_delete_file(filename);
 }
 
-/* around most of file, to exclude preload */
-#if !defined(NOT_DYNAMORIO_CORE_PROPER) || defined(STANDALONE_UNIT_TEST)
-
 byte *
 os_map_file(file_t f, size_t *size INOUT, uint64 offs, app_pc addr, uint prot,
             bool copy_on_write, bool image, bool fixed)
@@ -3868,6 +3873,9 @@ os_unmap_file(byte *map, size_t size)
     long res = munmap_syscall(map, size);
     return (res == 0);
 }
+
+/* around most of file, to exclude preload */
+#if !defined(NOT_DYNAMORIO_CORE_PROPER) || defined(STANDALONE_UNIT_TEST)
 
 bool
 os_get_disk_free_space(/*IN*/ file_t file_handle,
@@ -4118,6 +4126,8 @@ is_user_address(byte *pc)
     return true;
 }
 
+#endif /* !NOT_DYNAMORIO_CORE_PROPER */
+
 /* change protections on memory region starting at pc of length length 
  * this does not update the all memory area info 
  */
@@ -4159,6 +4169,8 @@ os_set_protection(byte *pc, size_t length, uint prot/*MEMPROT_*/)
     });
     return true;
 }
+
+#ifndef NOT_DYNAMORIO_CORE_PROPER
 
 /* change protections on memory region starting at pc of length length */
 bool
