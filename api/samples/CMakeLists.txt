@@ -82,6 +82,21 @@ if (NOT DEFINED GENERATE_PDBS)
   set(GENERATE_PDBS ON)
 endif (NOT DEFINED GENERATE_PDBS)
 
+# i#379: add CLIENT_DEBUG to allow user to enable debug build.
+# It is OFF by default to make client build with optimization on
+# so that auto-inlining is more likely to happen.
+# XXX: maybe we should use CMAKE_BUILD_TYPE instead?
+option(CLIENT_DEBUG
+  "Build client with debug symbols and without optimizations (this may affect performance, including auto-inlining of clean calls)"
+  OFF)
+if (CLIENT_DEBUG)
+  if (WIN32)
+    set(DBG_CFLAGS "/Zi /Od")
+  else (WIN32)
+    set(DBG_CFLAGS "-g3 -O0")
+  endif (WIN32)
+endif(CLIENT_DEBUG)
+
 if (NOT DEFINED DynamoRIO_DIR)
   set(DynamoRIO_DIR "${PROJECT_SOURCE_DIR}/../cmake" CACHE PATH
     "DynamoRIO installation's cmake directory")
@@ -102,6 +117,10 @@ if (WIN32)
   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${CL_CFLAGS}")
   add_definitions(-D_CRT_SECURE_NO_WARNINGS)
 endif (WIN32)
+if (CLIENT_DEBUG)
+  set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} ${DBG_CFLAGS}")
+  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${DBG_CFLAGS}")
+endif (CLIENT_DEBUG)
 
 file(GLOB srcs *.c *.cpp)
 # Not all clients are supported on all plaforms
@@ -154,6 +173,10 @@ foreach (src ${srcs})
     endif ()
     if ("${tgt}" STREQUAL "wrap")
       use_DynamoRIO_extension(${tgt} drwrap)
+      # XXX i#893: drwrap's asm isn't SEH compliant.
+      if (WIN32)
+        append_property_string(TARGET ${tgt} LINK_FLAGS "/safeseh:no")
+      endif ()
     endif ()
     if ("${tgt}" STREQUAL "memtrace")
       use_DynamoRIO_extension(${tgt} drmgr)
@@ -165,7 +188,7 @@ foreach (src ${srcs})
       add_custom_command(TARGET ${tgt}
         POST_BUILD
         COMMAND ${CMAKE_COMMAND}
-        ARGS -E echo "Usage: pass to drconfig or drrun: -client ${tgtnm} 0 \"\""
+        ARGS -E echo "Usage: pass to drconfig or drrun: -c ${tgtnm}"
         VERBATIM)
     endif ()
   endif ("${tgt}" STREQUAL "tracedump")

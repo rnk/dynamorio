@@ -44,6 +44,9 @@
 # include <sys/mman.h>
 # include <stdlib.h> /* abort */
 # include <errno.h>
+# include <signal.h>
+# include <ucontext.h>
+# include <unistd.h>
 #else
 # include <windows.h>
 # include <process.h> /* _beginthreadex */
@@ -54,6 +57,18 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+#define BUFFER_SIZE_BYTES(buf)      sizeof(buf)
+#define BUFFER_SIZE_ELEMENTS(buf)   (BUFFER_SIZE_BYTES(buf) / sizeof(buf[0]))
+#define BUFFER_LAST_ELEMENT(buf)    buf[BUFFER_SIZE_ELEMENTS(buf) - 1]
+#define NULL_TERMINATE_BUFFER(buf)  BUFFER_LAST_ELEMENT(buf) = 0
+
+/* check if all bits in mask are set in var */
+#define TESTALL(mask, var) (((mask) & (var)) == (mask))
+/* check if any bit in mask is set in var */
+#define TESTANY(mask, var) (((mask) & (var)) != 0)
+/* check if a single bit is set in var */
+#define TEST TESTANY
 
 #ifdef USE_DYNAMO
 /* to avoid non-api tests depending on dr_api headers we rely on test
@@ -192,6 +207,40 @@ static void VERBOSE_PRINT(char *fmt, ...) {}
 #  define CXT_XDI Edi
 #  define CXT_XFLAGS EFlags
 # endif
+#endif
+
+#ifdef LINUX
+# ifdef X64
+#  define SC_XIP rip
+# else
+#  define SC_XIP eip
+# endif
+
+# define ASSERT_NOERR(rc) do {                                 \
+    if (rc) {                                                  \
+        print("%s:%d rc=%d errno=%d %s\n",                     \
+              __FILE__, __LINE__,                              \
+              rc, errno, strerror(errno));                     \
+    }                                                          \
+} while (0);
+
+typedef void (*handler_1_t)(int);
+typedef void (*handler_3_t)(int, struct siginfo *, ucontext_t *);
+
+/* set up signal_handler as the handler for signal "sig" */
+void
+intercept_signal(int sig, handler_3_t handler, bool sigstack);
+#endif
+
+/* for cross-plaform siglongjmp */
+#ifdef LINUX
+# define SIGJMP_BUF sigjmp_buf
+# define SIGSETJMP(buf) sigsetjmp(buf, 1)
+# define SIGLONGJMP(buf, count) siglongjmp(buf, count)
+#else
+# define SIGJMP_BUF jmp_buf
+# define SIGSETJMP(buf) setjmp(buf)
+# define SIGLONGJMP(buf, count) longjmp(buf, count)
 #endif
 
 /* DynamoRIO prints directly by syscall to stderr, so we need to too to get
@@ -475,82 +524,17 @@ get_process_mem_stats(HANDLE h, VM_COUNTERS *info)
 }
 #endif
 
-static int
-get_os_prot_word(int prot) 
-{
-#ifdef LINUX
-    return (((prot & ALLOW_READ) != 0) ? PROT_READ : 0) |
-        (((prot & ALLOW_WRITE) != 0) ? PROT_WRITE : 0) |
-        (((prot & ALLOW_EXEC) != 0) ? PROT_EXEC : 0);
-#else
-    if ((prot & ALLOW_WRITE) != 0) {
-        if ((prot & ALLOW_EXEC) != 0) {
-            return PAGE_EXECUTE_READWRITE;
-        } else {
-            return PAGE_READWRITE;
-        }
-    } else {
-        if ((prot & ALLOW_READ) != 0) {
-            if ((prot & ALLOW_EXEC) != 0) {
-                return PAGE_EXECUTE_READ;
-            } else {
-                return PAGE_READONLY;
-            }
-        } else {
-            if ((prot & ALLOW_EXEC) != 0) {
-                return PAGE_EXECUTE;
-            } else {
-                return PAGE_NOACCESS;
-            }
-        }
-    }
-#endif
-}
+int
+get_os_prot_word(int prot);
 
-static char *
-allocate_mem(int size, int prot) 
-{
-#ifdef LINUX
-    return (char *) mmap((void *)0, size, get_os_prot_word(prot), MAP_PRIVATE|MAP_ANON, 0, 0);
-#else
-    return (char *) VirtualAlloc(NULL, size, MEM_COMMIT, get_os_prot_word(prot));
-#endif
-}
+char *
+allocate_mem(int size, int prot);
 
-static void
-protect_mem(void *start, size_t len, int prot) 
-{
-#ifdef LINUX
-    void *page_start = (void *)(((ptr_int_t)start) & ~(PAGE_SIZE -1));
-    int page_len = (len + ((ptr_int_t)start - (ptr_int_t)page_start) + PAGE_SIZE - 1)
-        & ~(PAGE_SIZE - 1);
-    if (mprotect(page_start, page_len, get_os_prot_word(prot)) != 0) {
-        print("Error on mprotect: %d\n", errno);
-    }
-#else
-    DWORD old;
-    if (VirtualProtect(start, len, get_os_prot_word(prot), &old) == 0) {
-        print("Error on VirtualProtect\n");
-    }
-#endif
-}
+void
+protect_mem(void *start, size_t len, int prot);
 
-static void
-protect_mem_check(void *start, size_t len, int prot, int expected)
-{
-#ifdef LINUX 
-    /* FIXME : add check */
-    protect_mem(start, len, prot);
-#else 
-    DWORD old;
-    if (VirtualProtect(start, len, get_os_prot_word(prot), &old) == 0) {
-        print("Error on VirtualProtect\n");
-    }
-    if (old != get_os_prot_word(expected)) {
-        print("Unexpected previous permissions\n");
-    }
-#endif
-}
+void
+protect_mem_check(void *start, size_t len, int prot, int expected);
 
 void *
 reserve_memory(int size);
@@ -564,15 +548,7 @@ test_print(void *buf, int n)
 #ifdef LINUX
 # define USE_USER32()
 # ifdef NEED_HANDLER
-#  include <unistd.h>
-#  include <signal.h>
-#  include <ucontext.h>
-#  include <errno.h>
-#  define INIT() intercept_signal(SIGSEGV, signal_handler)
-
-/* just use single-arg handlers */
-typedef void (*handler_t)(int);
-typedef void (*handler_3_t)(int, struct siginfo *, void *);
+#  define INIT() intercept_signal(SIGSEGV, (handler_3_t) signal_handler, false)
 
 static void
 signal_handler(int sig)
@@ -583,35 +559,6 @@ signal_handler(int sig)
         print("ERROR: Unexpected signal %d caught\n", sig);
     }
     exit(-1);
-}
-
-#define ASSERT_NOERR(rc) do {                               \
-  if (rc) {                                                 \
-     print("%s:%d rc=%d errno=%d %s\n", __FILE__, __LINE__, \
-           rc, errno, strerror(errno));                     \
-  }                                                         \
-} while (0);
-
-/* set up signal_handler as the handler for signal "sig" */
-static void
-intercept_signal(int sig, handler_t handler)
-{
-    int rc;
-    struct sigaction act;
-
-    act.sa_sigaction = (handler_3_t) handler;
-    /* FIXME: due to DR bug 840 we cannot block ourself in the handler
-     * since the handler does not end in a sigreturn, so we have an empty mask
-     * and we use SA_NOMASK
-     */
-    rc = sigemptyset(&act.sa_mask); /* block no signals within handler */
-    ASSERT_NOERR(rc);
-    /* FIXME: due to DR bug #654 we use SA_SIGINFO -- change it once DR works */
-    act.sa_flags = SA_NOMASK | SA_SIGINFO | SA_ONSTACK;
-    
-    /* arm the signal */
-    rc = sigaction(sig, &act, NULL);
-    ASSERT_NOERR(rc);
 }
 # else
 #  define INIT()

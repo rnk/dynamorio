@@ -120,7 +120,7 @@
 #define EXEMPT_TEST(tests) check_filter(tests, get_short_name(get_application_name()))
 
 #if defined(INTERNAL) || defined(DEBUG)
-void internal_error(char *file, int line, char *expr);
+void internal_error(const char *file, int line, const char *expr);
 bool ignore_assert(const char *assert_file_line, const char *expr);
 #endif
 
@@ -128,7 +128,7 @@ bool ignore_assert(const char *assert_file_line, const char *expr);
 #define apicheck(x, msg) \
     ((void)((DEBUG_CHECKS(CHKLVL_ASSERTS) && !(x)) ? \
      (external_error(__FILE__, __LINE__, msg), 0) : 0))
-void external_error(char *file, int line, char *msg);
+void external_error(const char *file, int line, const char *msg);
 
 #ifdef CLIENT_INTERFACE
 # ifdef DEBUG
@@ -222,7 +222,7 @@ typedef struct _mutex_t {
     contention_event_t contended_event; /* handle to event object to wait on when contended */
 #ifdef DEADLOCK_AVOIDANCE
     /* These fields are initialized with the INIT_LOCK_NO_TYPE macro */
-    char *    name;             /* set to variable lock name and location */
+    const char *name;            /* set to variable lock name and location */
     /* We flag as a violation if a lock with rank numerically smaller
      * or equal to the rank of a lock already held by the owning thread is acquired
      */
@@ -1041,16 +1041,20 @@ bool bitmap_check_consistency(bitmap_t b, uint bitmap_size, uint expect_free);
  /* longest message we would put in a log or messagebox 
   * 512 is too short for internal exception w/ app + options + callstack
   */
+/* We define MAX_LOG_LENGTH_MINUS_ONE for splitting long buffers.
+ * It must be a raw numeric constant as we STRINGIFY it.
+ */
 #if defined(PARAMS_IN_REGISTRY) || !defined(CLIENT_INTERFACE)
 # define MAX_LOG_LENGTH IF_X64_ELSE(1280, 768)
+# define MAX_LOG_LENGTH_MINUS_ONE IF_X64_ELSE(1279, 767)
 #else
 /* need more space for printing out longer option strings */
 /* CLIENT_INTERFACE build has larger stack and 2048 option length so go bigger
  * so clients don't have dr_printf truncated as often
  */
 # define MAX_LOG_LENGTH IF_CLIENT_INTERFACE_ELSE(2048,1384)
+# define MAX_LOG_LENGTH_MINUS_ONE IF_CLIENT_INTERFACE_ELSE(2047,1383)
 #endif
-#define MAX_LOG_LENGTH_MINUS_ONE (MAX_LOG_LENGTH-1) /* for splitting long buffers */
 
 #if defined(DEBUG) && !defined(STANDALONE_DECODER)
 # define LOG(file, mask, level, ...) do {        \
@@ -1092,15 +1096,15 @@ bool bitmap_check_consistency(bitmap_t b, uint bitmap_size, uint expect_free);
 # define LOG_DECLARE(declaration)
 # define DOCHECK(level, statement) /* nothing */
 #endif
-void print_log(file_t logfile, uint mask, uint level, char *fmt, ...);
-void print_file(file_t f, char *fmt, ...);
+void print_log(file_t logfile, uint mask, uint level, const char *fmt, ...);
+void print_file(file_t f, const char *fmt, ...);
 
 /* For repeated appending to a buffer.  The "sofar" var should be set
  * to 0 by the caller before the first call to print_to_buffer.
  */
 bool print_to_buffer(char *buf, size_t bufsz, size_t *sofar INOUT, const char *fmt, ...);
 
-char *memprot_string(uint prot);
+const char *memprot_string(uint prot);
 
 char * double_strchr(char *string, char c1, char c2);
 #ifndef WINDOWS
@@ -1740,9 +1744,13 @@ report_dynamorio_problem(dcontext_t *dcontext, uint dumpcore_flag,
                          const char *fmt, ...);
 
 void
+report_app_problem(dcontext_t *dcontext, uint appfault_flag,
+                   app_pc pc, app_pc report_ebp, const char *fmt, ...);
+
+void
 notify(syslog_event_type_t priority, bool internal, bool synch,
-            IF_WINDOWS_(uint message_id) uint substitution_nam, char *prefix, 
-            char *fmt, ...);
+            IF_WINDOWS_(uint message_id) uint substitution_nam, const char *prefix, 
+            const char *fmt, ...);
 
 #define SYSLOG_COMMON(synch, type, id, sub, ...) \
     notify(type, false, synch, IF_WINDOWS_(MSG_##id) sub, #type, MSG_##id##_STRING, __VA_ARGS__)
@@ -2059,7 +2067,8 @@ divide_uint64_print(uint64 numerator, uint64 denominator, bool percentage,
  * "%w.pf", a => dp(a, p, &c, &d, &s) "%s%(w-p)u.%.pu", s, c, d
  */
 void
-double_print(double val, uint precision, uint *top, uint *bottom, char **sign);
+double_print(double val, uint precision, uint *top, uint *bottom,
+             const char **sign);
 #endif /* DEBUG || INTERNAL */
 
 #ifdef CALL_PROFILE

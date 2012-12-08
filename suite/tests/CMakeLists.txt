@@ -94,12 +94,14 @@ set(vmap_run_list
   "SHORT::-code_api"
   # sanity check: run single app to make sure these options aren't totally broken
   "SHORT::ONLY::client.events$::-code_api -opt_memory"
+  "SHORT::ONLY::client.events$::-code_api -opt_speed"
   "SHORT::ONLY::client.events$::-code_api -thread_private"
   "SHORT::ONLY::client.events$::-code_api -disable_traces"
   "SHORT::ONLY::client.events$::-code_api -thread_private -disable_traces"
   "SHORT::LIN::ONLY::client.events$::-code_api -early_inject"
   # maybe this should be SHORT as -coarse_units will eventually be the default?
   "-code_api -opt_memory"
+  "-code_api -opt_speed"
   "-code_api -thread_private"
   "-code_api -disable_traces"
   "-code_api -thread_private -disable_traces"
@@ -940,7 +942,9 @@ function(rundr_cmd outcmd outops native dr_ops_aux is_runall)
       set(${outcmd} ${cmd} -env DYNAMORIO_OPTIONS "${dr_ops}" PARENT_SCOPE)
     endif ()
   else (UNIX)
-    set(dr_ops "-stderr_mask 0xC -msgbox_mask 0 -dumpcore_mask 0xfd -staged ${dr_ops_aux} ${TEST_OPTIONS}")
+    # Turn on core dumps for most fatal errors.  Don't dump for curiosities or
+    # security violations.
+    set(dr_ops "-stderr_mask 0xC -msgbox_mask 0 -dumpcore_mask 0x7d -staged ${dr_ops_aux} ${TEST_OPTIONS}")
     if (is_runall)
       # eliminate double-spaces, to help w/ passing strings to runall.cmake
       string(REGEX REPLACE "  +" " " dr_ops "${dr_ops}")
@@ -1257,6 +1261,7 @@ if (CLIENT_INTERFACE)
   tobuild_ci(client.count-bbs client-interface/count-bbs.c "" "" "")
   tobuild_ci(client.syscall client-interface/syscall.c "" "-no_follow_children" "")
   tobuild_ci(client.modules client-interface/modules.c "" "" "")
+  tobuild_ci(client.segfault client-interface/segfault.c "" "" "")
   tobuild_appdll(client.events client-interface/events.c)
   get_target_property(events_appdll_path client.events.appdll LOCATION${location_suffix})
   if (UNIX)
@@ -1411,8 +1416,9 @@ if (CLIENT_INTERFACE)
       "" "-thread_private -cache_bb_unit_init 4K" "")
   endif ()
 
-  tobuild_ci(client.nudge_ex client-interface/nudge_ex.c "" "" "")
-  use_DynamoRIO_extension(client.nudge_ex.dll drmgr)
+  # FIXME i#953: flaky, uses sleeps
+  tobuild_ci(client.nudge_ex_FLAKY client-interface/nudge_ex.c "" "" "")
+  use_DynamoRIO_extension(client.nudge_ex_FLAKY.dll drmgr)
 
   tobuild_ci(client.retaddr client-interface/retaddr.c "" "" "")
 endif (CLIENT_INTERFACE)
@@ -1590,14 +1596,7 @@ else (UNIX)
   tobuild(win32.virtualreserve win32/virtualreserve.c)
   tobuild(win32.winapc win32/winapc.c)
   tobuild(win32.winthread win32/winthread.c)
-
-  set(apc_shellcode security-win32.apc-shellcode)
-  if (X64)
-    set(apc_shellcode "${apc_shellcode}_FLAKY")
-  endif ()
-  if (NOT X64 OR TEST_SUITE) # fail on x64 so run only in suite
-    tobuild("${apc_shellcode}" security-win32/apc-shellcode.c)
-  endif ()
+  tobuild(security-win32.apc-shellcode security-win32/apc-shellcode.c)
 
   if (NOT X64)
     # FIXME i#16: these tests need to be fixed to compile for x64
@@ -1724,18 +1723,19 @@ mark_execstack(security-common.codemod)
 tobuild(security-common.decode-bad-stack security-common/decode-bad-stack.c)
 tochcon(security-common.decode-bad-stack execmem_exec_t)
 mark_execstack(security-common.decode-bad-stack)
-if (TEST_SUITE) # fails non-det (i#423) so run only in suite
-  tobuild(security-common.jmp_from_trace_FLAKY security-common/jmp_from_trace.c)
-  tochcon(security-common.jmp_from_trace_FLAKY textrel_shlib_t)
-endif (TEST_SUITE)
+if (VPS) # relies on being aborted on .B violation
+  tobuild(security-common.jmp_from_trace security-common/jmp_from_trace.c)
+  tochcon(security-common.jmp_from_trace textrel_shlib_t)
+endif (VPS)
 tobuild(security-common.retexisting security-common/retexisting.c)
 tobuild(security-common.ret_noncall_trace security-common/ret_noncall_trace.c)
 tobuild(security-common.retnonexisting security-common/retnonexisting.c)
 tobuild(security-common.selfmod2 security-common/selfmod2.c)
 tochcon(security-common.selfmod2 textrel_shlib_t)
+tobuild(security-common.selfmod-big security-common/selfmod-big.c)
+tochcon(security-common.selfmod-big textrel_shlib_t)
 if (NOT X64)
-  # FIXME i#125: not building on 32-bit b/c protect_mem() from tools.h being stripped
-  #tobuild(security-common.selfmod-big security-common/selfmod-big.c)
+  # FIXME i#125
   tobuild(security-common.vbjmp-rac-test security-common/vbjmp-rac-test.c)
 endif (NOT X64)
 tobuild(security-common.selfmod security-common/selfmod.c)

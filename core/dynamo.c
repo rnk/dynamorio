@@ -268,7 +268,7 @@ main_logfile_name(void)
     return get_app_name_for_path();
 }
 
-static char *
+static const char *
 thread_logfile_name(void)
 {
     return "log";
@@ -499,6 +499,7 @@ dynamorio_app_init(void)
         proc_init();
         modules_init(); /* before vm_areas_init() */
         os_init();
+        config_heap_init(); /* after heap_init */
         /* loader initialization, finalize the private lib load.
          * FIXME i#338: this must be before arch_init() for Windows, but Linux
          * wants it later.
@@ -1666,6 +1667,8 @@ create_callback_dcontext(dcontext_t *old_dcontext)
     new_dcontext->priv_fls_data = old_dcontext->priv_fls_data;
     new_dcontext->app_nt_rpc = old_dcontext->app_nt_rpc;
     new_dcontext->priv_nt_rpc = old_dcontext->priv_nt_rpc;
+    new_dcontext->app_nls_cache = old_dcontext->app_nls_cache;
+    new_dcontext->priv_nls_cache = old_dcontext->priv_nls_cache;
     new_dcontext->teb_base = old_dcontext->teb_base;
 #endif
 #ifdef LINUX

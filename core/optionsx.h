@@ -574,6 +574,10 @@
                        SYSLOG_NONE), SYSLOG_NONE),
                    "show messages onto stderr")
 
+    OPTION_DEFAULT(uint, appfault_mask, IF_CLIENT_INTERFACE_ELSE
+                   (IF_DEBUG_ELSE(APPFAULT_CRASH, 0), 0),
+                   "report diagnostic information on application faults")
+
 #ifdef LINUX
     /* Xref PR 258731 - options to duplicate stdout/stderr for our or client logging if
      * application tries to close them. */
@@ -608,7 +612,7 @@
     /* Disable diagnostics by default. -security turns it on */
     DYNAMIC_OPTION_DEFAULT(bool, diagnostics, false, "enable diagnostic reporting")
 
-    OPTION_DEFAULT(uint, max_supported_os_version, 61,
+    OPTION_DEFAULT(uint, max_supported_os_version, 62,
         /* case 447, defaults to supporting NT, 2000, XP, 2003, and Vista.
          * Windows 7 added with i#218
          * Windows 8 added with i#565
@@ -1342,7 +1346,9 @@
      * XXX: this option can only be turned on by drrun via "-early" so that
      * cmdline args can be arranged appropriately.
      */
-    OPTION_DEFAULT(bool, early_inject, IF_WINDOWS_ELSE(true, false), "inject early")
+    OPTION_DEFAULT(bool, early_inject, IF_WINDOWS_ELSE
+                   /* i#980: too early for kernel32 so we disable */
+                   (IF_CLIENT_INTERFACE_ELSE(false, true), false), "inject early")
 #if 0 /* FIXME i#234 NYI: not ready to enable just yet */
     OPTION_DEFAULT(bool, early_inject_map, true, "inject earliest via map")
     /* see enum definition is os_shared.h for notes on what works with which

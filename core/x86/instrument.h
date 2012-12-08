@@ -187,8 +187,11 @@ DR_API
  * executes, but must adhere to the following restrictions:
  * - If there is more than one non-meta branch, only the last can be
  * conditional.
- * - A non-meta conditional branch or direct call must be the final
+ * - A non-meta conditional branch must be the final
  * instruction in the block.
+ * - A non-meta direct call must be the final
+ * instruction in the block unless it is inserted by DR for elision and the
+ * subsequent instructions are the callee.
  * - There can only be one indirect branch (call, jump, or return) in
  * a basic block, and it must be the final instruction in the
  * block.
@@ -297,7 +300,9 @@ DR_API
  * some applications may see a performance degradation.  Applications making
  * heavy use of system calls are the most likely to be affected.
  * Future releases may allow clients some control over performance versus
- * visibility.
+ * visibility.  The \ref op_speed "-opt_speed" option can regain some
+ * of this performance at the cost of more complex basic blocks that
+ * cross control transfers.
  *
  * \note If multiple clients are present, the instruction list for a
  * basic block passed to earlier-registered clients will contain the
@@ -384,13 +389,18 @@ DR_API
  *
  * \return a #dr_emit_flags_t flag.
  *
- * The user is free to inspect and modify the trace before it
- * executes, with certain restrictions on introducing control-flow
+ * The user is free to inspect and modify the non-control-flow
+ * instructions in the trace before it
+ * executes, with certain restrictions
  * that include those for basic blocks (see dr_register_bb_event()).
  * Additional restrictions unique to traces also apply:
- * - Only one non-meta direct branch that targets the subsequent block
- *   in the trace can be present in each block.
- * - Each block must end with a non-meta control transfer.
+ * - The sequence of blocks composing the trace cannot be changed once
+ *   the trace is created.  Instead, modify the component blocks by
+ *   changing the block continuation addresses in the basic block callbacks
+ *   (called with \p for_trace set to true) as the trace is being built.
+ * - The (non-meta) control flow instruction (if any) terminating each
+ *   component block cannot be changed.
+ * - Non-meta control flow instructions cannot be added.
  * - The parameter to a system call, normally kept in the eax register, 
  *   cannot be changed.
  * - A system call or interrupt instruction cannot be added.
@@ -3245,11 +3255,14 @@ DR_API
  * max characters are written and -1 is returned.  If an error
  * occurs, a negative value is returned.
  * \note This routine supports printing wide characters via the ls
- * or S format specifiers via simply dropping the high-order byte.
+ * or S format specifiers.  On Windows, they are assumed to be UTF-16,
+ * and are converted to UTF-8.  On Linux, they are converted by simply
+ * dropping the high-order bytes.
  * \note If the data to be printed is large it will be truncated to
  * an internal buffer size.
  * \note On Windows, you can use _snprintf() instead (though _snprintf() does
- * not support printing floating point values).
+ * not support printing floating point values and does not convert
+ * between UTF-16 and UTF-8).
  * \note When printing floating-point values, the caller's code should
  * use proc_save_fpstate() or be inside a clean call that
  * has requested to preserve the floating-point state.
@@ -3260,9 +3273,11 @@ dr_snprintf(char *buf, size_t max, const char *fmt, ...);
 DR_API
 /**
  * Wide character version of dr_snprintf().  All of the comments for
- * dr_snprintf() apply, except that the hs or S format specifiers will
- * widen a single-byte character string into a two-byte character
- * string with zero as the high-order byte.
+ * dr_snprintf() apply, except for the hs or S format specifiers.
+ * On Windows, these will assume that the input is UTF-8, and will
+ * convert to UTF-16.  On Linux, they will widen a single-byte
+ * character string into a wchar_t character string with zero as the
+ * high-order bytes.
  */
 int
 dr_snwprintf(wchar_t *buf, size_t max, const wchar_t *fmt, ...);
@@ -3280,6 +3295,53 @@ DR_API
  */
 int
 dr_vsnwprintf(wchar_t *buf, size_t max, const wchar_t *fmt, va_list ap);
+
+DR_API
+/**
+ * Utility routine to parse strings that match a pre-defined format string,
+ * similar to the sscanf() C routine.
+ *
+ * @param[in] str   String to parse.
+ * @param[in] fmt   Format string controlling parsing. 
+ * @param[out] ...  All remaining parameters interpreted as output parameter
+ *                  pointers.  The type of each parameter must match the type
+ *                  implied by the corresponding format specifier in \p fmt.
+ * \return The number of specifiers matched.
+ *
+ * The benefit of using dr_sscanf() over native sscanf() is that DR's
+ * implementation is standalone, signal-safe, and cross-platform.  On Linux,
+ * sscanf() has been observed to call malloc().  On Windows, sscanf() will call
+ * strlen(), which can break when using mapped files.
+ *
+ * The behavior of dr_sscanf() is mostly identical to that of the sscanf() C
+ * routine.
+ *
+ * Supported format specifiers:
+ * - \%s: Matches a sequence of non-whitespace characters.  The string is copied
+ *   into the provided output buffer.  To avoid buffer overflow, the caller
+ *   should use a width specifier.
+ * - \%c: Matches any single character.
+ * - \%d: Matches a signed decimal integer.
+ * - \%u: Matches an unsigned decimal integer.
+ * - \%x: Matches an unsigned hexadecimal integer, with or without a leading 0x.
+ * - \%p: Matches a pointer-sized hexadecimal integer as %x does.
+ * - \%%: Matches a literal % character.  Does not store output.
+ *
+ * Supported format modifiers:
+ * - *: The * modifier causes the scan to match the specifier, but not store any
+ *   output.  No output parameter is consumed for this specifier, and one should
+ *   not be passed.
+ * - 0-9: A decimal integer preceding the specifier gives the width to match.
+ *   For strings, this indicates the maximum number of characters to copy.  For
+ *   integers, this indicates the maximum number of digits to parse.
+ * - h: Marks an integer specifier as short.
+ * - l: Marks an integer specifier as long.
+ * - ll: Marks an integer specifier as long long.  Use this for 64-bit integers.
+ *
+ * \warning dr_sscanf() does \em not support parsing floating point numbers yet.
+ */
+int
+dr_sscanf(const char *str, const char *fmt, ...);
 
 DR_API 
 /** Prints \p msg followed by the instruction \p instr to file \p f. */

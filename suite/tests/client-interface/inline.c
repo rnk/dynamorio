@@ -40,7 +40,9 @@
 /* List of instrumented functions. */
 #define FUNCTIONS() \
         FUNCTION(empty) \
+        FUNCTION(empty_1arg) \
         FUNCTION(inscount) \
+        FUNCTION(gcc47_inscount) \
         FUNCTION(callpic_pop) \
         FUNCTION(callpic_mov) \
         FUNCTION(nonleaf) \

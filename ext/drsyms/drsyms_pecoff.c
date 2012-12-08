@@ -445,7 +445,7 @@ drsym_obj_symbol_offs(void *mod_in, uint idx, size_t *offs_start OUT,
         } else
             *offs_end = *offs_start + 1;
     }
-    return DRSYM_SUCCESS;
+    return res;
 }
 
 drsym_error_t
@@ -520,5 +520,6 @@ const char *
 drsym_obj_debug_path(void)
 {
     /* XXX: figure out where cygwin is really installed */
+    /* XXX: also search mingw debug path */
     return "c:\\cygwin\\lib\\debug";
 }

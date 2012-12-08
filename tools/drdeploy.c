@@ -1,5 +1,5 @@
 /* **********************************************************
- * Copyright (c) 2011 Google, Inc.  All rights reserved.
+ * Copyright (c) 2011-2012 Google, Inc.  All rights reserved.
  * Copyright (c) 2008-2010 VMware, Inc.  All rights reserved.
  * **********************************************************/
 
@@ -110,6 +110,8 @@ const char *usage_str =
 #elif defined(DRRUN) || defined (DRINJECT)
     "usage: "TOOLNAME" [options] <app and args to run>\n"
     "   or: "TOOLNAME" [options] [DR options] -- <app and args to run>\n"
+    "   or: "TOOLNAME" [options] [DR options] -c <client> [client options]"
+    " -- <app and args to run>\n"
     "\n"
 #endif
     "       -v                 Display version information\n"
@@ -166,6 +168,14 @@ const char *usage_str =
     "                          Alternatively, if the application is separated\n"
     "                          by \"--\", the -ops may be omitted and DR options\n"
     "                          specified prior to \"--\" without quotes.\n"
+    "\n"
+    "        -c <path> <options>*\n"
+    "                           Registers one client to run alongside DR.  Assigns\n"
+    "                           the client an id of 0.  All remaining arguments\n"
+    "                           until the -- arg before the app are interpreted as\n"
+    "                           client options.  Must come after all drrun and DR\n"
+    "                           ops.  Incompatible with -client.  Requires using --\n"
+    "                           to separate the app executable.\n"
     "\n"
     "       -client <path> <ID> \"<options>\"\n"
     "                          Register one or more clients to run alongside DR.\n"
@@ -474,8 +484,10 @@ bool register_proc(const char *process,
 #ifdef WINDOWS
         char buf[MAXIMUM_PATH];
         if (GetEnvironmentVariableA("USERPROFILE", buf,
-                                    BUFFER_SIZE_ELEMENTS(buf)) <= 0) {
-            error("process registration failed: USERPROFILE env var not set!");
+                                    BUFFER_SIZE_ELEMENTS(buf)) == 0 &&
+            GetEnvironmentVariableA("DYNAMORIO_CONFIGDIR", buf,
+                                    BUFFER_SIZE_ELEMENTS(buf)) == 0) {
+            error("process registration failed: neither USERPROFILE nor DYNAMORIO_CONFIGDIR env var set!");
         } else
 #endif
             error("process registration failed");
@@ -604,14 +616,33 @@ write_pid_to_file(const char *pidfile, process_id_t pid)
 }
 #endif /* DRCONFIG */
 
+static void
+append_client(const char *client, int id, const char *client_ops,
+              char client_paths[MAX_CLIENT_LIBS][MAXIMUM_PATH],
+              client_id_t client_ids[MAX_CLIENT_LIBS],
+              const char *client_options[MAX_CLIENT_LIBS],
+              size_t *num_clients)
+{
+    GetFullPathName(client, BUFFER_SIZE_ELEMENTS(client_paths[*num_clients]),
+                    client_paths[*num_clients], NULL);
+    NULL_TERMINATE_BUFFER(client_paths[*num_clients]);
+    info("client %d path: %s", (int)*num_clients, client_paths[*num_clients]);
+    client_ids[*num_clients] = id;
+    client_options[*num_clients] = client_ops;
+    (*num_clients)++;
+}
+
 int main(int argc, char *argv[])
 {
     char *process = NULL;
     char *dr_root = NULL;
     char client_paths[MAX_CLIENT_LIBS][MAXIMUM_PATH];
-    char *client_options[MAX_CLIENT_LIBS] = {NULL,};
+    const char *client_options[MAX_CLIENT_LIBS] = {NULL,};
     client_id_t client_ids[MAX_CLIENT_LIBS] = {0,};
     size_t num_clients = 0;
+#if defined(DRCONFIG) || defined(DRRUN)
+    char single_client_ops[DR_MAX_OPTIONS_LENGTH];
+#endif
 #if defined(MF_API) || defined(PROBE_API)
     /* must set -mode */
     dr_operation_mode_t dr_mode = DR_MODE_NONE;
@@ -864,19 +895,19 @@ int main(int argc, char *argv[])
                 die();
             }
             else {
+                const char *client;
+                int id;
+                const char *ops;
                 if (i + 3 >= argc) {
                     usage("too few arguments to -client");
                 }
 
                 /* Support relative client paths: very useful! */
-                GetFullPathName(argv[++i],
-                                BUFFER_SIZE_ELEMENTS(client_paths[num_clients]),
-                                client_paths[num_clients], NULL);
-                NULL_TERMINATE_BUFFER(client_paths[num_clients]);
-                info("client %d path: %s", (int)num_clients, client_paths[num_clients]);
-                client_ids[num_clients] = strtoul(argv[++i], NULL, 16);
-                client_options[num_clients] = argv[++i];
-                num_clients++;
+                client = argv[++i];
+                id = strtoul(argv[++i], NULL, 16);
+                ops = argv[++i];
+                append_client(client, id, ops, client_paths, client_ids,
+                              client_options, &num_clients);
             }
         }
         else if (strcmp(argv[i], "-ops") == 0) {
@@ -923,15 +954,42 @@ int main(int argc, char *argv[])
          */
         else if (argv[i][0] == '-') {
             while (i<argc) {
-                if (strcmp(argv[i], "--") == 0) {
-                    i++;
-                    goto done_with_options;
+                if (strcmp(argv[i], "-c") == 0 ||
+                    strcmp(argv[i], "--") == 0) {
+                    break;
                 }
                 _snprintf(extra_ops + strlen(extra_ops),
                           BUFFER_SIZE_ELEMENTS(extra_ops) - strlen(extra_ops),
                           "%s%s", (extra_ops[0] == '\0') ? "" : " ", argv[i]);
                 NULL_TERMINATE_BUFFER(extra_ops);
                 i++;
+            }
+            if (strcmp(argv[i], "-c") == 0) {
+                const char *client;
+                if (i + 1 >= argc)
+                    usage("too few arguments to -c");
+                if (num_clients != 0)
+                    usage("Cannot use -client with -c.");
+                client = argv[++i];
+
+                /* Treat everything up to -- or end of argv as client args. */
+                i++;
+                single_client_ops[0] = '\0';
+                while (i < argc && strcmp(argv[i], "--") != 0) {
+                    _snprintf(single_client_ops + strlen(single_client_ops),
+                              BUFFER_SIZE_ELEMENTS(single_client_ops) -
+                              strlen(single_client_ops),
+                              "%s%s", (single_client_ops[0] == '\0') ? "" : " ",
+                              argv[i]);
+                    NULL_TERMINATE_BUFFER(single_client_ops);
+                    i++;
+                }
+                append_client(client, 0, single_client_ops, client_paths,
+                              client_ids, client_options, &num_clients);
+            }
+            if (i < argc && strcmp(argv[i], "--") == 0) {
+                i++;
+                goto done_with_options;
             }
 	}
 #endif
@@ -1044,7 +1102,7 @@ int main(int argc, char *argv[])
         else if (res != DR_SUCCESS)
             printf("nudge operation failed, verify adequate permissions for this operation.");
     }
-#ifdef WINDOWS
+#  ifdef WINDOWS
     /* FIXME i#840: Process iterator NYI for Linux. */
     else if (action == action_list) {
         if (!list_registered)
@@ -1059,7 +1117,7 @@ int main(int argc, char *argv[])
             dr_registered_process_iterator_stop(iter);
         }
     }
-#endif
+#  endif
     else if (!syswide_on && !syswide_off) {
         usage("no action specified");
     }
@@ -1093,7 +1151,19 @@ int main(int argc, char *argv[])
 # endif /* WINDOWS */
     return 0;
 #else /* DRCONFIG */
-    errcode = dr_inject_process_create(app_name, app_argv, &inject_data);
+    if (!global) {
+        /* i#939: attempt to work w/o any HOME/USERPROFILE by using a temp dir */
+        dr_get_config_dir(global, true/*use temp*/, buf, BUFFER_SIZE_ELEMENTS(buf));
+    }
+# ifdef LINUX
+    /* On Linux, we use exec by default to create the app process.  This matches
+     * our drrun shell script and makes scripting easier for the user.
+     */
+    if (limit == 0) {
+        errcode = dr_inject_prepare_to_exec(app_name, app_argv, &inject_data);
+    } else
+# endif /* LINUX */
+        errcode = dr_inject_process_create(app_name, app_argv, &inject_data);
     if (errcode != 0) {
         IF_WINDOWS(int sofar =)
             _snprintf(buf, BUFFER_SIZE_ELEMENTS(buf),

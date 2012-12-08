@@ -121,6 +121,7 @@ enum {
     PEB_TIB_OFFSET            = 0x060,
     FLS_DATA_TIB_OFFSET       = 0x17c8,
     NT_RPC_TIB_OFFSET         = 0x1698,
+    NLS_CACHE_TIB_OFFSET      = 0x17a0,
 #else
     EXCEPTION_LIST_TIB_OFFSET = 0x00,
     TOP_STACK_TIB_OFFSET      = 0x04,
@@ -134,6 +135,7 @@ enum {
     PEB_TIB_OFFSET            = 0x30,
     FLS_DATA_TIB_OFFSET       = 0xfb4,
     NT_RPC_TIB_OFFSET         = 0xf1c,
+    NLS_CACHE_TIB_OFFSET      = 0xfa0,
 #endif
 };
 
@@ -215,6 +217,9 @@ void print_dynamo_regions(void);
 size_t get_allocation_size(byte *pc, byte **base_pc);
 byte *get_allocation_base(byte *pc);
 void mark_page_as_guard(byte *pc);
+
+bool
+os_find_free_code_space_in_libs(void **start OUT, void **end OUT);
 
 void merge_writecopy_pages(app_pc start, app_pc end);
 
@@ -436,6 +441,9 @@ is_in_interception_buffer(byte *pc);
 
 bool
 is_part_of_interception(byte *pc);
+
+bool
+is_on_interception_initial_route(byte *pc);
 
 bool
 is_syscall_trampoline(byte *pc, byte **tgt);

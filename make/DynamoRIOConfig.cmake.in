@@ -120,6 +120,11 @@
 #
 #  set(DynamoRIO_RPATH ON)
 #
+# In addition to setting DT_RPATH for ELF files, on Windows this will create a
+# <client_basename>.drpath text file that contains a list of paths.  At runtime,
+# DynamoRIO's loader will parse this file and add each newline-separated path
+# to its list of search paths.
+#
 # If you are not exporting all global symbols in your Linux client,
 # this file tries to automatically determine that and explicitly mark
 # required client exports as visible.  The auto-detection can be
@@ -179,6 +184,7 @@ string(TOUPPER "${CMAKE_BUILD_TYPE}" CMAKE_BUILD_TYPE_UPPER)
 #
 # Define functions the client can use to set up build parameters:
 
+INCLUDEFILE make/utils.cmake
 
 # helper function
 function (get_lang target lang_var)
@@ -219,6 +225,13 @@ function (get_size is_cxx x64_var)
   endif (${sizeof_void} EQUAL 8)
 endfunction (get_size)
 
+# i#955: support a <basename>.drpath file for loader search paths
+function (get_drpath_name out target)
+  get_target_property(client_path ${target} LOCATION)
+  # NAME_WE chops off from the first . instead of the last . so we use regex:
+  string(REGEX REPLACE "\\.[^\\.]*$" "" client_base ${client_path})
+  set(${out} ${client_base}.@DR_RPATH_SUFFIX@ PARENT_SCOPE)
+endfunction (get_drpath_name)
 
 function (set_compile_flags target tgt_cflags)
   # i#850: we do not want the C flags being used for asm objects so we only set
@@ -243,13 +256,7 @@ function (set_compile_flags target tgt_cflags)
         # do not add COMPILE_FLAGS to an .obj file else VS2008 will try to
         # compile the file!
         NOT src MATCHES "\\.obj$")
-      # XXX: if we require cmake 2.8.6 we can simply use APPEND_STRING
-      get_source_file_property(cur_flags ${src} COMPILE_FLAGS)
-      if (NOT cur_flags)
-        set(cur_flags "")
-      endif (NOT cur_flags)
-      set_source_files_properties(${src} PROPERTIES
-        COMPILE_FLAGS "${cur_flags} ${tgt_flags}")
+      append_property_string(SOURCE ${src} COMPILE_FLAGS "${tgt_flags}")
     endif ()
   endforeach (src)
 
@@ -441,6 +448,13 @@ function (configure_DynamoRIO_common target is_client x64_var defs_var link_var)
   DynamoRIO_extra_cflags(tgt_cflags "${tgt_cflags}" ${tgt_cxx})
 
   if (UNIX)
+    # i#379: optimization + inlining of clean calls works best w/ optimized 
+    # clients. if any -O is asked for explicitly, honor it, but if default,
+    # add -O2.
+    if (NOT "${tgt_cflags}" MATCHES "-O")
+      set(tgt_cflags "${tgt_cflags} -O2")
+    endif (NOT "${tgt_cflags}" MATCHES "-O")
+
     if (is_client)
 
       if (NOT DEFINED DynamoRIO_VISATT)
@@ -480,6 +494,12 @@ function (configure_DynamoRIO_common target is_client x64_var defs_var link_var)
     # gcc is invoked for the link step so we have to repeat cflags as well
     set(tgt_link_flags "${tgt_cflags} ${tgt_link_flags}")
   else (UNIX)
+    # i#379: optimization + inlining of clean calls works best w/ optimized
+    # clients. if any /O is asked for explicitly, honor it, but if default,
+    # add /O2
+    if (NOT "${tgt_cflags}" MATCHES "/O" AND NOT "${tgt_cflags}" MATCHES "-O")
+      set(tgt_cflags "${tgt_cflags} /O2")
+    endif (NOT "${tgt_cflags}" MATCHES "/O" AND NOT "${tgt_cflags}" MATCHES "-O")
     if (tgt_cxx)
       set(tgt_cflags "${tgt_cflags} /EHsc")
     endif (tgt_cxx)
@@ -549,9 +569,14 @@ function (configure_DynamoRIO_common target is_client x64_var defs_var link_var)
     endif (is_client)
   endif (DEFINED DynamoRIO_RPATH)
   if (use_rpath)
-    get_target_property(libdir dynamorio LOCATION)
-    set_target_properties(${target} PROPERTIES
-      INSTALL_RPATH ${libdir})
+    add_rel_rpaths(${target} dynamorio)
+    if (WIN32 AND is_client) # doesn't make sense for standalone
+      # Create the .drpath file our loader uses
+      get_target_property(libpath dynamorio LOCATION)
+      get_filename_component(libdir ${libpath} PATH)
+      get_drpath_name(drpath_file ${target})
+      file(WRITE ${drpath_file} "${libdir}\n")
+    endif ()
   else (use_rpath)
     set_target_properties(${target} PROPERTIES
       SKIP_BUILD_RPATH ON)
@@ -705,12 +730,27 @@ endfunction (get_DynamoRIO_defines)
 # DynamoRIO Extensions
 function (use_DynamoRIO_extension target extname)
   if (NOT DynamoRIO_INTERNAL)
-    # Extensions are exported in the same cmake file as DynamoRIO
-    # so we do not need to include another file here.
-    # FIXME: should we add explicit support for 3rd party Extensions
-    # that are not checked in to public svn by searching here for
-    # ${cwd}/../ext/cmake/*.cmake or something?
-    include_directories(${cwd}/../ext/include)
+    # We only support Extensions as imported targets that have already
+    # been added:
+    if (NOT TARGET ${extname})
+      message(FATAL_ERROR "DynamoRIO Extension \"${extname}\" not found")
+    endif ()
+    # See whether this Extension is packaged with DynamoRIO:
+    if (UNIX)
+      file(GLOB libs "${cwd}/../ext/lib*/*/lib${extname}.*")
+    else (UNIX)
+      file(GLOB libs "${cwd}/../ext/lib*/*/${extname}.*")
+    endif (UNIX)
+    if (NOT libs OR DynamoRIO_EXT_${extname}_INC)
+      # Support for 3rd party Extensions: caller calls find_package()
+      # to set up the imported targets for the libraries and to set
+      # DynamoRIO_EXT_${extname}_INC.
+      include_directories(${DynamoRIO_EXT_${extname}_INC})
+    else ()
+      # Local extensions are exported in the same cmake file as DynamoRIO
+      # so we do not need to include another file here.
+      include_directories(${cwd}/../ext/include)
+    endif ()
   else (NOT DynamoRIO_INTERNAL)
     # support building from build dir for our own samples, and from
     # build dir for a client that includes our sources as a sub-project,
@@ -728,6 +768,21 @@ function (use_DynamoRIO_extension target extname)
       include_directories(${PROJECT_SOURCE_DIR}/../../ext/${extname})
     endif ()
   endif (NOT DynamoRIO_INTERNAL)
+
+  if (DEFINED DynamoRIO_RPATH)
+    add_rel_rpaths(${target} ${extname})
+    if (WIN32)
+      get_target_property(libpath ${extname} LOCATION)
+      get_filename_component(libdir ${libpath} PATH)
+      get_drpath_name(drpath_file ${target})
+      # File should have been created fresh when configured.
+      # XXX: in the future we may add support for relative dirs but for
+      # now we only support absolute.
+      file(APPEND ${drpath_file} "${libdir}\n")
+    endif (WIN32)
+  else ()
+    set_target_properties(${target} PROPERTIES SKIP_BUILD_RPATH ON)
+  endif ()
 
   target_link_libraries(${target} ${extname})
 

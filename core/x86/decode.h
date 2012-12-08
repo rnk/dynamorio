@@ -301,8 +301,9 @@ typedef struct decode_info_t {
     opnd_size_t size_immed2;
     ptr_int_t immed;
     ptr_int_t immed2; /* this additional field could be 32-bit on all platforms */
-    /* These two fields are only used when decoding rip-relative data refs */
+    /* These fields are only used when decoding rip-relative data refs */
     byte *start_pc;
+    byte *final_pc;
     uint len;
     /* This field is only used when encoding rip-relative data refs.
      * To save space we could make it a union with disp.
@@ -593,6 +594,7 @@ enum {
     OPSZ_8_of_16_vex32, /* 64 bits, but can be half of XMM register; if
                          * vex.L then is 256 bits (YMM or memory)
                          */
+    OPSZ_16_of_32, /* 128 bits: half of YMM */
     OPSZ_LAST_ENUM, /* note last is NOT inclusive */
 };
 

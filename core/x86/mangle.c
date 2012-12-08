@@ -103,6 +103,7 @@ typedef struct _slot_t {
 /* data structure of clean call callee information. */
 typedef struct _callee_info_t {
     bool bailout;             /* if we bail out on function analysis */
+    uint num_args;            /* number of args that will passed in */
     int num_instrs;           /* total number of instructions of a function */
     app_pc start;             /* entry point of a function  */
     app_pc bwd_tgt;           /* earliest backward branch target */
@@ -170,7 +171,7 @@ callee_info_free(callee_info_t *ci)
 }
 
 static callee_info_t *
-callee_info_create(app_pc start)
+callee_info_create(app_pc start, uint num_args)
 {
     callee_info_t *info;
     
@@ -178,6 +179,7 @@ callee_info_create(app_pc start)
                            ACCT_CLEANCALL, PROTECTED);
     callee_info_init(info);
     info->start = start;
+    info->num_args = num_args;
     return info;
 }
 
@@ -1820,7 +1822,7 @@ insert_push_retaddr(dcontext_t *dcontext, instrlist_t *ilist, instr_t *instr,
                                                    OPSZ_lea)));
         PRE(ilist, instr,
             INSTR_CREATE_mov_st(dcontext, OPND_CREATE_MEM32(REG_XSP, 0),
-                                OPND_CREATE_INT32(val)));
+                                OPND_CREATE_INT32((int)val)));
 #else
         ASSERT_NOT_REACHED();
 #endif
@@ -5133,7 +5135,7 @@ analyze_callee_regs_usage(dcontext_t *dcontext, callee_info_t *ci)
 {
     instrlist_t *ilist = ci->ilist;
     instr_t *instr;
-    uint i;
+    uint i, num_regparm;
 
     ci->num_xmms_used = 0;
     memset(ci->xmm_used, 0, sizeof(bool) * NUM_XMM_REGS);
@@ -5226,6 +5228,19 @@ analyze_callee_regs_usage(dcontext_t *dcontext, callee_info_t *ci)
             callee_info_reserve_slot(ci, SLOT_REG, DR_REG_XAX);
         }
     }
+
+    /* i#987, i#988: reg might be used for arg passing but not used in callee */
+    num_regparm = MIN(ci->num_args, NUM_REGPARM);
+    for (i = 0; i < num_regparm; i++) {
+        reg_id_t reg = regparms[i];
+        if (!ci->reg_used[reg - DR_REG_XAX]) {
+            LOG(THREAD, LOG_CLEANCALL, 2,
+                "CLEANCALL: callee "PFX" uses REG %s for arg passing\n", 
+                ci->start, reg_names[reg]);
+            ci->reg_used[reg - DR_REG_XAX] = true;
+            callee_info_reserve_slot(ci, SLOT_REG, reg);
+        }
+    }
 }
 
 /* We use push/pop pattern to detect callee saved registers,
@@ -5236,53 +5251,80 @@ static void
 analyze_callee_save_reg(dcontext_t *dcontext, callee_info_t *ci)
 {
     instrlist_t *ilist = ci->ilist;
-    instr_t *top, *bot, *push_xbp, *pop_xbp, *instr;
+    instr_t *top, *bot, *push_xbp, *pop_xbp, *instr, *enter, *leave;
 
     ASSERT(ilist != NULL);
     ci->num_callee_save_regs = 0;
-    /* 1. frame pointer usage analysis. */
-    /* XXX: frame pointer setup is not always starts from the first instr
-     * 0xb7df0520 <inscount+0>:     call   0xb7df076d <__i686.get_pc_thunk.cx>
-     * 0xb7df0525 <inscount+5>:     add    $0x1407,%ecx
-     * 0xb7df052b <inscount+11>:    xor    %edx,%edx
-     * 0xb7df052d <inscount+13>:    push   %ebp
-     * 0xb7df052e <inscount+14>:    mov    %esp,%ebp
-     * 0xb7df0530 <inscount+16>:    mov    0x8(%ebp),%eax
-     * 0xb7df0533 <inscount+19>:    add    %eax,0x44(%ecx)
-     * 0xb7df0539 <inscount+25>:    adc    %edx,0x48(%ecx)
-     * 0xb7df053f <inscount+31>:    pop    %ebp
-     * 0xb7df0540 <inscount+32>:    ret    
-     */
     top = instrlist_first(ilist);
     bot = instrlist_last(ilist);
     if (top == bot) {
         /* zero or one instruction only, no callee save */
         return;
     }
+    /* 1. frame pointer usage analysis. */
+    /* i#392-c#4: frame pointer code might be in the middle
+     * 0xf771f390 <compiler_inscount>:      call   0xf7723a19 <get_pc_thunk>
+     * 0xf771f395 <compiler_inscount+5>:    add    $0x6c5f,%ecx
+     * 0xf771f39b <compiler_inscount+11>:   push   %ebp
+     * 0xf771f39c <compiler_inscount+12>:   mov    %esp,%ebp
+     * 0xf771f39e <compiler_inscount+14>:   mov    0x8(%ebp),%eax
+     * 0xf771f3a1 <compiler_inscount+17>:   pop    %ebp
+     * 0xf771f3a2 <compiler_inscount+18>:   add    %eax,0x494(%ecx)
+     * 0xf771f3a8 <compiler_inscount+24>:   ret
+     */
     /* for easy of comparison, create push xbp, pop xbp */
     push_xbp = INSTR_CREATE_push(dcontext, opnd_create_reg(DR_REG_XBP));
     pop_xbp  = INSTR_CREATE_pop(dcontext, opnd_create_reg(DR_REG_XBP));
+    /* i#392-c#4: search for frame enter/leave pair */
+    enter = NULL;
+    leave = NULL;
+    for (instr = top; instr != bot; instr = instr_get_next(instr)) {
+        if (instr_get_opcode(instr) == OP_enter ||
+            instr_same(push_xbp, instr)) {
+            enter = instr;
+            break;
+        }
+    }
+    if (enter != NULL) {
+        for (instr = bot; instr != enter; instr = instr_get_prev(instr)) {
+            if (instr_get_opcode(instr) == OP_leave ||
+                instr_same(pop_xbp, instr)) {
+                leave = instr;
+                break;
+            }
+        }
+    }
     /* Check enter/leave pair  */
-    if ((instr_get_opcode(top) == OP_enter || instr_same(push_xbp, top)) &&
-        (instr_get_opcode(bot) == OP_leave || instr_same(pop_xbp, bot))  &&
-        (ci->bwd_tgt == NULL || instr_get_app_pc(top) <  ci->bwd_tgt) &&
-        (ci->fwd_tgt == NULL || instr_get_app_pc(bot) >= ci->fwd_tgt)) {
+    if (enter != NULL && leave != NULL &&
+        (ci->bwd_tgt == NULL || instr_get_app_pc(enter) <  ci->bwd_tgt) &&
+        (ci->fwd_tgt == NULL || instr_get_app_pc(leave) >= ci->fwd_tgt)) {
         /* check if xbp is fp */
-        instr = instr_get_next(top);
-        if (instr_get_opcode(top) == OP_enter) {
+        if (instr_get_opcode(enter) == OP_enter) {
             ci->xbp_is_fp = true;
-        } else if (instr != NULL &&
-                   instr_num_srcs(instr) == 1 &&
-                   instr_num_dsts(instr) == 1 &&
-                   opnd_is_reg(instr_get_src(instr, 0)) &&
-                   opnd_get_reg(instr_get_src(instr, 0)) == DR_REG_XSP &&
-                   opnd_is_reg(instr_get_dst(instr, 0)) &&
-                   opnd_get_reg(instr_get_dst(instr, 0)) == DR_REG_XBP) {
-            /* mov xsp => xbp */
-            ci->xbp_is_fp = true;
-            /* remove it */
-            instrlist_remove(ilist, instr);
-            instr_destroy(GLOBAL_DCONTEXT, instr);
+        } else {
+            /* i#392-c#2: mov xsp => xbp might not be right after push_xbp */
+            for (instr  = instr_get_next(enter);
+                 instr != leave;
+                 instr  = instr_get_next(instr)) {
+                if (instr != NULL &&
+                    /* we want to use instr_same to find "mov xsp => xbp",
+                     * but it could be OP_mov_ld or OP_mov_st, so use opnds
+                     * for comparison instead.
+                     */
+                    instr_num_srcs(instr) == 1 &&
+                    instr_num_dsts(instr) == 1 &&
+                    opnd_is_reg(instr_get_src(instr, 0)) &&
+                    opnd_get_reg(instr_get_src(instr, 0)) == DR_REG_XSP &&
+                    opnd_is_reg(instr_get_dst(instr, 0)) &&
+                    opnd_get_reg(instr_get_dst(instr, 0)) == DR_REG_XBP) {
+                    /* found mov xsp => xbp */
+                    ci->xbp_is_fp = true;
+                    /* remove it */
+                    instrlist_remove(ilist, instr);
+                    instr_destroy(GLOBAL_DCONTEXT, instr);
+                    break;
+                }
+            }
         }
         if (ci->xbp_is_fp) {
             LOG(THREAD, LOG_CLEANCALL, 2,
@@ -5290,20 +5332,18 @@ analyze_callee_save_reg(dcontext_t *dcontext, callee_info_t *ci)
         } else {
             LOG(THREAD, LOG_CLEANCALL, 2,
                 "CLEANCALL: callee "PFX" callee-saves reg xbp at "PFX" and "PFX"\n",
-                ci->start, instr_get_app_pc(top), instr_get_app_pc(bot));
+                ci->start, instr_get_app_pc(enter), instr_get_app_pc(leave));
             ci->callee_save_regs
                 [DR_REG_XBP - DR_REG_XAX] = true;
             ci->num_callee_save_regs++;
         }
-        /* remove top/bot pair */
-        instr = instr_get_next(top);
-        instrlist_remove(ilist, top);
-        instr_destroy(GLOBAL_DCONTEXT, top);
-        top   = instr;
-        instr = instr_get_prev(bot);
-        instrlist_remove(ilist, bot);
-        instr_destroy(GLOBAL_DCONTEXT, bot);
-        bot   = instr;
+        /* remove enter/leave or push/pop xbp pair */
+        instrlist_remove(ilist, enter);
+        instrlist_remove(ilist, leave);
+        instr_destroy(GLOBAL_DCONTEXT, enter);
+        instr_destroy(GLOBAL_DCONTEXT, leave);
+        top = instrlist_first(ilist);
+        bot = instrlist_last(ilist);
     }
     instr_destroy(dcontext, push_xbp);
     instr_destroy(dcontext, pop_xbp);
@@ -5699,7 +5739,7 @@ analyze_clean_call_aflags(dcontext_t *dcontext,
 static void
 analyze_clean_call_regs(dcontext_t *dcontext, clean_call_info_t *cci)
 {
-    uint i;
+    uint i, num_regparm;
     callee_info_t *info = cci->callee_info;
 
     /* 1. xmm registers */
@@ -5737,6 +5777,34 @@ analyze_clean_call_regs(dcontext_t *dcontext, clean_call_info_t *cci)
             ", cannot skip saving reg xax.\n", info->start);
         cci->reg_skip[0] = false;
         cci->num_regs_skip++;
+    }
+    /* i#987: args are passed via regs in 64-bit, which will clober those regs,
+     * so we should not skip any regs that are used for arg passing.
+     * XXX: we do not support args passing via XMMs, 
+     * see docs for dr_insert_clean_call
+     * XXX: we can elminate the arg passing instead since it is not used
+     * if marked for skip. However, we have to handle cases like some args
+     * are used and some are not.
+     */
+    num_regparm = cci->num_args < NUM_REGPARM ? cci->num_args : NUM_REGPARM;
+    for (i = 0; i < num_regparm; i++) {
+        if (cci->reg_skip[regparms[i] - DR_REG_XAX]) {
+            LOG(THREAD, LOG_CLEANCALL, 3,
+                "CLEANCALL: if inserting clean call "PFX
+                ", cannot skip saving reg %s due to param passing.\n",
+                info->start, reg_names[regparms[i]]);
+            cci->reg_skip[regparms[i] - DR_REG_XAX] = false;
+            cci->num_regs_skip--;
+            /* We cannot call callee_info_reserve_slot for reserving slot
+             * on inlining the callee here, because we are in clean call
+             * analysis not callee anaysis.
+             * Also the reg for arg passing should be first handled in
+             * analyze_callee_regs_usage on callee_info creation.
+             * If we still reach here, it means the number args changes
+             * for the same clean call, so we will not inline it and do not
+             * need call callee_info_reserve_slot either.
+             */
+        }
     }
 }
 
@@ -5782,6 +5850,13 @@ analyze_clean_call_inline(dcontext_t *dcontext, clean_call_info_t *cci)
         LOG(THREAD, LOG_CLEANCALL, 2,
             "CLEANCALL: fail inlining clean call "PFX", number of args %d > 1.\n",
             info->start, cci->num_args);
+        opt_inline = false;
+    }
+    if (cci->num_args > info->num_args) {
+        LOG(THREAD, LOG_CLEANCALL, 2,
+            "CLEANCALL: fail inlining clean call "PFX
+            ", number of args increases.\n",
+            info->start);
         opt_inline = false;
     }
     if (cci->save_fpstate) {
@@ -5855,7 +5930,7 @@ analyze_clean_call(dcontext_t *dcontext, clean_call_info_t *cci, instr_t *where,
         STATS_INC(cleancall_analyzed);
         LOG(THREAD, LOG_CLEANCALL, 2, "CLEANCALL: analyze callee "PFX"\n", callee);
         /* 4.1. create func_info */
-        ci = callee_info_create((app_pc)callee);
+        ci = callee_info_create((app_pc)callee, num_args);
         /* 4.2. decode the callee */
         decode_callee_ilist(dcontext, ci);
         /* 4.3. analyze the instrlist */
