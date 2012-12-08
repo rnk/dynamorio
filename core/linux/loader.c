@@ -328,11 +328,13 @@ static bool
 os_read_until(file_t fd, void *buf, size_t toread)
 {
     ssize_t nread;
-    do {
+    while (toread > 0) {
         nread = os_read(fd, buf, toread);
+        if (nread < 0)
+            break;
         toread -= nread;
-    } while (nread > 0 && toread > 0);
-    return (nread >= 0);
+    }
+    return (toread == 0);
 }
 
 bool
@@ -573,7 +575,7 @@ privload_map_and_relocate(const char *filename, size_t *size OUT)
             if (size != NULL)
                 *size = loader.image_size;
 #if defined(INTERNAL) || defined(CLIENT_INTERFACE)
-            /* XXX: This requires an extra mmap now. */
+            /* XXX: We have to mmap the whole file to find the text addr. */
             if (elf_loader_map_file(&loader) != NULL) {
                 app_pc text_addr;
                 text_addr = (app_pc)module_get_text_section(loader.file_map,
