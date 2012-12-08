@@ -355,16 +355,12 @@ privload_map_and_relocate(const char *filename, size_t *size OUT)
             if (size != NULL)
                 *size = loader.image_size;
 #if defined(INTERNAL) || defined(CLIENT_INTERFACE)
-            /* XXX: This requires an extra mmap now. */
+            /* XXX: We have to mmap the whole file to find the text addr. */
             if (elf_loader_map_file(&loader) != NULL) {
                 app_pc text_addr;
                 text_addr = (app_pc)module_get_text_section(loader.file_map,
                                                             loader.file_size);
                 text_addr += loader.load_delta;
-                /* We record the gdb command now.  We can't recompute it later
-                 * (see module_get_text_section comments), and we can't allocate a proper
-                 * os_privmod_data_t yet.
-                 */
                 privload_add_gdb_cmd(filename, text_addr);
             }
 #endif
