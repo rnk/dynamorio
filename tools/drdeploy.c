@@ -807,6 +807,7 @@ int main(int argc, char *argv[])
             limit = -1;
             continue;
         }
+# ifdef LINUX
         else if (strcmp(argv[i], "-use_ptrace") == 0) {
             use_ptrace = true;
             /* Set -early_inject, since using ptrace is functionally very
@@ -826,6 +827,7 @@ int main(int argc, char *argv[])
             NULL_TERMINATE_BUFFER(extra_ops);
             continue;
         }
+# endif /* LINUX */
         else if (strcmp(argv[i], "-exit0") == 0) {
             exit0 = true;
             continue;

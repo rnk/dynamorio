@@ -190,6 +190,8 @@ fork_suspended_child(const char *exe, const char **argv, int fds[2])
         arg = pipe_cmd;
         while (*arg != '\0' && !isspace(*arg))
             arg++;
+        while (*arg != '\0' && isspace(*arg))
+            arg++;
         if (pipe_cmd[0] == '\0') {
             /* If nothing was written to the pipe, let it run natively. */
             real_exe = exe;
