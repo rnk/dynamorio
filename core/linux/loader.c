@@ -581,10 +581,6 @@ privload_map_and_relocate(const char *filename, size_t *size OUT)
                 text_addr = (app_pc)module_get_text_section(loader.file_map,
                                                             loader.file_size);
                 text_addr += loader.load_delta;
-                /* We record the gdb command now.  We can't recompute it later
-                 * (see module_get_text_section comments), and we can't allocate a proper
-                 * os_privmod_data_t yet.
-                 */
                 privload_add_gdb_cmd(filename, text_addr);
             }
 #endif
