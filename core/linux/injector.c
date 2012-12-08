@@ -66,7 +66,7 @@ static bool verbose = false;
 
 typedef enum _inject_method_t {
     INJECT_EXEC_DR,     /* Works with self or child. */
-    INJECT_LD_PRELOAD,  /* Works with self or child.  FIXME i#840: NYI */
+    INJECT_LD_PRELOAD,  /* Works with self or child. */
     INJECT_PTRACE       /* Doesn't work with exec_self. */
 } inject_method_t;
 
@@ -193,7 +193,7 @@ fork_suspended_child(const char *exe, const char **argv, int fds[2])
         if (pipe_cmd[0] == '\0') {
             /* If nothing was written to the pipe, let it run natively. */
             real_exe = exe;
-        } else if (strstr("ld_preload ", pipe_cmd) == pipe_cmd) {
+        } else if (strstr(pipe_cmd, "ld_preload ") == pipe_cmd) {
             pre_execve_ld_preload(arg);
             real_exe = exe;
         } else if (strcmp("ptrace", pipe_cmd) == 0) {
@@ -201,7 +201,7 @@ fork_suspended_child(const char *exe, const char **argv, int fds[2])
              * execv.
              */
             real_exe = exe;
-        } else if (strstr("exec_dr ", pipe_cmd) == pipe_cmd) {
+        } else if (strstr(pipe_cmd, "exec_dr ") == pipe_cmd) {
             pre_execve_exec_dr(exe);
             real_exe = arg;
         }
@@ -347,6 +347,20 @@ dr_inject_get_image_name(void *data)
     return (char *) info->image_name;
 }
 
+/* FIXME: Use the parser in options.c without compiling it twice.  This
+ * approach will find options in quoted strings, like the client options
+ * string.
+ */
+static bool
+option_present(const char *dr_ops, const char *op)
+{
+    size_t oplen = strlen(op);
+    const char *cur = strstr(dr_ops, op);
+    return (cur != NULL &&
+            (cur[oplen] == '\0' || isspace(cur[oplen])) &&
+            (cur == dr_ops || isspace(cur[-1])));
+}
+
 DR_EXPORT
 bool
 dr_inject_process_inject(void *data, bool force_injection,
@@ -354,6 +368,19 @@ dr_inject_process_inject(void *data, bool force_injection,
 {
     dr_inject_info_t *info = (dr_inject_info_t *) data;
     char dr_path_buf[MAXIMUM_PATH];
+    char dr_ops[MAX_OPTIONS_STRING];
+
+    if (!get_config_val_other_app(info->image_name, info->pid,
+                                  DYNAMORIO_VAR_OPTIONS, dr_ops,
+                                  BUFFER_SIZE_ELEMENTS(dr_ops), NULL,
+                                  NULL, NULL)) {
+        return false;
+    }
+
+    if (info->method == INJECT_LD_PRELOAD &&
+        option_present(dr_ops, "-early_inject")) {
+        info->method = INJECT_EXEC_DR;
+    }
 
     /* Read the autoinject var from the config file if the caller didn't
      * override it.

@@ -809,6 +809,21 @@ int main(int argc, char *argv[])
         }
         else if (strcmp(argv[i], "-use_ptrace") == 0) {
             use_ptrace = true;
+            /* Set -early_inject, since using ptrace is functionally very
+             * similar.  Otherwise we assert trying to do things like looking
+             * up libc's errno.
+             */
+            _snprintf(extra_ops + strlen(extra_ops),
+                      BUFFER_SIZE_ELEMENTS(extra_ops) - strlen(extra_ops),
+                      "%s-early_inject", (extra_ops[0] == '\0') ? "" : " ");
+            NULL_TERMINATE_BUFFER(extra_ops);
+            continue;
+        }
+        else if (strcmp(argv[i], "-early") == 0) {
+            _snprintf(extra_ops + strlen(extra_ops),
+                      BUFFER_SIZE_ELEMENTS(extra_ops) - strlen(extra_ops),
+                      "%s-early_inject", (extra_ops[0] == '\0') ? "" : " ");
+            NULL_TERMINATE_BUFFER(extra_ops);
             continue;
         }
         else if (strcmp(argv[i], "-exit0") == 0) {
