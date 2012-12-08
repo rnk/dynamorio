@@ -49,6 +49,7 @@
 #include "os_private.h"
 
 #include <assert.h>
+#include <ctype.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <stdarg.h>
@@ -143,6 +144,30 @@ report_dynamorio_problem(dcontext_t *dcontext, uint dumpcore_flag,
  * Injection implementation
  */
 
+static void
+pre_execve_ld_preload(const char *dr_path)
+{
+    char ld_lib_path[MAX_OPTIONS_STRING];
+    const char *last_slash = strrchr(dr_path, '/');
+    const char *cur_path = getenv("LD_LIBRARY_PATH");
+    ASSERT(last_slash != NULL);  /* Should be absolute. */
+    snprintf(ld_lib_path, BUFFER_SIZE_ELEMENTS(ld_lib_path),
+             "%.*s%s%s", last_slash - dr_path, dr_path,
+             cur_path == NULL ? "" : ":",
+             cur_path == NULL ? "" : cur_path);
+    NULL_TERMINATE_BUFFER(ld_lib_path);
+    setenv("LD_LIBRARY_PATH", ld_lib_path, true/*overwrite*/);
+    setenv("LD_PRELOAD", "libdynamorio.so libdrpreload.so",
+           true/*overwrite*/);
+    setenv("LD_USE_LOAD_BIAS", "1", false/*!overwrite, let user set it*/);
+}
+
+static void
+pre_execve_exec_dr(const char *exe)
+{
+    setenv(DYNAMORIO_VAR_EXE_PATH, exe, true/*overwrite*/);
+}
+
 static process_id_t
 fork_suspended_child(const char *exe, const char **argv, int fds[2])
 {
@@ -152,7 +177,8 @@ fork_suspended_child(const char *exe, const char **argv, int fds[2])
         char pipe_cmd[MAXIMUM_PATH];
         ssize_t nread;
         size_t sofar = 0;
-        char *real_exe;
+        const char *real_exe = NULL;
+        const char *arg;
         close(fds[1]);  /* Close writer in child, keep reader. */
         do {
             nread = read(fds[0], pipe_cmd + sofar,
@@ -161,19 +187,25 @@ fork_suspended_child(const char *exe, const char **argv, int fds[2])
         } while (nread > 0 && sofar < BUFFER_SIZE_BYTES(pipe_cmd)-1);
         pipe_cmd[sofar] = '\0';
         close(fds[0]);  /* Close reader before exec. */
+        arg = pipe_cmd;
+        while (*arg != '\0' && !isspace(*arg))
+            arg++;
         if (pipe_cmd[0] == '\0') {
             /* If nothing was written to the pipe, let it run natively. */
-            real_exe = (char *) exe;
+            real_exe = exe;
+        } else if (strstr("ld_preload ", pipe_cmd) == pipe_cmd) {
+            pre_execve_ld_preload(arg);
+            real_exe = exe;
         } else if (strcmp("ptrace", pipe_cmd) == 0) {
             /* If using ptrace, we're already attached and will walk across the
              * execv.
              */
-            real_exe = (char *) exe;
-        } else if (strncmp("exec_dr ", pipe_cmd, 8) == 0) {
-            setenv(DYNAMORIO_VAR_EXE_PATH, exe, true/*overwrite*/);
-            real_exe = pipe_cmd;
+            real_exe = exe;
+        } else if (strstr("exec_dr ", pipe_cmd) == pipe_cmd) {
+            pre_execve_exec_dr(exe);
+            real_exe = arg;
         }
-        execv(real_exe, (char **) argv);
+        execv((char *) real_exe, (char **) argv);
         /* If execv returns, there was an error. */
         exit(-1);
     }
@@ -203,14 +235,29 @@ inject_exec_dr(dr_inject_info_t *info, const char *library_path)
         /* exec DR with the original command line and set an environment
          * variable pointing to the real exe.
          */
-        /* XXX: setenv will modify the environment on failure. */
-        setenv(DYNAMORIO_VAR_EXE_PATH, info->exe, true/*overwrite*/);
+        pre_execve_exec_dr(info->exe);
         execv(library_path, (char **) info->argv);
         return false;  /* if execv returns, there was an error */
     } else {
         /* Write the path to DR to the pipe. */
         char cmd[MAXIMUM_PATH];
         snprintf(cmd, BUFFER_SIZE_ELEMENTS(cmd), "exec_dr %s", library_path);
+        write_pipe_cmd(info->pipe_fd, cmd);
+    }
+    return true;
+}
+
+static bool
+inject_ld_preload(dr_inject_info_t *info, const char *library_path)
+{
+    if (info->exec_self) {
+        pre_execve_ld_preload(library_path);
+        execv(info->exe, (char **) info->argv);
+        return false;  /* if execv returns, there was an error */
+    } else {
+        /* Write the path to DR to the pipe. */
+        char cmd[MAXIMUM_PATH];
+        snprintf(cmd, BUFFER_SIZE_ELEMENTS(cmd), "ld_preload %s", library_path);
         write_pipe_cmd(info->pipe_fd, cmd);
     }
     return true;
@@ -245,7 +292,7 @@ dr_inject_process_create(const char *exe, const char **argv, void **data OUT)
     close(fds[0]);  /* Close reader, keep writer. */
     info->pipe_fd = fds[1];
     info->exec_self = false;
-    info->method = INJECT_EXEC_DR;
+    info->method = INJECT_LD_PRELOAD;
 
     if (info->pid == -1)
         goto error;
@@ -266,7 +313,7 @@ dr_inject_prepare_to_exec(const char *exe, const char **argv, void **data OUT)
     info->pid = getpid();
     info->pipe_fd = 0;  /* No pipe. */
     info->exec_self = true;
-    info->method = INJECT_EXEC_DR;
+    info->method = INJECT_LD_PRELOAD;
     *data = info;
     return 0;
 }
@@ -325,7 +372,7 @@ dr_inject_process_inject(void *data, bool force_injection,
     case INJECT_EXEC_DR:
         return inject_exec_dr(info, library_path);
     case INJECT_LD_PRELOAD:
-        return false;  /* NYI */
+        return inject_ld_preload(info, library_path);
     case INJECT_PTRACE:
         return inject_ptrace(info, library_path);
     }

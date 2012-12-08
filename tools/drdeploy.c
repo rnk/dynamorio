@@ -227,6 +227,7 @@ const char *usage_str =
     "       -pidfile <file>    Print the pid of the child process to the given file.\n"
     "       -no_inject         Run the application natively.\n"
 # ifdef LINUX  /* XXX: Ugh ifdefs. */
+    "       -early             Whether to use early injection.\n"
     "       -use_ptrace        Whether to use ptrace to inject.\n"
 # endif
     "       -use_dll <dll>     Inject given dll instead of configured DR dll.\n"
