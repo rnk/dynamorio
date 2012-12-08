@@ -134,12 +134,6 @@ dr_inject_process_run(void *data);
 
 #ifdef LINUX
 /**
- * NOCHECKIN: docs
- */
-int
-dr_inject_process_wait(void *data);
-
-/**
  * Use the ptrace system call to inject into the child.  Does not work with
  * dr_inject_prepare_to_exec().
  *

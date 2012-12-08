@@ -84,7 +84,7 @@ bool
 inject_ptrace(dr_inject_info_t *info, const char *library_path);
 
 static long
-os_ptrace(enum __ptrace_request request, pid_t pid, void *addr, void *data);
+our_ptrace(enum __ptrace_request request, pid_t pid, void *addr, void *data);
 
 /*******************************************************************************
  * Core compatibility layer
@@ -343,7 +343,7 @@ dr_inject_process_run(void *data)
         return false;  /* if execv returns, there was an error */
     } else {
         if (info->method == INJECT_PTRACE) {
-            os_ptrace(PTRACE_DETACH, info->pid, NULL, NULL);
+            our_ptrace(PTRACE_DETACH, info->pid, NULL, NULL);
         }
         /* Close the pipe. */
         close(info->pipe_fd);
@@ -374,18 +374,19 @@ dr_inject_process_exit(void *data, bool terminate)
 
 enum { MAX_SYSCALL_ARGS = 6 };
 
-enum { REG_PC_OFFSET = offsetof(struct user_regs_struct, IF_X64_ELSE(rip, eip)) };
-
 #define REG_PC_FIELD IF_X64_ELSE(rip, eip)
 #define REG_SP_FIELD IF_X64_ELSE(rsp, esp)
+
+enum { REG_PC_OFFSET = offsetof(struct user_regs_struct, REG_PC_FIELD) };
 
 #define APP  instrlist_append
 
 static bool op_exec_gdb = false;
 
 /* Used to pass data into the remote mapping routines. */
-static int injected_dr_fd;
-static dr_inject_info_t *injected_info;
+static dr_inject_info_t *injector_info;
+static file_t injector_dr_fd;
+static file_t injectee_dr_fd;
 
 typedef struct _enum_name_pair_t {
     const int enum_val;
@@ -426,7 +427,7 @@ static const enum_name_pair_t pt_req_map[] = {
  * libc from the injector process should always work.
  */
 static long
-os_ptrace(enum __ptrace_request request, pid_t pid, void *addr, void *data)
+our_ptrace(enum __ptrace_request request, pid_t pid, void *addr, void *data)
 {
     long r = dynamorio_syscall(SYS_ptrace, 4, request, pid, addr, data);
     if (r < 0 || (verbose &&
@@ -447,7 +448,7 @@ os_ptrace(enum __ptrace_request request, pid_t pid, void *addr, void *data)
     }
     return r;
 }
-#define ptrace use_os_ptrace
+#define ptrace use_our_ptrace
 
 /* Copies memory from traced process into parent.
  */
@@ -459,7 +460,7 @@ ptrace_read_memory(pid_t pid, void *dst, void *src, size_t len)
     reg_t *src_reg = src;
     ASSERT(len % sizeof(reg_t) == 0);  /* FIXME handle */
     for (i = 0; i < len / sizeof(reg_t); i++) {
-        long r = os_ptrace(PTRACE_PEEKDATA, pid, &src_reg[i], &dst_reg[i]);
+        long r = our_ptrace(PTRACE_PEEKDATA, pid, &src_reg[i], &dst_reg[i]);
         if (r < 0)
             return false;
     }
@@ -467,7 +468,6 @@ ptrace_read_memory(pid_t pid, void *dst, void *src, size_t len)
 }
 
 /* Copies memory from parent into traced process.
- * FIXME: Should return success.
  */
 static bool
 ptrace_write_memory(pid_t pid, void *dst, void *src, size_t len)
@@ -477,7 +477,8 @@ ptrace_write_memory(pid_t pid, void *dst, void *src, size_t len)
     reg_t *src_reg = src;
     ASSERT(len % sizeof(reg_t) == 0);  /* FIXME handle */
     for (i = 0; i < len / sizeof(reg_t); i++) {
-        long r = os_ptrace(PTRACE_POKEDATA, pid, &dst_reg[i], (void*)src_reg[i]);
+        long r = our_ptrace(PTRACE_POKEDATA, pid, &dst_reg[i],
+                            (void *)src_reg[i]);
         if (r < 0)
             return false;
     }
@@ -553,10 +554,10 @@ wait_until_signal(process_id_t pid, int sig)
         return true;
     } else {
         ptr_int_t err_pc;
-        os_ptrace(PTRACE_PEEKUSER, pid, (void*)REG_PC_OFFSET, &err_pc);
+        our_ptrace(PTRACE_PEEKUSER, pid, (void *)REG_PC_OFFSET, &err_pc);
         fprintf(stderr, "Unexpected trace event, expected %s, got:\n"
                 "status: 0x%x, stopped by signal: %d, at pc: %p\n",
-                strsignal(sig), status, WSTOPSIG(status), (void*)err_pc);
+                strsignal(sig), status, WSTOPSIG(status), (void *)err_pc);
         return false;
     }
 }
@@ -567,7 +568,7 @@ wait_until_signal(process_id_t pid, int sig)
 static bool
 continue_until_break(process_id_t pid)
 {
-    long r = os_ptrace(PTRACE_CONT, pid, NULL, NULL);
+    long r = our_ptrace(PTRACE_CONT, pid, NULL, NULL);
     if (r < 0)
         return false;
     return wait_until_signal(pid, SIGTRAP);
@@ -604,9 +605,10 @@ injectee_run_get_xax(dr_inject_info_t *info, void *dc, instrlist_t *ilist)
     ptr_int_t xax;
     app_pc pc;
     long r;
+    ptr_int_t failure = -EUNATCH;  /* Unlikely to be used by most syscalls. */
 
     /* Get register state before executing the shellcode. */
-    r = os_ptrace(PTRACE_GETREGS, info->pid, NULL, &regs);
+    r = our_ptrace(PTRACE_GETREGS, info->pid, NULL, &regs);
     if (r < 0)
         return r;
 
@@ -619,6 +621,9 @@ injectee_run_get_xax(dr_inject_info_t *info, void *dc, instrlist_t *ilist)
     APP(ilist, INSTR_CREATE_int3(dc));
     if (verbose) {
         fprintf(stderr, "injecting code:\n");
+        /* XXX: This disas call aborts on our raw bytes instructions.  Can we
+         * teach DR's disassembler to avoid those instrs?
+         */
         instrlist_disassemble(dc, pc, ilist, STDERR);
     }
 
@@ -630,25 +635,27 @@ injectee_run_get_xax(dr_inject_info_t *info, void *dc, instrlist_t *ilist)
     instrlist_clear_and_destroy(dc, ilist);
 
     /* Copy shell code into injectee at the current PC. */
-    ptrace_read_memory(info->pid, orig_code, pc, code_size);
-    ptrace_write_memory(info->pid, pc, shellcode, code_size);
+    if (!ptrace_read_memory(info->pid, orig_code, pc, code_size) ||
+        !ptrace_write_memory(info->pid, pc, shellcode, code_size))
+        return failure;
 
     /* Run it! */
-    os_ptrace(PTRACE_POKEUSER, info->pid, (void *)REG_PC_OFFSET, pc);
+    our_ptrace(PTRACE_POKEUSER, info->pid, (void *)REG_PC_OFFSET, pc);
     if (!continue_until_break(info->pid))
-        return -EUNATCH;  /* Unlikely to be used by most syscalls. */
+        return failure;
 
     /* Get xax. */
-    xax = -EUNATCH;
-    r = os_ptrace(PTRACE_PEEKUSER, info->pid,
-                  (void*)offsetof(struct user_regs_struct,
-                                  IF_X64_ELSE(rax, eax)), &xax);
+    xax = failure;
+    r = our_ptrace(PTRACE_PEEKUSER, info->pid,
+                   (void *)offsetof(struct user_regs_struct,
+                                   IF_X64_ELSE(rax, eax)), &xax);
     if (r < 0)
         return r;
 
     /* Put back original code and registers. */
-    ptrace_write_memory(info->pid, pc, orig_code, code_size);
-    r = os_ptrace(PTRACE_SETREGS, info->pid, NULL, &regs);
+    if (!ptrace_write_memory(info->pid, pc, orig_code, code_size))
+        return failure;
+    r = our_ptrace(PTRACE_SETREGS, info->pid, NULL, &regs);
     if (r < 0)
         return r;
 
@@ -682,12 +689,12 @@ injectee_mmap(dr_inject_info_t *info, void *addr, size_t sz, int prot,
     args[num_args++] = OPND_CREATE_INTPTR(addr);
     args[num_args++] = OPND_CREATE_INTPTR(sz);
     args[num_args++] = OPND_CREATE_INTPTR(prot);
-    args[num_args++] = OPND_CREATE_INTPTR(flags); /* flags */
-    args[num_args++] = OPND_CREATE_INTPTR(fd); /* fd from open */
-    args[num_args++] = OPND_CREATE_INTPTR(IF_X64_ELSE(offset, offset >> 12)); /* offset */
-    /* XXX: Only mmap2 works for me. */
+    args[num_args++] = OPND_CREATE_INTPTR(flags);
+    args[num_args++] = OPND_CREATE_INTPTR(fd);
+    args[num_args++] = OPND_CREATE_INTPTR(IF_X64_ELSE(offset, offset >> 12));
+    /* XXX: Regular mmap gives EBADR on ia32, but mmap2 works. */
     gen_syscall(dc, ilist, IF_X64_ELSE(SYS_mmap, SYS_mmap2), num_args, args);
-    return (void*)injectee_run_get_xax(info, dc, ilist);
+    return (void *)injectee_run_get_xax(info, dc, ilist);
 }
 
 static byte *
@@ -701,20 +708,20 @@ injectee_map_file(file_t f, size_t *size INOUT, uint64 offs, app_pc addr,
         flags |= MAP_PRIVATE;
     if (fixed)
         flags |= MAP_FIXED;
-    /* Assumes that f is for libdynamorio.so. */
-    if (f == -1) {
-        fd = -1;
+    if (f == injector_dr_fd)
+        fd = injectee_dr_fd;
+    else
+        fd = f;
+    if (fd == -1) {
         flags |= MAP_ANONYMOUS;
-    } else {
-        fd = injected_dr_fd;
     }
     /* image is a nop on Linux. */
-    r = (ptr_int_t)injectee_mmap(injected_info, addr, *size,
+    r = (ptr_int_t)injectee_mmap(injector_info, addr, *size,
                                  memprot_to_osprot(prot), flags, fd, offs);
     if (r < 0 && r >= -4096) {
         printf("injectee_mmap(%d, %p, %p, 0x%x, 0x%lx, 0x%x) -> (%d): %s\n",
-               fd, addr, (void*)*size, memprot_to_osprot(prot), (long)offs, flags,
-               (int)-r, strerror(-r));
+               fd, addr, (void *)*size, memprot_to_osprot(prot), (long)offs,
+               flags, (int)-r, strerror(-r));
         return NULL;
     }
     return (byte*)r;
@@ -732,9 +739,10 @@ injectee_unmap(byte *addr, size_t size)
     args[num_args++] = OPND_CREATE_INTPTR(addr);
     args[num_args++] = OPND_CREATE_INTPTR(size);
     gen_syscall(dc, ilist, SYS_munmap, num_args, args);
-    r = injectee_run_get_xax(injected_info, dc, ilist) == 0;
+    r = injectee_run_get_xax(injector_info, dc, ilist) == 0;
     if (r < 0) {
-        printf("injectee_munmap(%p, %p) -> %p\n", addr, (void*)size, (void*)r);
+        printf("injectee_munmap(%p, %p) -> %p\n",
+               addr, (void *)size, (void *)r);
         return false;
     }
     return true;
@@ -753,9 +761,10 @@ injectee_prot(byte *addr, size_t size, uint prot/*MEMPROT_*/)
     args[num_args++] = OPND_CREATE_INTPTR(size);
     args[num_args++] = OPND_CREATE_INTPTR(memprot_to_osprot(prot));
     gen_syscall(dc, ilist, SYS_mprotect, num_args, args);
-    r = injectee_run_get_xax(injected_info, dc, ilist) == 0;
+    r = injectee_run_get_xax(injector_info, dc, ilist) == 0;
     if (r < 0) {
-        printf("injectee_prot(%p, %p, %x) -> %d\n", addr, (void*)size, prot, (int)r);
+        printf("injectee_prot(%p, %p, %x) -> %d\n",
+               addr, (void *)size, prot, (int)r);
         return false;
     }
     return true;
@@ -816,12 +825,13 @@ detach_and_exec_gdb(process_id_t pid, const char *library_path)
     uint64 size64;
     os_get_file_size_by_handle(f, &size64);
     size_t size = (size_t)size64;
-    byte *base = os_map_file(f, &size, 0, NULL, MEMPROT_READ, true, false, false);
+    byte *base = os_map_file(f, &size, 0, NULL, MEMPROT_READ,
+                             true, false, false);
     app_pc text_start = (app_pc)module_get_text_section(base, size);
     os_unmap_file(base, size);
     os_close(f);
 
-    os_ptrace(PTRACE_DETACH, pid, NULL, NULL);
+    our_ptrace(PTRACE_DETACH, pid, NULL, NULL);
     snprintf(pid_str, sizeof(pid_str), "%d", pid);
     argv[num_args++] = "/usr/bin/gdb";
     argv[num_args++] = "--quiet";
@@ -843,7 +853,7 @@ bool
 inject_ptrace(dr_inject_info_t *info, const char *library_path)
 {
     /* Attach to the process in question. */
-    long r = os_ptrace(PTRACE_ATTACH, info->pid, NULL, NULL);
+    long r = our_ptrace(PTRACE_ATTACH, info->pid, NULL, NULL);
     if (r < 0) {
         if (verbose)
             fprintf(stderr, "PTRACE_ATTACH failed with error: %s\n",
@@ -858,8 +868,8 @@ inject_ptrace(dr_inject_info_t *info, const char *library_path)
         write_pipe_cmd(info->pipe_fd, "ptrace");
         close(info->pipe_fd);
         info->pipe_fd = 0;
-        if (os_ptrace(PTRACE_SETOPTIONS, info->pid, NULL,
-                      (void*)PTRACE_O_TRACEEXEC) < 0)
+        if (our_ptrace(PTRACE_SETOPTIONS, info->pid, NULL,
+                       (void *)PTRACE_O_TRACEEXEC) < 0)
             return false;
         if (!continue_until_break(info->pid))
             return false;
@@ -878,16 +888,19 @@ inject_ptrace(dr_inject_info_t *info, const char *library_path)
      */
     app_pc injected_base;
     elf_loader_t loader;
-    /* XXX: Have to use globals to communicate to injectee_map_file. =/ */
-    injected_dr_fd = dr_fd;
-    injected_info = info;
     if (!elf_loader_read_headers(&loader, library_path))
         return false;
+    /* XXX: Have to use globals to communicate to injectee_map_file. =/ */
+    injector_info = info;
+    injector_dr_fd = loader.fd;
+    injectee_dr_fd = dr_fd;
     injected_base = elf_loader_map_phdrs(&loader, true/*fixed*/,
                                          injectee_map_file, injectee_unmap,
                                          injectee_prot);
-    if (injected_base == NULL)
+    if (injected_base == NULL) {
+        fprintf(stderr, "Unable to mmap libdynamorio.so in injectee\n");
         return false;
+    }
     /* Looking up exports through ptrace is hard, so we use the e_entry from
      * the ELF header with different arguments.
      * XXX: Actually look up an export.
@@ -896,7 +909,7 @@ inject_ptrace(dr_inject_info_t *info, const char *library_path)
     elf_loader_destroy(&loader);
 
     struct user_regs_struct regs;
-    os_ptrace(PTRACE_GETREGS, info->pid, NULL, &regs);
+    our_ptrace(PTRACE_GETREGS, info->pid, NULL, &regs);
 
     /* Create an injection context and "push" it onto the stack of the injectee.
      * If you need to pass more info to the injected child process, this is a
@@ -908,18 +921,19 @@ inject_ptrace(dr_inject_info_t *info, const char *library_path)
     args.argc = ARGC_PTRACE_SENTINEL;
 
     /* We need to send the home directory over.  It's hard to find the
-     * environment in the injectee, and even if we did it might be a different
-     * user or might not have HOME set.
+     * environment in the injectee, and even if we could HOME might be
+     * different.
      */
     strncpy(args.home_dir, getenv("HOME"), BUFFER_SIZE_ELEMENTS(args.home_dir));
     NULL_TERMINATE_BUFFER(args.home_dir);
 
     regs.REG_SP_FIELD -= 128;  /* Need to preserve x64 red zone. */
     regs.REG_SP_FIELD -= sizeof(args); /* Allocate space for args. */
-    regs.REG_SP_FIELD = ALIGN_BACKWARD(regs.REG_SP_FIELD, 16);  /* Align stack. */
-    ptrace_write_memory(info->pid, (void*)regs.REG_SP_FIELD, &args, sizeof(args));
+    regs.REG_SP_FIELD = ALIGN_BACKWARD(regs.REG_SP_FIELD, 16);
+    ptrace_write_memory(info->pid, (void *)regs.REG_SP_FIELD,
+                        &args, sizeof(args));
     regs.REG_PC_FIELD = injected_dr_start;
-    os_ptrace(PTRACE_SETREGS, info->pid, NULL, &regs);
+    our_ptrace(PTRACE_SETREGS, info->pid, NULL, &regs);
 
     if (op_exec_gdb) {
         detach_and_exec_gdb(info->pid, library_path);

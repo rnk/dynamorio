@@ -1155,8 +1155,8 @@ privload_setup_auxv(char **envp, app_pc map, ptr_int_t delta)
     }
 }
 
-/* NOCHECKIN: os.c? inject.c? */
-void
+/* Entry point for ptrace injection. */
+static void
 takeover_ptrace(ptrace_stack_args_t *args)
 {
     static char home_var[MAXIMUM_PATH+5];

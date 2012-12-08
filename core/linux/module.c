@@ -2142,10 +2142,6 @@ elf_loader_map_phdrs(elf_loader_t *elf, bool fixed, map_fn_t map_func,
             ASSERT(map != NULL);
             /* fill zeros at extend size */
             file_end = (app_pc)prog_hdr->p_vaddr + prog_hdr->p_filesz;
-#if 0  /* NOCHECKIN, do we need this? */
-            if (seg_end > file_end + delta)
-                memset(file_end + delta, 0, seg_end - (file_end + delta));
-#endif
             seg_end  = (app_pc)ALIGN_FORWARD(prog_hdr->p_vaddr +
                                              prog_hdr->p_memsz,
                                              PAGE_SIZE) + delta;
