@@ -39,6 +39,7 @@
 #include "configure.h"
 #include "globals_shared.h"
 #include "../config.h"  /* for get_config_val_other_app */
+#include "../globals.h"
 
 #include <assert.h>
 #include <errno.h>
@@ -97,7 +98,7 @@ ignore_assert(const char *assert_stmt, const char *expr)
 }
 
 void
-report_dynamorio_problem(void *dcontext, uint dumpcore_flag,
+report_dynamorio_problem(dcontext_t *dcontext, uint dumpcore_flag,
                          app_pc exception_addr, app_pc report_ebp,
                          const char *fmt, ...)
 {
