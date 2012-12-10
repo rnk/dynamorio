@@ -6090,7 +6090,7 @@ update_all_memory_areas(app_pc start, app_pc end_in, uint prot, int type)
      * order violation with heap_unit_lock */
     ASSERT_OWN_WRITE_LOCK(true, &all_memory_areas->lock);
     sync_all_memory_areas();
-    LOG(THREAD_GET, LOG_VMAREAS, 2,
+    LOG(GLOBAL, LOG_VMAREAS, 4,
         "update_all_memory_areas "PFX"-"PFX" %d %d\n",
         start, end_in, prot, type);
     DOLOG(5, LOG_VMAREAS, print_all_memory_areas(GLOBAL););
@@ -6556,6 +6556,7 @@ post_system_call(dcontext_t *dcontext)
             os_fork_post(dcontext, true/*parent*/);
         }
     }
+
 
     LOG(THREAD, LOG_SYSCALLS, 2,
         "post syscall: sysnum="PFX", result="PFX" (%d)\n",

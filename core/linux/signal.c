@@ -1063,7 +1063,6 @@ signal_thread_init(dcontext_t *dcontext)
                                               ACCT_OTHER, PROTECTED);
 
     /* all fields want to be initialized to 0 */
-    /* XXX: Some, like restorer_valid, should be -1. */
     memset(info, 0, sizeof(thread_sig_info_t));
     dcontext->signal_field = (void *) info;
 
