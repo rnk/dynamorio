@@ -1327,8 +1327,7 @@ signal_thread_inherit(dcontext_t *dcontext, void *clone_record)
                 handler_alloc(dcontext, SIGARRAY_SIZE * sizeof(kernel_sigaction_t *));
             memset(info->app_sigaction, 0, SIGARRAY_SIZE * sizeof(kernel_sigaction_t *));
             for (i = 1; i <= MAX_SIGNUM; i++) {
-                /* clear cache */
-                info->restorer_valid[i] = -1;
+                info->restorer_valid[i] = -1;  /* clear cache */
                 if (record->info.app_sigaction[i] != NULL) {
                     info->app_sigaction[i] = (kernel_sigaction_t *)
                         handler_alloc(dcontext, sizeof(kernel_sigaction_t));
