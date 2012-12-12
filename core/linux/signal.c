@@ -1811,15 +1811,6 @@ intercept_signal(dcontext_t *dcontext, thread_sig_info_t *info, int sig)
     info->we_intercept[sig] = true;
 }
 
-bool
-sigsegv_handler_is_ours(void)
-{
-    int rc;
-    kernel_sigaction_t oldact;
-    rc = sigaction_syscall(SIGSEGV, NULL, &oldact);
-    return (rc == 0 && oldact.handler == (handler_t)master_signal_handler);
-}
-
 /**** system call handlers ***********************************************/
 
 /* FIXME: invalid pointer passed to kernel will currently show up
