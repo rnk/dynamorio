@@ -541,9 +541,6 @@ function(add_exe test source)
     # Link DR into every test exe except the api tests, which already link
     # against DR or the standalone decoder.
     force_static_link(${test} dynamorio)
-    if (WIN32)
-      append_property_string(TARGET ${test} LINK_FLAGS "/nodefaultlib:libcmt")
-    endif ()
   endif ()
 endfunction(add_exe)
 
