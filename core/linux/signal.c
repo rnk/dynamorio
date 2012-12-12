@@ -3728,7 +3728,7 @@ compute_memory_target(dcontext_t *dcontext, cache_pc instr_cache_pc,
     if (!found_target) {
         if (si->si_addr != NULL) {
             LOG(THREAD, LOG_ALL, 3,
-                "%s: Falling back to racy protection checks\n", __FUNCTION__);
+                "%s: falling back to racy protection checks\n", __FUNCTION__);
         }
         /* i#115/PR 394984: consider all memops */
         for (memopidx = 0;
