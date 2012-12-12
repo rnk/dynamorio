@@ -7001,11 +7001,6 @@ post_system_call(dcontext_t *dcontext)
     instrument_post_syscall(dcontext, sysnum);
 #endif
 
-    /* i#1012: DR's signal handler should always be installed.  We check
-     * post-syscall instead of in dispatch to keep the overhead down.
-     */
-    ASSERT(sigsegv_handler_is_ours());
-
     dcontext->whereami = old_whereami;
 }
 

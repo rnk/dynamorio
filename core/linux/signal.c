@@ -1580,11 +1580,24 @@ signal_fork_init(dcontext_t *dcontext)
     info->fully_initialized = true;
 }
 
+static bool
+sigsegv_handler_is_ours(void)
+{
+    int rc;
+    kernel_sigaction_t oldact;
+    rc = sigaction_syscall(SIGSEGV, NULL, &oldact);
+    return (rc == 0 && oldact.handler == (handler_t)master_signal_handler);
+}
+
 void
 signal_thread_exit(dcontext_t *dcontext, bool other_thread)
 {
     thread_sig_info_t *info = (thread_sig_info_t *) dcontext->signal_field;
     int i;
+
+    /* i#1012: DR's signal handler should always be installed before this point.
+     */
+    ASSERT(sigsegv_handler_is_ours());
 
     while (info->num_unstarted_children > 0) {
         /* must wait for children to start and copy our state
@@ -1794,15 +1807,6 @@ intercept_signal(dcontext_t *dcontext, thread_sig_info_t *info, int sig)
     
     LOG(THREAD, LOG_ASYNCH, 3, "\twe intercept signal %d\n", sig);
     info->we_intercept[sig] = true;
-}
-
-bool
-sigsegv_handler_is_ours(void)
-{
-    int rc;
-    kernel_sigaction_t oldact;
-    rc = sigaction_syscall(SIGSEGV, NULL, &oldact);
-    return (rc == 0 && oldact.handler == (handler_t)master_signal_handler);
 }
 
 /**** system call handlers ***********************************************/

@@ -169,7 +169,6 @@ share_siginfo_after_take_over(dcontext_t *dcontext, dcontext_t *takeover_dc);
 
 void start_itimer(dcontext_t *dcontext);
 void stop_itimer(dcontext_t *dcontext);
-bool sigsegv_handler_is_ours(void);
 
 /* handle app itimer syscalls */
 void
