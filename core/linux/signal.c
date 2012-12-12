@@ -1580,6 +1580,7 @@ signal_fork_init(dcontext_t *dcontext)
     info->fully_initialized = true;
 }
 
+#ifdef DEBUG
 static bool
 sigsegv_handler_is_ours(void)
 {
@@ -1588,6 +1589,7 @@ sigsegv_handler_is_ours(void)
     rc = sigaction_syscall(SIGSEGV, NULL, &oldact);
     return (rc == 0 && oldact.handler == (handler_t)master_signal_handler);
 }
+#endif /* DEBUG */
 
 void
 signal_thread_exit(dcontext_t *dcontext, bool other_thread)
