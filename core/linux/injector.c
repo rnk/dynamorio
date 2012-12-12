@@ -58,9 +58,9 @@ get_application_short_name(void)
 /* Opaque type to users, holds our state */
 typedef struct _dr_inject_info_t {
     process_id_t pid;
-    const char *exe;            /* points to user data */
+    const char *exe;            /* full path of executable */
     const char *image_name;     /* basename of exe */
-    const char **argv;          /* points to user data */
+    const char **argv;          /* array of arguments */
     int pipe_fd;
     bool exec_self;
 } dr_inject_info_t;

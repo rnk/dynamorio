@@ -656,8 +656,7 @@ instrument_exit(void)
     /* Note - currently own initexit lock when this is called (see PR 227619). */
 
     /* we guarantee we're in DR state at all callbacks and clean calls */
-    CLIENT_ASSERT(IF_WINDOWS(!should_swap_peb_pointer() ||)
-                  IF_LINUX(!INTERNAL_OPTION(private_loader) ||)
+    CLIENT_ASSERT(!os_should_swap_state() ||
                   !dr_using_app_state(get_thread_private_dcontext()), "state error");
 
     /* support dr_get_mcontext() from the exit event */

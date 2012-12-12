@@ -2425,6 +2425,17 @@ os_fork_init(dcontext_t *dcontext)
     TABLE_RWLOCK(fd_table, write, unlock);
 }
 
+/* We only bother swapping the library segment if we're using the private
+ * loader.
+ */
+bool
+os_should_swap_state(void)
+{
+    /* -private_loader currently implies -mangle_app_seg, but let's be safe. */
+    return (INTERNAL_OPTION(mangle_app_seg) &&
+            IF_CLIENT_INTERFACE_ELSE(INTERNAL_OPTION(private_loader), false));
+}
+
 bool
 os_using_app_state(dcontext_t *dcontext)
 {
@@ -2448,9 +2459,7 @@ os_using_app_state(dcontext_t *dcontext)
 void
 os_swap_context(dcontext_t *dcontext, bool to_app)
 {
-    if (INTERNAL_OPTION(mangle_app_seg) &&
-        /* xref os_tls_app_seg_init, we only swap lib TLS for private loader */
-        IF_CLIENT_INTERFACE_ELSE(INTERNAL_OPTION(private_loader), false))
+    if (os_should_swap_state())
         os_switch_seg_to_context(dcontext, LIB_SEG_TLS, to_app);
 }
 
@@ -3417,12 +3426,9 @@ void
 shared_library_error(char *buf, int maxlen)
 {
     const char *err;
-#if defined(CLIENT_INTERFACE) && !defined(STATIC_LIBRARY)
-    if (INTERNAL_OPTION(private_loader, false)) {
+    if (IF_CLIENT_INTERFACE_ELSE(INTERNAL_OPTION(private_loader), false)) {
         err = "error in private loader";
-    } else
-#endif
-    {
+    } else {
         ASSERT(!DYNAMO_OPTION(early_inject));
         err = dlerror();
         if (err == NULL) {
@@ -8134,6 +8140,8 @@ find_dynamo_library_vm_areas(void)
     /* We didn't add inside get_dynamo_library_bounds b/c it was called pre-alloc.
      * We don't bother to break down the sub-regions.
      * Assumption: we don't need to have the protection flags for DR sub-regions.
+     * For static library builds, DR's code is in the exe and isn't considered
+     * to be a DR area.
      */
     add_dynamo_vm_area(get_dynamorio_dll_start(), get_dynamorio_dll_end(),
                        MEMPROT_READ|MEMPROT_WRITE|MEMPROT_EXEC,
