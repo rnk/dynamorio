@@ -107,6 +107,8 @@ find_dynamo_library()
 
 /***************************************************************************/
 
+static bool verbose = false;
+
 static void
 do_execve(const char *path)
 {
@@ -148,6 +150,8 @@ int main(int argc, char** argv)
         perror("ERROR on fork");
     } else if (child > 0) {
         pid_t result;
+        if (verbose)
+            print("parent waiting for child\n");
         result = waitpid(child, NULL, 0);
         assert(result == child);
         print("child has exited\n");
@@ -163,6 +167,8 @@ int main(int argc, char** argv)
     } else if (child > 0) {
         pid_t result;
         int err;
+        if (verbose)
+            print("parent waiting for child\n");
         /* linux kernel will (incorrectly) return ECHILD sometimes
          * if the child has already exited
          */

@@ -1308,6 +1308,11 @@ if (CLIENT_INTERFACE)
   tobuild_ci(client.count-bbs client-interface/count-bbs.c "" "" "")
   tobuild_ci(client.syscall client-interface/syscall.c "" "-no_follow_children" "")
   tobuild_ci(client.modules client-interface/modules.c "" "" "")
+  tobuild_appdll(client.modules client-interface/modules.c)
+  if (UNIX)
+    # FIXME i#975: We can't load libc with STATIC_LIBRARY yet.
+    append_property_string(TARGET client.modules.appdll LINK_FLAGS "-nodefaultlibs")
+  endif ()
   tobuild_ci(client.segfault client-interface/segfault.c "" "" "")
   tobuild_appdll(client.events client-interface/events.c)
   get_target_property(events_appdll_path client.events.appdll LOCATION${location_suffix})
@@ -1583,9 +1588,9 @@ if (UNIX)
       "-coarse_units -coarse_split_calls -coarse_enable_freeze -coarse_freeze_min_size 0 -no_persist_per_user -no_validate_owner_dir" "-v")
     torunonly(linux.persist-use_FLAKY linux/infloop linux/persist-use.runall
       "-use_persisted -coarse_units -coarse_split_calls -no_persist_per_user -no_validate_owner_dir" "-v")
-    # when running tests in parallel: have to generate pcaches first
-    set(linux.persist-use_FLAKY_depends linux.persist_FLAKY)
   endif (NOT X64)
+  # when running tests in parallel: have to generate pcaches first
+  set(linux.persist-use_FLAKY_depends linux.persist_FLAKY)
 else (UNIX)
   if (VPS)
     # too flaky across platforms so we limit to VPS only: not too useful
