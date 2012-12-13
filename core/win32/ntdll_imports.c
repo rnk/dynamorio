@@ -34,6 +34,7 @@
  * Since they're stdcall we need to both list them in .def and to have stubs
  * in an .obj file.
  */
+/* i#1011: to support old Windows, only functions on win-2K+ can be added */
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -226,7 +227,7 @@ NTEXPORT NTSTATUS NTAPI
 NtMapViewOfSection(IN HANDLE           SectionHandle,
                    IN HANDLE           ProcessHandle,
                    IN OUT PVOID       *BaseAddress,
-                   IN ULONG            ZeroBits,
+                   IN ULONG_PTR        ZeroBits,
                    IN SIZE_T           CommitSize,
                    IN OUT PLARGE_INTEGER  SectionOffset OPTIONAL,
                    IN OUT PSIZE_T      ViewSize,
@@ -834,6 +835,32 @@ NTEXPORT NTSTATUS NTAPI
 NtFlushInstructionCache(IN HANDLE ProcessHandle,
                         IN PVOID BaseAddress OPTIONAL,
                         IN SIZE_T FlushSize)
+{
+    return STATUS_SUCCESS;
+}
+
+NTEXPORT NTSTATUS NTAPI
+NtOpenProcessTokenEx(HANDLE process_handle,
+                     ACCESS_MASK desired_access,
+                     ULONG handle_attributes,
+                     PHANDLE token_handle)
+{
+    return STATUS_SUCCESS;
+}
+
+NTEXPORT NTSTATUS NTAPI
+NtOpenThreadTokenEx(HANDLE thread_handle,
+                    ACCESS_MASK desired_access,
+                    BOOLEAN open_as_self,
+                    ULONG handle_attributes,
+                    PHANDLE token_handle)
+{
+    return STATUS_SUCCESS;
+}
+
+NTEXPORT NTSTATUS NTAPI
+NtQueryAttributesFile(POBJECT_ATTRIBUTES object_attributes,
+                      PFILE_BASIC_INFORMATION file_information)
 {
     return STATUS_SUCCESS;
 }

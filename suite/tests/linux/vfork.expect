@@ -7,3 +7,6 @@ trying vfork() #2
 child is running under DynamoRIO
 it_worked
 child has exited
+trying clone() after vfork()
+child thread running
+child has exited

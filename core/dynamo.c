@@ -235,7 +235,7 @@ dr_statistics_t *stats = NULL;
 DECLARE_FREQPROT_VAR(static int num_known_threads, 0);
 #ifdef LINUX
 /* i#237/PR 498284: vfork threads that execve need to be separately delay-freed */
-DECLARE_FREQPROT_VAR(static int num_execve_threads, 0);
+DECLARE_FREQPROT_VAR(int num_execve_threads, 0);
 #endif
 DECLARE_FREQPROT_VAR(static uint threads_ever_count, 0);
 
@@ -2346,7 +2346,7 @@ dynamo_thread_exit_common(dcontext_t *dcontext, thread_id_t id,
         vm_areas_thread_exit(dcontext);
     synch_thread_exit(dcontext);
     arch_thread_exit(dcontext _IF_WINDOWS(detach_stacked_callbacks));
-    os_thread_exit(dcontext);
+    os_thread_exit(dcontext, other_thread);
     DOLOG(1, LOG_STATS, {
         dump_thread_stats(dcontext, false);
     });
