@@ -603,7 +603,7 @@ function(tobuild_ci test source client_ops dr_ops exe_ops)
   if (NOT "${source}" MATCHES "\\.runall$")
     add_exe(${test} ${source})
   elseif (STATIC_LIBRARY)
-    return()  # FIXME i#975: Add support for STATIC_LIBRARY runall tests.
+    return()  # FIXME i#975: add support for STATIC_LIBRARY runall tests.
   endif ()
 
   add_library(${test}.dll ${SHARED_OR_STATIC} ${client_source})
@@ -1310,7 +1310,7 @@ if (CLIENT_INTERFACE)
   tobuild_ci(client.modules client-interface/modules.c "" "" "")
   tobuild_appdll(client.modules client-interface/modules.c)
   if (UNIX)
-    # FIXME i#975: We can't load libc with STATIC_LIBRARY yet.
+    # FIXME i#975: we can't load libc with STATIC_LIBRARY yet.
     append_property_string(TARGET client.modules.appdll LINK_FLAGS "-nodefaultlibs")
   endif ()
   tobuild_ci(client.segfault client-interface/segfault.c "" "" "")

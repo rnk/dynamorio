@@ -4746,7 +4746,7 @@ handle_execve(dcontext_t *dcontext)
         }
     }
 
-    /* i#237/PR 498284: If we're a vfork "thread" we're really in a different
+    /* i#237/PR 498284: if we're a vfork "thread" we're really in a different
      * process and if we exec then the parent process will still be alive.  We
      * can't easily clean our own state (dcontext, dstack, etc.) up in our
      * parent process: we need it to invoke the syscall and the syscall might
@@ -7623,7 +7623,7 @@ mem_stats_snapshot()
 }
 #endif
 
-/* i#975: With STATIC_LIBRARY, our code is mixed into the executable.  We
+/* i#975: with STATIC_LIBRARY, our code is mixed into the executable.  We
  * pretend DR has bounds of [0, 0), and nothing is in those bounds.
  */
 bool

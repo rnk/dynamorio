@@ -357,7 +357,7 @@ if (UNIX)
   set(dynamorio_link_flags "${dynamorio_link_flags} -nostdlib")
 
   if (NOT STATIC_LIBRARY)
-    # i#47: Set the ELF header entry point to _start for early injection.
+    # i#47: set the ELF header entry point to _start for early injection.
     set(dynamorio_link_flags "${dynamorio_link_flags} -Wl,--entry,_start")
   endif ()
 
@@ -588,7 +588,7 @@ else (UNIX)
       message(STATUS "Cannot find dumpbin so not performing dependence check")
     endif ()
   else ()
-    # i#975: If we're building static, none of those link flags above are going
+    # i#975: if we're building static, none of those link flags above are going
     # to make it through.  But target_link_libraries will.  We name a C library
     # here to make sure things get linked in the right order to avoid duplicate
     # definitions.  See the case 4125 msvcrt comment above about why we need a C

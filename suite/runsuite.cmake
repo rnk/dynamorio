@@ -174,8 +174,8 @@ if (DO_ALL_BUILDS)
     INTERNAL:BOOL=ON
     ")
   if (UNIX)
-    # i#975: Revived support for STATIC_LIBRARY.
-    # FIXME: We need a takeover mechanism on Windows to run the tests.
+    # i#975: revived support for STATIC_LIBRARY.
+    # FIXME: we need to implement takeover on Windows with .CRT$XCU.
     testbuild("static-debug-internal-64" ON "
       STATIC_LIBRARY:BOOL=ON
       DEBUG:BOOL=ON
