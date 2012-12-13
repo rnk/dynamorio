@@ -32,6 +32,8 @@
 
 /* Don't link against libc so we can pass with STATIC_LIBRARY. */
 
+#include "configure.h"
+
 /* We can't get this from tools.h, or we'll be linked against tools.c which uses
  * libc.
  */
