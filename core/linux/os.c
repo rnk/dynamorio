@@ -2838,7 +2838,10 @@ os_heap_reserve(void *preferred, size_t size, heap_error_code_t *error_code,
     /* FIXME: case 2347 on Linux or -vm_reserve should be set to false */
     /* FIXME: Need to actually get a mmap-ing with |MAP_NORESERVE */
     p = mmap_syscall(preferred, size, prot, MAP_PRIVATE|MAP_ANONYMOUS
-                     IF_X64(| (DYNAMO_OPTION(heap_in_lower_4GB) ? MAP_32BIT : 0)),
+                     IF_X64(| (DYNAMO_OPTION(heap_in_lower_4GB) &&
+                               /* allow preferred address to not be reachable */
+                               preferred == NULL ?
+                               MAP_32BIT : 0)),
                      -1, 0);
     if (!mmap_syscall_succeeded(p)) {
         *error_code = -(heap_error_code_t)(ptr_int_t)p;
@@ -5690,7 +5693,8 @@ pre_system_call(dcontext_t *dcontext)
         /* We switch the lib tls segment back to app's segment.
          * Please refer to comment on os_switch_lib_tls.
          */
-        if (IF_CLIENT_INTERFACE_ELSE(INTERNAL_OPTION(private_loader), false)) {
+        if (TEST(CLONE_VM, flags) /* not creating process */ &&
+            IF_CLIENT_INTERFACE_ELSE(INTERNAL_OPTION(private_loader), false)) {
             os_switch_lib_tls(dcontext, true/*to app*/);
         }
         break;
