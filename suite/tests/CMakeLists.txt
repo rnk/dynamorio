@@ -681,7 +681,7 @@ function(tobuild_gcc exe source depender extra_args)
 endfunction(tobuild_gcc)
 
 function(torunonly_ci test realexe realclient source client_ops dr_ops exe_ops)
-  get_client_path(client_path ${realclient} ${realexe})
+  get_client_path(client_path ${realclient}.dll ${realexe})
 
   # note that b/c of cmake's ridiculous scoping we can't easily share this code
   # w/ tobuild_ci: still have to propagate out of there, so we dup.
