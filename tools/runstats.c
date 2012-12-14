@@ -46,13 +46,14 @@
 #include <sys/types.h> /* for wait and mmap */
 #include <sys/wait.h>  /* for wait */
 #include <assert.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <sys/time.h> /* itimer */
 #include <stdlib.h> /* getenv */
 #include <string.h> /* strstr */
 #include <signal.h> /* killpg */
 
-#define VERBOSE 0
+static int memstats;
 
 /* just use single-arg handlers */
 typedef void (*handler_t)(int);
@@ -76,6 +77,17 @@ struct timeval start, end;
 static int silent; /* whether to print anything */
 static int kill_group; /* use killpg instead of kill */
 static FILE *FP;
+
+static void
+meminfo(const char *fmt, ...)
+{
+    va_list ap;
+    if (!memstats)
+        return;
+    va_start(ap, fmt);
+    vfprintf(FP, fmt, ap);
+    va_end(ap);
+}
 
 /***************************************************************************/
 /* /proc/self/status reader */
@@ -109,57 +121,43 @@ get_mem_stats(pid_t pid)
             assert(len == 2);
             if (val > vmstats.VmSize)
                 vmstats.VmSize = val;
-#if VERBOSE
-            fprintf(FP, "VmSize is %d kB\n", val);
-#endif
+            meminfo("VmSize is %d kB\n", val);
         } else if (strstr(line, "VmLck") != 0) {
             len = sscanf(line, STATUS_LINE_FORMAT, prefix, &val);
             assert(len == 2);
             if (val > vmstats.VmLck)
                 vmstats.VmLck = val;
-#if VERBOSE
-            fprintf(FP, "VmLck is %d kB\n", val);
-#endif
+            meminfo("VmLck is %d kB\n", val);
         } else if (strstr(line, "VmRSS") != 0) {
             len = sscanf(line, STATUS_LINE_FORMAT, prefix, &val);
             assert(len == 2);
             if (val > vmstats.VmRSS)
                 vmstats.VmRSS = val;
-#if VERBOSE
-            fprintf(FP, "VmRSS is %d kB\n", val);
-#endif
+            meminfo("VmRSS is %d kB\n", val);
         } else if (strstr(line, "VmData") != 0) {
             len = sscanf(line, STATUS_LINE_FORMAT, prefix, &val);
             assert(len == 2);
             if (val > vmstats.VmData)
                 vmstats.VmData = val;
-#if VERBOSE
-            fprintf(FP, "VmData is %d kB\n", val);
-#endif
+            meminfo("VmData is %d kB\n", val);
         } else if (strstr(line, "VmStk") != 0) {
             len = sscanf(line, STATUS_LINE_FORMAT, prefix, &val);
             assert(len == 2);
             if (val > vmstats.VmStk)
                 vmstats.VmStk = val;
-#if VERBOSE
-            fprintf(FP, "VmStk is %d kB\n", val);
-#endif
+            meminfo("VmStk is %d kB\n", val);
         } else if (strstr(line, "VmExe") != 0) {
             len = sscanf(line, STATUS_LINE_FORMAT, prefix, &val);
             assert(len == 2);
             if (val > vmstats.VmExe)
                 vmstats.VmExe = val;
-#if VERBOSE
-            fprintf(FP, "VmExe is %d kB\n", val);
-#endif
+            meminfo("VmExe is %d kB\n", val);
         } else if (strstr(line, "VmLib") != 0) {
             len = sscanf(line, STATUS_LINE_FORMAT, prefix, &val);
             assert(len == 2);
             if (val > vmstats.VmLib)
                 vmstats.VmLib = val;
-#if VERBOSE
-            fprintf(FP, "VmLib is %d kB\n", val);
-#endif
+            meminfo("VmLib is %d kB\n", val);
             /* final one, so break */
             break;
         }
@@ -173,15 +171,11 @@ static void
 signal_handler(int sig)
 {
     if (sig == SIGALRM) {
-#if VERBOSE
-        fprintf(FP, "just got SIGALRM for %d  =>  ", child);
-#endif
+        meminfo("just got SIGALRM for %d  =>  ", child);
         if (limit > 0) {
             gettimeofday(&end, (struct timezone *) 0);
-#if VERBOSE
-            fprintf(FP, "SIGALRM: comparing limit %d s vs. elapsed %d s\n",
+            meminfo("SIGALRM: comparing limit %d s vs. elapsed %ld s\n",
                     limit, end.tv_sec - start.tv_sec);
-#endif
             /* for limit, ignore fractions of second */
             if (end.tv_sec - start.tv_sec > limit) {
                 /* could use SIGTERM, but on win32 cygwin need SIGKILL */
@@ -196,9 +190,7 @@ signal_handler(int sig)
         }
         get_mem_stats(child);
     } else if (sig == SIGCHLD) {
-#if VERBOSE
-        fprintf(FP, "just got SIGCHLD for %d\n", child);
-#endif
+        meminfo("just got SIGCHLD for %d\n", child);
     }
 }
 
@@ -290,16 +282,14 @@ print_stats(struct timeval *start, struct timeval *end,
             vmstats.VmSize, vmstats.VmRSS, vmstats.VmData,
             vmstats.VmStk, vmstats.VmExe, vmstats.VmLib);
 
-#if VERBOSE
-    fprintf(FP, "Memory usage:\n");
-    fprintf(FP, "\tVmSize: %d kB\n", vmstats.VmSize);
-    fprintf(FP, "\tVmLck: %d kB\n", vmstats.VmLck);
-    fprintf(FP, "\tVmRSS: %d kB\n", vmstats.VmRSS);
-    fprintf(FP, "\tVmData: %d kB\n", vmstats.VmData);
-    fprintf(FP, "\tVmStk: %d kB\n", vmstats.VmStk);
-    fprintf(FP, "\tVmExe: %d kB\n", vmstats.VmExe);
-    fprintf(FP, "\tVmLib: %d kB\n", vmstats.VmLib);
-#endif
+    meminfo("Memory usage:\n");
+    meminfo("\tVmSize: %ld kB\n", vmstats.VmSize);
+    meminfo("\tVmLck: %ld kB\n", vmstats.VmLck);
+    meminfo("\tVmRSS: %ld kB\n", vmstats.VmRSS);
+    meminfo("\tVmData: %ld kB\n", vmstats.VmData);
+    meminfo("\tVmStk: %ld kB\n", vmstats.VmStk);
+    meminfo("\tVmExe: %ld kB\n", vmstats.VmExe);
+    meminfo("\tVmLib: %ld kB\n", vmstats.VmLib);
 }
 
 int usage(char *us)
@@ -342,6 +332,9 @@ int main(int argc, char *argv[])
         } else if (strcmp(argv[arg_offs], "-silent") == 0) {
             silent = 1;
             arg_offs += 1;
+        } else if (strcmp(argv[arg_offs], "-memstats") == 0) {
+            memstats = 1;
+            arg_offs += 1;
         } else if (strcmp(argv[arg_offs], "-killpg") == 0) {
             kill_group = 1;
             arg_offs += 1;
@@ -356,10 +349,8 @@ int main(int argc, char *argv[])
         } else if (strcmp(argv[arg_offs], "-env") == 0) {
             if (argc <= arg_offs+2)
                 return usage(argv[0]);
-#if VERBOSE
-            fprintf(FP, "setting env var \"%s\" to \"%s\"\n",
+            meminfo("setting env var \"%s\" to \"%s\"\n",
                     argv[arg_offs+1], argv[arg_offs+2]);
-#endif
             rc = setenv(argv[arg_offs+1], argv[arg_offs+2], 1/*overwrite*/);
             if (rc != 0 ||
                 strcmp(getenv(argv[arg_offs+1]), argv[arg_offs+2]) != 0) {
@@ -404,17 +395,13 @@ int main(int argc, char *argv[])
         rc = setitimer(ITIMER_REAL, &t, NULL);
         assert(rc == 0);
 
-#if VERBOSE
-        fprintf(FP, "parent waiting for child\n");
-#endif
+        meminfo("parent waiting for child\n");
         /* need loop since SIGALRM will interrupt us */
         do {
             result = wait3(&status, 0, &ru);
         } while (result != child);
         gettimeofday(&end, (struct timezone *) 0);
-#if VERBOSE
-        fprintf(FP, "child has exited\n");
-#endif
+        meminfo("child has exited\n");
     
         /* turn off timer */
         t.it_interval.tv_usec = 0;
