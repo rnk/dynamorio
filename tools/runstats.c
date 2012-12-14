@@ -338,7 +338,7 @@ int main(int argc, char *argv[])
         } else if (strcmp(argv[arg_offs], "-silent") == 0) {
             silent = 1;
             arg_offs += 1;
-        } else if (strcmp(argv[arg_offs], "-memstats") == 0) {
+        } else if (strcmp(argv[arg_offs], "-mem") == 0) {
             memstats = 1;
             arg_offs += 1;
         } else if (strcmp(argv[arg_offs], "-killpg") == 0) {
