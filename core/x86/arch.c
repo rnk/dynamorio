@@ -1947,13 +1947,13 @@ get_ibl_routine_code_internal(dcontext_t *dcontext,
 #endif
     switch (source_fragment_type) {
     case IBL_BB_SHARED:
-        if (!DYNAMO_OPTION(shared_bbs))
+        if (IF_X64_ELSE(false, !DYNAMO_OPTION(shared_bbs)))
             return NULL;
         return &(get_shared_gencode(dcontext _IF_X64(mode))->bb_ibl[branch_type]);
     case IBL_BB_PRIVATE:
         return &(get_emitted_routines_code(dcontext _IF_X64(mode))->bb_ibl[branch_type]);
     case IBL_TRACE_SHARED: 
-        if (!DYNAMO_OPTION(shared_traces))
+        if (IF_X64_ELSE(false, !DYNAMO_OPTION(shared_traces)))
             return NULL;
         return &(get_shared_gencode(dcontext _IF_X64(mode))->trace_ibl[branch_type]);
     case IBL_TRACE_PRIVATE:

@@ -7969,10 +7969,8 @@ client_xfer_ibl_tgt(dcontext_t *dcontext, generated_code_t *code,
      */
     return get_ibl_routine_ex(dcontext, entry_type,
                               DYNAMO_OPTION(disable_traces) ?
-                              (code->thread_shared && DYNAMO_OPTION(shared_bbs) ?
-                               IBL_BB_SHARED : IBL_BB_PRIVATE) :
-                              (code->thread_shared && DYNAMO_OPTION(shared_traces) ?
-                               IBL_TRACE_SHARED : IBL_TRACE_PRIVATE),
+                              (code->thread_shared ? IBL_BB_SHARED : IBL_BB_PRIVATE) :
+                              (code->thread_shared ? IBL_TRACE_SHARED : IBL_TRACE_PRIVATE),
                               IBL_RETURN
                               _IF_X64(code->gencode_mode));
 }
