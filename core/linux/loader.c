@@ -1360,8 +1360,8 @@ find_pt_interp(app_pc map, ptr_int_t delta)
     return NULL;
 }
 
-/* i#1004: Reserve some space for sbrk() during early injection before
- * initializing DR's heap.  With early injection, the program break comes
+/* i#1004: as a workaround, reserve some space for sbrk() during early injection
+ * before initializing DR's heap.  With early injection, the program break comes
  * somewhere after DR's bss section, subject to some ASLR.  When we allocate our
  * heap, sometimes we mmap right over the break, so any brk() calls will fail.
  * When brk() fails, most malloc() implementations fall back to mmap().
@@ -1376,7 +1376,7 @@ find_pt_interp(app_pc map, ptr_int_t delta)
  * memory, so this doesn't guarantee that further brk() calls will succeed.
  * However, I haven't observed any brk() failures after adding this workaround.
  */
-static void
+void
 reserve_brk(void)
 {
     ptr_int_t start_brk;
