@@ -1032,6 +1032,10 @@ GLOBAL_LABEL(dynamorio_syscall_wow64_noedx:)
         mov      [esp + 4], ecx
         lea      esp, [esp + 4]
         call     PTRSZ SEGMEM(fs,HEX(0c0))
+        /* we have to restore the stack shift of course (i#1036) */
+        mov      ecx, [esp]
+        mov      [esp - 4], ecx
+        lea      esp, [esp - 4]
         ret
         END_FUNC(dynamorio_syscall_wow64_noedx)
       
@@ -1135,7 +1139,7 @@ GLOBAL_LABEL(client_int_syscall:)
 #ifndef NOT_DYNAMORIO_CORE_PROPER
 #ifdef LINUX
 
-#ifndef STANDALONE_UNIT_TEST
+#if !defined(STANDALONE_UNIT_TEST) && !defined(STATIC_LIBRARY)
 /* i#47: Early injection _start routine.  The kernel sets all registers to zero
  * except the SP and PC.  The stack has argc, argv[], envp[], and the auxiliary
  * vector laid out on it.
@@ -1151,7 +1155,7 @@ GLOBAL_LABEL(_start:)
         call    privload_early_inject
         jmp     unexpected_return
         END_FUNC(_start)
-#endif
+#endif /* !STANDALONE_UNIT_TEST && !STATIC_LIBRARY */
 
 /* while with pre-2.6.9 kernels we were able to rely on the kernel's
  * default sigreturn code sequence and be more platform independent,
@@ -1775,9 +1779,6 @@ GLOBAL_LABEL(call_intr_excpt_alt_stack:)
 #undef stack
 #endif
 
-
-/* void get_segments_defg(cxt_seg_t *ds, cxt_seg_t *es, cxt_seg_t *fs, cxt_seg_t *gs) */
-        DECLARE_FUNC(get_segments_defg)
 /* CONTEXT.Seg* is WORD for x64 but DWORD for x86 */
 #ifdef X64
 # define REG_XAX_SEGWIDTH ax
@@ -1794,6 +1795,8 @@ GLOBAL_LABEL(call_intr_excpt_alt_stack:)
 #else
 # define FREE_REG REG_XCX
 #endif
+/* void get_segments_defg(cxt_seg_t *ds, cxt_seg_t *es, cxt_seg_t *fs, cxt_seg_t *gs) */
+        DECLARE_FUNC(get_segments_defg)
 GLOBAL_LABEL(get_segments_defg:)
         xor      eax, eax           /* Zero XAX, use it for reading segments. */
         mov      FREE_REG, ARG1
@@ -1810,6 +1813,19 @@ GLOBAL_LABEL(get_segments_defg:)
         mov      [FREE_REG], REG_XAX_SEGWIDTH
         ret
         END_FUNC(get_segments_defg)
+
+/* void get_segments_cs_ss(cxt_seg_t *cs, cxt_seg_t *ss) */
+        DECLARE_FUNC(get_segments_cs_ss)
+GLOBAL_LABEL(get_segments_cs_ss:)
+        xor      eax, eax           /* Zero XAX, use it for reading segments. */
+        mov      FREE_REG, ARG1
+        mov      ax, cs
+        mov      [FREE_REG], REG_XAX_SEGWIDTH
+        mov      FREE_REG, ARG2
+        mov      ax, ss
+        mov      [FREE_REG], REG_XAX_SEGWIDTH
+        ret
+        END_FUNC(get_segments_cs_ss)
 #undef FREE_REG
 #undef REG_XAX_SEGWIDTH
 
