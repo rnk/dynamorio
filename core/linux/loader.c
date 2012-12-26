@@ -1376,7 +1376,7 @@ find_pt_interp(app_pc map, ptr_int_t delta)
  * memory, so this doesn't guarantee that further brk() calls will succeed.
  * However, I haven't observed any brk() failures after adding this workaround.
  */
-void
+static void
 reserve_brk(void)
 {
     ptr_int_t start_brk;
