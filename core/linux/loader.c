@@ -355,7 +355,9 @@ elf_loader_init(elf_loader_t *elf, const char *filename)
 void
 elf_loader_destroy(elf_loader_t *elf)
 {
-    os_close(elf->fd);
+    if (elf->fd != INVALID_FILE) {
+        os_close(elf->fd);
+    }
     if (elf->file_map != NULL) {
         os_unmap_file(elf->file_map, elf->file_size);
     }
@@ -368,11 +370,16 @@ elf_loader_read_ehdr(elf_loader_t *elf)
     /* The initial read is sized to read both ehdr and all phdrs. */
     if (elf->fd == INVALID_FILE)
         return NULL;
-    if (!os_read_until(elf->fd, elf->buf, sizeof(elf->buf)))
-        return NULL;
-    if (!is_elf_so_header(elf->buf, sizeof(elf->buf)))
-        return NULL;
-    elf->ehdr = (ELF_HEADER_TYPE *) elf->buf;
+    if (elf->file_map != NULL) {
+        /* The user mapped the entire file up front, so use it. */
+        elf->ehdr = (ELF_HEADER_TYPE *) elf->file_map;
+    } else {
+        if (!os_read_until(elf->fd, elf->buf, sizeof(elf->buf)))
+            return NULL;
+        if (!is_elf_so_header(elf->buf, sizeof(elf->buf)))
+            return NULL;
+        elf->ehdr = (ELF_HEADER_TYPE *) elf->buf;
+    }
     return elf->ehdr;
 }
 
@@ -386,6 +393,7 @@ elf_loader_map_file(elf_loader_t *elf)
         return NULL;
     if (!os_get_file_size_by_handle(elf->fd, &size64))
         return NULL;
+    ASSERT_TRUNCATE(elf->file_size, size_t, size64);
     elf->file_size = (size_t)size64;  /* truncate */
     elf->file_map = os_map_file(elf->fd, &elf->file_size, 0, NULL, MEMPROT_READ,
                                 true/*cow*/, false/*image*/, false/*fixed*/);
@@ -401,7 +409,7 @@ elf_loader_read_phdrs(elf_loader_t *elf)
         return NULL;
     ph_off = elf->ehdr->e_phoff;
     ph_size = elf->ehdr->e_phnum * elf->ehdr->e_phentsize;
-    if (ph_off + ph_size < sizeof(elf->buf)) {
+    if (elf->file_map == NULL && ph_off + ph_size < sizeof(elf->buf)) {
         /* We already read phdrs, and they are in buf. */
         elf->phdrs = (ELF_PROGRAM_HEADER_TYPE *) (elf->buf + elf->ehdr->e_phoff);
     } else {
@@ -440,6 +448,7 @@ elf_loader_map_phdrs(elf_loader_t *elf, bool fixed, map_fn_t map_func,
     uint   seg_prot, i;
     ptr_int_t delta;
 
+    ASSERT(elf->phdrs != NULL && "call elf_loader_read_phdrs() first");
     if (elf->phdrs == NULL)
         return NULL;
 
@@ -458,9 +467,9 @@ elf_loader_map_phdrs(elf_loader_t *elf, bool fixed, map_fn_t map_func,
     elf->load_base = lib_base;
 
     if (map_base != NULL && map_base != lib_base) {
-        /* the mapped memory is not at preferred address,
+        /* the mapped memory is not at preferred address, 
          * should be ok if it is still reachable for X64,
-         * which will be checked later.
+         * which will be checked later. 
          */
         LOG(GLOBAL, LOG_LOADER, 1, "%s: module not loaded at preferred address\n",
             __FUNCTION__);
@@ -490,12 +499,12 @@ elf_loader_map_phdrs(elf_loader_t *elf, bool fixed, map_fn_t map_func,
             }
             seg_prot = module_segment_prot_to_osprot(prog_hdr);
             pg_offs  = ALIGN_BACKWARD(prog_hdr->p_offset, PAGE_SIZE);
-            /* FIXME:
+            /* FIXME: 
              * This function can be called after dynamorio_heap_initialized,
              * and we will use map_file instead of os_map_file.
-             * However, map_file does not allow mmap with overlapped memory,
+             * However, map_file does not allow mmap with overlapped memory, 
              * so we have to unmap the old memory first.
-             * This might be a problem, e.g.
+             * This might be a problem, e.g. 
              * one thread unmaps the memory and before mapping the actual file,
              * another thread requests memory via mmap takes the memory here,
              * a racy condition.
@@ -512,16 +521,16 @@ elf_loader_map_phdrs(elf_loader_t *elf, bool fixed, map_fn_t map_func,
             file_end = (app_pc)prog_hdr->p_vaddr + prog_hdr->p_filesz;
             if (seg_end > file_end + delta)
                 memset(file_end + delta, 0, seg_end - (file_end + delta));
-            seg_end  = (app_pc)ALIGN_FORWARD(prog_hdr->p_vaddr +
+            seg_end  = (app_pc)ALIGN_FORWARD(prog_hdr->p_vaddr + 
                                              prog_hdr->p_memsz,
                                              PAGE_SIZE) + delta;
             seg_size = seg_end - seg_base;
             (*prot_func)(seg_base, seg_size, seg_prot);
             last_end = seg_end;
-        }
+        } 
     }
     ASSERT(last_end == lib_end);
-    /* FIXME: Check for failure above rather than always succeeding. */
+    /* FIXME: recover from map failure rather than relying on asserts. */
 
     return lib_base;
 }
@@ -558,6 +567,7 @@ privload_map_and_relocate(const char *filename, size_t *size OUT)
     prot_fn_t prot_func;
     app_pc base = NULL;
     elf_loader_t loader;
+    app_pc text_addr;
 
     ASSERT_OWN_RECURSIVE_LOCK(true, &privload_lock);
     /* get appropriate function */
@@ -574,23 +584,44 @@ privload_map_and_relocate(const char *filename, size_t *size OUT)
         prot_func  = os_set_protection;
     }
 
-    if (elf_loader_read_headers(&loader, filename)) {
-        base = elf_loader_map_phdrs(&loader, false /* fixed */, map_func,
-                                    unmap_func, prot_func);
-        if (base != NULL) {
-            if (size != NULL)
-                *size = loader.image_size;
+    if (!elf_loader_read_headers(&loader, filename))
+        return NULL;
+
+    base = elf_loader_map_phdrs(&loader, false /* fixed */, map_func,
+                                unmap_func, prot_func);
+    if (base != NULL) {
+        if (size != NULL)
+            *size = loader.image_size;
+
 #if defined(INTERNAL) || defined(CLIENT_INTERFACE)
-            /* XXX: We have to mmap the whole file to find the text addr. */
-            if (elf_loader_map_file(&loader) != NULL) {
-                app_pc text_addr;
-                text_addr = (app_pc)module_get_text_section(loader.file_map,
-                                                            loader.file_size);
-                text_addr += loader.load_delta;
-                privload_add_gdb_cmd(filename, text_addr);
+        /* Get the text addr to register the ELF with gdb.  The section headers
+         * are not part of the mapped image, so we have to map the whole file.
+         * XXX: seek to e_shoff and read the section headers to avoid this map.
+         */
+        if (elf_loader_map_file(&loader) != NULL) {
+            text_addr = (app_pc)module_get_text_section(loader.file_map,
+                                                        loader.file_size);
+            text_addr += loader.load_delta;
+            privload_add_gdb_cmd(filename, text_addr);
+            /* Add debugging comment about how to get symbol information in gdb. */
+            if (printed_gdb_commands) {
+                /* This is a dynamically loaded auxlib, so we print here.
+                 * The client and its direct dependencies are batched up and
+                 * printed in os_loader_init_epilogue.
+                 */
+                SYSLOG_INTERNAL_INFO("Paste into GDB to debug DynamoRIO clients:\n"
+                                     "add-symbol-file '%s' %p\n",
+                                     filename, text_addr);
             }
-#endif
+            LOG(GLOBAL, LOG_LOADER, 1,
+                "for debugger: add-symbol-file %s %p\n",
+                filename, text_addr);
+            if (IF_CLIENT_INTERFACE_ELSE(
+                    INTERNAL_OPTION(privload_register_gdb), false)) {
+                dr_gdb_add_symbol_file(filename, text_addr);
+            }
         }
+#endif
     }
     elf_loader_destroy(&loader);
 

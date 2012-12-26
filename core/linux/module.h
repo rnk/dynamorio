@@ -312,7 +312,12 @@ typedef struct elf_loader_t {
     void *file_map;                     /* Whole file map, if needed. */
     size_t file_size;                   /* Size of the file map. */
 
-    /* Static buffer sized to hold most headers in a single read. */
+    /* Static buffer sized to hold most headers in a single read.  A typical ELF
+     * file has an ELF header followed by program headers.  On my workstation,
+     * most ELFs in /usr/lib have 7 phdrs, and the maximum is 9.  We choose 12
+     * as a good upper bound and to allow for padding.  If the headers don't
+     * fit, we fall back to file mapping.
+     */
     byte buf[sizeof(ELF_HEADER_TYPE) + sizeof(ELF_PROGRAM_HEADER_TYPE) * 12];
 } elf_loader_t;
 
@@ -349,7 +354,8 @@ app_pc
 elf_loader_map_file(elf_loader_t *elf);
 
 /* Maps in the PT_LOAD segments of an ELF file, returning the base.  Must be
- * called after reading program headers.  All image mappings are done via the
+ * called after reading program headers with elf_loader_read_phdrs() or the
+ * elf_loader_read_headers() shortcut.  All image mappings are done via the
  * provided function pointers.
  */
 app_pc
