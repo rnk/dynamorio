@@ -372,15 +372,13 @@ shared_gencode_init(IF_X64_ELSE(gencode_mode_t gencode_mode, void))
 
     /* PR 244737: thread-private uses shared gencode on x64.
      * Should we set the option instead? */
-    if (IF_X64(!DYNAMO_OPTION(disable_traces) ||)
-        DYNAMO_OPTION(shared_trace_ibl_routine)) {
+    if (USE_SHARED_TRACE_IBL()) {
         /* expected to be false for private trace IBL routine  */
         pc = emit_ibl_routines(GLOBAL_DCONTEXT, gencode,
                                pc, gencode->fcache_return, 
                                DYNAMO_OPTION(shared_traces) ?
                                IBL_TRACE_SHARED : IBL_TRACE_PRIVATE, /* source_fragment_type */
-                               /* thread_shared */
-                               USE_SHARED_TRACE_IBL(),
+                               true, /* thread_shared */
                                true, /* target_trace_table */
                                gencode->trace_ibl);
     }
