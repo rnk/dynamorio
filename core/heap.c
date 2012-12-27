@@ -459,7 +459,7 @@ request_region_be_heap_reachable(byte *start, size_t size)
     } 
     if (start + size - 1 > must_reach_region_end) {
         SELF_UNPROTECT_DATASEC(DATASEC_RARELY_PROT);
-        must_reach_region_end = start + size - 1;
+        must_reach_region_end = start + size - 1;  /* closed */
         /* Write assumed to be atomic so we don't have to hold a lock to use
          * heap_allowable_region_start. */
         heap_allowable_region_start = REACHABLE_32BIT_START(must_reach_region_start,
