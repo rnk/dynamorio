@@ -1036,11 +1036,21 @@ context_to_mcontext(priv_mcontext_t *mcontext, CONTEXT *cxt)
     mcontext->pc     = (app_pc) cxt->CXT_XIP; /* including XIP */
 }
 
+/* If set_cur_seg is true, cs and ss (part of CONTEXT_CONTROL) are set to
+ * the current values.
+ * If mcontext_to_context is used to set another thread's context,
+ * the caller must initialize the cs/ss value properly and set
+ * set_cur_seg to false
+ */
 void
-mcontext_to_context(CONTEXT *cxt, priv_mcontext_t *mcontext)
+mcontext_to_context(CONTEXT *cxt, priv_mcontext_t *mcontext, bool set_cur_seg)
 {
     /* xref comment in context_to_mcontext */
     ASSERT(TESTALL(CONTEXT_DR_STATE_NO_YMM, cxt->ContextFlags));
+    if (set_cur_seg) {
+        /* i#1033: initialize CONTEXT_CONTROL segments for current thread */
+        get_segments_cs_ss(&cxt->SegCs, &cxt->SegSs);
+    }
     /* CONTEXT_INTEGER */
     cxt->CXT_XAX    = mcontext->xax;
     cxt->CXT_XBX    = mcontext->xbx;
@@ -1144,7 +1154,7 @@ get_own_context_integer_control(CONTEXT *cxt, reg_t cs, reg_t ss,
     /* avoid assert in mcontext_to_context about not having xmm flags.
      * get rid of this once we implement PR 266070. */
     DODEBUG({ cxt->ContextFlags = CONTEXT_DR_STATE_NO_YMM; });
-    mcontext_to_context(cxt, mc);
+    mcontext_to_context(cxt, mc, false /* !set_cur_seg */);
     DODEBUG({ cxt->ContextFlags = origflags; });
 }
 
@@ -5137,11 +5147,11 @@ nt_raw_OpenProcessTokenEx(HANDLE process_handle,
                           PHANDLE token_handle)
 {
     NTSTATUS res;
-    res = NT_SYSCALL(OpenProcessTokenEx,
-                     process_handle,
-                     desired_access,
-                     handle_attributes,
-                     token_handle);
+    res = NT_RAW_SYSCALL(OpenProcessTokenEx,
+                         process_handle,
+                         desired_access,
+                         handle_attributes,
+                         token_handle);
 # ifdef DEBUG
     if (!NT_SUCCESS(res)) {
         NTLOG(GLOBAL, LOG_NT, 1,
@@ -5180,12 +5190,12 @@ nt_raw_OpenThreadTokenEx(HANDLE thread_handle,
                          PHANDLE token_handle)
 {
     NTSTATUS res;
-    res = NT_SYSCALL(OpenThreadTokenEx,
-                     thread_handle,
-                     desired_access,
-                     open_as_self,
-                     handle_attributes,
-                     token_handle);
+    res = NT_RAW_SYSCALL(OpenThreadTokenEx,
+                         thread_handle,
+                         desired_access,
+                         open_as_self,
+                         handle_attributes,
+                         token_handle);
 # ifdef DEBUG
     if (!NT_SUCCESS(res)) {
         NTLOG(GLOBAL, LOG_NT, 1,

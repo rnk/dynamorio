@@ -1336,6 +1336,15 @@ privload_process_one_import(privmod_t *mod, privmod_t *impmod,
     /* loop to handle sequence of forwarders */
     while (func == NULL) {
         if (forwarder == NULL) {
+#ifdef CLIENT_INTERFACE
+            /* there's a syslog in loader_init() but we want to provide the symbol */
+            char msg[MAXIMUM_PATH*2];
+            snprintf(msg, BUFFER_SIZE_ELEMENTS(msg),
+                     "import %s not found in ", impfunc); /* name is subsequent arg */
+            NULL_TERMINATE_BUFFER(msg);
+            SYSLOG(SYSLOG_ERROR, CLIENT_LIBRARY_UNLOADABLE, 4,
+                   get_application_name(), get_application_pid(), msg, impmod->name);
+#endif
             LOG(GLOBAL, LOG_LOADER, 1, "%s: import %s not found in %s\n",
                 __FUNCTION__, impfunc, impmod->name);
             return false;
@@ -1680,7 +1689,8 @@ privload_disable_console_init(privmod_t *mod)
 
     ASSERT(mod != NULL);
     ASSERT(strcasecmp(mod->name, "kernel32.dll") == 0);
-    if (get_os_version() < WINDOWS_VERSION_7)
+    /* win8 does not need this fix (i#911) */
+    if (get_os_version() != WINDOWS_VERSION_7)
         return true; /* nothing to do */
 
     /* We want to turn the call to ConnectConsoleInternal from ConDllInitialize,
