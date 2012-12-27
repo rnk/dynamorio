@@ -42,16 +42,16 @@ extern "C" {
 /* Users of drwrap need to use the drmgr versions of these events to ensure
  * that drwrap's actions occur at the right time.
  */
-#define dr_register_bb_event DO_NOT_USE_bb_event_USE_drmmgr_bb_events_instead
-#define dr_unregister_bb_event DO_NOT_USE_bb_event_USE_drmmgr_bb_events_instead
-#define dr_get_tls_field DO_NOT_USE_tls_field_USE_drmmgr_tls_field_instead
-#define dr_set_tls_field DO_NOT_USE_tls_field_USE_drmmgr_tls_field_instead
-#define dr_insert_read_tls_field DO_NOT_USE_tls_field_USE_drmmgr_tls_field_instead
-#define dr_insert_write_tls_field DO_NOT_USE_tls_field_USE_drmmgr_tls_field_instead
-#define dr_register_thread_init_event DO_NOT_USE_thread_event_USE_drmmgr_events_instead
-#define dr_unregister_thread_init_event DO_NOT_USE_thread_event_USE_drmmgr_events_instead
-#define dr_register_thread_exit_event DO_NOT_USE_thread_event_USE_drmmgr_events_instead
-#define dr_unregister_thread_exit_event DO_NOT_USE_thread_event_USE_drmmgr_events_instead
+#define dr_register_bb_event DO_NOT_USE_bb_event_USE_drmgr_bb_events_instead
+#define dr_unregister_bb_event DO_NOT_USE_bb_event_USE_drmgr_bb_events_instead
+#define dr_get_tls_field DO_NOT_USE_tls_field_USE_drmgr_tls_field_instead
+#define dr_set_tls_field DO_NOT_USE_tls_field_USE_drmgr_tls_field_instead
+#define dr_insert_read_tls_field DO_NOT_USE_tls_field_USE_drmgr_tls_field_instead
+#define dr_insert_write_tls_field DO_NOT_USE_tls_field_USE_drmgr_tls_field_instead
+#define dr_register_thread_init_event DO_NOT_USE_thread_event_USE_drmgr_events_instead
+#define dr_unregister_thread_init_event DO_NOT_USE_thread_event_USE_drmgr_events_instead
+#define dr_register_thread_exit_event DO_NOT_USE_thread_event_USE_drmgr_events_instead
+#define dr_unregister_thread_exit_event DO_NOT_USE_thread_event_USE_drmgr_events_instead
 
 /***************************************************************************
  * INIT
@@ -60,9 +60,11 @@ extern "C" {
 DR_EXPORT
 /**
  * Initializes the drwrap extension.  Must be called prior to any of the
- * other routines, and should only be called once.
+ * other routines.  Can be called multiple times (by separate components,
+ * normally) but each call must be paired with a corresponding call to
+ * drwrap_exit().
  *
- * \return whether successful.  Will return false if called a second time.
+ * \return whether successful.
  */
 bool
 drwrap_init(void);
@@ -87,11 +89,15 @@ drwrap_exit(void);
  * instrumentation pass ordering.
  */
 enum {
-    DRMGR_PRIORITY_APP2APP_DRWRAP  = -500, /**< Priority of drwap_replace() */
+    DRMGR_PRIORITY_APP2APP_DRWRAP  = -500, /**< Priority of drwrap_replace() */
     DRMGR_PRIORITY_INSERT_DRWRAP   =  500, /**< Priority of drwrap_wrap() */
+    DRMGR_PRIORITY_FAULT_DRWRAP    =  500, /**< Priority of fault handling event */
 };
 
-/** Name of drmgr instrumentation pass priorities for both app2app and insert */
+/**
+ * Name of drmgr instrumentation pass priorities for app2app, insert, and
+ * exception on Windows.
+ */
 #define DRMGR_PRIORITY_NAME_DRWRAP "drwrap"
 
 /** Spill slot used to store user_data parameter for drwrap_replace_native() */

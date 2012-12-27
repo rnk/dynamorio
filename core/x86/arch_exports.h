@@ -59,7 +59,8 @@
 #define XMM_SAVED_REG_SIZE  YMM_REG_SIZE /* space in priv_mcontext_t for xmm/ymm */
 #define XMM_SLOTS_SIZE  (NUM_XMM_SLOTS*XMM_SAVED_REG_SIZE)
 #define XMM_SAVED_SIZE  (NUM_XMM_SAVED*XMM_SAVED_REG_SIZE)
-#define YMM_ENABLED() (proc_has_feature(FEATURE_AVX))
+/* OS has to enable AVX (=> OSXSAVE): else AVX instrs will raise #UD (i#1030) */
+#define YMM_ENABLED() (proc_has_feature(FEATURE_AVX) && proc_has_feature(FEATURE_OSXSAVE))
 #define YMMH_REG_SIZE (YMM_REG_SIZE/2) /* upper half */
 #define YMMH_SAVED_SIZE (NUM_XMM_SLOTS*YMMH_REG_SIZE)
 
@@ -823,6 +824,7 @@ int dynamorio_syscall_syscall(int sysnum, ...);
 int dynamorio_syscall_wow64(int sysnum, ...);
 /* Use this version if !syscall_uses_edx_param_base() */
 int dynamorio_syscall_wow64_noedx(int sysnum, ...);
+void get_segments_cs_ss(cxt_seg_t *cs, cxt_seg_t *ss);
 void get_segments_defg(cxt_seg_t *ds, cxt_seg_t *es, cxt_seg_t *fs, cxt_seg_t *gs);
 void get_own_context_helper(CONTEXT *cxt);
 void dr_fxsave(byte *buf_aligned);

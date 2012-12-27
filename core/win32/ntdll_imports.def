@@ -117,6 +117,7 @@ EXPORTS
         NtCreateThread
         NtOpenThread
         NtFlushInstructionCache
+        NtQueryAttributesFile
         RtlInitializeCriticalSection
         RtlDeleteCriticalSection
         RtlEnterCriticalSection
@@ -148,6 +149,7 @@ EXPORTS
         LdrGetDllHandle
         CsrClientCallServer
         _snprintf
+        _snwprintf
         _stricmp
         _strnicmp
         _wcsicmp

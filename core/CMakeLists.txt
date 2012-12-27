@@ -236,7 +236,7 @@ else (UNIX)
     )
 endif (UNIX)
 
-add_library(dynamorio SHARED 
+add_library(dynamorio ${SHARED_OR_STATIC}
   ${CORE_SRCS} ${ARCH_SRCS} ${OS_SRCS}
   # FIXME: any other way to add a dependence?  this is for export_list,
   # where the PRE_LINK custom command doesn't support DEPENDS.
@@ -356,8 +356,10 @@ if (UNIX)
 
   set(dynamorio_link_flags "${dynamorio_link_flags} -nostdlib")
 
-  # i#47: Set the ELF header entry point to _start for early injection.
-  set(dynamorio_link_flags "${dynamorio_link_flags} -Wl,--entry,_start")
+  if (NOT STATIC_LIBRARY)
+    # i#47: set the ELF header entry point to _start for early injection.
+    set(dynamorio_link_flags "${dynamorio_link_flags} -Wl,--entry,_start")
+  endif ()
 
   if (NOT HAVE_FVISIBILITY)
     set(export_list ${CMAKE_CURRENT_BINARY_DIR}/exportlist)
@@ -419,7 +421,9 @@ if (UNIX)
   set_target_properties(dynamorio PROPERTIES
     VERSION "${VERSION_MAJOR_MINOR}" SOVERSION "${VERSION_MAJOR_MINOR}")
   # We assume we're still on 3.x
-  generate_soversions(${OLDEST_COMPATIBLE_VERSION} ${VERSION_NUMBER_INTEGER})
+  if (NOT STATIC_LIBRARY)
+    generate_soversions(${OLDEST_COMPATIBLE_VERSION} ${VERSION_NUMBER_INTEGER})
+  endif ()
 
   # Note that we can't locate readelf inside CMake_readelf.cmake as that
   # would disallow pointing externally at a readelf location, so we make it
@@ -429,9 +433,11 @@ if (UNIX)
   # readelf is a binutils app just like ld
   get_filename_component(binutils_path ${CMAKE_LINKER} PATH)
   find_program(READELF_EXECUTABLE readelf HINTS "${binutils_path}" DOC "path to readelf")
-  if (NOT READELF_EXECUTABLE)
+  if (STATIC_LIBRARY)
+    # Skipping readelf check for STATIC_LIBRARY.
+  elseif (NOT READELF_EXECUTABLE)
     message("readelf not found: not checking SElinux or execstack")
-  else (NOT READELF_EXECUTABLE)
+  else ()
     get_target_property(lib_to_check dynamorio LOCATION)
     add_custom_command(TARGET dynamorio
       POST_BUILD
@@ -452,7 +458,7 @@ if (UNIX)
            -P ${CMAKE_CURRENT_SOURCE_DIR}/CMake_readelf.cmake
       VERBATIM # recommended: p260
       )
-  endif (NOT READELF_EXECUTABLE)
+  endif ()
 
   # we used to run size on libdynamorio.so for info purposes
 
@@ -562,17 +568,32 @@ else (UNIX)
 
   set_target_properties(dynamorio PROPERTIES LINK_FLAGS "${dynamorio_link_flags}")
 
-  # ensure there are no dependencies other than ntdll
-  find_program(DUMPBIN_EXECUTABLE dumpbin.exe DOC "path to dumpbin.exe")
-  if (DUMPBIN_EXECUTABLE)
-    add_custom_command(TARGET dynamorio POST_BUILD
-      COMMAND ${CMAKE_COMMAND}
-      ARGS -D lib=${drout}
-           -D DUMPBIN_EXECUTABLE=${DUMPBIN_EXECUTABLE}
-           -P ${CMAKE_CURRENT_SOURCE_DIR}/CMake_checkdeps.cmake
-      VERBATIM)
+  if (DEBUG)
+    set(WIN32_C_LIB libcmtd)
+  else (DEBUG)
+    set(WIN32_C_LIB libcmt)
+  endif (DEBUG)
+
+  if (NOT STATIC_LIBRARY)
+    # ensure there are no dependencies other than ntdll
+    find_program(DUMPBIN_EXECUTABLE dumpbin.exe DOC "path to dumpbin.exe")
+    if (DUMPBIN_EXECUTABLE)
+      add_custom_command(TARGET dynamorio POST_BUILD
+        COMMAND ${CMAKE_COMMAND}
+        ARGS -D lib=${drout}
+             -D DUMPBIN_EXECUTABLE=${DUMPBIN_EXECUTABLE}
+             -P ${CMAKE_CURRENT_SOURCE_DIR}/CMake_checkdeps.cmake
+        VERBATIM)
+    else ()
+      message(STATUS "Cannot find dumpbin so not performing dependence check")
+    endif ()
   else ()
-    message(STATUS "Cannot find dumpbin so not performing dependence check")
+    # i#975: if we're building static, none of those link flags above are going
+    # to make it through.  But target_link_libraries will.  We name a C library
+    # here to make sure things get linked in the right order to avoid duplicate
+    # definitions.  See the case 4125 msvcrt comment above about why we need a C
+    # library.
+    target_link_libraries(dynamorio ${WIN32_C_LIB} ${ntimp_lib})
   endif ()
 
 
@@ -616,12 +637,6 @@ if (WIN32)
     # for parallel build correctness we need a target dependence
     add_dependencies(drinjectlib ${x86_noncore_asm_tgt} ntimp_tgt)
   endif ()
-  # I'm adding libcmt to attempt to make sure we have multithreaded C lib:
-  if (DEBUG)
-    set(WIN32_C_LIB libcmtd)
-  else (DEBUG)
-    set(WIN32_C_LIB libcmt)
-  endif (DEBUG)
   set(drinjectlib_link_flags
     # not bothering with map files
     "${LD_FLAGS} /incremental:no /subsystem:console /NODEFAULTLIB")
@@ -630,6 +645,7 @@ if (WIN32)
   # symbols atoi and iswctype from libcmtd and ntdll.  Unlike dynamorio.dll we're
   # ok w/ libc syms so we re-order and take the static syms first.
   set_target_properties(drinjectlib PROPERTIES LINK_FLAGS "${drinjectlib_link_flags}")
+  # I'm adding libcmt to attempt to make sure we have multithreaded C lib:
   target_link_libraries(drinjectlib drdecode ${WIN32_C_LIB} ${ntimp_lib}
     kernel32 advapi32 imagehlp)
   # drinject.exe needs a copy in the bin dir
@@ -683,17 +699,11 @@ set_target_properties(dynamorio PROPERTIES
   # Setting these isn't affecting anything but doing so anyway.
   IMPORTED_LINK_INTERFACE_LIBRARIES ""
   IMPORTED_LINK_INTERFACE_LIBRARIES_NOCONFIG "")
-DR_install(TARGETS dynamorio
-  EXPORT ${exported_targets_name}
+install_exported_target(dynamorio ${INSTALL_LIB}
   # CMake doesn't set +x on shared libraries, so we have to ask for it.
-  PERMISSIONS OWNER_READ OWNER_EXECUTE GROUP_READ GROUP_EXECUTE
-  RUNTIME DESTINATION ${INSTALL_LIB} # .dll
-  LIBRARY DESTINATION ${INSTALL_LIB} # .so
-  ARCHIVE DESTINATION ${INSTALL_LIB} # .lib
-  )
+  PERMISSIONS OWNER_READ OWNER_EXECUTE GROUP_READ GROUP_EXECUTE)
 DR_export_target(dynamorio)
-DR_install(TARGETS drinjectlib EXPORT ${exported_targets_name}
-  DESTINATION ${INSTALL_LIB_BASE})
+install_exported_target(drinjectlib ${INSTALL_LIB_BASE})
 DR_export_target(drinjectlib)
 if (UNIX)
   DR_install(TARGETS ${PRELOAD_NAME} DESTINATION ${INSTALL_LIB})
@@ -706,8 +716,7 @@ else (UNIX)
   DR_install(TARGETS drearlyhelp2 RUNTIME DESTINATION ${INSTALL_LIB_BASE})
 endif (UNIX)
 
-DR_install(TARGETS drdecode EXPORT ${exported_targets_name}
-  DESTINATION ${INSTALL_LIB})
+install_exported_target(drdecode ${INSTALL_LIB})
 
 # We need separate 32-bit and 64-bit versions so we put into lib dir
 DR_install(FILES ${ntimp_lib} DESTINATION ${INSTALL_LIB_BASE})

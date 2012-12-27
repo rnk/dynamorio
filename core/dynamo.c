@@ -235,7 +235,7 @@ dr_statistics_t *stats = NULL;
 DECLARE_FREQPROT_VAR(static int num_known_threads, 0);
 #ifdef LINUX
 /* i#237/PR 498284: vfork threads that execve need to be separately delay-freed */
-DECLARE_FREQPROT_VAR(static int num_execve_threads, 0);
+DECLARE_FREQPROT_VAR(int num_execve_threads, 0);
 #endif
 DECLARE_FREQPROT_VAR(static uint threads_ever_count, 0);
 
@@ -2263,10 +2263,6 @@ dynamo_thread_exit_common(dcontext_t *dcontext, thread_id_t id,
     }
 #endif
 
-    /* i#920: we can't take segment/timer/asynch actions for other threads */
-    if (!other_thread)
-        dynamo_thread_not_under_dynamo(dcontext);
-
 #ifdef SIDELINE
     /* N.B.: do not clean up any data structures while sideline thread
      * is still running!  put it to sleep for duration of this routine!
@@ -2309,20 +2305,6 @@ dynamo_thread_exit_common(dcontext_t *dcontext, thread_id_t id,
     }
 #endif
 
-    /* set tls dc to NULL prior to cleanup, to avoid problems handling
-     * alarm signals received during cleanup (we'll suppress if tls
-     * dc==NULL which seems the right thing to do: not worth our
-     * effort to pass to another thread if thread-group-shared alarm,
-     * and if thread-private then thread would have exited soon
-     * anyway).  see PR 596127.
-     */
-    /* make sure we invalidate the dcontext before releasing the memory  */
-    /* when cleaning up other threads, we cannot set their dcs to null,
-     * but we only do this at dynamorio_app_exit so who cares
-     */
-    if (id == get_thread_id())
-        set_thread_private_dcontext(NULL);
-
     /* In order to pass the client a dcontext in the process exit event
      * we do some thread cleanup early for the final thread so we can delay
      * the rest (PR 536058)
@@ -2334,6 +2316,31 @@ dynamo_thread_exit_common(dcontext_t *dcontext, thread_id_t id,
     if (!DYNAMO_OPTION(thin_client))
         instrument_thread_exit(dcontext);
 #endif
+
+    /* i#920: we can't take segment/timer/asynch actions for other threads.
+     * This must be called after dynamo_thread_exit_pre_client where
+     * we called event callbacks.
+     */
+    if (!other_thread)
+        dynamo_thread_not_under_dynamo(dcontext);
+
+    /* set tls dc to NULL prior to cleanup, to avoid problems handling
+     * alarm signals received during cleanup (we'll suppress if tls
+     * dc==NULL which seems the right thing to do: not worth our
+     * effort to pass to another thread if thread-group-shared alarm,
+     * and if thread-private then thread would have exited soon
+     * anyway).  see PR 596127.
+     */
+    /* make sure we invalidate the dcontext before releasing the memory  */
+    /* when cleaning up other threads, we cannot set their dcs to null,
+     * but we only do this at dynamorio_app_exit so who cares
+     */
+    /* This must be called after instrument_thread_exit, which uses
+     * get_thread_private_dcontext for app/dr state checks.
+     */
+    if (id == get_thread_id())
+        set_thread_private_dcontext(NULL);
+
     if (!dynamo_exited ||
         (other_thread &&
          (IF_WINDOWS_ELSE(!doing_detach, true) ||
@@ -2346,7 +2353,7 @@ dynamo_thread_exit_common(dcontext_t *dcontext, thread_id_t id,
         vm_areas_thread_exit(dcontext);
     synch_thread_exit(dcontext);
     arch_thread_exit(dcontext _IF_WINDOWS(detach_stacked_callbacks));
-    os_thread_exit(dcontext);
+    os_thread_exit(dcontext, other_thread);
     DOLOG(1, LOG_STATS, {
         dump_thread_stats(dcontext, false);
     });
