@@ -399,9 +399,10 @@ if (UNIX)
     get_target_property(dynamorio_dot_a dynamorio LOCATION)
     string(REGEX REPLACE "\\.a$" ".tmp.o" dynamorio_global_dot_o "${dynamorio_dot_a}")
     string(REGEX REPLACE "\\.a$" ".o" dynamorio_dot_o "${dynamorio_dot_a}")
+    string(REPLACE " " ";" partial_link_flags "${BASE_CFLAGS}")  # Get -m32/64
     add_custom_command(TARGET dynamorio POST_BUILD
       COMMAND
-      ${CMAKE_C_COMPILER} ${CMAKE_C_FLAGS} -nostartfiles -nodefaultlibs -r
+      ${CMAKE_C_COMPILER} ${partial_link_flags} -nostartfiles -nodefaultlibs -r
       -Wl,--whole-archive "${dynamorio_dot_a}" -o "${dynamorio_global_dot_o}"
       &&
       ${CMAKE_OBJCOPY} --localize-hidden "${dynamorio_global_dot_o}"
@@ -412,6 +413,9 @@ if (UNIX)
       ${CMAKE_AR} cr "${dynamorio_dot_a}" "${dynamorio_dot_o}"
       &&
       ${CMAKE_RANLIB} "${dynamorio_dot_a}"
+      ||
+      # Don't let the build succeed if one step fails.
+      rm -f "${dynamorio_dot_a}"
       WORKING_DIRECTORY ${DR_LIBRARY_OUTPUT_DIRECTORY}
       VERBATIM)
   endif ()
