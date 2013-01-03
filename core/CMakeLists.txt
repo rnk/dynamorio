@@ -387,6 +387,35 @@ if (UNIX)
   # import that we should cut.
   target_link_libraries(dynamorio dl m)
 
+  # We need to do extra work hide symbols in the static library build.  First
+  # we do a partial link with ld -r, which makes a single dynamorio.o object
+  # file.  Then we use objcopy --localize-hidden to hide all non-exported
+  # symbols.
+  if (NOT DEFINED CMAKE_OBJCOPY)
+    find_package(BinUtils)
+  endif (NOT DEFINED CMAKE_OBJCOPY)
+  if (STATIC_LIBRARY AND DEFINED CMAKE_OBJCOPY)
+    # FIXME: should this be its own shell or cmake script?
+    get_target_property(dynamorio_dot_a dynamorio LOCATION)
+    string(REGEX REPLACE "\\.a$" ".tmp.o" dynamorio_global_dot_o "${dynamorio_dot_a}")
+    string(REGEX REPLACE "\\.a$" ".o" dynamorio_dot_o "${dynamorio_dot_a}")
+    add_custom_command(TARGET dynamorio POST_BUILD
+      COMMAND
+      ${CMAKE_C_COMPILER} ${CMAKE_C_FLAGS} -nostartfiles -nodefaultlibs -r
+      -Wl,--whole-archive "${dynamorio_dot_a}" -o "${dynamorio_global_dot_o}"
+      &&
+      ${CMAKE_OBJCOPY} --localize-hidden "${dynamorio_global_dot_o}"
+      "${dynamorio_dot_o}"
+      &&
+      rm -f "${dynamorio_dot_a}"
+      &&
+      ${CMAKE_AR} cr "${dynamorio_dot_a}" "${dynamorio_dot_o}"
+      &&
+      ${CMAKE_RANLIB} "${dynamorio_dot_a}"
+      WORKING_DIRECTORY ${DR_LIBRARY_OUTPUT_DIRECTORY}
+      VERBATIM)
+  endif ()
+
   # We use .so versioning via symlinks.
   # We do not version the preload lib as it does not expose an API,
   # and drconfig is Windows-only.
