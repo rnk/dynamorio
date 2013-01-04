@@ -68,6 +68,7 @@ typedef struct _dr_inject_info_t {
 const char *
 get_application_short_name(void)
 {
+    ASSERT(false);
     return "";
 }
 

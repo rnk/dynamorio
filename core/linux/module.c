@@ -2104,9 +2104,9 @@ elf_loader_map_phdrs(elf_loader_t *elf, bool fixed, map_fn_t map_func,
     elf->load_base = lib_base;
 
     if (map_base != NULL && map_base != lib_base) {
-        /* the mapped memory is not at preferred address, 
+        /* the mapped memory is not at preferred address,
          * should be ok if it is still reachable for X64,
-         * which will be checked later. 
+         * which will be checked later.
          */
         LOG(GLOBAL, LOG_LOADER, 1, "%s: module not loaded at preferred address\n",
             __FUNCTION__);
@@ -2136,12 +2136,12 @@ elf_loader_map_phdrs(elf_loader_t *elf, bool fixed, map_fn_t map_func,
             }
             seg_prot = module_segment_prot_to_osprot(prog_hdr);
             pg_offs  = ALIGN_BACKWARD(prog_hdr->p_offset, PAGE_SIZE);
-            /* FIXME: 
+            /* FIXME:
              * This function can be called after dynamorio_heap_initialized,
              * and we will use map_file instead of os_map_file.
-             * However, map_file does not allow mmap with overlapped memory, 
+             * However, map_file does not allow mmap with overlapped memory,
              * so we have to unmap the old memory first.
-             * This might be a problem, e.g. 
+             * This might be a problem, e.g.
              * one thread unmaps the memory and before mapping the actual file,
              * another thread requests memory via mmap takes the memory here,
              * a racy condition.
@@ -2158,13 +2158,13 @@ elf_loader_map_phdrs(elf_loader_t *elf, bool fixed, map_fn_t map_func,
             file_end = (app_pc)prog_hdr->p_vaddr + prog_hdr->p_filesz;
             if (seg_end > file_end + delta)
                 memset(file_end + delta, 0, seg_end - (file_end + delta));
-            seg_end  = (app_pc)ALIGN_FORWARD(prog_hdr->p_vaddr + 
+            seg_end  = (app_pc)ALIGN_FORWARD(prog_hdr->p_vaddr +
                                              prog_hdr->p_memsz,
                                              PAGE_SIZE) + delta;
             seg_size = seg_end - seg_base;
             (*prot_func)(seg_base, seg_size, seg_prot);
             last_end = seg_end;
-        } 
+        }
     }
     ASSERT(last_end == lib_end);
     /* FIXME: recover from map failure rather than relying on asserts. */
