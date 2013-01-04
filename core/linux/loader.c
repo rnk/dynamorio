@@ -395,6 +395,9 @@ elf_loader_map_file(elf_loader_t *elf)
         return NULL;
     ASSERT_TRUNCATE(elf->file_size, size_t, size64);
     elf->file_size = (size_t)size64;  /* truncate */
+    /* We use os_map_file since this mapping is usually temporary.  We don't
+     * need to add and remove it from dynamo_areas.
+     */
     elf->file_map = os_map_file(elf->fd, &elf->file_size, 0, NULL, MEMPROT_READ,
                                 true/*cow*/, false/*image*/, false/*fixed*/);
     return elf->file_map;
