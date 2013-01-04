@@ -1544,8 +1544,13 @@ if (UNIX)
   # thereby exercising on our ability to copy libc's TLS data.
   tobuild_ops(linux.app_tls linux/app_tls.c "-native_exec_list libfoo.so" "")
 
-  # Test fully static executables, which we only support with early injection.
-  tobuild_ops(linux.fib-static common/fib.c "-early_inject" "")
+  # Test fully static executables, which we only support with early injection
+  # or STATIC_LIBRARY.
+  set(fib_static_ops "-early_inject")
+  if (STATIC_LIBRARY)
+    set(fib_static_ops "")
+  endif ()
+  tobuild_ops(linux.fib-static common/fib.c "${fib_static_ops}" "")
   append_property_string(TARGET linux.fib-static LINK_FLAGS "-static")
   # Test position independent executables.
   # FIXME i#1001: fib-pie fails with -early_inject.
