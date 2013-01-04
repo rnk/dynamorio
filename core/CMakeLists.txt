@@ -395,7 +395,6 @@ if (UNIX)
     find_package(BinUtils)
   endif (NOT DEFINED CMAKE_OBJCOPY)
   if (STATIC_LIBRARY AND DEFINED CMAKE_OBJCOPY)
-    # FIXME: should this be its own shell or cmake script?
     get_target_property(dynamorio_dot_a dynamorio LOCATION)
     string(REGEX REPLACE "\\.a$" ".tmp.o" dynamorio_global_dot_o "${dynamorio_dot_a}")
     string(REGEX REPLACE "\\.a$" ".o" dynamorio_dot_o "${dynamorio_dot_a}")
@@ -403,18 +402,13 @@ if (UNIX)
     add_custom_command(TARGET dynamorio POST_BUILD
       COMMAND
       ${CMAKE_C_COMPILER} ${partial_link_flags} -nostartfiles -nodefaultlibs -r
-      -Wl,--whole-archive "${dynamorio_dot_a}" -o "${dynamorio_global_dot_o}"
-      &&
+        -Wl,--whole-archive "${dynamorio_dot_a}" -o "${dynamorio_global_dot_o}" &&
       ${CMAKE_OBJCOPY} --localize-hidden "${dynamorio_global_dot_o}"
-      "${dynamorio_dot_o}"
-      &&
-      rm -f "${dynamorio_dot_a}"
-      &&
-      ${CMAKE_AR} cr "${dynamorio_dot_a}" "${dynamorio_dot_o}"
-      &&
+        "${dynamorio_dot_o}" &&
+      rm -f "${dynamorio_dot_a}" &&
+      ${CMAKE_AR} cr "${dynamorio_dot_a}" "${dynamorio_dot_o}" &&
       ${CMAKE_RANLIB} "${dynamorio_dot_a}"
-      ||
-      # Don't let the build succeed if one step fails.
+      ||  # Don't let the build succeed if one step fails.
       rm -f "${dynamorio_dot_a}"
       WORKING_DIRECTORY ${DR_LIBRARY_OUTPUT_DIRECTORY}
       VERBATIM)
