@@ -558,19 +558,27 @@ gen_syscall(void *dc, instrlist_t *ilist, int sysnum, uint num_opnds,
 #endif
 }
 
+static void
+unexpected_trace_event(process_id_t pid, int sig_expected, int sig_actual)
+{
+    ptr_int_t err_pc;
+    our_ptrace(PTRACE_PEEKUSER, pid, (void *)REG_PC_OFFSET, &err_pc);
+    fprintf(stderr, "Unexpected trace event.  Expected %s, got signal %d "
+            "at pc: %p\n", strsignal(sig_expected), sig_actual,
+            (void *)err_pc);
+}
+
 static bool
 wait_until_signal(process_id_t pid, int sig)
 {
     int status;
-    waitpid(pid, &status, 0);
+    int r = waitpid(pid, &status, 0);
+    if (r < 0)
+        return false;
     if (WIFSTOPPED(status) && WSTOPSIG(status) == sig) {
         return true;
     } else {
-        ptr_int_t err_pc;
-        our_ptrace(PTRACE_PEEKUSER, pid, (void *)REG_PC_OFFSET, &err_pc);
-        fprintf(stderr, "Unexpected trace event, expected %s, got:\n"
-                "status: 0x%x, stopped by signal: %d, at pc: %p\n",
-                strsignal(sig), status, WSTOPSIG(status), (void *)err_pc);
+        unexpected_trace_event(pid, sig, WSTOPSIG(status));
         return false;
     }
 }
@@ -955,9 +963,27 @@ inject_ptrace(dr_inject_info_t *info, const char *library_path)
 
     /* This should run something equivalent to dynamorio_app_init(), and then
      * return.
+     * XXX: we can actually fault during dynamorio_app_init() due to safe_reads,
+     * so we have to expect SIGSEGV and let it be delivered.
      */
-    if (!continue_until_break(info->pid))
+    int status;
+    int signal = 0;
+    do {
+        /* Continue or deliver pending signal from status. */
+        r = our_ptrace(PTRACE_CONT, info->pid, NULL, (void *)(ptr_int_t)signal);
+        if (r < 0)
+            return false;
+        r = waitpid(info->pid, &status, 0);
+        if (r < 0 || !WIFSTOPPED(status))
+            return false;
+        signal = WSTOPSIG(status);
+    } while (signal == SIGSEGV);
+
+    /* When we get SIGTRAP, DR has initialized. */
+    if (signal != SIGTRAP) {
+        unexpected_trace_event(info->pid, SIGTRAP, signal);
         return false;
+    }
 
     /* We've stopped the injectee prior to dynamo_start.  If we detach now, it
      * will continue into dynamo_start().
