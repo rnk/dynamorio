@@ -1,5 +1,5 @@
 /* **********************************************************
- * Copyright (c) 2010-2012 Google, Inc.  All rights reserved.
+ * Copyright (c) 2010-2013 Google, Inc.  All rights reserved.
  * Copyright (c) 2000-2010 VMware, Inc.  All rights reserved.
  * **********************************************************/
 
@@ -372,19 +372,17 @@ shared_gencode_init(IF_X64_ELSE(gencode_mode_t gencode_mode, void))
 
     /* PR 244737: thread-private uses shared gencode on x64.
      * Should we set the option instead? */
-    if (IF_X64(!DYNAMO_OPTION(disable_traces) ||)
-        DYNAMO_OPTION(shared_trace_ibl_routine)) {
+    if (USE_SHARED_TRACE_IBL()) {
         /* expected to be false for private trace IBL routine  */
         pc = emit_ibl_routines(GLOBAL_DCONTEXT, gencode,
                                pc, gencode->fcache_return, 
                                DYNAMO_OPTION(shared_traces) ?
                                IBL_TRACE_SHARED : IBL_TRACE_PRIVATE, /* source_fragment_type */
-                               /* thread_shared */
-                               IF_X64_ELSE(true, DYNAMO_OPTION(shared_trace_ibl_routine)),
+                               true, /* thread_shared */
                                true, /* target_trace_table */
                                gencode->trace_ibl);
     }
-    if (IF_X64_ELSE(true, DYNAMO_OPTION(shared_bbs))) {
+    if (USE_SHARED_BB_IBL()) {
         pc = emit_ibl_routines(GLOBAL_DCONTEXT, gencode,
                                pc, gencode->fcache_return,
                                IBL_BB_SHARED, /* source_fragment_type */
@@ -1947,13 +1945,13 @@ get_ibl_routine_code_internal(dcontext_t *dcontext,
 #endif
     switch (source_fragment_type) {
     case IBL_BB_SHARED:
-        if (!DYNAMO_OPTION(shared_bbs))
+        if (!USE_SHARED_BB_IBL())
             return NULL;
         return &(get_shared_gencode(dcontext _IF_X64(mode))->bb_ibl[branch_type]);
     case IBL_BB_PRIVATE:
         return &(get_emitted_routines_code(dcontext _IF_X64(mode))->bb_ibl[branch_type]);
     case IBL_TRACE_SHARED: 
-        if (!DYNAMO_OPTION(shared_traces))
+        if (!USE_SHARED_TRACE_IBL())
             return NULL;
         return &(get_shared_gencode(dcontext _IF_X64(mode))->trace_ibl[branch_type]);
     case IBL_TRACE_PRIVATE:
@@ -2550,6 +2548,30 @@ instr_is_trace_cmp(dcontext_t *dcontext, instr_t *inst)
         ;
 }
 
+#ifdef LINUX
+static inline bool
+instr_is_seg_ref_load(dcontext_t *dcontext, instr_t *inst)
+{
+    /* This won't fault but we don't want "unsupported mangle instr" message. */
+    if (!instr_is_our_mangling(inst))
+        return false;
+    /* Look for the load of either segment base */
+    if (instr_is_tls_restore(inst, REG_NULL/*don't care*/,
+                             os_tls_offset(os_get_app_seg_base_offset(SEG_FS))) ||
+        instr_is_tls_restore(inst, REG_NULL/*don't care*/,
+                             os_tls_offset(os_get_app_seg_base_offset(SEG_GS))))
+        return true;
+    /* Look for the lea */
+    if (instr_get_opcode(inst) == OP_lea) {
+        opnd_t mem = instr_get_src(inst, 0);
+        if (opnd_get_scale(mem) == 1 &&
+            opnd_get_index(mem) == opnd_get_reg(instr_get_dst(inst, 0)))
+            return true;
+    }
+    return false;
+}
+#endif
+
 static void
 translate_walk_track(dcontext_t *tdcontext, instr_t *inst, translate_walk_t *walk)
 {
@@ -2675,6 +2697,17 @@ translate_walk_track(dcontext_t *tdcontext, instr_t *inst, translate_walk_t *wal
         }
         else if (instr_is_trace_cmp(tdcontext, inst)) {
             /* nothing to do */
+        }
+#ifdef LINUX
+        else if (instr_is_seg_ref_load(tdcontext, inst)) {
+            /* nothing to do */
+        }
+#endif
+        else if (instr_ok_to_mangle(inst)) {
+            /* To have reg spill+restore in the same mangle region, we mark
+             * the (modified) app instr for rip-rel and for segment mangling as
+             * "our mangling".  There's nothing specific to do for it.
+             */
         }
         /* We do not support restoring state at arbitrary points for thread
          * relocation (a performance issue, not a correctness one): if not a

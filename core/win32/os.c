@@ -514,6 +514,7 @@ exit_global_profiles()
 bool
 os_supports_avx()
 {
+    /* XXX: why not just test proc FEATURE_OSXSAVE? */
     /* XXX: what about the WINDOWS Server 2008 R2? */
     if (os_version >= WINDOWS_VERSION_8 ||
         (os_version == WINDOWS_VERSION_7 && os_service_pack_major >= 1))
@@ -1445,7 +1446,7 @@ os_thread_init(dcontext_t *dcontext)
 }
 
 void
-os_thread_exit(dcontext_t *dcontext)
+os_thread_exit(dcontext_t *dcontext, bool other_thread)
 {
     os_thread_data_t *ostd = (os_thread_data_t *) dcontext->os_field;
     aslr_thread_exit(dcontext);
@@ -3638,7 +3639,11 @@ thread_set_mcontext(thread_record_t *tr, priv_mcontext_t *mc)
 {
     char buf[MAX_CONTEXT_SIZE];
     CONTEXT *cxt = nt_initialize_context(buf, CONTEXT_DR_STATE);
-    mcontext_to_context(cxt, mc);
+    /* i#1033: get the context from the dst thread to make sure
+     * segments are correctly set.
+     */
+    thread_get_context(tr, cxt);
+    mcontext_to_context(cxt, mc, false /* !set_cur_seg */);
     return thread_set_context(tr, cxt);
 }
 
@@ -3669,7 +3674,8 @@ thread_set_self_mcontext(priv_mcontext_t *mc)
 {
     char buf[MAX_CONTEXT_SIZE];
     CONTEXT *cxt = nt_initialize_context(buf, CONTEXT_DR_STATE);
-    mcontext_to_context(cxt, mc);
+    /* need ss and cs for setting my own context */
+    mcontext_to_context(cxt, mc, true /* set_cur_seg */);
     thread_set_self_context(cxt);
     ASSERT_NOT_REACHED();
 }
@@ -5575,6 +5581,7 @@ os_unmap_file(byte *map, size_t size/*unused*/)
  * owner, the caller must hold the thread_initexit_lock to ensure that it
  * remains valid.
  * Requires thread trec is at_safe_spot().
+ * We assume that the segments CS and SS have been set in the cxt properly.
  */
 bool
 translate_context(thread_record_t *trec, CONTEXT *cxt, bool restore_memory)
@@ -5587,8 +5594,10 @@ translate_context(thread_record_t *trec, CONTEXT *cxt, bool restore_memory)
     ASSERT(TESTALL(CONTEXT_DR_STATE, cxt->ContextFlags));
     context_to_mcontext(&mc, cxt);
     res = translate_mcontext(trec, &mc, restore_memory, NULL);
-    if (res)
-        mcontext_to_context(cxt, &mc);
+    if (res) {
+        /* assuming cs/ss has been set properly */
+        mcontext_to_context(cxt, &mc, false /* set_cur_seg */);
+    }
     return res;
 }
 

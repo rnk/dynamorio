@@ -486,6 +486,7 @@ static HMODULE (WINAPI *priv_kernel32_LoadLibraryW)(const wchar_t *);
 #ifdef CLIENT_INTERFACE
 /* Isolate the app's PEB by making a copy for use by private libs (i#249) */
 static PEB *private_peb;
+static bool private_peb_initialized = false;
 /* Isolate TEB->FlsData: for first thread we need to copy before have dcontext */
 static void *pre_fls_data;
 /* Isolate TEB->ReservedForNtRpc: for first thread we need to copy before have dcontext */
@@ -548,7 +549,7 @@ os_loader_init_prologue(void)
         private_peb->FlsListHead.Flink = (LIST_ENTRY *) &private_peb->FlsListHead;
         private_peb->FlsListHead.Blink = (LIST_ENTRY *) &private_peb->FlsListHead;
         private_peb->FlsCallback = NULL;
-
+        private_peb_initialized = true;
         swap_peb_pointer(NULL, true/*to priv*/);
         LOG(GLOBAL, LOG_LOADER, 2, "app peb="PFX"\n", own_peb);
         LOG(GLOBAL, LOG_LOADER, 2, "private peb="PFX"\n", private_peb);
@@ -806,7 +807,7 @@ is_using_app_peb(dcontext_t *dcontext)
     void *cur_rpc;
     ASSERT(dcontext != NULL && dcontext != GLOBAL_DCONTEXT);
     if (!INTERNAL_OPTION(private_peb) ||
-        !dynamo_initialized ||
+        !private_peb_initialized ||
         !should_swap_peb_pointer())
         return true;
     ASSERT(cur_peb != NULL);
@@ -844,7 +845,7 @@ swap_peb_pointer(dcontext_t *dcontext, bool to_priv)
 {
     PEB *tgt_peb = to_priv ? get_private_peb() : get_own_peb();
     ASSERT(INTERNAL_OPTION(private_peb));
-    ASSERT(!dynamo_initialized || should_swap_peb_pointer());
+    ASSERT(private_peb_initialized || should_swap_peb_pointer());
     ASSERT(tgt_peb != NULL);
     set_teb_field(dcontext, PEB_TIB_OFFSET, (void *) tgt_peb);
     LOG(THREAD, LOG_LOADER, 2, "set teb->peb to "PFX"\n", tgt_peb);
@@ -916,7 +917,7 @@ restore_peb_pointer_for_thread(dcontext_t *dcontext)
     PEB *tgt_peb = get_own_peb();
     ASSERT_NOT_TESTED();
     ASSERT(INTERNAL_OPTION(private_peb));
-    ASSERT(!dynamo_initialized || should_swap_peb_pointer());
+    ASSERT(private_peb_initialized || should_swap_peb_pointer());
     ASSERT(tgt_peb != NULL);
     ASSERT(dcontext != NULL && dcontext->teb_base != NULL);
     set_teb_field(dcontext, PEB_TIB_OFFSET, (void *) tgt_peb);
@@ -933,6 +934,12 @@ restore_peb_pointer_for_thread(dcontext_t *dcontext)
     LOG(THREAD, LOG_LOADER, 3, "restored app fls to "PFX"\n", dcontext->app_nt_rpc);
 }
 #endif /* CLIENT_INTERFACE */
+
+bool
+os_should_swap_state(void)
+{
+    return IF_CLIENT_INTERFACE_ELSE(should_swap_peb_pointer(), false);
+}
 
 bool
 os_using_app_state(dcontext_t *dcontext)
@@ -1329,6 +1336,15 @@ privload_process_one_import(privmod_t *mod, privmod_t *impmod,
     /* loop to handle sequence of forwarders */
     while (func == NULL) {
         if (forwarder == NULL) {
+#ifdef CLIENT_INTERFACE
+            /* there's a syslog in loader_init() but we want to provide the symbol */
+            char msg[MAXIMUM_PATH*2];
+            snprintf(msg, BUFFER_SIZE_ELEMENTS(msg),
+                     "import %s not found in ", impfunc); /* name is subsequent arg */
+            NULL_TERMINATE_BUFFER(msg);
+            SYSLOG(SYSLOG_ERROR, CLIENT_LIBRARY_UNLOADABLE, 4,
+                   get_application_name(), get_application_pid(), msg, impmod->name);
+#endif
             LOG(GLOBAL, LOG_LOADER, 1, "%s: import %s not found in %s\n",
                 __FUNCTION__, impfunc, impmod->name);
             return false;
@@ -1673,7 +1689,8 @@ privload_disable_console_init(privmod_t *mod)
 
     ASSERT(mod != NULL);
     ASSERT(strcasecmp(mod->name, "kernel32.dll") == 0);
-    if (get_os_version() < WINDOWS_VERSION_7)
+    /* win8 does not need this fix (i#911) */
+    if (get_os_version() != WINDOWS_VERSION_7)
         return true; /* nothing to do */
 
     /* We want to turn the call to ConnectConsoleInternal from ConDllInitialize,

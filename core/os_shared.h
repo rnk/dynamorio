@@ -58,7 +58,7 @@ void os_tls_init(void);
  */
 void os_tls_exit(struct _local_state_t *local_state, bool other_thread);
 void os_thread_init(dcontext_t *dcontext);
-void os_thread_exit(dcontext_t *dcontext);
+void os_thread_exit(dcontext_t *dcontext, bool other_thread);
 
 /* must only be called for the executing thread */
 void os_thread_under_dynamo(dcontext_t *dcontext);
@@ -173,6 +173,8 @@ bool
 os_tls_cfree(uint offset, uint num_slots);
 #endif
 
+bool
+os_should_swap_state(void);
 bool
 os_using_app_state(dcontext_t *dcontext);
 void
