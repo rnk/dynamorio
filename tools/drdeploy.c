@@ -71,7 +71,13 @@ typedef enum _action_t {
 
 static bool verbose;
 static bool quiet;
-static bool DR_dll_not_needed;
+static bool DR_dll_not_needed =
+#ifdef STATIC_LIBRARY
+    true
+#else
+    false
+#endif
+    ;
 static bool nocheck;
 
 #define die() exit(1)
@@ -1130,17 +1136,21 @@ int main(int argc, char *argv[])
         usage("no action specified");
     }
     if (syswide_on) {
+        DWORD platform;
+        if (get_platform(&platform) != ERROR_SUCCESS)
+            platform = PLATFORM_UNKNOWN;
+        if (platform >= PLATFORM_WIN_8) {
+            error("syswide_on is not yet supported on Windows 8");
+            die();
+        }
         if (!check_dr_root(dr_root, false, dr_platform, true))
             die();
         /* If this is the first setting of AppInit on NT, warn about reboot */
         if (!dr_syswide_is_on(dr_platform, dr_root)) {
-            DWORD platform;
-            if (get_platform(&platform) == ERROR_SUCCESS &&
-                platform == PLATFORM_WIN_NT_4) {
+            if (platform == PLATFORM_WIN_NT_4) {
                 warn("on Windows NT, applications will not be taken over until reboot");
             }
-            else if (get_platform(&platform) == ERROR_SUCCESS &&
-                     platform >= PLATFORM_WIN_7) {
+            else if (platform >= PLATFORM_WIN_7) {
                 /* i#323 will fix this but good to warn the user */
                 warn("on Windows 7, syswide_on relaxes system security by removing certain code signing requirements");
             }
@@ -1168,10 +1178,15 @@ int main(int argc, char *argv[])
      * our drrun shell script and makes scripting easier for the user.
      */
     if (limit == 0 && !use_ptrace) {
+        info("will exec %s", app_name);
         errcode = dr_inject_prepare_to_exec(app_name, app_argv, &inject_data);
     } else
 # endif /* LINUX */
+    {
         errcode = dr_inject_process_create(app_name, app_argv, &inject_data);
+        info("created child with pid %d for %s",
+             dr_inject_get_process_id(inject_data), app_name);
+    }
     if (errcode != 0) {
         IF_WINDOWS(int sofar =)
             _snprintf(buf, BUFFER_SIZE_ELEMENTS(buf),
@@ -1228,7 +1243,10 @@ int main(int argc, char *argv[])
     success = false;
     IF_WINDOWS(start_time = time(NULL);)
 
-    dr_inject_process_run(inject_data);
+    if (!dr_inject_process_run(inject_data)) {
+        error("unable to run");
+        goto error;
+    }
 
 # ifdef WINDOWS
     if (limit == 0 && dr_inject_using_debug_key(inject_data)) {

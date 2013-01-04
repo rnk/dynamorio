@@ -99,6 +99,9 @@
 # define SYSNUM_FSTAT SYS_fstat64
 #endif
 
+/* Prototype for all functions in .init_array. */
+typedef int (*init_fn_t)(int argc, char **argv, char **envp);
+
 /* i#46: Private __environ pointer.  Points at the environment variable array
  * on the stack, which is different from what libc __environ may point at.  We
  * use the environment for following children and setting options, so its OK
@@ -395,9 +398,11 @@ static void os_dir_iterator_start(dir_iterator_t *iter, file_t fd);
 static bool os_dir_iterator_next(dir_iterator_t *iter);
 /* XXX: If we generalize to Windows, will we need os_dir_iterator_stop()? */
 
+#if defined(CLIENT_INTERFACE) || !defined(STATIC_LIBRARY)
 static int
 get_library_bounds(const char *name, app_pc *start/*IN/OUT*/, app_pc *end/*OUT*/,
                    char *fullpath/*OPTIONAL OUT*/, size_t path_size);
+#endif
 
 /* vsyscall page.  hardcoded at 0xffffe000 in earlier kernels, but
  * randomly placed since fedora2.
@@ -419,7 +424,7 @@ app_pc vsyscall_sysenter_return_pc = NULL;
 # define VSYSCALL_REGION_MAPS_NAME "[vsyscall]"
 #endif
 
-#ifndef STANDALONE_UNIT_TEST
+#if !defined(STANDALONE_UNIT_TEST) && !defined(STATIC_LIBRARY)
 /* The pthreads library keeps errno in its pthread_descr data structure,
  * which it looks up by dispatching on the stack pointer.  This doesn't work
  * when within dynamo.  Thus, we define our own __errno_location() for use both
@@ -446,7 +451,7 @@ __errno_location(void) {
         return &(dcontext->upcontext_ptr->errno);
     }
 }
-#endif /* !STANDALONE_UNIT_TEST */
+#endif /* !STANDALONE_UNIT_TEST && !STATIC_LIBRARY */
 
 #if defined(HAVE_TLS) && defined(CLIENT_INTERFACE)
 /* i#598 
@@ -664,9 +669,8 @@ getenv(const char *name)
 /* Work around drpreload's _init going first.  We can get envp in our own _init
  * routine down below, but drpreload.so comes first and calls
  * dynamorio_app_init before our own _init routine gets called.  Apps using the
- * app API are unaffected because our _init routine will have run by then.
- * FIXME: If we decide to support STATIC_LIBRARY we'll need to document this API
- * or make sure we get envp some other way.
+ * app API are unaffected because our _init routine will have run by then.  For
+ * STATIC_LIBRARY, we simply set our_environ below in our_init().
  */
 DYNAMORIO_EXPORT
 void
@@ -675,26 +679,31 @@ dynamorio_set_envp(char **envp)
     our_environ = envp;
 }
 
-#if !defined(STATIC_LIBRARY) && !defined(STANDALONE_UNIT_TEST)
-/* shared library init and exit */
+/* shared library init */
 int
-_init(int argc, char **argv, char **envp)
+our_init(int argc, char **argv, char **envp)
 {
     /* if do not want to use drpreload.so, we can take over here */
     extern void dynamorio_app_take_over(void);
     bool takeover = false;
-# ifdef INIT_TAKE_OVER
+#ifdef INIT_TAKE_OVER
     takeover = true;
-# endif
-# ifdef VMX86_SERVER
+#endif
+#ifdef VMX86_SERVER
     /* PR 391765: take over here instead of using preload */
     takeover = os_in_vmkernel_classic();
-# endif
+#endif
     if (our_environ != NULL) {
         /* Set by dynamorio_set_envp above.  These should agree. */
         ASSERT(our_environ == envp);
     } else {
         our_environ = envp;
+    }
+    if (!takeover) {
+        const char *takeover_env = getenv("DYNAMORIO_TAKEOVER_IN_INIT");
+        if (takeover_env != NULL && strcmp(takeover_env, "1") == 0) {
+            takeover = true;
+        }
     }
     if (takeover) {
         if (dynamorio_app_init() == 0 /* success */) {
@@ -704,10 +713,24 @@ _init(int argc, char **argv, char **envp)
     return 0;
 }
 
+#if defined(STATIC_LIBRARY) || defined(STANDALONE_UNIT_TEST)
+/* If we're getting linked into a binary that already has an _init definition
+ * like the app's exe or unit_tests, we add a pointer to our_init() to the
+ * .init_array section.  We can't use the constructor attribute because not all
+ * toolchains pass the args and environment to the constructor.
+ */
+static init_fn_t
+__attribute__ ((section (".init_array"), aligned (sizeof (void *)), used))
+init_array[] = {
+    our_init
+};
+#else
+/* If we're a normal shared object, then we override _init.
+ */
 int
-_fini()
+_init(int argc, char **argv, char **envp)
 {
-    return 0;
+    return our_init(argc, argv, envp);
 }
 #endif
 
@@ -2281,7 +2304,7 @@ os_thread_init(dcontext_t *dcontext)
 }
 
 void
-os_thread_exit(dcontext_t *dcontext)
+os_thread_exit(dcontext_t *dcontext, bool other_thread)
 {
     os_thread_data_t *ostd = (os_thread_data_t *) dcontext->os_field;
 
@@ -2293,7 +2316,7 @@ os_thread_exit(dcontext_t *dcontext)
 
     DELETE_LOCK(ostd->suspend_lock);
 
-    signal_thread_exit(dcontext);
+    signal_thread_exit(dcontext, other_thread);
 
     /* for non-debug we do fast exit path and don't free local heap */
     DODEBUG({
@@ -2422,6 +2445,17 @@ os_fork_init(dcontext_t *dcontext)
     TABLE_RWLOCK(fd_table, write, unlock);
 }
 
+/* We only bother swapping the library segment if we're using the private
+ * loader.
+ */
+bool
+os_should_swap_state(void)
+{
+    /* -private_loader currently implies -mangle_app_seg, but let's be safe. */
+    return (INTERNAL_OPTION(mangle_app_seg) &&
+            IF_CLIENT_INTERFACE_ELSE(INTERNAL_OPTION(private_loader), false));
+}
+
 bool
 os_using_app_state(dcontext_t *dcontext)
 {
@@ -2445,9 +2479,7 @@ os_using_app_state(dcontext_t *dcontext)
 void
 os_swap_context(dcontext_t *dcontext, bool to_app)
 {
-    if (INTERNAL_OPTION(mangle_app_seg) &&
-        /* xref os_tls_app_seg_init, we only swap lib TLS for private loader */
-        IF_CLIENT_INTERFACE_ELSE(INTERNAL_OPTION(private_loader), false))
+    if (os_should_swap_state())
         os_switch_seg_to_context(dcontext, LIB_SEG_TLS, to_app);
 }
 
@@ -2830,7 +2862,10 @@ os_heap_reserve(void *preferred, size_t size, heap_error_code_t *error_code,
     /* FIXME: case 2347 on Linux or -vm_reserve should be set to false */
     /* FIXME: Need to actually get a mmap-ing with |MAP_NORESERVE */
     p = mmap_syscall(preferred, size, prot, MAP_PRIVATE|MAP_ANONYMOUS
-                     IF_X64(| (DYNAMO_OPTION(heap_in_lower_4GB) ? MAP_32BIT : 0)),
+                     IF_X64(| (DYNAMO_OPTION(heap_in_lower_4GB) &&
+                               /* allow preferred address to not be reachable */
+                               preferred == NULL ?
+                               MAP_32BIT : 0)),
                      -1, 0);
     if (!mmap_syscall_succeeded(p)) {
         *error_code = -(heap_error_code_t)(ptr_int_t)p;
@@ -3374,6 +3409,14 @@ get_num_processors(void)
 shlib_handle_t 
 load_shared_library(const char *name)
 {
+# ifdef STATIC_LIBRARY
+    if (os_files_same(name, get_application_name())) {
+        /* The private loader falls back to dlsym() and friends for modules it
+         * does't recognize, so this works without disabling the private loader.
+         */
+        return dlopen(NULL, RTLD_LAZY);  /* Gets a handle to the exe. */
+    }
+# endif
     if (IF_CLIENT_INTERFACE_ELSE(INTERNAL_OPTION(private_loader), false))
         return (shlib_handle_t)load_private_library(name);
     ASSERT(!DYNAMO_OPTION(early_inject));
@@ -3484,6 +3527,25 @@ os_file_exists(const char *fname, bool is_dir)
         return false;
     }
     return (!is_dir || S_ISDIR(st.st_mode));
+}
+
+/* Returns true if two paths point to the same file.  Follows symlinks.
+ */
+bool
+os_files_same(const char *path1, const char *path2)
+{
+    struct stat64 st1, st2;
+    ptr_int_t res = dynamorio_syscall(SYSNUM_STAT, 2, path1, &st1);
+    if (res != 0) {
+        LOG(THREAD_GET, LOG_SYSCALLS, 2, "%s failed: "PIFX"\n", __func__, res);
+        return false;
+    }
+    res = dynamorio_syscall(SYSNUM_STAT, 2, path2, &st2);
+    if (res != 0) {
+        LOG(THREAD_GET, LOG_SYSCALLS, 2, "%s failed: "PIFX"\n", __func__, res);
+        return false;
+    }
+    return st1.st_ino == st2.st_ino;
 }
 
 bool
@@ -4213,6 +4275,13 @@ make_writable(byte *pc, size_t size)
      * this is crucial on modern linux kernels which refuse to mark stack +x.
      */
     if (!is_in_dynamo_dll(pc)/*avoid allmem assert*/ &&
+#ifdef STATIC_LIBRARY
+        /* FIXME i#975: is_in_dynamo_dll() is always false for STATIC_LIBRARY,
+         * but we can't call get_memory_info() until allmem is initialized.  Our
+         * uses before then are for patching x86.asm, which is OK.
+         */
+        all_memory_areas_initialized() &&
+#endif
         get_memory_info(pc, NULL, NULL, &prot))
         prot |= PROT_WRITE;
 
@@ -4267,6 +4336,13 @@ make_unwritable(byte *pc, size_t size)
      * this is crucial on modern linux kernels which refuse to mark stack +x.
      */
     if (!is_in_dynamo_dll(pc)/*avoid allmem assert*/ &&
+#ifdef STATIC_LIBRARY
+        /* FIXME i#975: is_in_dynamo_dll() is always false for STATIC_LIBRARY,
+         * but we can't call get_memory_info() until allmem is initialized.  Our
+         * uses before then are for patching x86.asm, which is OK.
+         */
+        all_memory_areas_initialized() &&
+#endif
         get_memory_info(pc, NULL, NULL, &prot))
         prot &= ~PROT_WRITE;
 
@@ -4712,6 +4788,24 @@ handle_execve(dcontext_t *dcontext)
         }
     }
 
+    /* i#237/PR 498284: if we're a vfork "thread" we're really in a different
+     * process and if we exec then the parent process will still be alive.  We
+     * can't easily clean our own state (dcontext, dstack, etc.) up in our
+     * parent process: we need it to invoke the syscall and the syscall might
+     * fail.  We could expand cleanup_and_terminate to also be able to invoke
+     * SYS_execve: but execve seems more likely to fail than termination
+     * syscalls.  Our solution is to mark this thread as "execve" and hide it
+     * from regular thread queries; we clean it up in the process-exiting
+     * synch_with_thread(), or if the same parent thread performs another vfork
+     * (to prevent heap accumulation from repeated vfork+execve).  Since vfork
+     * on linux suspends the parent, there cannot be any races with the execve
+     * syscall completing: there can't even be peer vfork threads, so we could
+     * set a flag and clean up in dispatch, but that seems overkill.  (If vfork
+     * didn't suspend the parent we'd need to touch a marker file or something
+     * to know the execve was finished.)
+     */
+    mark_thread_execve(dcontext->thread_record, true);
+
 #ifdef STATIC_LIBRARY
     /* no way we can inject, we just lose control */
     SYSLOG_INTERNAL_WARNING("WARNING: static DynamoRIO library, losing control on execve");
@@ -4730,24 +4824,6 @@ handle_execve(dcontext_t *dcontext)
     int num_new;
     char **new_envp;
     uint logdir_length;
-
-    /* i#237/PR 498284: If we're a vfork "thread" we're really in a different
-     * process and if we exec then the parent process will still be alive.  We
-     * can't easily clean our own state (dcontext, dstack, etc.) up in our
-     * parent process: we need it to invoke the syscall and the syscall might
-     * fail.  We could expand cleanup_and_terminate to also be able to invoke
-     * SYS_execve: but execve seems more likely to fail than termination
-     * syscalls.  Our solution is to mark this thread as "execve" and hide it
-     * from regular thread queries; we clean it up in the process-exiting
-     * synch_with_thread(), or if the same parent thread performs another vfork
-     * (to prevent heap accumulation from repeated vfork+execve).  Since vfork
-     * on linux suspends the parent, there cannot be any races with the execve
-     * syscall completing: there can't even be peer vfork threads, so we could
-     * set a flag and clean up in dispatch, but that seems overkill.  (If vfork
-     * didn't suspend the parent we'd need to touch a marker file or something
-     * to know the execve was finished.)
-     */
-    mark_thread_execve(dcontext->thread_record, true);
 
     num_new = 
         2 + /* execve indicator var plus final NULL */
@@ -5589,6 +5665,7 @@ pre_system_call(dcontext_t *dcontext)
         /* i#91/PR 396352: need to watch SYS_brk to maintain all_memory_areas.
          * We store the old break in the param1 slot.
          */
+        DODEBUG(dcontext->sys_param0 = (reg_t) sys_param(dcontext, 0););
         dcontext->sys_param1 = dynamorio_syscall(SYS_brk, 1, 0);
         break;
     }
@@ -5647,7 +5724,8 @@ pre_system_call(dcontext_t *dcontext)
         /* We switch the lib tls segment back to app's segment.
          * Please refer to comment on os_switch_lib_tls.
          */
-        if (IF_CLIENT_INTERFACE_ELSE(INTERNAL_OPTION(private_loader), false)) {
+        if (TEST(CLONE_VM, flags) /* not creating process */ &&
+            IF_CLIENT_INTERFACE_ELSE(INTERNAL_OPTION(private_loader), false)) {
             os_switch_lib_tls(dcontext, true/*to app*/);
         }
         break;
@@ -6814,9 +6892,21 @@ post_system_call(dcontext_t *dcontext)
          * (if it failed, the old break will be returned).  We stored
          * the old break in sys_param1 in pre-syscall.
          */
+        app_pc old_brk = (app_pc) dcontext->sys_param1;
+        app_pc new_brk = (app_pc) result;
+        DEBUG_DECLARE(app_pc req_brk = (app_pc) dcontext->sys_param0;);
+#ifdef DEBUG
+        if (DYNAMO_OPTION(early_inject) &&
+            req_brk != NULL /* Ignore calls that don't increase brk. */) {
+            DO_ONCE({
+                ASSERT_CURIOSITY(new_brk > old_brk && "i#1004: first brk() "
+                                 "allocation failed with -early_inject");
+            });
+        }
+#endif
         /* i#851: the brk might not be page aligned */
-        app_pc old_brk = (app_pc) ALIGN_FORWARD(dcontext->sys_param1, PAGE_SIZE);
-        app_pc new_brk = (app_pc) ALIGN_FORWARD(result, PAGE_SIZE);
+        old_brk = (app_pc) ALIGN_FORWARD(old_brk, PAGE_SIZE);
+        new_brk = (app_pc) ALIGN_FORWARD(new_brk, PAGE_SIZE);
         if (new_brk < old_brk) {
             all_memory_areas_lock();
             DEBUG_DECLARE(ok =)
@@ -7304,6 +7394,7 @@ dl_iterate_get_path_cb(struct dl_phdr_info *info, size_t size, void *data)
 }
 #endif
 
+#if defined(CLIENT_INTERFACE) || !defined(STATIC_LIBRARY)
 /* Finds the bounds of the library with name "name".  If "name" is NULL,
  * "start" must be non-NULL and must be an address within the library.
  * Note that we can't just walk backward and look for is_elf_so_header() b/c
@@ -7478,7 +7569,9 @@ get_library_bounds(const char *name, app_pc *start/*IN/OUT*/, app_pc *end/*OUT*/
         *end = cur_end;
     return count;
 }
+#endif /* CLIENT_INTERFACE || !STATIC_LIBRARY */
 
+#ifndef STATIC_LIBRARY
 /* initializes dynamorio library bounds.
  * does not use any heap.
  * assumed to be called prior to find_executable_vm_areas.
@@ -7513,11 +7606,7 @@ get_dynamo_library_bounds(void)
     ASSERT(check_start == dynamo_dll_start && check_end == dynamo_dll_end);
     LOG(GLOBAL, LOG_VMAREAS, 1, "DR library bounds: "PFX" to "PFX"\n",
         dynamo_dll_start, dynamo_dll_end);
-#ifdef STATIC_LIBRARY
-    dynamorio_library_path[0] = '\0';
-#else
     ASSERT(res > 0);
-#endif
 
     /* Issue 20: we need the path to the alt arch */
     strncpy(dynamorio_alt_arch_path, dynamorio_library_path,
@@ -7537,14 +7626,17 @@ get_dynamo_library_bounds(void)
 
     return res;
 }
+#endif /* !STATIC_LIBRARY */
 
 /* get full path to our own library, (cached), used for forking and message file name */
 char*
 get_dynamorio_library_path(void)
 {
+#ifndef STATIC_LIBRARY
     if (!dynamorio_library_path[0]) { /* not cached */
         get_dynamo_library_bounds();
     }
+#endif
     return dynamorio_library_path;
 }
 
@@ -7609,10 +7701,15 @@ mem_stats_snapshot()
 }
 #endif
 
+/* i#975: with STATIC_LIBRARY, our code is mixed into the executable.  We
+ * pretend DR has bounds of [0, 0), and nothing is in those bounds.
+ */
 bool
 is_in_dynamo_dll(app_pc pc)
 {
+#ifndef STATIC_LIBRARY
     ASSERT(dynamo_dll_start != NULL);
+#endif
 #ifdef VMX86_SERVER
     /* We want to consider vmklib as part of the DR lib for allowing
      * execution (_init calls os_in_vmkernel_classic()) and for
@@ -7627,18 +7724,22 @@ is_in_dynamo_dll(app_pc pc)
 app_pc
 get_dynamorio_dll_start()
 {
+#ifndef STATIC_LIBRARY
     if (dynamo_dll_start == NULL)
         get_dynamo_library_bounds();
     ASSERT(dynamo_dll_start != NULL);
+#endif
     return dynamo_dll_start;
 }
 
 app_pc
 get_dynamorio_dll_end()
 {
+#ifndef STATIC_LIBRARY
     if (dynamo_dll_end == NULL)
         get_dynamo_library_bounds();
     ASSERT(dynamo_dll_end != NULL);
+#endif
     return dynamo_dll_end;
 }
 
@@ -8113,13 +8214,17 @@ find_executable_vm_areas(void)
 int
 find_dynamo_library_vm_areas(void)
 {
+#ifndef STATIC_LIBRARY
     /* We didn't add inside get_dynamo_library_bounds b/c it was called pre-alloc.
      * We don't bother to break down the sub-regions.
      * Assumption: we don't need to have the protection flags for DR sub-regions.
+     * For static library builds, DR's code is in the exe and isn't considered
+     * to be a DR area.
      */
     add_dynamo_vm_area(get_dynamorio_dll_start(), get_dynamorio_dll_end(),
                        MEMPROT_READ|MEMPROT_WRITE|MEMPROT_EXEC,
                        true /* from image */ _IF_DEBUG(dynamorio_library_path));
+#endif
 #ifdef VMX86_SERVER
     if (os_in_vmkernel_userworld())
         vmk_add_vmklib_to_dynamo_areas();

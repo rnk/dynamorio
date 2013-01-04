@@ -624,7 +624,8 @@ static void
 signal_info_init_sigaction(dcontext_t *dcontext, thread_sig_info_t *info);
 
 static void
-signal_info_exit_sigaction(dcontext_t *dcontext, thread_sig_info_t *info);
+signal_info_exit_sigaction(dcontext_t *dcontext, thread_sig_info_t *info,
+                           bool other_thread);
 
 static void
 execute_handler_from_cache(dcontext_t *dcontext, int sig, sigframe_rt_t *our_frame,
@@ -1060,10 +1061,10 @@ signal_thread_init(dcontext_t *dcontext)
 #endif
     thread_sig_info_t *info = HEAP_TYPE_ALLOC(dcontext, thread_sig_info_t,
                                               ACCT_OTHER, PROTECTED);
-    dcontext->signal_field = (void *) info;
 
     /* all fields want to be initialized to 0 */
     memset(info, 0, sizeof(thread_sig_info_t));
+    dcontext->signal_field = (void *) info;
 
     /* our special heap to avoid reentrancy problems
      * composed entirely of sigpending_t units
@@ -1230,7 +1231,8 @@ signal_info_init_sigaction(dcontext_t *dcontext, thread_sig_info_t *info)
 
 /* Cleans up info's app_sigaction, restorer_valid, and we_intercept fields */
 static void
-signal_info_exit_sigaction(dcontext_t *dcontext, thread_sig_info_t *info)
+signal_info_exit_sigaction(dcontext_t *dcontext, thread_sig_info_t *info,
+                           bool other_thread)
 {
     int i;
     kernel_sigaction_t act;
@@ -1238,27 +1240,28 @@ signal_info_exit_sigaction(dcontext_t *dcontext, thread_sig_info_t *info)
     act.handler = (handler_t) SIG_DFL;
     kernel_sigemptyset(&act.mask); /* does mask matter for SIG_DFL? */
     for (i = 1; i <= MAX_SIGNUM; i++) {
-        if (info->app_sigaction[i] != NULL) {
-            /* restore to old handler, but not if exiting whole
-             * process: else may get itimer during cleanup, so we
-             * set to SIG_IGN (we'll have to fix once we impl detach)
-             */
-            if (dynamo_exited) {
-                info->app_sigaction[i]->handler = (handler_t) SIG_IGN;
-                sigaction_syscall(i, info->app_sigaction[i], NULL);
-            }
-            LOG(THREAD, LOG_ASYNCH, 2, "\trestoring "PFX" as handler for %d\n",
-                info->app_sigaction[i]->handler, i);
-            sigaction_syscall(i, info->app_sigaction[i], NULL);
-            handler_free(dcontext, info->app_sigaction[i], sizeof(kernel_sigaction_t));
-        } else if (info->we_intercept[i]) {
-            /* restore to default */
-            LOG(THREAD, LOG_ASYNCH, 2, "\trestoring SIG_DFL as handler for %d\n", i);
-            sigaction_syscall(i, &act, NULL);
+        if (!other_thread) {
             if (info->app_sigaction[i] != NULL) {
-                handler_free(dcontext, info->app_sigaction[i],
-                             sizeof(kernel_sigaction_t));
+                /* restore to old handler, but not if exiting whole
+                 * process: else may get itimer during cleanup, so we
+                 * set to SIG_IGN (we'll have to fix once we impl detach)
+                 */
+                if (dynamo_exited) {
+                    info->app_sigaction[i]->handler = (handler_t) SIG_IGN;
+                    sigaction_syscall(i, info->app_sigaction[i], NULL);
+                }
+                LOG(THREAD, LOG_ASYNCH, 2, "\trestoring "PFX" as handler for %d\n",
+                    info->app_sigaction[i]->handler, i);
+                sigaction_syscall(i, info->app_sigaction[i], NULL);
+            } else if (info->we_intercept[i]) {
+                /* restore to default */
+                LOG(THREAD, LOG_ASYNCH, 2, "\trestoring SIG_DFL as handler for %d\n", i);
+                sigaction_syscall(i, &act, NULL);
             }
+        }
+        if (info->app_sigaction[i] != NULL) {
+            handler_free(dcontext, info->app_sigaction[i],
+                         sizeof(kernel_sigaction_t));
         }
     }
     handler_free(dcontext, info->app_sigaction,
@@ -1323,7 +1326,7 @@ signal_thread_inherit(dcontext_t *dcontext, void *clone_record)
                 handler_alloc(dcontext, SIGARRAY_SIZE * sizeof(kernel_sigaction_t *));
             memset(info->app_sigaction, 0, SIGARRAY_SIZE * sizeof(kernel_sigaction_t *));
             for (i = 1; i <= MAX_SIGNUM; i++) {
-                ASSERT(record->info.restorer_valid[i] == -1);
+                info->restorer_valid[i] = -1;  /* clear cache */
                 if (record->info.app_sigaction[i] != NULL) {
                     info->app_sigaction[i] = (kernel_sigaction_t *)
                         handler_alloc(dcontext, sizeof(kernel_sigaction_t));
@@ -1382,7 +1385,8 @@ signal_thread_inherit(dcontext_t *dcontext, void *clone_record)
         /* initialize in isolation */
         if (!dynamo_initialized) {
             /* Undo the early-init handler */
-            signal_info_exit_sigaction(GLOBAL_DCONTEXT, &init_info);
+            signal_info_exit_sigaction(GLOBAL_DCONTEXT, &init_info,
+                                       false/*!other_thread*/);
         }
 
         if (APP_HAS_SIGSTACK(info)) {
@@ -1576,11 +1580,26 @@ signal_fork_init(dcontext_t *dcontext)
     info->fully_initialized = true;
 }
 
+#ifdef DEBUG
+static bool
+sigsegv_handler_is_ours(void)
+{
+    int rc;
+    kernel_sigaction_t oldact;
+    rc = sigaction_syscall(SIGSEGV, NULL, &oldact);
+    return (rc == 0 && oldact.handler == (handler_t)master_signal_handler);
+}
+#endif /* DEBUG */
+
 void
-signal_thread_exit(dcontext_t *dcontext)
+signal_thread_exit(dcontext_t *dcontext, bool other_thread)
 {
     thread_sig_info_t *info = (thread_sig_info_t *) dcontext->signal_field;
     int i;
+
+    /* i#1012: DR's signal handler should always be installed before this point.
+     */
+    ASSERT(sigsegv_handler_is_ours());
 
     while (info->num_unstarted_children > 0) {
         /* must wait for children to start and copy our state
@@ -1605,7 +1624,7 @@ signal_thread_exit(dcontext_t *dcontext)
     }
     if (!info->shared_app_sigaction || *info->shared_refcount == 0) {
         LOG(THREAD, LOG_ASYNCH, 2, "signal handler cleanup:\n");
-        signal_info_exit_sigaction(dcontext, info);
+        signal_info_exit_sigaction(dcontext, info, other_thread);
         if (info->shared_lock != NULL) {
             DELETE_LOCK(*info->shared_lock);
             global_heap_free(info->shared_lock, sizeof(mutex_t) HEAPACCT(ACCT_OTHER));
@@ -3649,7 +3668,7 @@ is_sys_kill(dcontext_t *dcontext, byte *pc, byte *xsp, struct siginfo *info)
 
 static byte *
 compute_memory_target(dcontext_t *dcontext, cache_pc instr_cache_pc,
-                      struct sigcontext *sc, bool *write)
+                      struct sigcontext *sc, siginfo_t *si, bool *write)
 {
     byte *target = NULL;
     instr_t instr;
@@ -3683,6 +3702,28 @@ compute_memory_target(dcontext_t *dcontext, cache_pc instr_cache_pc,
         return NULL;
     }
 
+    sigcontext_to_mcontext(&mc, sc);
+    ASSERT(write != NULL);
+
+    /* i#1009: If si_addr is plausibly one of the memory operands of the
+     * faulting instruction, assume the target was si_addr.  If none of the
+     * memops match, fall back to checking page protections, which can be racy.
+     * For si_addr == NULL, we fall back to the protection check because it's
+     * too likely to be a valid memop and we can live with a race on a page that
+     * is typically unmapped.
+     */
+    if (si->si_code == SEGV_ACCERR && si->si_addr != NULL) {
+        for (memopidx = 0;
+             instr_compute_address_ex_priv(&instr, &mc, memopidx,
+                                           &target, write, NULL);
+             memopidx++) {
+            if (si->si_addr == target) {
+                found_target = true;
+                break;
+            }
+        }
+    }
+
     /* For fcache faults, use all_memory_areas, which is faster but acquires
      * locks.  If it's possible we're in DR, go to the OS to avoid deadlock.
      */
@@ -3690,31 +3731,38 @@ compute_memory_target(dcontext_t *dcontext, cache_pc instr_cache_pc,
         use_allmem = safe_is_in_fcache(dcontext, instr_cache_pc,
                                        (byte *)sc->SC_XSP);
     }
-    sigcontext_to_mcontext(&mc, sc);
-    ASSERT(write != NULL);
-    /* i#115/PR 394984: consider all memops */
-    for (memopidx = 0;
-         instr_compute_address_ex_priv(&instr, &mc, memopidx, 
-                                       &target, write, NULL);
-         memopidx++) {
-        if (use_allmem) {
-            in_maps = get_memory_info(target, NULL, NULL, &prot);
-        } else {
-            in_maps = get_memory_info_from_os(target, NULL, NULL, &prot);
+    if (!found_target) {
+        if (si->si_addr != NULL) {
+            LOG(THREAD, LOG_ALL, 3,
+                "%s: falling back to racy protection checks\n", __FUNCTION__);
         }
-        if ((!in_maps || !TEST(MEMPROT_READ, prot)) ||
-            (*write && !TEST(MEMPROT_WRITE, prot))) {
-            found_target = true;
-            break;
+        /* i#115/PR 394984: consider all memops */
+        for (memopidx = 0;
+             instr_compute_address_ex_priv(&instr, &mc, memopidx,
+                                           &target, write, NULL);
+             memopidx++) {
+            if (use_allmem) {
+                in_maps = get_memory_info(target, NULL, NULL, &prot);
+            } else {
+                in_maps = get_memory_info_from_os(target, NULL, NULL, &prot);
+            }
+            if ((!in_maps || !TEST(MEMPROT_READ, prot)) ||
+                (*write && !TEST(MEMPROT_WRITE, prot))) {
+                found_target = true;
+                break;
+            }
         }
     }
+
     if (!found_target) {
         /* probably an NX fault: how tell whether kernel enforcing? */
-        if (!TEST(MEMPROT_EXEC, prot)) {
+        in_maps = get_memory_info_from_os(instr_cache_pc, NULL, NULL, &prot);
+        if (!in_maps || !TEST(MEMPROT_EXEC, prot)) {
             target = instr_cache_pc;
             found_target = true;
         }
     }
+
     /* we may still not find target, e.g. for SYS_kill(SIGSEGV) */
     if (!found_target)
         target = NULL;
@@ -4088,7 +4136,7 @@ master_signal_handler_C(byte *xsp)
          * this order should be fine.
          */
 
-        target = compute_memory_target(dcontext, pc, sc, &is_write);
+        target = compute_memory_target(dcontext, pc, sc, siginfo, &is_write);
 #ifdef STACK_GUARD_PAGE
         if (sig == SIGSEGV && is_write && is_stack_overflow(dcontext, target)) {
             SYSLOG_INTERNAL_CRITICAL(PRODUCT_NAME" stack overflow at pc "PFX, pc);

@@ -1968,11 +1968,13 @@ static bool
 os_read_until(file_t fd, void *buf, size_t toread)
 {
     ssize_t nread;
-    do {
+    while (toread > 0) {
         nread = os_read(fd, buf, toread);
+        if (nread < 0)
+            break;
         toread -= nread;
-    } while (nread > 0 && toread > 0);
-    return (nread >= 0);
+    }
+    return (toread == 0);
 }
 
 bool
@@ -1987,7 +1989,9 @@ elf_loader_init(elf_loader_t *elf, const char *filename)
 void
 elf_loader_destroy(elf_loader_t *elf)
 {
-    os_close(elf->fd);
+    if (elf->fd != INVALID_FILE) {
+        os_close(elf->fd);
+    }
     if (elf->file_map != NULL) {
         os_unmap_file(elf->file_map, elf->file_size);
     }
@@ -2000,11 +2004,16 @@ elf_loader_read_ehdr(elf_loader_t *elf)
     /* The initial read is sized to read both ehdr and all phdrs. */
     if (elf->fd == INVALID_FILE)
         return NULL;
-    if (!os_read_until(elf->fd, elf->buf, sizeof(elf->buf)))
-        return NULL;
-    if (!is_elf_so_header(elf->buf, sizeof(elf->buf)))
-        return NULL;
-    elf->ehdr = (ELF_HEADER_TYPE *) elf->buf;
+    if (elf->file_map != NULL) {
+        /* The user mapped the entire file up front, so use it. */
+        elf->ehdr = (ELF_HEADER_TYPE *) elf->file_map;
+    } else {
+        if (!os_read_until(elf->fd, elf->buf, sizeof(elf->buf)))
+            return NULL;
+        if (!is_elf_so_header(elf->buf, sizeof(elf->buf)))
+            return NULL;
+        elf->ehdr = (ELF_HEADER_TYPE *) elf->buf;
+    }
     return elf->ehdr;
 }
 
@@ -2018,7 +2027,11 @@ elf_loader_map_file(elf_loader_t *elf)
         return NULL;
     if (!os_get_file_size_by_handle(elf->fd, &size64))
         return NULL;
+    ASSERT_TRUNCATE(elf->file_size, size_t, size64);
     elf->file_size = (size_t)size64;  /* truncate */
+    /* We use os_map_file instead of map_file since this mapping is temporary.
+     * We don't need to add and remove it from dynamo_areas.
+     */
     elf->file_map = os_map_file(elf->fd, &elf->file_size, 0, NULL, MEMPROT_READ,
                                 true/*cow*/, false/*image*/, false/*fixed*/);
     return elf->file_map;
@@ -2033,7 +2046,7 @@ elf_loader_read_phdrs(elf_loader_t *elf)
         return NULL;
     ph_off = elf->ehdr->e_phoff;
     ph_size = elf->ehdr->e_phnum * elf->ehdr->e_phentsize;
-    if (ph_off + ph_size < sizeof(elf->buf)) {
+    if (elf->file_map == NULL && ph_off + ph_size < sizeof(elf->buf)) {
         /* We already read phdrs, and they are in buf. */
         elf->phdrs = (ELF_PROGRAM_HEADER_TYPE *) (elf->buf + elf->ehdr->e_phoff);
     } else {
@@ -2072,6 +2085,7 @@ elf_loader_map_phdrs(elf_loader_t *elf, bool fixed, map_fn_t map_func,
     uint   seg_prot, i;
     ptr_int_t delta;
 
+    ASSERT(elf->phdrs != NULL && "call elf_loader_read_phdrs() first");
     if (elf->phdrs == NULL)
         return NULL;
 
@@ -2156,7 +2170,7 @@ elf_loader_map_phdrs(elf_loader_t *elf, bool fixed, map_fn_t map_func,
         }
     }
     ASSERT(last_end == lib_end);
-    /* FIXME: Check for failure above rather than always succeeding. */
+    /* FIXME: recover from map failure rather than relying on asserts. */
 
     return lib_base;
 }
