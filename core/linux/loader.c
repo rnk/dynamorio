@@ -1408,6 +1408,32 @@ privload_setup_auxv(char **envp, app_pc map, ptr_int_t delta)
     }
 }
 
+/* i#1004: as a workaround, reserve some space for sbrk() during early injection
+ * before initializing DR's heap.  With early injection, the program break comes
+ * somewhere after DR's bss section, subject to some ASLR.  When we allocate our
+ * heap, sometimes we mmap right over the break, so any brk() calls will fail.
+ * When brk() fails, most malloc() implementations fall back to mmap().
+ * However, sometimes libc startup code needs to allocate memory before libc is
+ * initialized.  In this case it calls brk(), and will crash if it fails.
+ *
+ * Ideally we'd just set the break to follow the app's exe, but the kernel
+ * forbids setting the break to a value less than the current break.  I also
+ * tried to reserve memory by increasing the break by ~20 pages and then
+ * resetting it, but the kernel unreserves it.  The current work around is to
+ * increase the break by 1.  The loader needs to allocate more than a page of
+ * memory, so this doesn't guarantee that further brk() calls will succeed.
+ * However, I haven't observed any brk() failures after adding this workaround.
+ */
+static void
+reserve_brk(void)
+{
+    ptr_int_t start_brk;
+    ASSERT(!dynamo_heap_initialized);
+    start_brk = dynamorio_syscall(SYS_brk, 1, 0);
+    dynamorio_syscall(SYS_brk, 1, start_brk + 1);
+    /* I'd log the results, but logs aren't initialized yet. */
+}
+
 /* Called from _start in x86.asm.  sp is the initial app stack pointer that the
  * kernel set up for us, and it points to the usual argc, argv, envp, and auxv
  * that the kernel puts on the stack.
@@ -1487,6 +1513,8 @@ privload_early_inject(void **sp)
         entry = (app_pc)exe_ld.ehdr->e_entry + exe_ld.load_delta;
     }
     elf_loader_destroy(&exe_ld);
+
+    reserve_brk();
 
     /* Initialize DR *after* we map the app image.  This is consistent with our
      * old behavior, and allows the client to do things like call

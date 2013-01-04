@@ -99,6 +99,9 @@
 # define SYSNUM_FSTAT SYS_fstat64
 #endif
 
+/* Prototype for all functions in .init_array. */
+typedef int (*init_fn_t)(int argc, char **argv, char **envp);
+
 /* i#46: Private __environ pointer.  Points at the environment variable array
  * on the stack, which is different from what libc __environ may point at.  We
  * use the environment for following children and setting options, so its OK
@@ -674,32 +677,20 @@ dynamorio_set_envp(char **envp)
     our_environ = envp;
 }
 
-#if !defined(STANDALONE_UNIT_TEST)
-/* shared library init and exit */
+/* shared library init */
 int
-# ifndef STATIC_LIBRARY
-/* i#1022: gcc 4.4 doesn't seem to put our_init() in .init_array, so we
- * implement _init() directly.
- */
-_init(int argc, char **argv, char **envp)
-# else /* STATIC_LIBRARY */
-/* For STATIC_LIBRARY, we can't use _init because that conflicts with the
- * definition in crt0.o.
- */
-__attribute__((constructor))
 our_init(int argc, char **argv, char **envp)
-# endif
 {
     /* if do not want to use drpreload.so, we can take over here */
     extern void dynamorio_app_take_over(void);
     bool takeover = false;
-# ifdef INIT_TAKE_OVER
+#ifdef INIT_TAKE_OVER
     takeover = true;
-# endif
-# ifdef VMX86_SERVER
+#endif
+#ifdef VMX86_SERVER
     /* PR 391765: take over here instead of using preload */
     takeover = os_in_vmkernel_classic();
-# endif
+#endif
     if (our_environ != NULL) {
         /* Set by dynamorio_set_envp above.  These should agree. */
         ASSERT(our_environ == envp);
@@ -718,6 +709,26 @@ our_init(int argc, char **argv, char **envp)
         }
     }
     return 0;
+}
+
+#if defined(STATIC_LIBRARY) || defined(STANDALONE_UNIT_TEST)
+/* If we're getting linked into a binary that already has an _init definition
+ * like the app's exe or unit_tests, we add a pointer to our_init() to the
+ * .init_array section.  We can't use the constructor attribute because not all
+ * toolchains pass the args and environment to the constructor.
+ */
+static init_fn_t
+__attribute__ ((section (".init_array"), aligned (sizeof (void *)), used))
+init_array[] = {
+    our_init
+};
+#else
+/* If we're a normal shared object, then we override _init.
+ */
+int
+_init(int argc, char **argv, char **envp)
+{
+    return our_init(argc, argv, envp);
 }
 #endif
 
@@ -5642,6 +5653,7 @@ pre_system_call(dcontext_t *dcontext)
         /* i#91/PR 396352: need to watch SYS_brk to maintain all_memory_areas.
          * We store the old break in the param1 slot.
          */
+        DODEBUG(dcontext->sys_param0 = (reg_t) sys_param(dcontext, 0););
         dcontext->sys_param1 = dynamorio_syscall(SYS_brk, 1, 0);
         break;
     }
@@ -6868,9 +6880,21 @@ post_system_call(dcontext_t *dcontext)
          * (if it failed, the old break will be returned).  We stored
          * the old break in sys_param1 in pre-syscall.
          */
+        app_pc old_brk = (app_pc) dcontext->sys_param1;
+        app_pc new_brk = (app_pc) result;
+        DEBUG_DECLARE(app_pc req_brk = (app_pc) dcontext->sys_param0;);
+#ifdef DEBUG
+        if (DYNAMO_OPTION(early_inject) &&
+            req_brk != NULL /* Ignore calls that don't increase brk. */) {
+            DO_ONCE({
+                ASSERT_CURIOSITY(new_brk > old_brk && "i#1004: first brk() "
+                                 "allocation failed with -early_inject");
+            });
+        }
+#endif
         /* i#851: the brk might not be page aligned */
-        app_pc old_brk = (app_pc) ALIGN_FORWARD(dcontext->sys_param1, PAGE_SIZE);
-        app_pc new_brk = (app_pc) ALIGN_FORWARD(result, PAGE_SIZE);
+        old_brk = (app_pc) ALIGN_FORWARD(old_brk, PAGE_SIZE);
+        new_brk = (app_pc) ALIGN_FORWARD(new_brk, PAGE_SIZE);
         if (new_brk < old_brk) {
             all_memory_areas_lock();
             DEBUG_DECLARE(ok =)
