@@ -945,7 +945,7 @@ inject_ptrace(dr_inject_info_t *info, const char *library_path)
      * the ELF header with different arguments.
      * XXX: Actually look up an export.
      */
-    app_pc injected_dr_start = loader.ehdr->e_entry + loader.load_delta;
+    app_pc injected_dr_start = (app_pc) loader.ehdr->e_entry + loader.load_delta;
     elf_loader_destroy(&loader);
 
     struct user_regs_struct regs;
@@ -967,9 +967,9 @@ inject_ptrace(dr_inject_info_t *info, const char *library_path)
     strncpy(args.home_dir, getenv("HOME"), BUFFER_SIZE_ELEMENTS(args.home_dir));
     NULL_TERMINATE_BUFFER(args.home_dir);
 
-    regs.REG_SP_FIELD -= 128;  /* Need to preserve x64 red zone. */
-    regs.REG_SP_FIELD -= sizeof(args); /* Allocate space for args. */
-    regs.REG_SP_FIELD = ALIGN_BACKWARD(regs.REG_SP_FIELD, 16);
+    regs.REG_SP_FIELD -= REDZONE_SIZE;  /* Need to preserve x64 red zone. */
+    regs.REG_SP_FIELD -= sizeof(args);  /* Allocate space for args. */
+    regs.REG_SP_FIELD = ALIGN_BACKWARD(regs.REG_SP_FIELD, REGPARM_END_ALIGN);
     ptrace_write_memory(info->pid, (void *)regs.REG_SP_FIELD,
                         &args, sizeof(args));
     regs.REG_PC_FIELD = (ptr_int_t) injected_dr_start;
