@@ -66,7 +66,7 @@ static bool verbose = false;
 typedef enum _inject_method_t {
     INJECT_EXEC_DR,     /* Works with self or child. */
     INJECT_LD_PRELOAD,  /* Works with self or child.  FIXME i#840: NYI */
-    INJECT_PTRACE       /* Doesn't work with exec_self. */
+    INJECT_PTRACE       /* Doesn't work with self. */
 } inject_method_t;
 
 /* Opaque type to users, holds our state */
@@ -215,6 +215,7 @@ inject_exec_dr(dr_inject_info_t *info, const char *library_path)
         /* Write the path to DR to the pipe. */
         char cmd[MAXIMUM_PATH];
         snprintf(cmd, BUFFER_SIZE_ELEMENTS(cmd), "exec_dr %s", library_path);
+        NULL_TERMINATE_BUFFER(cmd);
         write_pipe_cmd(info->pipe_fd, cmd);
     }
     return true;
@@ -279,7 +280,7 @@ dr_inject_prepare_to_exec(const char *exe, const char **argv, void **data OUT)
 
 DR_EXPORT
 bool
-dr_inject_use_ptrace(void *data)
+dr_inject_prepare_to_ptrace(void *data)
 {
     dr_inject_info_t *info = (dr_inject_info_t *) data;
     if (data == NULL)
@@ -385,10 +386,12 @@ dr_inject_process_exit(void *data, bool terminate)
  * ptrace injection code
  */
 
-enum { MAX_SYSCALL_ARGS = 6 };
+enum { MAX_SHELL_CODE = 4096 };
 
-#define REG_PC_FIELD IF_X64_ELSE(rip, eip)
-#define REG_SP_FIELD IF_X64_ELSE(rsp, esp)
+#ifdef X86
+# define REG_PC_FIELD IF_X64_ELSE(rip, eip)
+# define REG_SP_FIELD IF_X64_ELSE(rsp, esp)
+#endif
 
 enum { REG_PC_OFFSET = offsetof(struct user_regs_struct, REG_PC_FIELD) };
 
@@ -406,7 +409,9 @@ typedef struct _enum_name_pair_t {
     const char * const enum_name;
 } enum_name_pair_t;
 
-/* Ptrace request enum name mapping, from sys/ptrace.h. */
+/* Ptrace request enum name mapping.  The complete enumeration is in
+ * sys/ptrace.h.
+ */
 static const enum_name_pair_t pt_req_map[] = {
     {PTRACE_TRACEME,        "PTRACE_TRACEME"},
     {PTRACE_PEEKTEXT,       "PTRACE_PEEKTEXT"},
@@ -461,7 +466,7 @@ our_ptrace(enum __ptrace_request request, pid_t pid, void *addr, void *data)
     }
     return r;
 }
-#define ptrace use_our_ptrace
+#define ptrace DO_NOT_USE_ptrace_USE_our_ptrace
 
 /* Copies memory from traced process into parent.
  */
@@ -469,10 +474,13 @@ static bool
 ptrace_read_memory(pid_t pid, void *dst, void *src, size_t len)
 {
     uint i;
-    reg_t *dst_reg = dst;
-    reg_t *src_reg = src;
-    ASSERT(len % sizeof(reg_t) == 0);  /* FIXME handle */
-    for (i = 0; i < len / sizeof(reg_t); i++) {
+    ptr_int_t *dst_reg = dst;
+    ptr_int_t *src_reg = src;
+    ASSERT(len % sizeof(ptr_int_t) == 0);  /* FIXME handle */
+    for (i = 0; i < len / sizeof(ptr_int_t); i++) {
+        /* We use a raw syscall instead of the libc wrapper, so the value read
+         * is stored in the data pointer instead of being returned in r.
+         */
         long r = our_ptrace(PTRACE_PEEKDATA, pid, &src_reg[i], &dst_reg[i]);
         if (r < 0)
             return false;
@@ -486,10 +494,10 @@ static bool
 ptrace_write_memory(pid_t pid, void *dst, void *src, size_t len)
 {
     uint i;
-    reg_t *dst_reg = dst;
-    reg_t *src_reg = src;
-    ASSERT(len % sizeof(reg_t) == 0);  /* FIXME handle */
-    for (i = 0; i < len / sizeof(reg_t); i++) {
+    ptr_int_t *dst_reg = dst;
+    ptr_int_t *src_reg = src;
+    ASSERT(len % sizeof(ptr_int_t) == 0);  /* FIXME handle */
+    for (i = 0; i < len / sizeof(ptr_int_t); i++) {
         long r = our_ptrace(PTRACE_POKEDATA, pid, &dst_reg[i],
                             (void *)src_reg[i]);
         if (r < 0)
@@ -539,7 +547,7 @@ gen_syscall(void *dc, instrlist_t *ilist, int sysnum, uint num_opnds,
             opnd_t *args)
 {
     uint i;
-
+    ASSERT(num_opnds <= MAX_SYSCALL_ARGS);
     APP(ilist, INSTR_CREATE_mov_imm
         (dc, opnd_create_reg(DR_REG_XAX), OPND_CREATE_INTPTR(sysnum)));
     for (i = 0; i < num_opnds; i++) {
@@ -551,6 +559,7 @@ gen_syscall(void *dc, instrlist_t *ilist, int sysnum, uint num_opnds,
                 (dc, opnd_create_reg(syscall_parms[i]), args[i]));
         }
     }
+    /* XXX: Reuse create_syscall_instr() in emit_utils.c. */
 #ifdef X64
     APP(ilist, INSTR_CREATE_syscall(dc));
 #else
@@ -558,14 +567,27 @@ gen_syscall(void *dc, instrlist_t *ilist, int sysnum, uint num_opnds,
 #endif
 }
 
+#if 0  /* Useful for debugging gen_syscall and gen_push_string. */
+static void
+gen_print(void *dc, instrlist_t *ilist, const char *msg)
+{
+    opnd_t args[MAX_SYSCALL_ARGS];
+    args[0] = OPND_CREATE_INTPTR(2);
+    args[1] = OPND_CREATE_MEMPTR(DR_REG_XSP, 0);  /* msg is on TOS. */
+    args[2] = OPND_CREATE_INTPTR(strlen(msg));
+    gen_push_string(dc, ilist, msg);
+    gen_syscall(dc, ilist, SYS_write, 3, args);
+}
+#endif
+
 static void
 unexpected_trace_event(process_id_t pid, int sig_expected, int sig_actual)
 {
-    ptr_int_t err_pc;
+    app_pc err_pc;
     our_ptrace(PTRACE_PEEKUSER, pid, (void *)REG_PC_OFFSET, &err_pc);
     fprintf(stderr, "Unexpected trace event.  Expected %s, got signal %d "
             "at pc: %p\n", strsignal(sig_expected), sig_actual,
-            (void *)err_pc);
+            err_pc);
 }
 
 static bool
@@ -595,22 +617,6 @@ continue_until_break(process_id_t pid)
     return wait_until_signal(pid, SIGTRAP);
 }
 
-/* Useful for debugging gen_syscall and gen_push_string. */
-#if 0
-static void
-gen_print(void *dc, instrlist_t *ilist, const char *msg)
-{
-    opnd_t args[MAX_SYSCALL_ARGS];
-    args[0] = OPND_CREATE_INTPTR(2);
-    args[1] = OPND_CREATE_MEMPTR(DR_REG_XSP, 0);  /* msg is on TOS. */
-    args[2] = OPND_CREATE_INTPTR(strlen(msg));
-    gen_push_string(dc, ilist, msg);
-    gen_syscall(dc, ilist, SYS_write, 3, args);
-}
-#endif
-
-#define MAX_SHELL_CODE 4096
-
 /* Injects the code in ilist into the injectee and runs it, returning the value
  * left in xax at the end of ilist execution.  Frees ilist.  Returns -EUNATCH
  * if anything fails before executing the syscall.
@@ -620,7 +626,7 @@ injectee_run_get_xax(dr_inject_info_t *info, void *dc, instrlist_t *ilist)
 {
     struct user_regs_struct regs;
     byte shellcode[MAX_SHELL_CODE];
-    reg_t orig_code[MAX_SHELL_CODE / sizeof(reg_t)];
+    byte orig_code[MAX_SHELL_CODE];
     app_pc end_pc;
     size_t code_size;
     ptr_int_t xax;
@@ -636,7 +642,7 @@ injectee_run_get_xax(dr_inject_info_t *info, void *dc, instrlist_t *ilist)
     /* Use the current PC's page, since it's executable.  Our shell code is
      * always less than one page, so we won't overflow.
      */
-    pc = (app_pc)ALIGN_BACKWARD(regs.IF_X64_ELSE(rip, eip), 4096);
+    pc = (app_pc)ALIGN_BACKWARD(regs.IF_X64_ELSE(rip, eip), PAGE_SIZE);
 
     /* Append an int3 so we can catch the break. */
     APP(ilist, INSTR_CREATE_int3(dc));
@@ -653,6 +659,7 @@ injectee_run_get_xax(dr_inject_info_t *info, void *dc, instrlist_t *ilist)
                                       &shellcode[MAX_SHELL_CODE], true/*jmp*/);
     code_size = end_pc - &shellcode[0];
     code_size = ALIGN_FORWARD(code_size, sizeof(reg_t));
+    ASSERT(code_size <= MAX_SHELL_CODE);
     instrlist_clear_and_destroy(dc, ilist);
 
     /* Copy shell code into injectee at the current PC. */
@@ -695,6 +702,7 @@ injectee_open(dr_inject_info_t *info, const char *path, int flags, mode_t mode)
     args[num_args++] = OPND_CREATE_MEMPTR(DR_REG_XSP, 0);
     args[num_args++] = OPND_CREATE_INTPTR(flags);
     args[num_args++] = OPND_CREATE_INTPTR(mode);
+    ASSERT(num_args <= MAX_SYSCALL_ARGS);
     gen_syscall(dc, ilist, SYS_open, num_args, args);
     return injectee_run_get_xax(info, dc, ilist);
 }
@@ -713,18 +721,23 @@ injectee_mmap(dr_inject_info_t *info, void *addr, size_t sz, int prot,
     args[num_args++] = OPND_CREATE_INTPTR(flags);
     args[num_args++] = OPND_CREATE_INTPTR(fd);
     args[num_args++] = OPND_CREATE_INTPTR(IF_X64_ELSE(offset, offset >> 12));
+    ASSERT(num_args <= MAX_SYSCALL_ARGS);
     /* XXX: Regular mmap gives EBADR on ia32, but mmap2 works. */
     gen_syscall(dc, ilist, IF_X64_ELSE(SYS_mmap, SYS_mmap2), num_args, args);
-    return (void *)injectee_run_get_xax(info, dc, ilist);
+    return (void *) injectee_run_get_xax(info, dc, ilist);
 }
 
+/* Do an mmap syscall in the injectee, parallel to the os_map_file prototype.
+ * Passed to elf_loader_map_phdrs to map DR into the injectee.  Uses the globals
+ * injector_dr_fd to injectee_dr_fd to map the former to the latter.
+ */
 static byte *
 injectee_map_file(file_t f, size_t *size INOUT, uint64 offs, app_pc addr,
                   uint prot, bool copy_on_write, bool image, bool fixed)
 {
     int fd;
     int flags = 0;
-    ptr_int_t r;
+    app_pc r;
     if (copy_on_write)
         flags |= MAP_PRIVATE;
     if (fixed)
@@ -737,15 +750,16 @@ injectee_map_file(file_t f, size_t *size INOUT, uint64 offs, app_pc addr,
         flags |= MAP_ANONYMOUS;
     }
     /* image is a nop on Linux. */
-    r = (ptr_int_t)injectee_mmap(injector_info, addr, *size,
-                                 memprot_to_osprot(prot), flags, fd, offs);
-    if (r < 0 && r >= -4096) {
+    r = injectee_mmap(injector_info, addr, *size, memprot_to_osprot(prot),
+                      flags, fd, offs);
+    if (!mmap_syscall_succeeded(r)) {
+        int err = -(int)(ptr_int_t)r;
         printf("injectee_mmap(%d, %p, %p, 0x%x, 0x%lx, 0x%x) -> (%d): %s\n",
                fd, addr, (void *)*size, memprot_to_osprot(prot), (long)offs,
-               flags, (int)-r, strerror(-r));
+               flags, err, strerror(err));
         return NULL;
     }
-    return (byte*)r;
+    return r;
 }
 
 /* Do an munmap syscall in the injectee. */
@@ -759,8 +773,9 @@ injectee_unmap(byte *addr, size_t size)
     int num_args = 0;
     args[num_args++] = OPND_CREATE_INTPTR(addr);
     args[num_args++] = OPND_CREATE_INTPTR(size);
+    ASSERT(num_args <= MAX_SYSCALL_ARGS);
     gen_syscall(dc, ilist, SYS_munmap, num_args, args);
-    r = injectee_run_get_xax(injector_info, dc, ilist) == 0;
+    r = injectee_run_get_xax(injector_info, dc, ilist);
     if (r < 0) {
         printf("injectee_munmap(%p, %p) -> %p\n",
                addr, (void *)size, (void *)r);
@@ -781,8 +796,9 @@ injectee_prot(byte *addr, size_t size, uint prot/*MEMPROT_*/)
     args[num_args++] = OPND_CREATE_INTPTR(addr);
     args[num_args++] = OPND_CREATE_INTPTR(size);
     args[num_args++] = OPND_CREATE_INTPTR(memprot_to_osprot(prot));
+    ASSERT(num_args <= MAX_SYSCALL_ARGS);
     gen_syscall(dc, ilist, SYS_mprotect, num_args, args);
-    r = injectee_run_get_xax(injector_info, dc, ilist) == 0;
+    r = injectee_run_get_xax(injector_info, dc, ilist);
     if (r < 0) {
         printf("injectee_prot(%p, %p, %x) -> %d\n",
                addr, (void *)size, prot, (int)r);
@@ -836,8 +852,8 @@ user_regs_to_mc(priv_mcontext_t *mc, struct user_regs_struct *regs)
 static void
 detach_and_exec_gdb(process_id_t pid, const char *library_path)
 {
-    char pid_str[10];
-    const char *argv[20];
+    char pid_str[16];  /* long enough for a decimal string pid */
+    const char *argv[20];  /* 20 is long enough for our gdb command. */
     int num_args = 0;
     char add_symfile[MAXIMUM_PATH];
 
@@ -845,15 +861,16 @@ detach_and_exec_gdb(process_id_t pid, const char *library_path)
     file_t f = os_open(library_path, OS_OPEN_READ);
     uint64 size64;
     os_get_file_size_by_handle(f, &size64);
-    size_t size = (size_t)size64;
+    size_t size = (size_t) size64;
     byte *base = os_map_file(f, &size, 0, NULL, MEMPROT_READ,
                              true, false, false);
-    app_pc text_start = (app_pc)module_get_text_section(base, size);
+    app_pc text_start = (app_pc) module_get_text_section(base, size);
     os_unmap_file(base, size);
     os_close(f);
 
     our_ptrace(PTRACE_DETACH, pid, NULL, NULL);
-    snprintf(pid_str, sizeof(pid_str), "%d", pid);
+    snprintf(pid_str, BUFFER_SIZE_ELEMENTS(pid_str), "%d", pid);
+    NULL_TERMINATE_BUFFER(pid_str);
     argv[num_args++] = "/usr/bin/gdb";
     argv[num_args++] = "--quiet";
     argv[num_args++] = "--pid";
@@ -866,6 +883,7 @@ detach_and_exec_gdb(process_id_t pid, const char *library_path)
     NULL_TERMINATE_BUFFER(add_symfile);
     argv[num_args++] = add_symfile;
     argv[num_args++] = NULL;
+    ASSERT(num_args < BUFFER_SIZE_ELEMENTS(argv));
     execv("/usr/bin/gdb", (char **)argv);
     ASSERT(false && "failed to exec gdb?");
 }
@@ -876,9 +894,10 @@ inject_ptrace(dr_inject_info_t *info, const char *library_path)
     /* Attach to the process in question. */
     long r = our_ptrace(PTRACE_ATTACH, info->pid, NULL, NULL);
     if (r < 0) {
-        if (verbose)
+        if (verbose) {
             fprintf(stderr, "PTRACE_ATTACH failed with error: %s\n",
                     strerror(-r));
+        }
         return false;
     }
     if (!wait_until_signal(info->pid, SIGSTOP))
@@ -926,7 +945,7 @@ inject_ptrace(dr_inject_info_t *info, const char *library_path)
      * the ELF header with different arguments.
      * XXX: Actually look up an export.
      */
-    reg_t injected_dr_start = loader.ehdr->e_entry + loader.load_delta;
+    app_pc injected_dr_start = loader.ehdr->e_entry + loader.load_delta;
     elf_loader_destroy(&loader);
 
     struct user_regs_struct regs;
@@ -953,7 +972,7 @@ inject_ptrace(dr_inject_info_t *info, const char *library_path)
     regs.REG_SP_FIELD = ALIGN_BACKWARD(regs.REG_SP_FIELD, 16);
     ptrace_write_memory(info->pid, (void *)regs.REG_SP_FIELD,
                         &args, sizeof(args));
-    regs.REG_PC_FIELD = injected_dr_start;
+    regs.REG_PC_FIELD = (ptr_int_t) injected_dr_start;
     our_ptrace(PTRACE_SETREGS, info->pid, NULL, &regs);
 
     if (op_exec_gdb) {

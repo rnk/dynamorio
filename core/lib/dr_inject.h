@@ -75,6 +75,7 @@ dr_inject_process_create(const char *app_name, const char **app_cmdline,
                          void **data);
 
 #ifdef LINUX
+
 /**
  * Prepare to exec() the provided command from the current process.  Use
  * dr_inject_process_inject() to perform the exec() under DR.
@@ -101,6 +102,19 @@ dr_inject_process_create(const char *app_name, const char **app_cmdline,
 int
 dr_inject_prepare_to_exec(const char *app_name, const char **app_cmdline,
                           void **data);
+
+/**
+ * Use the ptrace system call to inject into the targetted process.  Must be
+ * called before dr_inject_process_inject().  Does not work with
+ * dr_inject_prepare_to_exec().
+ *
+ * \param[in]   data           The pointer returned by dr_inject_process_create()
+ *
+ * \return  Whether successful.
+ */
+bool
+dr_inject_prepare_to_ptrace(void *data);
+
 #endif /* LINUX */
 
 /**
@@ -131,19 +145,6 @@ dr_inject_process_inject(void *data, bool force_injection,
  */
 bool
 dr_inject_process_run(void *data);
-
-#ifdef LINUX
-/**
- * Use the ptrace system call to inject into the child.  Does not work with
- * dr_inject_prepare_to_exec().
- *
- * \note Unix only.
- *
- * \return  Whether successful.
- */
-bool
-dr_inject_use_ptrace(void *data);
-#endif
 
 /**
  * Frees resources used by dr_inject_process_create().

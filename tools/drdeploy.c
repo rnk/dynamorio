@@ -1226,7 +1226,7 @@ int main(int argc, char *argv[])
 
 #ifdef LINUX
     if (use_ptrace) {
-        if (!dr_inject_use_ptrace(inject_data)) {
+        if (!dr_inject_prepare_to_ptrace(inject_data)) {
             error("unable to use ptrace");
             goto error;
         } else {

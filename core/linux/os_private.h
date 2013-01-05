@@ -65,6 +65,9 @@
                              CLONE_THREAD|CLONE_SYSVSEM|CLONE_SETTLS| \
                              CLONE_PARENT_SETTID|CLONE_CHILD_CLEARTID)
 
+/* Maximum number of arguments to Linux syscalls. */
+enum { MAX_SYSCALL_ARGS = 6 };
+
 /* thread-local data that's os-private, for modularity */
 typedef struct _os_thread_data_t {
     /* store stack info at thread startup, since stack can get fragmented in
@@ -143,6 +146,9 @@ set_executable_path(const char *);
 
 uint
 memprot_to_osprot(uint prot);
+
+bool
+mmap_syscall_succeeded(byte *retval);
 
 bool
 os_files_same(const char *path1, const char *path2);

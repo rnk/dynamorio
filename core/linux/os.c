@@ -2768,7 +2768,7 @@ mprotect_syscall(byte *p, size_t size, uint prot)
     return dynamorio_syscall(SYS_mprotect, 3, p, size, prot);
 }
 
-static bool
+bool
 mmap_syscall_succeeded(byte *retval)
 {
     ptr_int_t result = (ptr_int_t) retval;
