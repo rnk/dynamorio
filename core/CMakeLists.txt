@@ -390,10 +390,10 @@ if (UNIX)
   # import that we should cut.
   target_link_libraries(dynamorio dl m)
 
-  # We need to do extra work hide symbols in the static library build.  First
-  # we do a partial link with ld -r, which makes a single dynamorio.o object
-  # file.  Then we use objcopy --localize-hidden to hide all non-exported
-  # symbols.
+  # We need to do extra work to hide symbols in the static library build.
+  # First we do a partial link with ld -r, which makes a single libdynamorio.o
+  # object file.  Then we use objcopy --localize-hidden to hide all
+  # non-exported symbols.
   if (STATIC_LIBRARY)
     if (NOT EXISTS ${CMAKE_OBJCOPY})
       message(FATAL_ERROR "STATIC_LIBRARY requires objcopy")
@@ -404,6 +404,8 @@ if (UNIX)
     set (globalize_pic_thunks)
     if (NOT X64)
       # Localizing PIC thunks on ia32 creates references to discarded sections.
+      # XXX: Hardcoding this list of symbols is fragile.  It is known to work
+      # with gcc 4.6.
       set (globalize_pic_thunks ${CMAKE_OBJCOPY}
         --globalize-symbol=__i686.get_pc_thunk.bx
         --globalize-symbol=__i686.get_pc_thunk.cx
