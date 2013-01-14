@@ -7639,12 +7639,10 @@ get_dynamo_library_bounds(void)
 # endif
     dynamorio_libname = IF_UNIT_TEST_ELSE(UNIT_TEST_EXE_NAME,DYNAMORIO_LIBRARY_NAME);
 #endif /* STATIC_LIBRARY */
-    print_file(STDERR, "check_start: %p\n", check_start);
     res = get_library_bounds(dynamorio_libname,
                              &check_start, &check_end,
                              dynamorio_library_path,
                              BUFFER_SIZE_ELEMENTS(dynamorio_library_path));
-    print_file(STDERR, "check_start: %p\n", check_start);
     LOG(GLOBAL, LOG_VMAREAS, 1, PRODUCT_NAME" library path: %s\n",
         dynamorio_library_path);
 #ifndef STATIC_LIBRARY
