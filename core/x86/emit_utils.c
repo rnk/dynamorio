@@ -2157,7 +2157,7 @@ void
 init_patch_list(patch_list_t *patch, patch_list_type_t type)
 {
     patch->num_relocations = 0;
-    ASSERT_TRUNCATE(patch->type, ushort, type);
+    ASSERT_TRUNCATE(patch->type, ushort, (int)type);
     patch->type = (ushort) type;
 }
 

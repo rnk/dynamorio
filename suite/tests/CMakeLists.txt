@@ -1551,7 +1551,8 @@ if (UNIX)
     set(fib_static_ops "")
   endif ()
   tobuild_ops(linux.fib-static common/fib.c "${fib_static_ops}" "")
-  append_property_string(TARGET linux.fib-static LINK_FLAGS "-static")
+  append_property_string(TARGET linux.fib-static LINK_FLAGS
+    "-static -Wl,--no-export-dynamic")
   # Test position independent executables.
   # FIXME i#1001: fib-pie fails with -early_inject.
   tobuild(linux.fib-pie common/fib.c)
