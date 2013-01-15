@@ -1552,6 +1552,9 @@ if (UNIX)
   endif ()
   tobuild_ops(linux.fib-static common/fib.c "${fib_static_ops}" "")
   append_property_string(TARGET linux.fib-static LINK_FLAGS
+    # The default value of CMAKE_SHARED_LIBRARY_LINK_C_FLAGS has -rdynamic,
+    # which doesn't play well with clang and -static.  Adding
+    # --no-export-dynamic avoids the problem.
     "-static -Wl,--no-export-dynamic")
   # Test position independent executables.
   # FIXME i#1001: fib-pie fails with -early_inject.
