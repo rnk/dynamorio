@@ -397,12 +397,12 @@ locks_not_closed()
         if (allow_do_threshold_leaks && cur_lock->rank == LOCK_RANK(do_threshold_mutex)) {
             ignored++;
         } else if (cur_lock->deleted &&
-                   (cur_lock->rank == LOCK_RANK(report_buf_lock) ||
+                   (IF_WINDOWS(cur_lock->rank == LOCK_RANK(debugbox_lock) ||
+                               cur_lock->rank == LOCK_RANK(dump_core_lock) ||)
+                    cur_lock->rank == LOCK_RANK(report_buf_lock) ||
                     cur_lock->rank == LOCK_RANK(datasec_selfprot_lock) ||
-                    cur_lock->rank == LOCK_RANK(dump_core_lock) ||
                     cur_lock->rank == LOCK_RANK(logdir_mutex) ||
-                    cur_lock->rank == LOCK_RANK(options_lock)
-                    IF_WINDOWS(|| cur_lock->rank == LOCK_RANK(debugbox_lock)))) {
+                    cur_lock->rank == LOCK_RANK(options_lock))) {
             /* i#1058: curiosities during exit re-acquire these locks. */
             ignored++;
         } else {
