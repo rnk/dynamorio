@@ -403,12 +403,10 @@ locks_not_closed()
                     cur_lock->rank == LOCK_RANK(logdir_mutex) ||
                     cur_lock->rank == LOCK_RANK(options_lock)
                     IF_WINDOWS(|| cur_lock->rank == LOCK_RANK(debugbox_lock)))) {
-            /* i#1058: curiosities during exit re-aquire these locks. */
+            /* i#1058: curiosities during exit re-acquire these locks. */
             ignored++;
         } else {
             LOG(GLOBAL, LOG_STATS, 1, "missing DELETE_LOCK on lock "PFX" %s\n",
-                cur_lock, cur_lock->name);
-            print_file(STDERR, "missing DELETE_LOCK on lock "PFX" %s\n",
                 cur_lock, cur_lock->name);
             forgotten++;
         }
