@@ -890,6 +890,7 @@ inject_ptrace(dr_inject_info_t *info, const char *library_path)
     struct user_regs_struct regs;
     ptrace_stack_args_t args;
     app_pc injected_base;
+    app_pc injected_dr_start;
     elf_loader_t loader;
     int status;
     int signal;
