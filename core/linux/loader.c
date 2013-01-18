@@ -1,5 +1,5 @@
 /* *******************************************************************************
- * Copyright (c) 2011-2012 Google, Inc.  All rights reserved.
+ * Copyright (c) 2011-2013 Google, Inc.  All rights reserved.
  * Copyright (c) 2011 Massachusetts Institute of Technology  All rights reserved.
  * *******************************************************************************/
 
@@ -338,7 +338,9 @@ privload_map_and_relocate(const char *filename, size_t *size OUT)
     prot_fn_t prot_func;
     app_pc base = NULL;
     elf_loader_t loader;
+#if defined(INTERNAL) || defined(CLIENT_INTERFACE)
     app_pc text_addr;
+#endif
 
     ASSERT_OWN_RECURSIVE_LOCK(true, &privload_lock);
     /* get appropriate function */
@@ -509,6 +511,29 @@ privload_locate_and_load(const char *impname, privmod_t *dependent)
     return NULL;
 }
 
+app_pc
+privload_load_private_library(const char *name)
+{
+    privmod_t *newmod;
+    app_pc res = NULL;
+    acquire_recursive_lock(&privload_lock);
+    newmod = privload_lookup(name);
+    if (newmod == NULL)
+        newmod = privload_locate_and_load(name, NULL);
+    else
+        newmod->ref_count++;
+    if (newmod != NULL)
+        res = newmod->base;
+    release_recursive_lock(&privload_lock);
+    return res;
+}
+
+void
+privload_load_finalized(privmod_t *mod)
+{
+    /* nothing further to do */
+}
+
 static bool
 privload_search_rpath(privmod_t *mod, const char *name,
                       char *filename OUT /* buffer size is MAXIMUM_PATH */)
@@ -574,6 +599,13 @@ privload_locate(const char *name, privmod_t *dep,
 {
     uint i;
     char *lib_paths;
+
+    /* We may be passed a full path. */
+    if (name[0] == '/' && os_file_exists(name, false/*!is_dir*/)) {
+        snprintf(filename, MAXIMUM_PATH, "%s", name);
+        filename[MAXIMUM_PATH - 1] = 0;
+        return true;
+    }
 
     /* FIXME: We have a simple implementation of library search.
      * libc implementation can be found at elf/dl-load.c:_dl_map_object.

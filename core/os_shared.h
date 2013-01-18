@@ -1,5 +1,5 @@
 /* **********************************************************
- * Copyright (c) 2010-2012 Google, Inc.  All rights reserved.
+ * Copyright (c) 2010-2013 Google, Inc.  All rights reserved.
  * Copyright (c) 2003-2010 VMware, Inc.  All rights reserved.
  * **********************************************************/
 
@@ -89,6 +89,12 @@ enum {
     HEAP_ERROR_NOT_AT_PREFERRED = 2,
 };
 typedef uint heap_error_code_t;
+
+/* For dr_raw_mem_alloc, try to allocate memory at preferred address. */
+void *os_raw_mem_alloc(void *preferred, size_t size, uint prot,
+                       heap_error_code_t *error_code);
+/* For dr_raw_mem_free, free memory allocated from os_raw_mem_alloc */
+void os_raw_mem_free(void *p, size_t size, heap_error_code_t *error_code);
 
 /* Reserve size bytes of virtual address space in one piece without committing swap
  * space for it.  If preferred is non-NULL then memory will be reserved at that address
@@ -605,7 +611,7 @@ bool remove_from_all_memory_areas(app_pc start, app_pc end);
 /* defaults to read only access, if write is not set ignores others */
 #define OS_OPEN_READ        0x01
 #define OS_OPEN_WRITE       0x02
-#define OS_OPEN_APPEND      0x04
+#define OS_OPEN_APPEND      0x04 /* if not set, the file is truncated */
 #define OS_OPEN_REQUIRE_NEW 0x08
 #define OS_EXECUTE          0x10 /* only used on win32, currently */
 #define OS_SHARE_DELETE     0x20 /* only used on win32, currently */
@@ -983,6 +989,8 @@ void landing_pads_to_executable_areas(bool add);
 /* in loader_shared.c */
 app_pc load_private_library(const char *filename);
 bool unload_private_library(app_pc modbase);
+/* searches in standard paths instead of requiring abs path */
+app_pc locate_and_load_private_library(const char *name);
 void loader_init(void);
 void loader_exit(void);
 void loader_thread_init(dcontext_t *dcontext);
