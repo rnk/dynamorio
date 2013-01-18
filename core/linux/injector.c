@@ -970,11 +970,16 @@ inject_ptrace(dr_inject_info_t *info, const char *library_path)
     strncpy(args.home_dir, getenv("HOME"), BUFFER_SIZE_ELEMENTS(args.home_dir));
     NULL_TERMINATE_BUFFER(args.home_dir);
 
+#ifdef X86
     regs.REG_SP_FIELD -= REDZONE_SIZE;  /* Need to preserve x64 red zone. */
     regs.REG_SP_FIELD -= sizeof(args);  /* Allocate space for args. */
     regs.REG_SP_FIELD = ALIGN_BACKWARD(regs.REG_SP_FIELD, REGPARM_END_ALIGN);
     ptrace_write_memory(info->pid, (void *)regs.REG_SP_FIELD,
                         &args, sizeof(args));
+#else
+# error "depends on arch stack growth direction"
+#endif
+
     regs.REG_PC_FIELD = (ptr_int_t) injected_dr_start;
     our_ptrace(PTRACE_SETREGS, info->pid, NULL, &regs);
 
