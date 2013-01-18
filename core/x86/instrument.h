@@ -1,5 +1,5 @@
 /* **********************************************************
- * Copyright (c) 2010-2012 Google, Inc.  All rights reserved.
+ * Copyright (c) 2010-2013 Google, Inc.  All rights reserved.
  * Copyright (c) 2002-2010 VMware, Inc.  All rights reserved.
  * **********************************************************/
 
@@ -1845,16 +1845,20 @@ DR_API
  * change in the next release.  Consider it experimental in this release.
  *
  * Allocates \p size bytes (page size aligned) of memory as a separate
- * allocation with a base at \p addr that must be page size aligned,
+ * allocation at preferred base \p addr that must be page size aligned,
  * allowing for separate protection.
+ * If \p addr is NULL, an arbitrary address is picked.
+ *
  * The \p prot protection should use the DR_MEMPROT_READ,
  * DR_MEMPROT_WRITE, and DR_MEMPROT_EXEC bits.
  * The allocated memory is not considered to be DynamoRIO or tool memory and
  * thus is not kept separate from the application. Use of this memory is at the
  * client's own risk.
- * Returns true if successful.
+ *
+ * Returns the actual address allocated or NULL if memory allocation at 
+ * preferred base fails.
  */
-bool
+void *
 dr_raw_mem_alloc(size_t size, uint prot, void *addr);
 
 DR_API
@@ -2104,6 +2108,10 @@ DR_API
  * dr_memory_is_in_client() and any faults in the library will be
  * considered client faults.  The bounds of the loaded library are
  * returned in the optional out variables.  On failure, returns NULL.
+ *
+ * If only a filename and not a full path is given, this routine will
+ * search for the library in the standard search locations for DR's
+ * private loader.
  */
 dr_auxlib_handle_t
 dr_load_aux_library(const char *name,

@@ -1,5 +1,5 @@
 /* **********************************************************
- * Copyright (c) 2010-2012 Google, Inc.  All rights reserved.
+ * Copyright (c) 2010-2013 Google, Inc.  All rights reserved.
  * Copyright (c) 2000-2010 VMware, Inc.  All rights reserved.
  * **********************************************************/
 
@@ -3378,6 +3378,43 @@ reset_profile(profile_t *profile)
 }
 #endif
 
+/* free memory allocated from os_raw_mem_alloc */
+void
+os_raw_mem_free(void *p, size_t size, heap_error_code_t *error_code)
+{
+    ASSERT(error_code != NULL);
+    ASSERT(size > 0 && ALIGNED(size, PAGE_SIZE));
+
+    *error_code = nt_decommit_virtual_memory(p, size);
+    ASSERT(NT_SUCCESS(*error_code));
+    *error_code = nt_free_virtual_memory(p);
+    LOG(GLOBAL, LOG_HEAP, 2, "os_raw_mem_free: "SZFMT" bytes @ "PFX"\n",
+        size, p);
+    ASSERT(NT_SUCCESS(*error_code));
+}
+
+void *
+os_raw_mem_alloc(void *preferred, size_t size, uint prot,
+                 heap_error_code_t *error_code)
+{
+    void *p = preferred;
+    uint os_prot = memprot_to_osprot(prot);
+
+    ASSERT(error_code != NULL);
+    /* should only be used on aligned pieces */
+    ASSERT(size > 0 && ALIGNED(size, PAGE_SIZE));
+
+    *error_code = nt_allocate_virtual_memory(&p, size, os_prot, MEMORY_COMMIT);
+    if (!NT_SUCCESS(*error_code)) {
+        LOG(GLOBAL, LOG_HEAP, 3,
+            "os_raw_mem_alloc %d bytes failed"PFX"\n", size, p);
+        return NULL;
+    }
+    LOG(GLOBAL, LOG_HEAP, 2, "os_raw_mem_alloc: "SZFMT" bytes @ "PFX"\n",
+        size, p);
+    return p;
+}
+
 /* caller is required to handle thread synchronization */
 /* see inject.c, this must be able to free an nt_allocate_virtual_memory
  * pointer */
@@ -3854,7 +3891,10 @@ shlib_handle_t
 load_shared_library(const char *name)
 {
     if (IF_CLIENT_INTERFACE_ELSE(INTERNAL_OPTION(private_loader), false)) {
-        return (shlib_handle_t) load_private_library(name);
+        /* We call locate_and_load_private_library() to support searching for
+         * a pathless name.
+         */
+        return (shlib_handle_t) locate_and_load_private_library(name);
     } else {
         wchar_t buf[MAX_PATH];
         snwprintf(buf, BUFFER_SIZE_ELEMENTS(buf), L"%hs", name);
