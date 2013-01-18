@@ -1215,7 +1215,7 @@ privload_setup_auxv(char **envp, app_pc map, ptr_int_t delta)
 static void
 takeover_ptrace(ptrace_stack_args_t *args)
 {
-    static char home_var[MAXIMUM_PATH+5];
+    static char home_var[MAXIMUM_PATH+6/*HOME=path\0*/];
     static char *fake_envp[] = {home_var, NULL};
 
     thread_sleep(1000);
@@ -1234,13 +1234,13 @@ takeover_ptrace(ptrace_stack_args_t *args)
 
     dynamorio_app_init();
 
-    /* FIXME: Takeover other threads */
+    /* FIXME i#37: takeover other threads */
 
     /* We need to wait until dr_inject_process_run() is called to finish
      * takeover, and this is an easy way to stop and return control to the
      * injector.
      */
-    asm ("int3");  /* return control to injector.c */
+    dynamorio_syscall(SYS_kill, 2, get_process_id(), SIGTRAP);
 
     dynamo_start(&args->mc);
 }

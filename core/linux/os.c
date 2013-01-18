@@ -4527,6 +4527,28 @@ typedef struct {
         unsigned long offset;
 } mmap_arg_struct_t;
 
+#endif /* !NOT_DYNAMORIO_CORE_PROPER: around most of file, to exclude preload */
+
+const reg_id_t syscall_regparms[MAX_SYSCALL_ARGS] = {
+#ifdef X64
+    DR_REG_RDI,
+    DR_REG_RSI,
+    DR_REG_RDX,
+    DR_REG_R10,  /* RCX goes here in normal x64 CC. */
+    DR_REG_R8,
+    DR_REG_R9
+#else
+    DR_REG_EBX,
+    DR_REG_ECX,
+    DR_REG_EDX,
+    DR_REG_ESI,
+    DR_REG_EDI,
+    DR_REG_EBP
+#endif
+};
+
+#ifndef NOT_DYNAMORIO_CORE_PROPER
+
 static inline reg_t *
 sys_param_addr(dcontext_t *dcontext, int num)
 {

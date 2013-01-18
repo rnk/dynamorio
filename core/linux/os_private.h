@@ -41,6 +41,7 @@
 
 #include <signal.h> /* for stack_t */
 #include "module.h" /* for os_module_data_t */
+#include "instr.h" /* for reg_id_t */
 #include <sys/time.h> /* struct itimerval */
 
 /* for inline asm */
@@ -152,6 +153,8 @@ mmap_syscall_succeeded(byte *retval);
 
 bool
 os_files_same(const char *path1, const char *path2);
+
+const reg_id_t syscall_regparms[MAX_SYSCALL_ARGS];
 
 /* in signal.c */
 struct _kernel_sigaction_t;

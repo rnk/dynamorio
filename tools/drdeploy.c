@@ -232,9 +232,8 @@ const char *usage_str =
     "       -mem               Print memory usage statistics.\n"
     "       -pidfile <file>    Print the pid of the child process to the given file.\n"
     "       -no_inject         Run the application natively.\n"
-# ifdef LINUX  /* XXX: Ugh ifdefs. */
-    "       -use_ptrace        Whether to use ptrace to inject.\n"
-# endif
+    "       -attach <pid>      Attach to the process with the given pid.  Pass 0\n"
+    "                          for pid to launch and inject into a new process.\n"
     "       -use_dll <dll>     Inject given dll instead of configured DR dll.\n"
     "       -force             Inject regardless of configuration.\n"
     "       -exit0             Return a 0 exit code instead of the app's exit code.\n"
@@ -813,6 +812,16 @@ int main(int argc, char *argv[])
             continue;
         }
         else if (strcmp(argv[i], "-use_ptrace") == 0) {
+            use_ptrace = true;
+            continue;
+        }
+        else if (strcmp(argv[i], "-attach") == 0) {
+            const char *pid_str = argv[++i];
+            process_id_t pid = strtoul(pid_str, NULL, 10);
+            if (pid == ULONG_MAX)
+                usage("-attach expects an integer pid");
+            if (pid != 0)
+                usage("attaching to running processes is not yet implemented");
             use_ptrace = true;
             continue;
         }
