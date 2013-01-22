@@ -1,5 +1,5 @@
 # **********************************************************
-# Copyright (c) 2010-2012 Google, Inc.    All rights reserved.
+# Copyright (c) 2010-2013 Google, Inc.    All rights reserved.
 # Copyright (c) 2009-2010 VMware, Inc.    All rights reserved.
 # **********************************************************
 
@@ -178,6 +178,9 @@ if (UNIX)
     linux/injector.c
     config.c    # to read config
     linux/os.c  # for file_t interface
+    linux/module.c
+    string.c
+    io.c
     ${x86_noncore_asm_src}  # for dynamorio_syscall
     )
 else (UNIX)
@@ -340,6 +343,9 @@ add_library(drdecode
   )
 set_target_properties(drdecode PROPERTIES
   COMPILE_FLAGS "-DNOT_DYNAMORIO_CORE_PROPER -DSTANDALONE_DECODER")
+if (UNIX)
+  append_property_string(TARGET drdecode COMPILE_FLAGS "-fPIC")
+endif (UNIX)
 add_gen_events_deps(drdecode)
 
 ###########################################################################
@@ -405,10 +411,12 @@ if (UNIX)
     if (NOT X64)
       # Localizing PIC thunks on ia32 creates references to discarded sections.
       # XXX: Hardcoding this list of symbols is fragile.  It is known to work
-      # with gcc 4.4 and 4.6.
+      # with gcc 4.4 and 4.6.  gcc 4.7 uses symbols starting with __x86.
       set (globalize_pic_thunks ${CMAKE_OBJCOPY}
         --globalize-symbol=__i686.get_pc_thunk.bx
         --globalize-symbol=__i686.get_pc_thunk.cx
+        --globalize-symbol=__x86.get_pc_thunk.bx
+        --globalize-symbol=__x86.get_pc_thunk.cx
         "${dynamorio_dot_o}" &&
         )
     endif ()
@@ -591,8 +599,10 @@ else (UNIX)
       "${dynamorio_link_flags} /export:dr_app_start /export:dr_app_take_over")
   endif (APP_EXPORTS)
   if (CLIENT_INTERFACE)
-    set(dynamorio_link_flags 
-      "${dynamorio_link_flags} /export:dr_try_start")
+    set(dynamorio_link_flags "${dynamorio_link_flags} /export:dr_try_start")
+    if (NOT X64)
+      set(dynamorio_link_flags "${dynamorio_link_flags} /export:dr_invoke_x64_routine")
+    endif (NOT X64)
   endif (CLIENT_INTERFACE)
   if (WINDOWS)
     set(dynamorio_link_flags
@@ -668,6 +678,7 @@ endif (UNIX)
 # drinjectlib
 add_library(drinjectlib SHARED ${INJECTOR_SRCS})
 add_gen_events_deps(drinjectlib)
+target_link_libraries(drinjectlib drdecode)
 set_target_properties(drinjectlib PROPERTIES
   # COMPILE_DEFINITONS isn't working for me: cmake bug?
   # Set define parameters for resources.rc
