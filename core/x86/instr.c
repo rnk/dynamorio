@@ -2975,6 +2975,7 @@ instr_decode(dcontext_t *dcontext, instr_t *instr)
 /* Calls instr_decode() with the current dcontext.  Mostly useful as the slow
  * path for IR routines that get inlined.
  */
+NOINLINE  /* rarely called */
 instr_t *
 instr_decode_with_current_dcontext(instr_t *instr)
 {
