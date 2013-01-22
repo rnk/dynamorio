@@ -59,7 +59,6 @@
 #include "decode.h"
 #include "decode_fast.h"
 #include "instr_create.h"
-#include "utils.h"
 
 #include <string.h> /* for memcpy */
 
