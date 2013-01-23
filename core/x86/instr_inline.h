@@ -232,28 +232,28 @@ INSTR_INLINE
 bool
 instr_operands_valid(instr_t *instr)
 {
-    return ((instr->flags & INSTR_OPERANDS_VALID) != 0);
+    return TEST(INSTR_OPERANDS_VALID, instr->flags);
 }
 
 INSTR_INLINE
 bool
 instr_raw_bits_valid(instr_t *instr)
 {
-    return ((instr->flags & INSTR_RAW_BITS_VALID) != 0);
+    return TEST(INSTR_RAW_BITS_VALID, instr->flags);
 }
 
 INSTR_INLINE
 bool
 instr_has_allocated_bits(instr_t *instr)
 {
-    return ((instr->flags & INSTR_RAW_BITS_ALLOCATED) != 0);
+    return TEST(INSTR_RAW_BITS_ALLOCATED, instr->flags);
 }
 
 INSTR_INLINE
 bool
 instr_needs_encoding(instr_t *instr)
 {
-    return ((instr->flags & INSTR_RAW_BITS_VALID) == 0);
+    return !TEST(INSTR_RAW_BITS_VALID, instr->flags);
 }
 
 INSTR_INLINE
