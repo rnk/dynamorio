@@ -3699,12 +3699,13 @@ instr_is_exit_cti(instr_t *instr)
     if (!instr_operands_valid(instr) || /* implies !opcode_valid */
         !instr_ok_to_mangle(instr))
         return false;
-    opc = instr_get_opcode(instr);
+    /* XXX: avoid conditional decode in instr_get_opcode() for speed. */
+    opc = instr->opcode;
     if (opcode_is_ubr(opc) || opcode_is_cbr(opc)) {
         CLIENT_ASSERT(instr_num_srcs(instr) > 0,
                       "internal error: exit cti has no target");
         /* far pc should only happen for mangle's call to here */
-        return opnd_is_pc(instr->src0);
+        return opnd_is_pc(instr_get_target(instr));
     }
     return false;
 }
