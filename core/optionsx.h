@@ -1,5 +1,5 @@
 /* *******************************************************************************
- * Copyright (c) 2010-2012 Google, Inc.  All rights reserved.
+ * Copyright (c) 2010-2013 Google, Inc.  All rights reserved.
  * Copyright (c) 2011 Massachusetts Institute of Technology  All rights reserved.
  * Copyright (c) 2003-2010 VMware, Inc.  All rights reserved.
  * *******************************************************************************/
@@ -275,6 +275,7 @@
     OPTION_DEFAULT_INTERNAL(uint, global_stats_interval, 5000,
                    "global statistics dump interval in fragments, 0 to disable periodic dump")
 #  ifdef HASHTABLE_STATISTICS
+    OPTION_DEFAULT_INTERNAL(bool, hashtable_study, true, "enable hashtable studies")
     OPTION_DEFAULT_INTERNAL(bool, hashtable_ibl_stats, true, "enable hashtable statistics for IBL routines")
     /* off by default until non-sharing bug 5846 fixed */
     OPTION_DEFAULT_INTERNAL(bool, hashtable_ibl_entry_stats, false, "enable hashtable statistics per IBL entry")
@@ -1346,7 +1347,9 @@
      * XXX: this option can only be turned on by drrun via "-early" so that
      * cmdline args can be arranged appropriately.
      */
-    OPTION_DEFAULT(bool, early_inject, IF_WINDOWS_ELSE(true, false), "inject early")
+    OPTION_DEFAULT(bool, early_inject, IF_WINDOWS_ELSE
+                   /* i#980: too early for kernel32 so we disable */
+                   (IF_CLIENT_INTERFACE_ELSE(false, true), false), "inject early")
 #if 0 /* FIXME i#234 NYI: not ready to enable just yet */
     OPTION_DEFAULT(bool, early_inject_map, true, "inject earliest via map")
     /* see enum definition is os_shared.h for notes on what works with which
@@ -2002,9 +2005,12 @@ IF_RCT_IND_BRANCH(options->rct_ind_jump = OPTION_DISABLED;)
             IF_X64(options->coarse_split_riprel = true;)
             /* FIXME: i#660: not compatible w/ Probe API */
             IF_CLIENT_INTERFACE(DISABLE_PROBE_API(options);)
+            /* i#1051: disable reset until we decide how it interacts w/ pcaches */
+            DISABLE_RESET(options);
         } else {
             options->coarse_enable_freeze = false;
             options->use_persisted = false;
+            REENABLE_RESET(options);
         }
      }, "generate and use persisted caches", STATIC, OP_PCACHE_GLOBAL)
 
@@ -2020,8 +2026,7 @@ IF_RCT_IND_BRANCH(options->rct_ind_jump = OPTION_DISABLED;)
                 * N.B.: if we re-enable traces we'll want to turn this back on
                 */
                options->indcall2direct = false;
-               /* case 9686: for now reset is a nop until we decide what it
-                * should do wrt pcaches */
+               /* i#1051: disable reset until we decide how it interacts w/ pcaches */
                DISABLE_RESET(options);
            } else {
                /* -no_desktop: like -no_client, only use in simple

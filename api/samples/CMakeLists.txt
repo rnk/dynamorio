@@ -82,6 +82,25 @@ if (NOT DEFINED GENERATE_PDBS)
   set(GENERATE_PDBS ON)
 endif (NOT DEFINED GENERATE_PDBS)
 
+if (STATIC_LIBRARY)
+  set(libtype STATIC)
+else()
+  set(libtype SHARED)
+endif ()
+
+# i#379: We usually want to build the samples with optimizations to improve the
+# chances of inlining, but it's nice to be able to turn that off easily.  A
+# release build should already have optimizations, so this should only really
+# affect debug builds.
+option(OPTIMIZE_SAMPLES
+  "Build samples with optimizations to increase the chances of clean call inlining (overrides debug flags)"
+  ON)
+if (WIN32)
+  set(OPT_CFLAGS "/O2")
+else (WIN32)
+  set(OPT_CFLAGS "-O2")
+endif (WIN32)
+
 if (NOT DEFINED DynamoRIO_DIR)
   set(DynamoRIO_DIR "${PROJECT_SOURCE_DIR}/../cmake" CACHE PATH
     "DynamoRIO installation's cmake directory")
@@ -102,6 +121,11 @@ if (WIN32)
   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${CL_CFLAGS}")
   add_definitions(-D_CRT_SECURE_NO_WARNINGS)
 endif (WIN32)
+
+if (OPTIMIZE_SAMPLES)
+  set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} ${OPT_CFLAGS}")
+  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${OPT_CFLAGS}")
+endif ()
 
 file(GLOB srcs *.c *.cpp)
 # Not all clients are supported on all plaforms
@@ -136,7 +160,7 @@ foreach (src ${srcs})
         VERBATIM)
     endif ()
   else ("${tgt}" STREQUAL "tracedump")
-    add_library(${tgt} SHARED ${src})
+    add_library(${tgt} ${libtype} ${src})
     if (SHOW_SYMBOLS AND "${tgt}" STREQUAL "instrcalls" AND DR_EXT_DRSYMS_STATIC)
       # required for using drsyms built as a static library
       set(DynamoRIO_USE_LIBC ON)
@@ -163,13 +187,16 @@ foreach (src ${srcs})
       use_DynamoRIO_extension(${tgt} drmgr)
       use_DynamoRIO_extension(${tgt} drutil)
     endif ()
+    if ("${tgt}" STREQUAL "bbcov")
+      use_DynamoRIO_extension(${tgt} drcontainers)
+    endif ()
 
     if (NOT DynamoRIO_INTERNAL OR NOT "${CMAKE_GENERATOR}" MATCHES "Ninja")
       get_target_property(tgtnm ${tgt} LOCATION${location_suffix})
       add_custom_command(TARGET ${tgt}
         POST_BUILD
         COMMAND ${CMAKE_COMMAND}
-        ARGS -E echo "Usage: pass to drconfig or drrun: -client ${tgtnm} 0 \"\""
+        ARGS -E echo "Usage: pass to drconfig or drrun: -c ${tgtnm}"
         VERBATIM)
     endif ()
   endif ("${tgt}" STREQUAL "tracedump")

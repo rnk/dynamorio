@@ -1,5 +1,5 @@
 /* **********************************************************
- * Copyright (c) 2011-2012 Google, Inc.  All rights reserved.
+ * Copyright (c) 2011-2013 Google, Inc.  All rights reserved.
  * Copyright (c) 2000-2010 VMware, Inc.  All rights reserved.
  * **********************************************************/
 
@@ -219,6 +219,14 @@ extern const char * const reg_names[];
 extern const reg_id_t dr_reg_fixer[];
 /* DR_API EXPORT BEGIN */
 
+#define DR_REG_START_GPR DR_REG_XAX /**< Start of general register enum values */
+#ifdef X64
+# define DR_REG_STOP_GPR DR_REG_R15 /**< End of general register enum values */
+#else
+# define DR_REG_STOP_GPR DR_REG_XDI /**< End of general register enum values */
+#endif
+/**< Number of general registers */
+#define DR_NUM_GPR_REGS (DR_REG_STOP_GPR - DR_REG_START_GPR)
 #define DR_REG_START_64    DR_REG_RAX  /**< Start of 64-bit general register enum values */
 #define DR_REG_STOP_64     DR_REG_R15  /**< End of 64-bit general register enum values */  
 #define DR_REG_START_32    DR_REG_EAX  /**< Start of 32-bit general register enum values */
@@ -2228,6 +2236,9 @@ DR_API
 void 
 instr_set_target(instr_t *cti_instr, opnd_t target);
 
+#ifdef AVOID_API_EXPORT
+INSTR_INLINE  /* hot internally */
+#endif
 DR_API
 /** Returns true iff \p instr's operands are up to date. */
 bool 
@@ -2309,16 +2320,25 @@ DR_API
 void 
 instr_set_raw_bits_valid(instr_t *instr, bool valid);
 
+#ifdef AVOID_API_EXPORT
+INSTR_INLINE  /* internal inline */
+#endif
 DR_API
 /** Returns true iff \p instr's raw bits are a valid encoding of instr. */
 bool 
 instr_raw_bits_valid(instr_t *instr);
 
+#ifdef AVOID_API_EXPORT
+INSTR_INLINE  /* internal inline */
+#endif
 DR_API
 /** Returns true iff \p instr has its own allocated memory for raw bits. */
 bool 
 instr_has_allocated_bits(instr_t *instr);
 
+#ifdef AVOID_API_EXPORT
+INSTR_INLINE  /* internal inline */
+#endif
 DR_API
 /** Returns true iff \p instr's raw bits are not a valid encoding of \p instr. */
 bool 
@@ -3222,10 +3242,10 @@ opnd_t
 instr_get_src_mem_access(instr_t *instr);
 
 void 
-loginst(dcontext_t *dcontext, uint level, instr_t *instr, char *string);
+loginst(dcontext_t *dcontext, uint level, instr_t *instr, const char *string);
 
 void 
-logopnd(dcontext_t *dcontext, uint level, opnd_t opnd, char *string);
+logopnd(dcontext_t *dcontext, uint level, opnd_t opnd, const char *string);
 
 DR_API
 /**
@@ -3576,6 +3596,9 @@ opnd_t opnd_create_sized_tls_slot(int offs, opnd_size_t size);
 bool instr_raw_is_tls_spill(byte *pc, reg_id_t reg, ushort offs);
 bool instr_is_tls_spill(instr_t *instr, reg_id_t reg, ushort offs);
 bool instr_is_tls_xcx_spill(instr_t *instr);
+/* Pass REG_NULL to not care about the reg */
+bool
+instr_is_tls_restore(instr_t *instr, reg_id_t reg, ushort offs);
 bool
 instr_is_reg_spill_or_restore(dcontext_t *dcontext, instr_t *instr,
                               bool *tls, bool *spill, reg_id_t *reg);

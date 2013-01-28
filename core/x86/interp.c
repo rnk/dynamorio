@@ -85,7 +85,6 @@ static int fixup_last_cti(dcontext_t *dcontext, instrlist_t *trace,
                           bool record_translation, uint *num_exits_deleted/*OUT*/,
                           /* If non-NULL, only looks inside trace between these two */
                           instr_t *start_instr, instr_t *end_instr);
-static bool can_use_mangle_trace(void);
 bool mangle_trace(dcontext_t *dcontext, instrlist_t *ilist, monitor_data_t *md);
 
 /* we use a branch limit of 1 to make it easier for the trace
@@ -167,7 +166,8 @@ typedef struct {
     app_pc start_pc;
     bool app_interp;         /* building bb to interp app, as opposed to for pc
                               * translation or figuring out what pages a bb touches? */
-    bool for_cache;          /* should vmareas be updated? */
+    bool for_cache;          /* normal to-be-executed build? */
+    bool record_vmlist;      /* should vmareas be updated? */
     bool mangle_ilist;       /* should bb ilist be mangled? */
     bool record_translation; /* store translation info for each instr_t? */
     bool has_bb_building_lock; /* usually ==for_cache; used for aborting bb building */
@@ -231,6 +231,8 @@ init_build_bb(build_bb_t *bb, app_pc start_pc, bool app_interp, bool for_cache,
     bb->start_pc = start_pc;
     bb->app_interp = app_interp;
     bb->for_cache = for_cache;
+    if (bb->for_cache)
+        bb->record_vmlist = true;
     bb->mangle_ilist = mangle_ilist;
     bb->record_translation = record_translation;
     bb->outf = outf;
@@ -649,7 +651,7 @@ check_new_page_start(dcontext_t *dcontext, build_bb_t *bb)
     if (!bb->check_vm_area)
         return;
     DEBUG_DECLARE(ok =) check_thread_vm_area(dcontext, bb->start_pc, bb->start_pc,
-                                             (bb->for_cache ? &bb->vmlist : NULL),
+                                             (bb->record_vmlist ? &bb->vmlist : NULL),
                                              &bb->flags, &bb->checked_end,
                                              false/*!xfer*/);
     ASSERT(ok); /* cannot return false on non-xfer */
@@ -663,35 +665,51 @@ check_new_page_start(dcontext_t *dcontext, build_bb_t *bb)
  * while bb building like we used to.  Should revisit the overlap info and
  * walk_app_bb reasons for keeping those contig() calls and see if we can
  * optimize them away for bb building at least.
+ * i#993: new_pc points to the last byte of the current instruction and is not
+ * an open-ended endpoint.
  */
-static inline void
+static inline bool
 check_new_page_contig(dcontext_t *dcontext, build_bb_t *bb, app_pc new_pc)
 {
+    bool is_first_instr = (bb->instr_start == bb->start_pc);
     if (!bb->check_vm_area)
-        return;
-    if (bb->overlap_info != NULL)
-        update_overlap_info(dcontext, bb, new_pc, false/*not jmp*/);
+        return true;
     if (bb->checked_end == NULL) {
         ASSERT(new_pc == bb->start_pc);
-    } else if (new_pc > bb->checked_end) {
-        DEBUG_DECLARE(bool ok =)
-            check_thread_vm_area(dcontext, new_pc, bb->start_pc,
-                                 (bb->for_cache ? &bb->vmlist : NULL),
-                                 &bb->flags, &bb->checked_end,
-                                 false/*!xfer*/);
-        ASSERT(ok); /* cannot return false on non-xfer */
+    } else if (new_pc >= bb->checked_end) {
+        if (!check_thread_vm_area(dcontext, new_pc, bb->start_pc,
+                                  (bb->record_vmlist ? &bb->vmlist : NULL),
+                                  &bb->flags, &bb->checked_end,
+                                  /* i#989: We don't want to fall through to an
+                                   * incompatible vmarea, so we treat fall
+                                   * through like a transfer.  We can't end the
+                                   * bb before the first instruction, so we pass
+                                   * false to forcibly merge in the vmarea
+                                   * flags.
+                                   */
+                                  !is_first_instr/*xfer*/)) {
+            return false;
+        }
     }
+    if (bb->overlap_info != NULL)
+        update_overlap_info(dcontext, bb, new_pc, false/*not jmp*/);
     DOLOG(4, LOG_INTERP, {
         if (PAGE_START(bb->last_page) != PAGE_START(new_pc))
             LOG(THREAD, LOG_INTERP, 4, "page boundary crossed\n");
     });
     bb->last_page = new_pc; /* update even if not new page, for walk_app_bb */
+    return true;
 }
 
 /* Direct cti from prev_pc to new_pc */
 static bool
 check_new_page_jmp(dcontext_t *dcontext, build_bb_t *bb, app_pc new_pc)
 {
+    /* For tracking purposes, check the last byte of the cti. */
+    bool ok = check_new_page_contig(dcontext, bb, bb->cur_pc-1);
+    ASSERT(ok && "should have checked cur_pc-1 in decode loop");
+    if (!ok)  /* Don't follow the jmp in release build. */
+        return false;
     /* cur sandboxing doesn't handle direct cti
      * not good enough to only check this at top of interp -- could walk contig
      * from non-selfmod to selfmod page, and then do a direct cti, which
@@ -727,7 +745,7 @@ check_new_page_jmp(dcontext_t *dcontext, build_bb_t *bb, app_pc new_pc)
         return true;
     /* need to check this even if an intra-page jmp b/c we allow sub-page vm regions */
     if (!check_thread_vm_area(dcontext, new_pc, bb->start_pc,
-                              (bb->for_cache ? &bb->vmlist : NULL),
+                              (bb->record_vmlist ? &bb->vmlist : NULL),
                               &bb->flags, &bb->checked_end, true/*xfer*/))
         return false;
     if (bb->overlap_info != NULL)
@@ -823,7 +841,6 @@ follow_direct_jump(dcontext_t *dcontext, build_bb_t *bb,
     if (bb->follow_direct &&
         bb->num_elide_jmp < DYNAMO_OPTION(max_elide_jmp) &&
         (DYNAMO_OPTION(elide_back_jmps) || bb->cur_pc <= target)) {
-        check_new_page_contig(dcontext, bb, bb->cur_pc-1);
         if (check_new_page_jmp(dcontext, bb, target)) {
             /* Elide unconditional branch and follow target */
             bb->num_elide_jmp++;
@@ -908,7 +925,6 @@ bb_process_ubr(dcontext_t *dcontext, build_bb_t *bb)
         if (bb->follow_direct &&
             bb->num_elide_jmp < DYNAMO_OPTION(max_elide_jmp) &&
             (DYNAMO_OPTION(elide_back_jmps) || bb->cur_pc <= tgt)) {
-            check_new_page_contig(dcontext, bb, bb->cur_pc-1);
             if (check_new_page_jmp(dcontext, bb, tgt)) {
                 /* Elide unconditional branch and follow target */
                 bb->num_elide_jmp++;
@@ -945,7 +961,6 @@ follow_direct_call(dcontext_t *dcontext, build_bb_t *bb, app_pc callee)
     if (bb->follow_direct &&
         bb->num_elide_call < DYNAMO_OPTION(max_elide_call) &&
         (DYNAMO_OPTION(elide_back_calls) || bb->cur_pc <= callee)) {
-        check_new_page_contig(dcontext, bb, bb->cur_pc-1);
         if (check_new_page_jmp(dcontext, bb, callee)) {
             bb->num_elide_call++;
             STATS_INC(total_elided_calls);
@@ -1017,7 +1032,6 @@ bb_process_call_direct(dcontext_t *dcontext, build_bb_t *bb)
         if (bb->follow_direct &&
             bb->num_elide_call < DYNAMO_OPTION(max_elide_call) &&
             (DYNAMO_OPTION(elide_back_calls) || bb->cur_pc <= callee)) {
-            check_new_page_contig(dcontext, bb, bb->cur_pc-1);
             if (check_new_page_jmp(dcontext, bb, callee)) {
                 bb->num_elide_call++;
                 STATS_INC(total_elided_calls);
@@ -1980,7 +1994,6 @@ bb_process_convertible_indcall(dcontext_t *dcontext, build_bb_t *bb)
     if (bb->follow_direct &&
         bb->num_elide_call < DYNAMO_OPTION(max_elide_call) &&
         (DYNAMO_OPTION(elide_back_calls) || bb->cur_pc <= callee)) {
-        check_new_page_contig(dcontext, bb, bb->cur_pc-1);
         /* FIXME This is identical to the code for evaluating a
          * direct call's callee. If such code appears in another
          * (3rd) place, we should outline it.
@@ -2449,6 +2462,19 @@ client_process_bb(dcontext_t *dcontext, build_bb_t *bb)
     if (!bb->pass_to_client)
         return;
 
+    /* i#995: DR may build a bb with one invalid instruction, which won't be
+     * passed to cliennt.
+     * FIXME: i#1000, we should present the bb to the client.
+     * i#1000-c#1: the bb->ilist could be empty.
+     */
+    if (instrlist_first(bb->ilist) == NULL)
+        return;
+    if (!instr_opcode_valid(instrlist_first(bb->ilist))) {
+        /* it should have only one instr */
+        ASSERT(instrlist_first(bb->ilist) == instrlist_last(bb->ilist));
+        return;
+    }
+
     /* Call the bb creation callback(s) */
     if (!instrument_basic_block(dcontext, (app_pc) bb->start_pc, bb->ilist,
                                 bb->for_trace, !bb->app_interp, &emitflags)) {
@@ -2517,8 +2543,14 @@ client_process_bb(dcontext_t *dcontext, build_bb_t *bb)
         /* PR 215217: client should not add new source code regions, else our
          * cache consistency (both page prot and selfmod) will fail
          */
-        CLIENT_ASSERT((instr_get_translation(inst) >= bb->start_pc &&
-                       instr_get_translation(inst) < bb->cur_pc) ||
+        ASSERT(!bb->for_cache || bb->vmlist != NULL);
+        /* For selfmod recreation we don't check vmareas so we don't have vmlist.
+         * We live w/o the checks there.
+         */
+        CLIENT_ASSERT(!bb->for_cache ||
+                      vm_list_overlaps(dcontext, bb->vmlist,
+                                       instr_get_translation(inst),
+                                       instr_get_translation(inst)+1) ||
                       (instr_is_ubr(inst) && opnd_is_pc(instr_get_target(inst)) &&
                        instr_get_translation(inst) == opnd_get_pc(instr_get_target(inst)))
                       /* the displaced code and jmp return from intercept buffer
@@ -2551,7 +2583,7 @@ client_process_bb(dcontext_t *dcontext, build_bb_t *bb)
                  * special flags set above, even if the client doesn't change
                  * the exit target.  We undo such flags after this ilist walk
                  * to support client removal of syscalls/ints.
-                 * EXIT_IS_IND_JMP_PLT() is used for indcall2direct, which
+                 * EXIT_IS_IND_JMP_PLT() is used for -IAT_{convert,elide}, which
                  * is off by default for CI; it's also used for native_exec,
                  * but we're not sure if we want to support that with CI.
                  * xref case 10846 and i#198
@@ -2568,7 +2600,11 @@ client_process_bb(dcontext_t *dcontext, build_bb_t *bb)
 
                 if (instr_is_near_ubr(inst) || instr_is_near_call_direct(inst)) {
                     CLIENT_ASSERT(instr_is_near_ubr(inst) ||
-                                  inst == instrlist_last(bb->ilist),
+                                  inst == instrlist_last(bb->ilist) ||
+                                  /* for elision we assume calls are followed
+                                   * by their callee target code
+                                   */
+                                  DYNAMO_OPTION(max_elide_call) > 0,
                                   "an exit call must terminate the block");
                     /* a ubr need not be the final instr */
                     if (inst == last_app_instr) {
@@ -2606,7 +2642,9 @@ client_process_bb(dcontext_t *dcontext, build_bb_t *bb)
                         STATS_INC(coarse_prevent_client);
                     }
                     /* decode_fragment can't handle code beyond ctis */
-                    bb->flags |= FRAG_CANNOT_BE_TRACE;
+                    if (!instr_is_near_call_direct(inst) ||
+                        DYNAMO_OPTION(max_elide_call) == 0)
+                        bb->flags |= FRAG_CANNOT_BE_TRACE;
                 }
 
             }
@@ -2618,9 +2656,16 @@ client_process_bb(dcontext_t *dcontext, build_bb_t *bb)
              * reasons as well.
              */
             else {
-                CLIENT_ASSERT(instr_is_near_ubr(inst),
+                CLIENT_ASSERT(instr_is_near_ubr(inst) ||
+                              (instr_is_near_call_direct(inst) &&
+                               /* for elision we assume calls are followed
+                                * by their callee target code
+                                */
+                               DYNAMO_OPTION(max_elide_call) > 0),
                               "a second exit cti must be a ubr");
-                bb->flags |= FRAG_CANNOT_BE_TRACE;
+                if (!instr_is_near_call_direct(inst) ||
+                    DYNAMO_OPTION(max_elide_call) == 0)
+                    bb->flags |= FRAG_CANNOT_BE_TRACE;
                 /* our cti check above should have already turned off coarse */
                 ASSERT(!TEST(FRAG_COARSE_GRAIN, bb->flags));
             }
@@ -2704,7 +2749,9 @@ client_process_bb(dcontext_t *dcontext, build_bb_t *bb)
  *   If pass_to_client is true,
  *     calls instrument routine on bb->ilist before mangling
  *   If mangle_ilist is true, mangles the ilist, else leaves it in app form
- *   If for_cache is true, updates the vmareas data structures
+ *   If record_vmlist is true, updates the vmareas data structures
+ *   If for_cache is true, bb building lock is assumed to be held.
+ *     record_vmlist should also be true.
  *     Caller must set and later clear dcontext->bb_build_info.
  *     For !for_cache, build_bb_ilist() sets and clears it, making the
  *     assumption that the caller is doing no other reading from the region.
@@ -2743,13 +2790,15 @@ build_bb_ilist(dcontext_t *dcontext, build_bb_t *bb)
      */
     dcontext_t *my_dcontext = get_thread_private_dcontext();
     DEBUG_DECLARE(bool regenerated = false;)
+    bool stop_bb_on_fallthrough = false;
 
     ASSERT(bb->initialized);
     /* note that it's ok for bb->start_pc to be NULL as our check_new_page_start
      * will catch it
      */
     /* vmlist must start out empty (or N/A) */
-    ASSERT(bb->vmlist == NULL || !bb->for_cache);
+    ASSERT(bb->vmlist == NULL || !bb->record_vmlist);
+    ASSERT(!bb->for_cache || bb->record_vmlist); /* for_cache assumes record_vmlist */
 
 #ifdef CUSTOM_TRACES_RET_REMOVAL
     my_dcontext->num_calls = 0;
@@ -2826,8 +2875,10 @@ build_bb_ilist(dcontext_t *dcontext, build_bb_t *bb)
     /* avoid discrepancy in finding invalid instructions between fast decode
      * and the full decode of sandboxing by doing full decode up front
      */
-    if (TEST(FRAG_SELFMOD_SANDBOXED, bb->flags))
+    if (TEST(FRAG_SELFMOD_SANDBOXED, bb->flags)) {
         bb->full_decode = true;
+        bb->follow_direct = false;
+    }
     if (TEST(FRAG_HAS_TRANSLATION_INFO, bb->flags)) {
         bb->full_decode = true;
         bb->record_translation = true;
@@ -2851,7 +2902,7 @@ build_bb_ilist(dcontext_t *dcontext, build_bb_t *bb)
         do {
             /* If the thread's vmareas aren't being added to, indicate the
              * page that's being decoded. */
-            if (!bb->for_cache
+            if (!bb->record_vmlist
                 && page_start_pc != (app_pc) PAGE_START(bb->cur_pc)) {
                 page_start_pc = (app_pc) PAGE_START(bb->cur_pc);
                 set_thread_decode_page_start(my_dcontext == NULL ?
@@ -2872,7 +2923,7 @@ build_bb_ilist(dcontext_t *dcontext, build_bb_t *bb)
 
             ASSERT(!bb->check_vm_area || bb->checked_end != NULL);
             if (bb->check_vm_area &&
-                bb->cur_pc != NULL && bb->cur_pc-1 > bb->checked_end) {
+                bb->cur_pc != NULL && bb->cur_pc-1 >= bb->checked_end) {
                 /* We're beyond the vmarea allowed -- so check again.
                  * Ideally we'd want to check BEFORE we decode from the
                  * subsequent page, as it could be inaccessible, but not worth
@@ -2881,7 +2932,31 @@ build_bb_ilist(dcontext_t *dcontext, build_bb_t *bb)
                  * mechanisms to handle faults while decoding, which we need
                  * anyway to handle racy unmaps by the app.
                  */
-                check_new_page_contig(dcontext, bb, bb->cur_pc-1);
+                uint old_flags = bb->flags;
+                DEBUG_DECLARE(bool is_first_instr = (bb->instr_start ==
+                                                     bb->start_pc));
+                if (!check_new_page_contig(dcontext, bb, bb->cur_pc-1)) {
+                    /* i#989: Stop bb building before falling through to an
+                     * incompatible vmarea.
+                     */
+                    ASSERT(!is_first_instr);
+                    bb->cur_pc = NULL;
+                    stop_bb_on_fallthrough = true;
+                    break;
+                }
+                if (!TEST(FRAG_SELFMOD_SANDBOXED, old_flags) &&
+                    TEST(FRAG_SELFMOD_SANDBOXED, bb->flags)) {
+                    /* Restart the decode loop with full_decode and
+                     * !follow_direct, which are needed for sandboxing.  This
+                     * can't happen more than once because sandboxing is now on.
+                     */
+                    ASSERT(is_first_instr);
+                    bb->full_decode = true;
+                    bb->follow_direct = false;
+                    bb->cur_pc = bb->instr_start;
+                    instr_reset(dcontext, bb->instr);
+                    continue;
+                }
             }
 
             total_instrs++;
@@ -2947,7 +3022,9 @@ build_bb_ilist(dcontext_t *dcontext, build_bb_t *bb)
                  total_instrs <= DYNAMO_OPTION(max_bb_instrs));
 
         if (bb->cur_pc == NULL) {
-            /* invalid instr: reset bb->cur_pc, will end bb after updating stats */
+            /* invalid instr or vmarea change: reset bb->cur_pc, will end bb
+             * after updating stats
+             */
             bb->cur_pc = bb->instr_start;
         }
 
@@ -3039,6 +3116,11 @@ build_bb_ilist(dcontext_t *dcontext, build_bb_t *bb)
 
         if (!instr_valid(bb->instr)) {
             bb_process_invalid_instr(dcontext, bb);
+            break;
+        }
+
+        if (stop_bb_on_fallthrough) {
+            bb_stop_prior_to_instr(dcontext, bb, false/*not appended*/);
             break;
         }
 
@@ -3278,7 +3360,9 @@ build_bb_ilist(dcontext_t *dcontext, build_bb_t *bb)
             bb->instr->bytes != (byte *) HEAP_PAD_PTR_UINT));
 #endif
 
-    check_new_page_contig(dcontext, bb, bb->cur_pc-1);
+    if (!check_new_page_contig(dcontext, bb, bb->cur_pc-1)) {
+        ASSERT(false && "Should have checked cur_pc-1 in decode loop");
+    }
     bb->end_pc = bb->cur_pc;
     BBPRINT(bb, 3, "end_pc = "PFX"\n\n", bb->end_pc);
 
@@ -3335,38 +3419,45 @@ build_bb_ilist(dcontext_t *dcontext, build_bb_t *bb)
     }
 #endif
 
-    if (TEST(FRAG_SELFMOD_SANDBOXED, bb->flags) &&
-        (TEST(FRAG_HAS_DIRECT_CTI, bb->flags) || !bb->full_decode)) {
-        /* Sandbox requires that bb have no direct cti followings, and
-         * had full decode from the start for -selfmod_max_writes!
-         * check_thread_vm_area should have ensured this for us, except
-         * there is a pathological case where a direct cti occurs, and
-         * then we walk over a page boundary onto a selfmod page -- no
-         * choice but to back out, which for now we do by rebuilding.
-         * FIXME: find better way
+    if (stop_bb_on_fallthrough && TEST(FRAG_HAS_DIRECT_CTI, bb->flags)) {
+        /* If we followed a direct cti to an instruction straddling a vmarea
+         * boundary, we can't actually do the elision.  See the
+         * sandbox_last_byte() test case in security-common/sandbox.c.  Restart
+         * bb building without follow_direct.  Alternatively, we could check the
+         * vmareas of the targeted instruction before performing elision.
          */
         /* FIXME: a better assert is needed because this can trigger if 
          * hot patching turns off follow_direct, the current bb was elided 
          * earlier and is marked as selfmod.  hotp_num_frag_direct_cti will 
          * track this for now.
          */
-        ASSERT(bb->follow_direct == true); /* else, infinite loop possible */
+        ASSERT(bb->follow_direct); /* else, infinite loop possible */
         BBPRINT(bb, 2,
-                "*** must rebuild bb to avoid following direct cti for selfmod ***\n");
+                "*** must rebuild bb to avoid following direct cti to "
+                "incompatible vmarea\n");
         STATS_INC(num_bb_end_early);
         instrlist_clear_and_destroy(dcontext, bb->ilist);
         if (bb->vmlist != NULL) {
             vm_area_destroy_list(dcontext, bb->vmlist);
             bb->vmlist = NULL;
         }
-        bb->flags = FRAG_SELFMOD_SANDBOXED; /* lose all other flags */
-        bb->full_decode = true; /* full decode -- see comment at top of routine */
-        bb->follow_direct = false; 
+        /* Remove FRAG_HAS_DIRECT_CTI, since we're turning off follow_direct.
+         * Try to keep the known flags.  We stopped the bb before merging in any
+         * incompatible flags.
+         */
+        bb->flags &= ~FRAG_HAS_DIRECT_CTI;
+        bb->follow_direct = false;
         bb->exit_type = 0; /* i#577 */
         bb->exit_target = NULL; /* i#928 */
         /* overlap info will be reset by check_new_page_start */
         build_bb_ilist(dcontext, bb);
         return;
+    }
+
+    if (TEST(FRAG_SELFMOD_SANDBOXED, bb->flags)) {
+        ASSERT(bb->full_decode);
+        ASSERT(!bb->follow_direct);
+        ASSERT(!TEST(FRAG_HAS_DIRECT_CTI, bb->flags));
     }
 
 #ifdef HOT_PATCHING_INTERFACE
@@ -3546,7 +3637,7 @@ build_bb_ilist(dcontext_t *dcontext, build_bb_t *bb)
         instr_t *exit_instr = INSTR_CREATE_jmp(dcontext, opnd_create_pc(bb->exit_target));
         if (bb->record_translation) {
             app_pc translation = NULL;
-            if (bb->instr == NULL) {
+            if (bb->instr == NULL || !instr_opcode_valid(bb->instr)) {
                 /* we removed (or mangle will remove) the last instruction
                  * for special handling (invalid/syscall/int 2b) or there were
                  * no instructions added (i.e. check_stopping_point in which 
@@ -4261,11 +4352,14 @@ build_basic_block_fragment(dcontext_t *dcontext, app_pc start, uint initial_flag
  *   check selfmod and native_exec for elision, but otherwise will
  *   follow ubrs to the limit.  Currently used for
  *   record_translation_info() (case 3559).
+ * If vmlist!=NULL and check_vm_area, returns the vmlist, which the
+ * caller must free by calling vm_area_destroy_list.
  */
 instrlist_t *
 recreate_bb_ilist(dcontext_t *dcontext, byte *pc, byte *pretend_pc,
-                  uint flags, uint *res_flags,
-                  uint *res_exit_type, bool check_vm_area, bool mangle
+                  uint flags, uint *res_flags OUT,
+                  uint *res_exit_type OUT, bool check_vm_area, bool mangle,
+                  void **vmlist_out OUT
                   _IF_CLIENT(bool call_client) _IF_CLIENT(bool for_trace))
 {
     build_bb_t bb;
@@ -4281,7 +4375,11 @@ recreate_bb_ilist(dcontext_t *dcontext, byte *pc, byte *pretend_pc,
                   mangle, true/*translation*/, INVALID_FILE,
                   flags, NULL/*no overlap*/);
     bb.check_vm_area = check_vm_area;
+    if (check_vm_area && vmlist_out != NULL)
+        bb.record_vmlist = true;
 #ifdef CLIENT_INTERFACE
+    if (check_vm_area && !bb.record_vmlist)
+        bb.record_vmlist = true; /* for xl8 region checks */
     /* PR 214962: we call bb hook again, unless the client told us
      * DR_EMIT_STORE_TRANSLATIONS, in which case we shouldn't come here,
      * except for traces (see below):
@@ -4311,6 +4409,10 @@ recreate_bb_ilist(dcontext_t *dcontext, byte *pc, byte *pretend_pc,
         *res_flags = bb.flags;
     if (res_exit_type != NULL)
         *res_exit_type = bb.exit_type;
+    if (check_vm_area && vmlist_out != NULL)
+        *vmlist_out = bb.vmlist;
+    else if (bb.record_vmlist)
+        vm_area_destroy_list(dcontext, bb.vmlist);
     return bb.ilist;
 }
 
@@ -4392,7 +4494,7 @@ recreate_fragment_ilist(dcontext_t *dcontext, byte *pc,
         /* easy case: just a bb */
         ilist = recreate_bb_ilist(dcontext, (byte *) f->tag, (byte *) f->tag,
                                   0/*no pre flags*/, &flags, NULL,
-                                  true/*check vm area*/, mangle
+                                  true/*check vm area*/, mangle, NULL
                                   _IF_CLIENT(call_client)
                                   _IF_CLIENT(false/*not for_trace*/));
         ASSERT(ilist != NULL);
@@ -4408,7 +4510,7 @@ recreate_fragment_ilist(dcontext_t *dcontext, byte *pc,
         trace_only_t *t = TRACE_FIELDS(f);
         uint i;
         instr_t *last;
-        bool mangle_at_end = can_use_mangle_trace();
+        bool mangle_at_end = mangle_trace_at_end();
 
         if (mangle_at_end) {
             /* we need an md for mangle_trace */
@@ -4419,21 +4521,27 @@ recreate_fragment_ilist(dcontext_t *dcontext, byte *pc,
             md.blk_info = (trace_bb_build_t *)
                 HEAP_ARRAY_ALLOC(dcontext, trace_bb_build_t, md.num_blks, ACCT_TRACE,
                                  true);
+#ifdef CLIENT_INTERFACE
+            md.pass_to_client = true;
+#endif
         }
 
         ilist = instrlist_create(dcontext);
         STATS_INC(num_recreated_traces);
         ASSERT(t->bbs != NULL);
         for (i=0; i<t->num_bbs; i++) {
+            void *vmlist = NULL;
             apc = (byte *) t->bbs[i].tag;
             bb = recreate_bb_ilist(dcontext, apc, apc, 0/*no pre flags*/,
                                    &flags, &md.final_exit_flags,
-                                   true/*check vm area*/, !mangle_at_end
+                                   true/*check vm area*/, !mangle_at_end,
+                                   (mangle_at_end ? &vmlist : NULL)
                                    _IF_CLIENT(call_client)
                                    _IF_CLIENT(true/*for_trace*/));
             ASSERT(bb != NULL);
             if (bb == NULL) {
                 instrlist_clear_and_destroy(dcontext, ilist);
+                vm_area_destroy_list(dcontext, vmlist);
                 ilist = NULL;
                 goto recreate_fragment_done;
             }
@@ -4443,8 +4551,8 @@ recreate_fragment_ilist(dcontext_t *dcontext, byte *pc,
             ASSERT(last != NULL);
 #ifdef CLIENT_INTERFACE
             if (mangle_at_end) {
-                md.blk_info[i].bounds.end_pc =
-                    decode_next_pc(dcontext, instr_get_translation(last));
+                md.blk_info[i].vmlist = vmlist;
+                md.blk_info[i].final_cti = instr_is_cti(instrlist_last(bb));
             }
 #endif
 
@@ -4542,6 +4650,11 @@ recreate_fragment_ilist(dcontext_t *dcontext, byte *pc,
 
  recreate_fragment_done:
     if (md.blk_info != NULL) {
+        uint i;
+        for (i = 0; i < md.num_blks; i++) {
+            vm_area_destroy_list(dcontext, md.blk_info[i].vmlist);
+            md.blk_info[i].vmlist = NULL;
+        }
         HEAP_ARRAY_FREE(dcontext, md.blk_info, trace_bb_build_t, md.num_blks,
                         ACCT_TRACE, true);
     }
@@ -5803,25 +5916,16 @@ create_exit_jmp(dcontext_t *dcontext, app_pc target, app_pc translation,
     return jmp;
 }
 
-static bool
-can_use_mangle_trace(void)
-{
-    /* elision messes up our bb boundary identification */
-    bool ok = (DYNAMO_OPTION(max_elide_jmp) == 0 &&
-               DYNAMO_OPTION(max_elide_call) == 0 &&
-               !DYNAMO_OPTION(indcall2direct));
-#ifdef CLIENT_INTERFACE
-    /* must be able to use it if client has hooks */
-    ASSERT(ok || (!dr_bb_hook_exists() && !dr_trace_hook_exists()));
-#endif
-    return ok;
-}
-
 /* Given an ilist with no mangling or stitching together, this routine does those
  * things.  This is used both for CLIENT_INTERFACE and for recreating traces
  * for state translation.
  * It assumes the ilist abides by client rules: single-mbr bbs, no
- * changes in source app code, no elision.  Else, it returns false.
+ * changes in source app code.  Else, it returns false.
+ * Elision is supported.
+ *
+ * Our docs disallow removal of an entire block, changing inter-block ctis, and
+ * changing the ordering of the blocks, which is what allows us to correctly
+ * mangle the inter-block ctis here.
  *
  * Reads the following fields from md:
  * - trace_tag
@@ -5837,9 +5941,14 @@ mangle_trace(dcontext_t *dcontext, instrlist_t *ilist, monitor_data_t *md)
     uint blk, num_exits_deleted;
     app_pc fallthrough = NULL;
     bool found_syscall = false, found_int = false;
-    int i;
 
-    ASSERT(can_use_mangle_trace());
+#ifdef CLIENT_INTERFACE
+    /* We don't assert that mangle_trace_at_end() is true b/c the client
+     * can unregister its bb and trace hooks if it really wants to,
+     * though we discourage it.
+     */
+    ASSERT(md->pass_to_client);
+#endif
 
     LOG(THREAD, LOG_MONITOR, 2, "mangle_trace "PFX"\n", md->trace_tag);
     DOLOG(4, LOG_INTERP, {
@@ -5852,53 +5961,22 @@ mangle_trace(dcontext_t *dcontext, instrlist_t *ilist, monitor_data_t *md)
      */
     blk = 0;
     for (inst = instrlist_first(ilist); inst != NULL; inst = next_inst) {
-        LOG_DECLARE(instr_t *prev = instr_get_prev(inst);)
+        app_pc xl8 = instr_get_translation(inst);
         next_inst = instr_get_next(inst);
 
         if (!instr_ok_to_mangle(inst))
             continue;
 
         DOLOG(5, LOG_INTERP, {
-            LOG(THREAD, LOG_MONITOR, 4, "transl "PFX" ", instr_get_translation(inst));
+            LOG(THREAD, LOG_MONITOR, 4, "transl "PFX" ", xl8);
             loginst(dcontext, 4, inst, "considering non-meta");
         }); 
 
-        /* Check for bb end with no exit cti.  We don't worry about whether a ubr w/
-         * a translation set to its target is part of this or next bb: all that's
-         * important is blk++ to ensure we find later transitions.  We assume a block
-         * w/ nothing but ubrs must have the final one target the subsequent block
-         * (which will hit our exit cti check below), so we'll always see an instr in
-         * the next block's translation range.
-         */
-        /* PR 366232: we handle empty bbs by looping here */
-        for (i = 1; blk+i < md->num_blks; i++) {
-            /* Since we can have tail-duplication among bbs, make sure to first
-             * check whether we're still in the cur block: b/c this translation
-             * can be both in this block and in next block.  In such a case we
-             * assume a (backward) cti separates them. */
-            if (!(instr_get_translation(inst) >= md->blk_info[blk].info.tag &&
-                  instr_get_translation(inst) < md->blk_info[blk].bounds.end_pc) &&
-                instr_get_translation(inst) >= md->blk_info[blk+i].info.tag &&
-                instr_get_translation(inst) < md->blk_info[blk+i].bounds.end_pc) {
-                /* counting down but adding jmps in forward order */
-                for (; i >= 1; i--) {
-                    DOLOG(4, LOG_INTERP, { /* use prev to avoid added jmp */
-                        loginst(dcontext, 4, prev, "fallthrough end of bb");
-                    }); 
-                    jmp = create_exit_jmp(dcontext, md->blk_info[blk+1].info.tag,
-                                          md->blk_info[blk+1].info.tag, 0);
-                    instrlist_preinsert(ilist, inst, jmp);
-                    md->blk_info[blk].bounds.end_instr = jmp;
-                    blk++;
-#if defined(RETURN_AFTER_CALL) || defined(RCT_IND_BRANCH)
-                    /* we'll decrement if jmp gets elided (as it should) */
-                    md->blk_info[blk].info.num_exits++;
-#endif
-                    LOG(THREAD, LOG_MONITOR, 4, "starting next bb "PFX"\n",
-                        md->blk_info[blk].info.tag);
-                }
-                break;
-            }
+        /* Skip blocks that don't end in ctis (except final) */
+        while (blk < md->num_blks - 1 && !md->blk_info[blk].final_cti) {
+            LOG(THREAD, LOG_MONITOR, 4, "skipping fall-through bb #%d\n", blk);
+            md->blk_info[blk].end_instr = NULL;
+            blk++;
         }
 
 #ifdef CLIENT_INTERFACE
@@ -5912,14 +5990,15 @@ mangle_trace(dcontext_t *dcontext, instrlist_t *ilist, monitor_data_t *md)
          * selfmod).
          */
         if (md->pass_to_client &&
-            !((instr_get_translation(inst) >= md->blk_info[blk].info.tag &&
-               instr_get_translation(inst) < md->blk_info[blk].bounds.end_pc) ||
-              (instr_is_ubr(inst) && opnd_is_pc(instr_get_target(inst)) &&
-               instr_get_translation(inst) == opnd_get_pc(instr_get_target(inst))))) {
+            (!vm_list_overlaps(dcontext, md->blk_info[blk].vmlist, xl8, xl8+1) &&
+             !(instr_is_ubr(inst) && opnd_is_pc(instr_get_target(inst)) &&
+               xl8 == opnd_get_pc(instr_get_target(inst))))
+            IF_WINDOWS(&& !vmvector_overlap(landing_pad_areas,
+                                            md->blk_info[blk].info.tag,
+                                            md->blk_info[blk].info.tag+1))) {
             LOG(THREAD, LOG_MONITOR, 2,
-                "trace error: out-of-bounds transl "PFX" vs start "PFX" end "PFX"\n",
-                instr_get_translation(inst),
-                md->blk_info[blk].info.tag, md->blk_info[blk].bounds.end_pc);
+                "trace error: out-of-bounds transl "PFX" vs block w/ start "PFX"\n",
+                xl8, md->blk_info[blk].info.tag);
             CLIENT_ASSERT(false,
                           "trace's app sources (instr_set_translation() targets) "
                           "must remain within original bounds");
@@ -5932,14 +6011,16 @@ mangle_trace(dcontext_t *dcontext, instrlist_t *ilist, monitor_data_t *md)
             /* Do not call instr_length() on this inst: use length
              * of translation! (i#509)
              */
-            fallthrough = decode_next_pc(dcontext, instr_get_translation(inst));
+            fallthrough = decode_next_pc(dcontext, xl8);
         }
 
         /* PR 299808: identify bb boundaries.  We can't go by translations alone, as
          * ubrs can point at their targets and theoretically the entire trace could
          * be ubrs: so we have to go by exits, and limit what the client can do.  We
          * can assume that each bb should not violate the bb callback rules (PR
-         * 215217): if has cbr, call, or mbr, that must end bb.  We also want to
+         * 215217): if has cbr or mbr, that must end bb.  If it has a call, that
+         * could be elided; if not, its target should match the start of the next
+         * block.   We also want to
          * impose the can't-be-trace rules (PR 215219), which are not documented for
          * bbs: if more than one exit cti or if code beyond last exit cti then can't
          * be in a trace.  We can soften a little and allow extra ubrs if they do not
@@ -5948,7 +6029,7 @@ mangle_trace(dcontext_t *dcontext, instrlist_t *ilist, monitor_data_t *md)
          * really correspond to app cbr?): then can handle code past exit ubr.
          */
         if (instr_will_be_exit_cti(inst) &&
-            (!instr_is_ubr(inst) ||
+            ((!instr_is_ubr(inst) && !instr_is_near_call_direct(inst)) ||
              (inst == instrlist_last(ilist) ||
               (blk+1 < md->num_blks &&
                /* client is disallowed from changing bb exits and sequencing in trace
@@ -5972,20 +6053,21 @@ mangle_trace(dcontext_t *dcontext, instrlist_t *ilist, monitor_data_t *md)
                     /* Do not call instr_length() on this inst: use length
                      * of translation! (i#509)
                      */
-                    target = decode_next_pc(dcontext, instr_get_translation(inst));
+                    target = decode_next_pc(dcontext, xl8);
                 } else {
                     target = opnd_get_pc(instr_get_target(inst));
                 }
                 ASSERT(target != NULL);
-                jmp = create_exit_jmp(dcontext, target, instr_get_translation(inst),
-                                      instr_branch_type(inst));
+                jmp = create_exit_jmp(dcontext, target, xl8, instr_branch_type(inst));
                 instrlist_postinsert(ilist, inst, jmp);
-                /* we're now done w/ end_pc: replace w/ end instr.
+                /* we're now done w/ vmlist: switch to end instr.
                  * mangle() shouldn't remove the exit cti.
                  */
-                md->blk_info[blk].bounds.end_instr = jmp;
+                vm_area_destroy_list(dcontext, md->blk_info[blk].vmlist);
+                md->blk_info[blk].vmlist = NULL;
+                md->blk_info[blk].end_instr = jmp;
             } else
-                md->blk_info[blk].bounds.end_instr = inst;
+                md->blk_info[blk].end_instr = inst;
 
             blk++;
             DOLOG(4, LOG_INTERP, {
@@ -6043,7 +6125,7 @@ mangle_trace(dcontext_t *dcontext, instrlist_t *ilist, monitor_data_t *md)
 #endif
         }
         instrlist_append(ilist, jmp);
-        md->blk_info[blk].bounds.end_instr = jmp;
+        md->blk_info[blk].end_instr = jmp;
     } else {
         CLIENT_ASSERT((!found_syscall && !found_int)
                       /* On linux we allow ignorable syscalls in middle.
@@ -6073,12 +6155,13 @@ mangle_trace(dcontext_t *dcontext, instrlist_t *ilist, monitor_data_t *md)
     });
 
     /* 3rd walk: stitch together delineated bbs */
-    blk = 0;
+    for (blk = 0; blk < md->num_blks && md->blk_info[blk].end_instr == NULL; blk++)
+        ; /* nothing */
     start_instr = instrlist_first(ilist);
     for (inst = instrlist_first(ilist); inst != NULL; inst = next_inst) {
         next_inst = instr_get_next(inst);
         
-        if (inst == md->blk_info[blk].bounds.end_instr) {
+        if (inst == md->blk_info[blk].end_instr) {
             /* Chain exit to point to next bb */
             if (blk + 1 < md->num_blks) {
                 /* We must do proper analysis so that state translation matches
@@ -6101,6 +6184,9 @@ mangle_trace(dcontext_t *dcontext, instrlist_t *ilist, monitor_data_t *md)
 #endif
             }
             blk++;
+            /* skip fall-throughs */
+            while (blk < md->num_blks && md->blk_info[blk].end_instr == NULL)
+                blk++;
             if (blk >= md->num_blks && next_inst != NULL) {
                 CLIENT_ASSERT(false, "unsupported trace modification: exits modified");
                 return false;

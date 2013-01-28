@@ -1,5 +1,5 @@
 /* **********************************************************
- * Copyright (c) 2010-2012 Google, Inc.   All rights reserved.
+ * Copyright (c) 2010-2013 Google, Inc.   All rights reserved.
  * **********************************************************/
 
 /* drutil: DynamoRIO Instrumentation Utilities
@@ -46,9 +46,11 @@ extern "C" {
 DR_EXPORT
 /**
  * Initializes the drutil extension.  Must be called prior to any of the
- * other routines, and should only be called once.
+ * other routines.  Can be called multiple times (by separate components,
+ * normally) but each call must be paired with a corresponding call to
+ * drutil_exit().
  *
- * \return whether successful.  Will return false if called a second time.
+ * \return whether successful.
  */
 bool
 drutil_init(void);
@@ -118,7 +120,7 @@ DR_EXPORT
  * be called from the application-to-application ("app2app") stage
  * (see drmgr_register_bb_app2app_event()).
  *
- * This transformation is determinstic, so the caller can return
+ * This transformation is deterministic, so the caller can return
  * DR_EMIT_DEFAULT from its event.
  *
  * \return whether successful.

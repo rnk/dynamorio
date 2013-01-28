@@ -131,6 +131,9 @@ void os_thread_take_over(priv_mcontext_t *mc);
 void
 set_executable_path(const char *);
 
+bool
+os_files_same(const char *path1, const char *path2);
+
 /* in signal.c */
 struct _kernel_sigaction_t;
 typedef struct _kernel_sigaction_t kernel_sigaction_t;
@@ -138,7 +141,7 @@ typedef struct _kernel_sigaction_t kernel_sigaction_t;
 void signal_init(void);
 void signal_exit(void);
 void signal_thread_init(dcontext_t *dcontext);
-void signal_thread_exit(dcontext_t *dcontext);
+void signal_thread_exit(dcontext_t *dcontext, bool other_thread);
 void handle_clone(dcontext_t *dcontext, uint flags);
 bool handle_sigaction(dcontext_t *dcontext, int sig,
                       const kernel_sigaction_t *act, 

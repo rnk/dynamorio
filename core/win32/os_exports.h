@@ -1,5 +1,5 @@
 /* **********************************************************
- * Copyright (c) 2011-2012 Google, Inc.  All rights reserved.
+ * Copyright (c) 2011-2013 Google, Inc.  All rights reserved.
  * Copyright (c) 2000-2010 VMware, Inc.  All rights reserved.
  * **********************************************************/
 
@@ -121,6 +121,7 @@ enum {
     PEB_TIB_OFFSET            = 0x060,
     FLS_DATA_TIB_OFFSET       = 0x17c8,
     NT_RPC_TIB_OFFSET         = 0x1698,
+    NLS_CACHE_TIB_OFFSET      = 0x17a0,
 #else
     EXCEPTION_LIST_TIB_OFFSET = 0x00,
     TOP_STACK_TIB_OFFSET      = 0x04,
@@ -134,6 +135,7 @@ enum {
     PEB_TIB_OFFSET            = 0x30,
     FLS_DATA_TIB_OFFSET       = 0xfb4,
     NT_RPC_TIB_OFFSET         = 0xf1c,
+    NLS_CACHE_TIB_OFFSET      = 0xfa0,
 #endif
 };
 
@@ -498,11 +500,6 @@ void swap_peb_pointer(dcontext_t *dcontext, bool to_priv);
  * or swap private values.  Up to caller to synchronize w/ other thread.
  */
 void restore_peb_pointer_for_thread(dcontext_t *dcontext);
-/* searches in standard paths instead of requiring abs path.
- * exported for dr_enable_console_printing().
- * XXX: should have an os-shared version.
- */
-app_pc privload_load_private_library(const char *name);
 #endif
 
 

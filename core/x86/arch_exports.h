@@ -1,5 +1,5 @@
 /* **********************************************************
- * Copyright (c) 2011-2012 Google, Inc.  All rights reserved.
+ * Copyright (c) 2011-2013 Google, Inc.  All rights reserved.
  * Copyright (c) 2000-2010 VMware, Inc.  All rights reserved.
  * **********************************************************/
 
@@ -59,12 +59,13 @@
 #define XMM_SAVED_REG_SIZE  YMM_REG_SIZE /* space in priv_mcontext_t for xmm/ymm */
 #define XMM_SLOTS_SIZE  (NUM_XMM_SLOTS*XMM_SAVED_REG_SIZE)
 #define XMM_SAVED_SIZE  (NUM_XMM_SAVED*XMM_SAVED_REG_SIZE)
-#define YMM_ENABLED() (proc_has_feature(FEATURE_AVX))
+/* OS has to enable AVX (=> OSXSAVE): else AVX instrs will raise #UD (i#1030) */
+#define YMM_ENABLED() (proc_has_feature(FEATURE_AVX) && proc_has_feature(FEATURE_OSXSAVE))
 #define YMMH_REG_SIZE (YMM_REG_SIZE/2) /* upper half */
 #define YMMH_SAVED_SIZE (NUM_XMM_SLOTS*YMMH_REG_SIZE)
 
 /* Number of slots for spills from inlined clean calls. */
-#define CLEANCALL_NUM_INLINE_SLOTS 4
+#define CLEANCALL_NUM_INLINE_SLOTS 5
 
 typedef enum {
     IBL_NONE = -1,
@@ -497,6 +498,7 @@ atomic_exchange_int(volatile int *var, int newval)
     return result;
 }
 
+#ifdef X64
 /* returns true if var was equal to compare, and now is equal to exchange, 
    otherwise returns false
  */ 
@@ -513,6 +515,7 @@ static inline bool atomic_compare_exchange_int64(volatile int64 *var,
        although we could put the return value in EAX ourselves */
     return c == 0;
 }
+#endif
 
 /* atomically adds value to memory location var and returns the sum */
 static inline int atomic_add_exchange_int(volatile int *var, int value)
@@ -805,6 +808,10 @@ ret_tgt_cache_to_app(dcontext_t *dcontext, app_pc pc);
 /* in x86.asm */
 void call_switch_stack(dcontext_t *dcontext, byte *stack, void (*func) (dcontext_t *),
                        bool free_initstack, bool return_on_return);
+# if defined (WINDOWS) && !defined(X64)
+DYNAMORIO_EXPORT int64
+dr_invoke_x64_routine(dr_auxlib64_routine_ptr_t func64, uint num_params, ...);
+# endif
 void unexpected_return(void);
 void clone_and_swap_stack(byte *stack, byte *tos);
 void go_native(dcontext_t *dcontext);
@@ -823,6 +830,7 @@ int dynamorio_syscall_syscall(int sysnum, ...);
 int dynamorio_syscall_wow64(int sysnum, ...);
 /* Use this version if !syscall_uses_edx_param_base() */
 int dynamorio_syscall_wow64_noedx(int sysnum, ...);
+void get_segments_cs_ss(cxt_seg_t *cs, cxt_seg_t *ss);
 void get_segments_defg(cxt_seg_t *ds, cxt_seg_t *es, cxt_seg_t *fs, cxt_seg_t *gs);
 void get_own_context_helper(CONTEXT *cxt);
 void dr_fxsave(byte *buf_aligned);
@@ -1352,7 +1360,7 @@ bb_build_abort(dcontext_t *dcontext, bool clean_vmarea);
  */
 instrlist_t * recreate_bb_ilist(dcontext_t *dcontext, byte *pc, byte *pretend_pc,
                                 uint flags, uint *res_flags, uint *res_exit_type,
-                                bool check_vm_area, bool mangle
+                                bool check_vm_area, bool mangle, void **vmlist
                                 _IF_CLIENT(bool call_client)
                                 _IF_CLIENT(bool for_trace));
 

@@ -736,7 +736,7 @@ drwrap_replace_init(void);
  * INIT
  */
 
-static void *exit_lock;
+static int drwrap_init_count;
 
 DR_EXPORT
 bool
@@ -748,14 +748,18 @@ drwrap_init(void)
     drmgr_priority_t pri_insert = {sizeof(pri_insert), DRMGR_PRIORITY_NAME_DRWRAP,
                                    NULL, NULL, DRMGR_PRIORITY_INSERT_DRWRAP};
 #ifdef WINDOWS
+    /* DrMem i#1098: We use a late priority so we don't unwind if the client
+     * handles the fault.
+     */
+    drmgr_priority_t pri_fault = {sizeof(pri_fault), DRMGR_PRIORITY_NAME_DRWRAP,
+                                  NULL, NULL, DRMGR_PRIORITY_FAULT_DRWRAP};
     module_data_t *ntdll;
 #endif
 
-    static bool initialized;
-    if (initialized)
+    /* handle multiple sets of init/exit calls */
+    int count = dr_atomic_add32_return_sum(&drwrap_init_count, 1);
+    if (count > 1)
         return true;
-    initialized = true;
-    exit_lock = dr_mutex_create();
 
     drmgr_init();
     if (!drmgr_register_bb_app2app_event(drwrap_event_bb_app2app, &pri_replace))
@@ -780,7 +784,7 @@ drwrap_init(void)
                       NULL, NULL);
     post_call_rwlock = dr_rwlock_create();
     wrap_lock = dr_recurlock_create();
-    dr_register_module_unload_event(drwrap_event_module_unload);
+    drmgr_register_module_unload_event(drwrap_event_module_unload);
     dr_register_delete_event(drwrap_fragment_delete);
 
     tls_idx = drmgr_register_tls_field();
@@ -805,7 +809,7 @@ drwrap_init(void)
         }
         dr_free_module_data(ntdll);
     }
-    dr_register_exception_event(drwrap_event_exception);
+    drmgr_register_exception_event_ex(drwrap_event_exception, &pri_fault);
 #endif
 
     drwrap_replace_init();
@@ -817,13 +821,10 @@ DR_EXPORT
 void
 drwrap_exit(void)
 {
-    static bool exited;
-    /* try to handle multiple calls to exit.  still possible to crash
-     * trying to lock a destroyed lock.
-     */
-    if (exited || !dr_mutex_trylock(exit_lock) || exited)
+    /* handle multiple sets of init/exit calls */
+    int count = dr_atomic_add32_return_sum(&drwrap_init_count, -1);
+    if (count != 0)
         return;
-    exited = true;
 
     hashtable_delete(&replace_table);
     hashtable_delete(&replace_native_table);
@@ -839,9 +840,6 @@ drwrap_exit(void)
         dr_global_free(post_call_notify_list, sizeof(*post_call_notify_list));
         post_call_notify_list = tmp;
     }
-
-    dr_mutex_unlock(exit_lock);
-    dr_mutex_destroy(exit_lock);
 }
 
 static void

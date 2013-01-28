@@ -1,5 +1,5 @@
 /* *******************************************************************************
- * Copyright (c) 2011-2012 Google, Inc.  All rights reserved.
+ * Copyright (c) 2011-2013 Google, Inc.  All rights reserved.
  * Copyright (c) 2010 Massachusetts Institute of Technology  All rights reserved.
  * Copyright (c) 2009 Derek Bruening   All rights reserved.
  * *******************************************************************************/
@@ -126,12 +126,12 @@ loader_init(void)
         NULL_TERMINATE_BUFFER(name_copy);
         if (!privload_load_finalize(mod)) {
             mod = NULL; /* it's been unloaded! */
-            CLIENT_ASSERT(false, "failure to process imports of client library");
 #ifdef CLIENT_INTERFACE
             SYSLOG(SYSLOG_ERROR, CLIENT_LIBRARY_UNLOADABLE, 4,
                    get_application_name(), get_application_pid(), name_copy,
-                   "\n\tUnable to process imports of client library");
+                   ".\n\tUnable to process imports of client library");
 #endif
+            CLIENT_ASSERT(false, "failure to process imports of client library");
         }
     }
     /* os specific loader initialization epilogue after finalize the load */
@@ -208,7 +208,18 @@ loader_thread_exit(dcontext_t *dcontext)
 {
     privmod_t *mod;
     /* assuming context swap have happened when entered DR */
-    if (privload_has_thread_entry()) {
+    if (privload_has_thread_entry() &&
+        /* Only call if we're cleaning up the currently executing thread, as
+         * that's what the entry routine is going to do!  Calling on other
+         * threads results in problems like double frees (i#969).  Exiting
+         * another thread should only happen on process exit or forced thread
+         * termination.  The former can technically continue (app could call
+         * NtTerminateProcess(0) but then keep going) but we have never seen
+         * that; and the latter doesn't do full native cleanups anyway.  Thus
+         * we're not worried about leaks from not calling DLL_THREAD_EXIT.
+         * (We can't check get_thread_private_dcontext() b/c it's already cleared.)
+         */
+        dcontext->owning_thread == get_thread_id()) {
         acquire_recursive_lock(&privload_lock);
         /* Walk forward and call independent libs last */
          for (mod = modlist; mod != NULL; mod = mod->next) {
@@ -221,7 +232,17 @@ loader_thread_exit(dcontext_t *dcontext)
     os_loader_thread_exit(dcontext);
 }
 
-/* load private library for DR's client */
+/* Given a path-less name, locates and loads a private library for DR's client.
+ * Will also accept a full path.
+ */
+app_pc
+locate_and_load_private_library(const char *name)
+{
+    DODEBUG(privload_recurse_cnt = 0;);
+    return privload_load_private_library(name);
+}
+
+/* Load private library for DR's client.  Must be passed a full path. */
 app_pc
 load_private_library(const char *filename)
 {
@@ -364,6 +385,8 @@ privload_insert(privmod_t *after, app_pc base, size_t size, const char *name,
         if (after == NULL) {
             mod->next = modlist;
             mod->prev = NULL;
+            if (modlist != NULL)
+                modlist->prev = mod;
             ASSERT(!DATASEC_PROTECTED(DATASEC_RARELY_PROT));
             modlist = mod;
         } else {
@@ -605,6 +628,8 @@ privload_load_finalize(privmod_t *privmod)
         privload_unload(privmod);
         return false;
     }
+
+    privload_load_finalized(privmod);
 
     LOG(GLOBAL, LOG_LOADER, 1, "%s: loaded %s @ "PFX"-"PFX" from %s\n", __FUNCTION__,
         privmod->name, privmod->base, privmod->base + privmod->size, privmod->path);

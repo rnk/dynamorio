@@ -38,12 +38,23 @@
 ##
 ## DynamoRIO @name@ script for Linux
 ## 
-## usage: @name@ [-v] [-debug] [-dr_home <path>] [-ops <dr_options>]*
+## Usage for drrun or drinject:
+## For a single client, use the -c form and separate the application with --:
+##        @name@ [-v] [-debug] [-dr_home <path>] [-logdir <path>]
+##                  [<dr_options>]* -c <path> [client_ops]*
+##                  -- <executable> [args ...]
+##
+## For multiple clients, use either of these forms:
+##        @name@ [-v] [-debug] [-dr_home <path>] [-logdir <path>]
+##                  -client <path> <id> "<client_ops>" [<dr_options>]*
+##                  -- <executable> [args ...]
+##
+##        @name@ [-v] [-debug] [-dr_home <path>] [-ops <dr_options>]*
 ##                 [-logdir <path>] -client <path> <executable> [args ...]
 ##
-## alternate usage: @name@ [-v] [-debug] [-dr_home <path>] [<dr_options>]*
-##                     [-logdir <path>] -client <path> -- <executable> [args ...]
+## For drconfig, use the -reg or -unreg options described below.
 ##
+## Option explanation:
 ##  [-v]                   Verbose output
 ##  [-debug]               Use debug build of DynamoRIO (release is default)
 ##  [-@archother@]                  Use @archother@-bit DynamoRIO (default is @archdefault@-bit).  This
@@ -53,7 +64,10 @@
 ##                           control.  Useful for following all child processes
 ##                           except a blacklist.  DR will still be loaded, and
 ##                           the app API available.
-##  [-unreg]               Only for drconfig.  Removes configuration file.
+##  [-reg <executable>]    Only for drconfig.  Creates configuration file for
+##                           the specified application name.
+##  [-unreg <executable>]  Only for drconfig.  Removes configuration file for
+##                           the specified application name.
 ##  [-dr_home <path>]      Path to the DynamoRIO install.
 ##                           Defaults to .. from @name@; may also be omitted
 ##                           if DYNAMORIO_HOME is defined in the environment.
@@ -66,6 +80,12 @@
 ##  [-logdir <path>]       Path to logging directory.  Defaults to ../logs from
 ##                           @name@; may also be omitted if DYNAMORIO_LOGDIR
 ##                           is defined in the environment.
+##  [-c <path> <options>*] Registers one client to run alongside DR.  Assigns
+##                           the client an id of 0.  All remaining arguments
+##                           until the -- arg before the app are interpreted as
+##                           client options.  Must come after all drrun and DR
+##                           ops.  Incompatible with -client.  Requires using --
+##                           to separate the app executable.
 ##  [-client <path> <ID> "<options>"]
 ##                         Register one or more clients to run alongside DR.
 ##                           This option is only valid when registering a
@@ -87,23 +107,7 @@ arch=@archdefault@
 # drinject: config=0, runapp=1
 config=@config@
 runapp=@runapp@
-
-if [ "$config" = "1" ]
-then
-    extra="[-reg <executable>] [-unreg <executable] [-norun] "
-else
-    extra=""
-fi
-
-usage="USAGE: $0 [-v] [-debug] [-32] [-64] $extra
-  [-dr_home <path>] [-ops <dr_options>]* [-logdir <path>]
-  [-client <path> <ID> \"<options>\"]* <executable> [args ...]
-
-OR, inline DR options after script options and use -- to separate executable:
-
-$0 [-v] [-debug] [-32] [-64] $extra
-  [-dr_home <path>] [-logdir <path>] [-client <path> <ID> \"<options>\"]*
-  [<dr_options>]* -- <executable> [args ...]"
+static=@static@
 
 default_home_rel="`dirname $0`/.."
 default_home=`cd $default_home_rel ; pwd`
@@ -114,10 +118,8 @@ app=""
 
 if [ "$1" = "" ] || [ "$1" = "-h" ] || [ "$1" = "-help" ] || [ "$1" = "--help" ]
 then
-    echo "$usage"
-    echo
     # sed would be more precise but may not be available
-    head -n 80 $0 | tail -n 44
+    head -n 101 $0 | tail -n 65
     exit
 fi
 
@@ -259,7 +261,7 @@ done
 case "$1" in
     -*)
       specified_ops=yes
-      while [ "$1" != "--" ] && [ "$1" != "" ]
+      while [ "$1" != "--" ] && [ "$1" != "" ] && [ "$1" != "-c" ]
       do
           if [ -n "$ops" ]
           then
@@ -269,6 +271,51 @@ case "$1" in
           fi
           shift
       done
+
+      # Support alternative client specification:
+      # drrun [script ops...] [dr ops...] -c <client> [client ops...] -- app
+      if [ "$1" = "-c" ]
+      then
+          shift
+          client="$1"
+          shift
+          client_id=0
+          client_ops=""
+          # setup client
+          if [ ! -n "$client" ]
+          then
+              echo "ERROR - client not fully specified"
+              echo "$usage"
+              exit
+          fi
+          if [ ! -e $client ]
+          then
+              echo "ERROR - client lib $client not found"
+              echo "$usage"
+              exit
+          fi
+          while [ "$1" != "--" ] && [ "$1" != "" ]
+          do
+              if [ -n "$client_ops" ]
+              then
+                  client_ops="$client_ops $1"
+              else
+                  client_ops="$1"
+              fi
+              shift
+          done
+          # convert to absolute path
+          client=`cd \`dirname $client\` ; pwd`/`basename $client`
+          if [ -n "$client_list" ]
+          then
+              echo "ERROR - cannot use multiple clients with -c"
+              exit 1
+          else
+              client_list="${client};${client_id};${client_ops}"
+          fi
+      fi
+
+      # -- indicates app command.
       if [ "$1" = "--" ]
       then
           shift
@@ -281,34 +328,37 @@ then
     DYNAMORIO_HOME="$default_home"
 fi
 
-# Setup lib path
-if [ ! -n "$dr_lib_path" ]
+if [ "$static" = "0" ]
 then
-    dr_lib_path=$DYNAMORIO_HOME/lib$arch
-    dr_ext_path=$DYNAMORIO_HOME/ext/lib$arch
-fi
-if [ ! -e "$dr_lib_path/$lib/libdynamorio.so" ]
-then
-    # Support running from old build dir layout
-    dr_lib_build_path=$DYNAMORIO_HOME/lib
-    dr_ext_build_path=$DYNAMORIO_HOME/ext/lib
-    if [ -e "$dr_lib_build_path/libdynamorio.so" ]
+    # Setup lib path
+    if [ ! -n "$dr_lib_path" ]
     then
-        lib=""
-        dr_lib_path=$dr_lib_build_path
-        dr_ext_path=$dr_ext_build_path
-    else
-        if [ "$unreg" = "0" ] && [ "$rununder" = "1" ]
+        dr_lib_path=$DYNAMORIO_HOME/lib$arch
+        dr_ext_path=$DYNAMORIO_HOME/ext/lib$arch
+    fi
+    if [ ! -e "$dr_lib_path/$lib/libdynamorio.so" ]
+    then
+        # Support running from old build dir layout
+        dr_lib_build_path=$DYNAMORIO_HOME/lib
+        dr_ext_build_path=$DYNAMORIO_HOME/ext/lib
+        if [ -e "$dr_lib_build_path/libdynamorio.so" ]
         then
-            echo "ERROR - libdynamorio.so not found in $dr_lib_path/$lib"
-            echo "$usage"
-            exit
+            lib=""
+            dr_lib_path=$dr_lib_build_path
+            dr_ext_path=$dr_ext_build_path
+        else
+            if [ "$unreg" = "0" ] && [ "$rununder" = "1" ]
+            then
+                echo "ERROR - libdynamorio.so not found in $dr_lib_path/$lib"
+                echo "$usage"
+                exit
+            fi
         fi
     fi
+    # convert to absolute path
+    dr_lib_path=`cd "$dr_lib_path" ; pwd`
+    dr_ext_path=`cd "$dr_ext_path" ; pwd`
 fi
-# convert to absolute path
-dr_lib_path=`cd "$dr_lib_path" ; pwd`
-dr_ext_path=`cd "$dr_ext_path" ; pwd`
 
 if [ ! -n "$*" ] && [ "$app" = "" ]
 then
@@ -471,8 +521,23 @@ then
         fi
         exec "$drloader" "$dr_lib_path/$lib/libdynamorio.so" "$fullname" "$@"
     else
-        export LD_LIBRARY_PATH=$dr_lib_path/$lib:$dr_ext_path/$lib:$LD_LIBRARY_PATH
-        export LD_PRELOAD="libdynamorio.so libdrpreload.so"
+        if [ "$static" = "1" ]
+        then
+            export DYNAMORIO_TAKEOVER_IN_INIT=1
+        else
+            export LD_LIBRARY_PATH=$dr_lib_path/$lib:$dr_ext_path/$lib:$LD_LIBRARY_PATH
+            export LD_PRELOAD="libdynamorio.so libdrpreload.so"
+            if [ -z "$LD_USE_LOAD_BIAS" ]
+            then
+                if [ "$verbose" = "yes" ]
+                then
+                    echo "Setting LD_USE_LOAD_BIAS for PIEs (i#719)"
+                    echo "Set LD_USE_LOAD_BIAS=0 prior to running this script"
+                    echo "if this is a problem"
+                fi 
+                export LD_USE_LOAD_BIAS=1
+            fi
+        fi
         exec $app "$@"
     fi
 else

@@ -1,5 +1,5 @@
 /* **********************************************************
- * Copyright (c) 2010-2012 Google, Inc.  All rights reserved.
+ * Copyright (c) 2010-2013 Google, Inc.  All rights reserved.
  * Copyright (c) 2002-2010 VMware, Inc.  All rights reserved.
  * **********************************************************/
 
@@ -461,7 +461,7 @@ static bool
 lookup_addr(vm_area_vector_t *v, app_pc addr, vm_area_t **area);
 #if defined(DEBUG) && defined(INTERNAL)
 static void
-print_fraglist(dcontext_t *dcontext, vm_area_t *area, char *prefix);
+print_fraglist(dcontext_t *dcontext, vm_area_t *area, const char *prefix);
 static void
 print_written_areas(file_t outf);
 #endif
@@ -776,7 +776,8 @@ print_vm_areas(vm_area_vector_t *v, file_t outf)
 
 #if defined(DEBUG) && defined(INTERNAL)
 static void
-print_contig_vm_areas(vm_area_vector_t *v, app_pc start, app_pc end, file_t outf, char *prefix)
+print_contig_vm_areas(vm_area_vector_t *v, app_pc start, app_pc end, file_t outf,
+                      const char *prefix)
 {
     vm_area_t *new_area;
     app_pc pc = start;
@@ -891,7 +892,7 @@ vm_area_merge_fraglists(vm_area_t *dst, vm_area_t *src)
  */
 static void
 add_vm_area(vm_area_vector_t *v, app_pc start, app_pc end,
-            uint vm_flags, uint frag_flags, void *data _IF_DEBUG(char *comment))
+            uint vm_flags, uint frag_flags, void *data _IF_DEBUG(const char *comment))
 {
     int i, j, diff;
     /* if we have overlap, we extend an existing area -- else we add a new area */
@@ -2486,7 +2487,7 @@ add_executable_vm_area_check_IAT(app_pc *start /*IN/OUT*/, app_pc *end /*IN/OUT*
 
 static void
 add_executable_vm_area_helper(app_pc start, app_pc end, uint vm_flags, uint frag_flags,
-                              coarse_info_t *info _IF_DEBUG(char *comment))
+                              coarse_info_t *info _IF_DEBUG(const char *comment))
 {
     ASSERT_OWN_WRITE_LOCK(true, &executable_areas->lock);
 
@@ -2548,7 +2549,7 @@ add_executable_vm_area_helper(app_pc start, app_pc end, uint vm_flags, uint frag
 
 static coarse_info_t *
 vm_area_load_coarse_unit(app_pc start, app_pc end, uint vm_flags, uint frag_flags,
-                         bool delayed _IF_DEBUG(char *comment))
+                         bool delayed _IF_DEBUG(const char *comment))
 {
     coarse_info_t *info;
     /* We load persisted cache files at mmap time primarily for RCT
@@ -2622,7 +2623,7 @@ vm_area_load_coarse_unit(app_pc start, app_pc end, uint vm_flags, uint frag_flag
  * block from the region */
 static bool
 add_executable_vm_area(app_pc start, app_pc end, uint vm_flags, uint frag_flags,
-                       bool have_writelock _IF_DEBUG(char *comment))
+                       bool have_writelock _IF_DEBUG(const char *comment))
 {
     vm_area_t *existing_area = NULL;
     coarse_info_t *info = NULL;
@@ -2725,7 +2726,7 @@ add_executable_vm_area(app_pc start, app_pc end, uint vm_flags, uint frag_flags,
  * ensuring this (see fixme in signal.c adding sigreturn code)
  */
 bool
-add_executable_region(app_pc start, size_t size _IF_DEBUG(char *comment))
+add_executable_region(app_pc start, size_t size _IF_DEBUG(const char *comment))
 {
     return add_executable_vm_area(start, start+size, 0, 0, false/*no lock*/
                                   _IF_DEBUG(comment));
@@ -2855,7 +2856,7 @@ free_nonexec_coarse_and_unlock()
  */
 static bool
 add_futureexec_vm_area(app_pc start, app_pc end, bool once_only
-                       _IF_DEBUG(char *comment))
+                       _IF_DEBUG(const char *comment))
 {
     /* FIXME: don't add portions that overlap w/ exec areas */
     LOG(GLOBAL, LOG_VMAREAS, 2, "new FUTURE executable vm area: "PFX"-"PFX" %s%s\n",
@@ -3550,7 +3551,7 @@ dynamo_vm_areas_done_reading()
  */
 bool
 add_dynamo_vm_area(app_pc start, app_pc end, uint prot, bool unmod_image
-                   _IF_DEBUG(char *comment))
+                   _IF_DEBUG(const char *comment))
 {
     uint vm_flags = (TEST(MEMPROT_WRITE, prot) ? VM_WRITABLE : 0) |
                     (unmod_image ? VM_UNMOD_IMAGE : 0);
@@ -3600,7 +3601,7 @@ remove_dynamo_vm_area(app_pc start, app_pc end)
  */
 bool
 add_dynamo_heap_vm_area(app_pc start, app_pc end, bool writable, bool unmod_image
-                        _IF_DEBUG(char *comment))
+                        _IF_DEBUG(const char *comment))
 {
     LOG(GLOBAL, LOG_VMAREAS, 2, "new dynamo vm area: "PFX"-"PFX" %s\n",
         start, end, comment);
@@ -5687,7 +5688,7 @@ simulate_attack(dcontext_t *dcontext, app_pc pc)
 
 #if defined(DEBUG) && defined(INTERNAL)
 static void
-print_entry(dcontext_t *dcontext, fragment_t *entry, char *prefix)
+print_entry(dcontext_t *dcontext, fragment_t *entry, const char *prefix)
 {
     if (entry == NULL)
         LOG(THREAD, LOG_VMAREAS, 1, "%s<NULL>\n", prefix);
@@ -5707,7 +5708,7 @@ print_entry(dcontext_t *dcontext, fragment_t *entry, char *prefix)
 }
 
 static void
-print_fraglist(dcontext_t *dcontext, vm_area_t *area, char *prefix)
+print_fraglist(dcontext_t *dcontext, vm_area_t *area, const char *prefix)
 {
     fragment_t *entry, *last;
     LOG(THREAD, LOG_VMAREAS, 1, "%sFragments for area ("PFX") "PFX".."PFX"\n",
@@ -5900,7 +5901,7 @@ dyngen_diagnostics(dcontext_t *dcontext, app_pc pc, app_pc base_pc, size_t size,
  */
 bool
 app_memory_allocation(dcontext_t *dcontext, app_pc base, size_t size, uint prot,
-                      bool image _IF_DEBUG(char *comment))
+                      bool image _IF_DEBUG(const char *comment))
 {
     /* FIXME (case 68): to guard against external agents freeing memory, we
      * could remove this region from the executable list here -- is it worth the
@@ -6602,7 +6603,7 @@ app_memory_protection_change(dcontext_t *dcontext, app_pc base, size_t size,
             bool free_iat = false;
 #endif
             uint frag_flags = 0;
-            DEBUG_DECLARE(char *comment = "";)
+            DEBUG_DECLARE(const char *comment = "";)
             LOG(THREAD, LOG_SYSCALLS|LOG_VMAREAS, 1,
                 "WARNING: data region "PFX"-"PFX" is being made executable\n",
                 base, base+size);
@@ -7027,6 +7028,52 @@ check_thread_vm_area_abort(dcontext_t *dcontext, void **vmlist, uint flags)
                                  self_owns_write_lock(&data->areas.lock));
 }
 
+static bool
+allow_xfer_for_frag_flags(dcontext_t *dcontext, app_pc pc,
+                          uint src_flags, uint tgt_flags)
+{
+    /* the flags we don't allow a direct cti to bridge if different */
+    const uint frag_flags_cmp = FRAG_SELFMOD_SANDBOXED | FRAG_COARSE_GRAIN
+#ifdef PROGRAM_SHEPHERDING
+        | FRAG_DYNGEN
+#endif
+        ;
+    uint src_cmp = src_flags & frag_flags_cmp;
+    uint tgt_cmp = tgt_flags & frag_flags_cmp;
+    bool allow = (src_cmp == tgt_cmp) ||
+        /* Case 8917: hack to allow elision of call* to vsyscall-in-ntdll,
+         * while still ruling out fine fragments coming in to coarse regions
+         * (where we'd rather stop the fine and build a (cheaper) coarse bb).
+         * Use == instead of TEST to rule out any other funny flags.
+         */
+        (src_cmp == 0 /* we removed FRAG_COARSE_GRAIN to make this fine */
+         && tgt_cmp == FRAG_COARSE_GRAIN /* still in coarse region though */
+         && TEST(FRAG_HAS_SYSCALL, src_flags));
+    if (TEST(FRAG_COARSE_GRAIN, src_flags)) {
+        /* FIXME case 8606: we can allow intra-module xfers but we have no
+         * way of checking here -- would have to check in
+         * interp.c:check_new_page_jmp().  So for now we disallow all xfers.
+         * If our regions match modules exactly we shouldn't see any
+         * intra-module direct xfers anyway.
+         */
+        /* N.B.: ibl entry removal (case 9636) assumes coarse fragments
+         * stay bounded within contiguous FRAG_COARSE_GRAIN regions
+         */
+        allow = false;
+    }
+    if (!allow) {
+        LOG(THREAD, LOG_VMAREAS, 3,
+            "change in vm area flags (0x%08x vs. 0x%08x %d): "
+            "stopping at "PFX"\n", src_flags, tgt_flags,
+            TEST(FRAG_COARSE_GRAIN, src_flags), pc);
+        DOSTATS({
+            if (TEST(FRAG_COARSE_GRAIN, tgt_flags))
+                STATS_INC(elisions_prevented_for_coarse);
+        });
+    }
+    return allow;
+}
+
 /* check origins of code for several purposes:
  * 1) we need list of areas where this thread's fragments come
  *    from, for faster flushing on munmaps
@@ -7069,18 +7116,12 @@ check_thread_vm_area(dcontext_t *dcontext, app_pc pc, app_pc tag, void **vmlist,
     vm_area_t *area = NULL;
     vm_area_t *local_area = NULL; /* entry for this thread */
     vm_area_t area_copy; /* local copy, so can let go of lock */
-    /* the flags we don't allow a direct cti to bridge if different */
-    const uint frag_flags_cmp = FRAG_SELFMOD_SANDBOXED | FRAG_COARSE_GRAIN
-#ifdef PROGRAM_SHEPHERDING
-        | FRAG_DYNGEN
-#endif
-        ;
     /* we can be recursively called (check_origins() calling build_app_bb_ilist())
      * so make sure we don't re-try to get a lock we already hold
      */
     bool caller_execareas_writelock = self_owns_write_lock(&executable_areas->lock);
     bool own_execareas_writelock = caller_execareas_writelock;
-    DEBUG_DECLARE(char *new_area_prefix;)
+    DEBUG_DECLARE(const char *new_area_prefix;)
 
     /* deadlock issues if write lock is held already for vmlist!=NULL case */
     ASSERT(vmlist == NULL || !caller_execareas_writelock);
@@ -7589,42 +7630,9 @@ check_thread_vm_area(dcontext_t *dcontext, app_pc pc, app_pc tag, void **vmlist,
      * in the same bb as previous areas, as dictated by old flags
      * N.B.: we only care about FRAG_ flags here, not VM_ flags
      */
-    if (xfer) {
-        uint src_cmp = *flags & frag_flags_cmp;
-        uint tgt_cmp = frag_flags & frag_flags_cmp;
-        bool allow = (src_cmp == tgt_cmp) ||
-            /* Case 8917: hack to allow elision of call* to vsyscall-in-ntdll,
-             * while still ruling out fine fragments coming in to coarse regions
-             * (where we'd rather stop the fine and build a (cheaper) coarse bb).
-             * Use == instead of TEST to rule out any other funny flags.
-             */
-            (src_cmp == 0 /* we removed FRAG_COARSE_GRAIN to make this fine */
-             && tgt_cmp == FRAG_COARSE_GRAIN /* still in coarse region though */
-             && TEST(FRAG_HAS_SYSCALL, *flags));
-        if (TEST(FRAG_COARSE_GRAIN, *flags)) {
-            /* FIXME case 8606: we can allow intra-module xfers but we have no
-             * way of checking here -- would have to check in
-             * interp.c:check_new_page_jmp().  So for now we disallow all xfers.
-             * If our regions match modules exactly we shouldn't see any
-             * intra-module direct xfers anyway.
-             */
-            /* N.B.: ibl entry removal (case 9636) assumes coarse fragments
-             * stay bounded within contiguous FRAG_COARSE_GRAIN regions
-             */
-            allow = false;
-        }
-        if (!allow) {
-            LOG(THREAD, LOG_VMAREAS, 3,
-                "change in vm area flags (0x%08x vs. 0x%08x %d): "
-                "stopping at "PFX"\n", *flags, frag_flags,
-                TEST(FRAG_COARSE_GRAIN, *flags), pc);
-            DOSTATS({
-                    if (TEST(FRAG_COARSE_GRAIN, frag_flags))
-                        STATS_INC(elisions_prevented_for_coarse);
-                });
-            result = false;
-            goto check_thread_return;
-        }
+    if (xfer && !allow_xfer_for_frag_flags(dcontext, pc, *flags, frag_flags)) {
+        result = false;
+        goto check_thread_return;
     }
 
     /* Normally we return the union of flags from all vmarea regions touched.
@@ -7824,6 +7832,11 @@ check_thread_vm_area(dcontext_t *dcontext, app_pc pc, app_pc tag, void **vmlist,
         ASSERT(area != NULL);
         area_copy = *area;
         area = &area_copy;
+
+        if (xfer && !allow_xfer_for_frag_flags(dcontext, pc, *flags, frag_flags)) {
+            result = false;
+            goto check_thread_return;
+        }
     }
     if (local_area == NULL) {
         /* new area for this thread */
@@ -8416,7 +8429,8 @@ vm_area_add_to_list(dcontext_t *dcontext, app_pc tag, void **vmlist,
 void
 vm_area_destroy_list(dcontext_t *dcontext, void *vmlist)
 {
-    vm_area_remove_fragment(dcontext, (fragment_t *)vmlist);
+    if (vmlist != NULL)
+        vm_area_remove_fragment(dcontext, (fragment_t *)vmlist);
 }
 
 bool
@@ -8701,7 +8715,7 @@ add_to_pending_list(dcontext_t *dcontext, fragment_t *f,
 
 #if defined(DEBUG) && defined(INTERNAL)
 static void
-print_lazy_deletion_list(dcontext_t *dcontext, char *msg)
+print_lazy_deletion_list(dcontext_t *dcontext, const char *msg)
 {
     uint i = 0;
     fragment_t *f;
@@ -9841,9 +9855,10 @@ vm_area_coarse_units_reset_free()
                 if (info != info_start) {
                     coarse_unit_free(GLOBAL_DCONTEXT, info);
                     info = NULL;
-                }
+                } else
+                    coarse_unit_mark_in_use(info); /* still in-use if re-used */
                 /* The start info itself is freed in remove_vm_area, if exiting */
-                /* FIXME case 9686: should re-load persisted caches after reset */
+                /* XXX i#1051: should re-load persisted caches after reset */
                 info = next_info;
                 ASSERT(info == NULL || !info->frozen);
             }
@@ -11057,7 +11072,7 @@ apc_thread_policy_helper(app_pc *apc_target_location, /* IN/OUT */
         bool squashed = false;
         char injected_threat_buf[MAXIMUM_VIOLATION_NAME_LENGTH]
             = "APCS.XXXX.B";
-        char *name = injected_threat_buf;
+        const char *name = injected_threat_buf;
 
         bool block = TEST(OPTION_BLOCK, target_policy);
 
@@ -11075,9 +11090,10 @@ apc_thread_policy_helper(app_pc *apc_target_location, /* IN/OUT */
                     /* (injected) shellcode thread */
                     ASSERT_NOT_TESTED();
                     /* gcc warns if we use the string "INJT" directly */
-                    strncpy(name, INJT, 4);
+                    strncpy(injected_threat_buf, INJT, 4);
                 }
-                fill_security_violation_target(name, (const byte*)&injected_code);
+                fill_security_violation_target(injected_threat_buf,
+                                               (const byte*)&injected_code);
             }
 
             /* we allow -exempt_threat_list to override our action */
@@ -11244,7 +11260,7 @@ aslr_report_violation(app_pc execution_fault_pc,
 # define INT_TO_PC(x) ((app_pc)(ptr_uint_t)(x))
 
 static void
-print_vector_msg(vm_area_vector_t *v, file_t f, char *msg)
+print_vector_msg(vm_area_vector_t *v, file_t f, const char *msg)
 {
     print_file(f, "%s:\n", msg);
     print_vm_areas(v, f);

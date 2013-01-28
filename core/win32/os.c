@@ -1,5 +1,5 @@
 /* **********************************************************
- * Copyright (c) 2010-2012 Google, Inc.  All rights reserved.
+ * Copyright (c) 2010-2013 Google, Inc.  All rights reserved.
  * Copyright (c) 2000-2010 VMware, Inc.  All rights reserved.
  * **********************************************************/
 
@@ -514,6 +514,7 @@ exit_global_profiles()
 bool
 os_supports_avx()
 {
+    /* XXX: why not just test proc FEATURE_OSXSAVE? */
     /* XXX: what about the WINDOWS Server 2008 R2? */
     if (os_version >= WINDOWS_VERSION_8 ||
         (os_version == WINDOWS_VERSION_7 && os_service_pack_major >= 1))
@@ -1445,7 +1446,7 @@ os_thread_init(dcontext_t *dcontext)
 }
 
 void
-os_thread_exit(dcontext_t *dcontext)
+os_thread_exit(dcontext_t *dcontext, bool other_thread)
 {
     os_thread_data_t *ostd = (os_thread_data_t *) dcontext->os_field;
     aslr_thread_exit(dcontext);
@@ -3377,6 +3378,43 @@ reset_profile(profile_t *profile)
 }
 #endif
 
+/* free memory allocated from os_raw_mem_alloc */
+void
+os_raw_mem_free(void *p, size_t size, heap_error_code_t *error_code)
+{
+    ASSERT(error_code != NULL);
+    ASSERT(size > 0 && ALIGNED(size, PAGE_SIZE));
+
+    *error_code = nt_decommit_virtual_memory(p, size);
+    ASSERT(NT_SUCCESS(*error_code));
+    *error_code = nt_free_virtual_memory(p);
+    LOG(GLOBAL, LOG_HEAP, 2, "os_raw_mem_free: "SZFMT" bytes @ "PFX"\n",
+        size, p);
+    ASSERT(NT_SUCCESS(*error_code));
+}
+
+void *
+os_raw_mem_alloc(void *preferred, size_t size, uint prot,
+                 heap_error_code_t *error_code)
+{
+    void *p = preferred;
+    uint os_prot = memprot_to_osprot(prot);
+
+    ASSERT(error_code != NULL);
+    /* should only be used on aligned pieces */
+    ASSERT(size > 0 && ALIGNED(size, PAGE_SIZE));
+
+    *error_code = nt_allocate_virtual_memory(&p, size, os_prot, MEMORY_COMMIT);
+    if (!NT_SUCCESS(*error_code)) {
+        LOG(GLOBAL, LOG_HEAP, 3,
+            "os_raw_mem_alloc %d bytes failed"PFX"\n", size, p);
+        return NULL;
+    }
+    LOG(GLOBAL, LOG_HEAP, 2, "os_raw_mem_alloc: "SZFMT" bytes @ "PFX"\n",
+        size, p);
+    return p;
+}
+
 /* caller is required to handle thread synchronization */
 /* see inject.c, this must be able to free an nt_allocate_virtual_memory
  * pointer */
@@ -3638,7 +3676,11 @@ thread_set_mcontext(thread_record_t *tr, priv_mcontext_t *mc)
 {
     char buf[MAX_CONTEXT_SIZE];
     CONTEXT *cxt = nt_initialize_context(buf, CONTEXT_DR_STATE);
-    mcontext_to_context(cxt, mc);
+    /* i#1033: get the context from the dst thread to make sure
+     * segments are correctly set.
+     */
+    thread_get_context(tr, cxt);
+    mcontext_to_context(cxt, mc, false /* !set_cur_seg */);
     return thread_set_context(tr, cxt);
 }
 
@@ -3669,7 +3711,8 @@ thread_set_self_mcontext(priv_mcontext_t *mc)
 {
     char buf[MAX_CONTEXT_SIZE];
     CONTEXT *cxt = nt_initialize_context(buf, CONTEXT_DR_STATE);
-    mcontext_to_context(cxt, mc);
+    /* need ss and cs for setting my own context */
+    mcontext_to_context(cxt, mc, true /* set_cur_seg */);
     thread_set_self_context(cxt);
     ASSERT_NOT_REACHED();
 }
@@ -3848,7 +3891,10 @@ shlib_handle_t
 load_shared_library(const char *name)
 {
     if (IF_CLIENT_INTERFACE_ELSE(INTERNAL_OPTION(private_loader), false)) {
-        return (shlib_handle_t) load_private_library(name);
+        /* We call locate_and_load_private_library() to support searching for
+         * a pathless name.
+         */
+        return (shlib_handle_t) locate_and_load_private_library(name);
     } else {
         wchar_t buf[MAX_PATH];
         snwprintf(buf, BUFFER_SIZE_ELEMENTS(buf), L"%hs", name);
@@ -5543,16 +5589,16 @@ os_map_file(file_t f, size_t *size INOUT, uint64 offs, app_pc addr, uint prot,
     /* FIXME case 9642: support requesting a particular base address so
      * we can randomize, make adjacent to vmheap, etc.
      */
-    res = nt_map_view_of_section(section, /* 0 */
-                                 NT_CURRENT_PROCESS, /* 1 */
-                                 &map, /* 2 */
-                                 0, /* 3 */
-                                 0 /* not page-file-backed */, /* 4 */
-                                 &li_offs, /* 5 */
-                                 (PSIZE_T) size, /* 6 */
-                                 ViewUnmap /* FIXME: expose? */, /* 7 */
-                                 0 /* no special top-down or anything */, /* 8 */
-                                 osprot); /* 9 */
+    res = nt_raw_MapViewOfSection(section, /* 0 */
+                                  NT_CURRENT_PROCESS, /* 1 */
+                                  &map, /* 2 */
+                                  0, /* 3 */
+                                  0 /* not page-file-backed */, /* 4 */
+                                  &li_offs, /* 5 */
+                                  (PSIZE_T) size, /* 6 */
+                                  ViewUnmap /* FIXME: expose? */, /* 7 */
+                                  0 /* no special top-down or anything */, /* 8 */
+                                  osprot); /* 9 */
     /* We do not need to keep the section handle open */
     close_handle(section);
     if (!NT_SUCCESS(res)) {
@@ -5565,7 +5611,7 @@ os_map_file(file_t f, size_t *size INOUT, uint64 offs, app_pc addr, uint prot,
 bool
 os_unmap_file(byte *map, size_t size/*unused*/)
 {
-    int res = nt_unmap_view_of_section(NT_CURRENT_PROCESS, map);
+    int res = nt_raw_UnmapViewOfSection(NT_CURRENT_PROCESS, map);
     return NT_SUCCESS(res);
 }
 
@@ -5575,6 +5621,7 @@ os_unmap_file(byte *map, size_t size/*unused*/)
  * owner, the caller must hold the thread_initexit_lock to ensure that it
  * remains valid.
  * Requires thread trec is at_safe_spot().
+ * We assume that the segments CS and SS have been set in the cxt properly.
  */
 bool
 translate_context(thread_record_t *trec, CONTEXT *cxt, bool restore_memory)
@@ -5587,8 +5634,10 @@ translate_context(thread_record_t *trec, CONTEXT *cxt, bool restore_memory)
     ASSERT(TESTALL(CONTEXT_DR_STATE, cxt->ContextFlags));
     context_to_mcontext(&mc, cxt);
     res = translate_mcontext(trec, &mc, restore_memory, NULL);
-    if (res)
-        mcontext_to_context(cxt, &mc);
+    if (res) {
+        /* assuming cs/ss has been set properly */
+        mcontext_to_context(cxt, &mc, false /* set_cur_seg */);
+    }
     return res;
 }
 

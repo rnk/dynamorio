@@ -1,5 +1,5 @@
 /* **********************************************************
- * Copyright (c) 2010-2012 Google, Inc.  All rights reserved.
+ * Copyright (c) 2010-2013 Google, Inc.  All rights reserved.
  * Copyright (c) 2000-2010 VMware, Inc.  All rights reserved.
  * **********************************************************/
 
@@ -120,7 +120,7 @@
 #define EXEMPT_TEST(tests) check_filter(tests, get_short_name(get_application_name()))
 
 #if defined(INTERNAL) || defined(DEBUG)
-void internal_error(char *file, int line, char *expr);
+void internal_error(const char *file, int line, const char *expr);
 bool ignore_assert(const char *assert_file_line, const char *expr);
 #endif
 
@@ -128,7 +128,7 @@ bool ignore_assert(const char *assert_file_line, const char *expr);
 #define apicheck(x, msg) \
     ((void)((DEBUG_CHECKS(CHKLVL_ASSERTS) && !(x)) ? \
      (external_error(__FILE__, __LINE__, msg), 0) : 0))
-void external_error(char *file, int line, char *msg);
+void external_error(const char *file, int line, const char *msg);
 
 #ifdef CLIENT_INTERFACE
 # ifdef DEBUG
@@ -222,7 +222,7 @@ typedef struct _mutex_t {
     contention_event_t contended_event; /* handle to event object to wait on when contended */
 #ifdef DEADLOCK_AVOIDANCE
     /* These fields are initialized with the INIT_LOCK_NO_TYPE macro */
-    char *    name;             /* set to variable lock name and location */
+    const char *name;            /* set to variable lock name and location */
     /* We flag as a violation if a lock with rank numerically smaller
      * or equal to the rank of a lock already held by the owning thread is acquired
      */
@@ -258,6 +258,7 @@ typedef struct _mutex_t {
 #else
 #  define MAX_MUTEX_CALLSTACK 0 /* cannot use */
 #endif /* MUTEX_CALLSTACK */
+    bool deleted;  /* this lock has been deleted at least once */
 #endif /* DEADLOCK_AVOIDANCE */
     /* Any new field needs to be initialized with INIT_LOCK_NO_TYPE */
 } mutex_t;
@@ -433,6 +434,7 @@ enum {
     LOCK_RANK(callback_registration_lock), /* > dr_client_mutex */
     LOCK_RANK(client_tls_lock), /* > dr_client_mutex */
 #endif
+    LOCK_RANK(privload_lock), /* < modlist_areas, < table_rwlock */
     LOCK_RANK(table_rwlock), /* > dr_client_mutex */
     LOCK_RANK(loaded_module_areas),  /* < dynamo_areas < global_alloc_lock */
     LOCK_RANK(aslr_areas), /* < dynamo_areas < global_alloc_lock */
@@ -462,13 +464,15 @@ enum {
     LOCK_RANK(suspend_lock),
     LOCK_RANK(shared_lock),
 #endif
-    LOCK_RANK(privload_lock), /* < modlist_areas */
     LOCK_RANK(modlist_areas), /* < dynamo_areas < global_alloc_lock */
 #ifdef WINDOWS
     LOCK_RANK(privload_fls_lock), /* < dynamo_areas < global_alloc_lock */
 #endif    
 #ifdef CLIENT_INTERFACE
     LOCK_RANK(client_aux_libs),
+# ifdef WINDOWS
+    LOCK_RANK(client_aux_lib64_lock),
+# endif
 #endif
     /* ADD HERE a lock around section that may allocate memory */
 
@@ -922,6 +926,8 @@ typedef enum {
     HASH_FUNCTION_SWAP_12TO15_AND_NONE = 5,
     HASH_FUNCTION_SHIFT_XOR = 6,
 #endif
+    HASH_FUNCTION_STRING = 7,
+    HASH_FUNCTION_STRING_NOCASE = 8,
     HASH_FUNCTION_ENUM_MAX,
 } hash_function_t;
 
@@ -1096,15 +1102,15 @@ bool bitmap_check_consistency(bitmap_t b, uint bitmap_size, uint expect_free);
 # define LOG_DECLARE(declaration)
 # define DOCHECK(level, statement) /* nothing */
 #endif
-void print_log(file_t logfile, uint mask, uint level, char *fmt, ...);
-void print_file(file_t f, char *fmt, ...);
+void print_log(file_t logfile, uint mask, uint level, const char *fmt, ...);
+void print_file(file_t f, const char *fmt, ...);
 
 /* For repeated appending to a buffer.  The "sofar" var should be set
  * to 0 by the caller before the first call to print_to_buffer.
  */
 bool print_to_buffer(char *buf, size_t bufsz, size_t *sofar INOUT, const char *fmt, ...);
 
-char *memprot_string(uint prot);
+const char *memprot_string(uint prot);
 
 char * double_strchr(char *string, char c1, char c2);
 #ifndef WINDOWS
@@ -1749,8 +1755,8 @@ report_app_problem(dcontext_t *dcontext, uint appfault_flag,
 
 void
 notify(syslog_event_type_t priority, bool internal, bool synch,
-            IF_WINDOWS_(uint message_id) uint substitution_nam, char *prefix, 
-            char *fmt, ...);
+            IF_WINDOWS_(uint message_id) uint substitution_nam, const char *prefix, 
+            const char *fmt, ...);
 
 #define SYSLOG_COMMON(synch, type, id, sub, ...) \
     notify(type, false, synch, IF_WINDOWS_(MSG_##id) sub, #type, MSG_##id##_STRING, __VA_ARGS__)
@@ -2067,7 +2073,8 @@ divide_uint64_print(uint64 numerator, uint64 denominator, bool percentage,
  * "%w.pf", a => dp(a, p, &c, &d, &s) "%s%(w-p)u.%.pu", s, c, d
  */
 void
-double_print(double val, uint precision, uint *top, uint *bottom, char **sign);
+double_print(double val, uint precision, uint *top, uint *bottom,
+             const char **sign);
 #endif /* DEBUG || INTERNAL */
 
 #ifdef CALL_PROFILE

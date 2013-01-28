@@ -1384,10 +1384,32 @@ unmap_intercept_pc(app_pc original_app_pc)
     mutex_unlock(&map_intercept_pc_lock);
 }
 
+static void
+free_intercept_list(void)
+{
+    /* For all regular hooks, un_intercept_call() calls unmap_intercept_pc()
+     * and removes the hook's entry.  But syscall wrappers have a target app
+     * pc that's unusual.  Rather than store it for each, we just tear
+     * down the whole list.
+     */
+    intercept_map_elem_t *curr;
+    mutex_lock(&map_intercept_pc_lock);
+    while (intercept_map->head != NULL) {
+        curr = intercept_map->head;
+        intercept_map->head = curr->next;
+        HEAP_TYPE_FREE(GLOBAL_DCONTEXT, curr, intercept_map_elem_t,
+                       ACCT_OTHER, UNPROTECTED);
+    }
+    intercept_map->head = NULL;
+    intercept_map->tail = NULL;
+    mutex_unlock(&map_intercept_pc_lock);
+}
+
 /* We assume no mangling of code placed in the interception buffer,
  * other than re-relativizing ctis.  As such, we can uniquely correlate
  * interception buffer PCs to their original app PCs.
- * Caller must check that pc is actually in the intercept buffer.
+ * Caller must check that pc is actually in the intercept buffer (or landing
+ * pad displaced app code or jmp back).
  */
 app_pc
 get_app_pc_from_intercept_pc(byte *pc)
@@ -1886,24 +1908,27 @@ clean_syscall_wrapper(byte *nt_wrapper, int sys_enum)
         }
         APP(ilist, create_syscall_instr(dcontext));
     } else { /* XP or greater */
-        APP(ilist,
-            INSTR_CREATE_mov_imm(dcontext, opnd_create_reg(REG_XDX),
-                                 OPND_CREATE_INTPTR((ptr_int_t)VSYSCALL_BOOTSTRAP_ADDR)));
         if (get_os_version() >= WINDOWS_VERSION_8) {
             /* Win8 does not use ind calls: it calls to a local copy of KiFastSystemCall.
              * We do the next best thing.
              */
             ASSERT(KiFastSystemCall != NULL);
             APP(ilist, INSTR_CREATE_call(dcontext, opnd_create_pc(KiFastSystemCall)));
-        }
-        else if (use_ki_syscall_routines()) {
-            /* call through vsyscall addr to Ki*SystemCall routine */
-            APP(ilist,
-                INSTR_CREATE_call_ind(dcontext, opnd_create_base_disp(REG_XDX, REG_NULL,
-                                                                      0, 0, OPSZ_4_short2)));
         } else {
-            /* call to vsyscall addr */
-            APP(ilist, INSTR_CREATE_call_ind(dcontext, opnd_create_reg(REG_XDX)));
+            APP(ilist,
+                INSTR_CREATE_mov_imm(dcontext, opnd_create_reg(REG_XDX),
+                                     OPND_CREATE_INTPTR((ptr_int_t)
+                                                        VSYSCALL_BOOTSTRAP_ADDR)));
+
+            if (use_ki_syscall_routines()) {
+                /* call through vsyscall addr to Ki*SystemCall routine */
+                APP(ilist,
+                    INSTR_CREATE_call_ind(dcontext, opnd_create_base_disp
+                                          (REG_XDX, REG_NULL, 0, 0, OPSZ_4_short2)));
+            } else {
+                /* call to vsyscall addr */
+                APP(ilist, INSTR_CREATE_call_ind(dcontext, opnd_create_reg(REG_XDX)));
+            }
         }
     }
     if (is_wow64_process(NT_CURRENT_PROCESS) && get_os_version() == WINDOWS_VERSION_7) {
@@ -1933,7 +1958,11 @@ clean_syscall_wrapper(byte *nt_wrapper, int sys_enum)
          instr_new = instr_get_next(instr_new)) {
         instr_reset(dcontext, instr_old);
         pc = decode(dcontext, pc, instr_old);
-        if (!instr_same(instr_new, instr_old)) {
+        if (!instr_same(instr_new, instr_old) &&
+            /* don't consider call to KiFastSystemCall vs inlined sysenter to be a hook */
+            !(get_os_version() >= WINDOWS_VERSION_8 &&
+              instr_get_opcode(instr_new) == instr_get_opcode(instr_old) &&
+              instr_get_opcode(instr_new) == OP_call)) {
             /* We haven't seen hookers where the opcode would match, so in that case
              * seems likely could be our fault (got an immed wrong or something). */
             ASSERT_CURIOSITY(instr_get_opcode(instr_new) != instr_get_opcode(instr_old));
@@ -2224,6 +2253,40 @@ syscall_wrapper_ilist(dcontext_t *dcontext,
         ASSERT(instr_get_opcode(instr) == OP_call_ind);
         instr_destroy(dcontext, instr);
         /* XXX: how handle chrome hooks on win8?  (xref i#464) */
+    } else if (get_syscall_method() == SYSCALL_METHOD_SYSENTER &&
+               get_os_version() >= WINDOWS_VERSION_8) {
+        /* Second instr is a call to an inlined routine that calls sysenter.
+         * We treat this in a similar way to call* to sysenter which is handled
+         * down below.
+         * XXX: could share a little bit of code but not much.
+         */
+        after_hook_target = pc;
+        instr = instr_create(dcontext);
+        *ret_pc = decode(dcontext, pc, instr); /* skip call to skip syscall */
+        ASSERT(instr_get_opcode(instr) == OP_call);
+
+        /* replace the call w/ a push */
+        instrlist_append(ilist, INSTR_CREATE_push_imm
+                         (dcontext, OPND_CREATE_INTPTR((ptr_int_t)pc)));
+
+        /* the callee, inlined later in wrapper, or KiFastSystemCall */
+        pc = (byte *) opnd_get_pc(instr_get_target(instr));
+
+        /* fourth instr: mov %xsp -> %xdx */
+        instr_reset(dcontext, instr); /* re-use call container */
+        pc = decode(dcontext, pc, instr);
+        instrlist_append(ilist, instr);
+        ASSERT(instr_get_opcode(instr) == OP_mov_ld);
+
+        /* fifth instr: sysenter */
+        instr = instr_create(dcontext);
+        after_hook_target = pc;
+        pc = decode(dcontext, pc, instr);
+        ASSERT(instr_get_opcode(instr) == OP_sysenter);
+        instr_destroy(dcontext, instr);
+
+        /* ignore ret after sysenter, we'll return to ret after call */
+
     } else {
         /* second instr is either a lea, a mov immed, or an xor */
         DOLOG(3, LOG_ASYNCH, { disassemble_with_bytes(dcontext, pc, main_logfile); });
@@ -2420,6 +2483,11 @@ intercept_syscall_wrapper(byte **ptgt_pc /* IN/OUT */,
     lpad_pc = emit_landing_pad_code(lpad_pc, pc, after_hook_target,
                                     0/*no displaced code in lpad*/,
                                     &lpad_resume_pc, &changed_prot);
+    /* i#1027: map jmp back in landing pad to original app pc.  We do this to
+     * have the translation just in case, even though we hide this jmp from the
+     * client.  Xref the PR 219351 comment in is_intercepted_app_pc().
+     */
+    map_intercept_pc_to_app_pc(lpad_resume_pc, after_hook_target, JMP_LONG_LENGTH, 0);
     finalize_landing_pad_code(lpad_start, changed_prot);
 
     emit_pc = pc;
@@ -2580,6 +2648,22 @@ is_syscall_trampoline(byte *pc, byte **tgt)
     if (syscall_trampolines_start == NULL)
         return false;
     if (vmvector_overlap(landing_pad_areas, pc, pc + 1)) {
+        /* Also count the jmp from landing pad back to syscall instr, which is
+         * immediately after the jmp from landing pad to interception buffer (i#1027).
+         */
+        app_pc syscall;
+        if (is_jmp_rel32(pc, pc, &syscall) &&
+            is_jmp_rel32(pc - JMP_LONG_LENGTH, NULL, NULL)) {
+            dcontext_t *dcontext = get_thread_private_dcontext();
+            instr_t instr;
+            instr_init(dcontext, &instr);
+            decode(dcontext, syscall, &instr);
+            if (instr_is_syscall(&instr)) {
+                /* proceed using the 1st jmp */
+                pc -= JMP_LONG_LENGTH;
+            }
+            instr_free(dcontext, &instr);
+        }
 #ifdef X64
         /* target is 8 bytes back */
         pc = *(app_pc *)(pc - sizeof(app_pc));
@@ -2733,6 +2817,7 @@ asynch_take_over(app_state_at_intercept_t *state)
             trace_abort(dcontext);
         }
     }
+    ASSERT(os_using_app_state(dcontext));
     LOG(THREAD, LOG_ASYNCH, 2, "asynch_take_over 0x%08x\n", state->start_pc);
     /* may have been inside syscall...now we're in app! */
     set_at_syscall(dcontext, false);
@@ -3722,7 +3807,10 @@ found_modified_code(dcontext_t *dcontext, EXCEPTION_RECORD *pExcptRec,
             context_to_mcontext(&mcontext, cxt);
             res = recreate_app_state(dcontext, &mcontext, true/*memory too*/, f);
             if (res == RECREATE_SUCCESS_STATE) {
-                mcontext_to_context(cxt, &mcontext);
+                /* cxt came from the kernel, so it should already have ss and cs
+                 * initialized. Thus there's no need to get them again.
+                 */
+                mcontext_to_context(cxt, &mcontext, false /* !set_cur_seg */);
             } else {
                 /* Should not happen since this should not be an instr we added! */
                 SYSLOG_INTERNAL_WARNING("Unable to fully translate cxt for codemod fault");
@@ -4586,7 +4674,7 @@ client_exception_event(dcontext_t *dcontext, CONTEXT *cxt,
 
     /* i#249: swap PEB pointers.  We assume that no other Ki-handling code needs
      * the PEB swapped, as our hook code does not swap like fcache enter/return
-     * and clean calls do.
+     * and clean calls do.  We do swap when recreating app state.
      */
     if (INTERNAL_OPTION(private_peb) && should_swap_peb_pointer())
         swap_peb_pointer(dcontext, true/*to priv*/);
@@ -4598,11 +4686,19 @@ client_exception_event(dcontext_t *dcontext, CONTEXT *cxt,
     if (pass_to_app) {
         CLIENT_ASSERT(einfo.mcontext->flags == DR_MC_ALL,
                       "exception mcontext flags cannot be changed");
-        mcontext_to_context(cxt, dr_mcontext_as_priv_mcontext(einfo.mcontext));
+        /* cxt came from the kernel, so it should already have ss and cs
+         * initialized. Thus there's no need to get them again.
+         */
+        mcontext_to_context(cxt, dr_mcontext_as_priv_mcontext(einfo.mcontext),
+                            true /* !set_cur_seg */);
     } else {
         CLIENT_ASSERT(einfo.raw_mcontext->flags == DR_MC_ALL,
                       "exception mcontext flags cannot be changed");
-        mcontext_to_context(cxt, dr_mcontext_as_priv_mcontext(einfo.raw_mcontext));
+        /* cxt came from the kernel, so it should already have ss and cs
+         * initialized. Thus there's no need to get them again.
+         */
+        mcontext_to_context(cxt, dr_mcontext_as_priv_mcontext(einfo.raw_mcontext),
+                            true /* !set_cur_seg */);
         /* Now re-execute the faulting instr, or go to
          * new context specified by client, skipping
          * app exception handlers.
@@ -5291,7 +5387,10 @@ intercept_exception(app_state_at_intercept_t *state)
 #endif
             LOG(THREAD, LOG_ASYNCH, 2, "Translated cxt->Xip "PFX" to "PFX"\n",
                 cxt->CXT_XIP, mcontext.pc);
-            mcontext_to_context(cxt, &mcontext);
+            /* cxt came from the kernel, so it should already have ss and cs
+             * initialized. Thus there's no need to get them again.
+             */
+            mcontext_to_context(cxt, &mcontext, false /* !set_cur_seg */);
 
             /* PR 306410: if exception while on dstack but going to app,
              * copy SEH frame over to app stack and update handler xsp.
@@ -5343,12 +5442,6 @@ intercept_exception(app_state_at_intercept_t *state)
                 client_exception_event(dcontext, cxt, pExcptRec, &raw_mcontext, f);
             }
 #endif
-            /* Fixme : we could do this higher up in the function (before
-             * translation) but then wouldn't be able to separate out the case
-             * of faulting interpreted dynamo address above. Prob. is nicer
-             * to have the final translation available in the dump anyways.*/
-            report_app_exception(dcontext, APPFAULT_FAULT, pExcptRec, cxt,
-                                 "Exception occurred in application code.");
         } else {
             /* If the exception pc is not in the fcache, then the exception
              * was generated by calling RaiseException, or it's one of the
@@ -5379,6 +5472,12 @@ intercept_exception(app_state_at_intercept_t *state)
             });
         }
 
+        /* Fixme : we could do this higher up in the function (before
+         * translation) but then wouldn't be able to separate out the case
+         * of faulting interpreted dynamo address above. Prob. is nicer
+         * to have the final translation available in the dump anyways.*/
+        report_app_exception(dcontext, APPFAULT_FAULT, pExcptRec, cxt,
+                             "Exception occurred in application code.");
         /* We won't get here for UNDER_DYN_HACK since at the top of the routine
          * we set takeover to false for that case.  FIXME - if we clean up the
          * above if and the check/found/handle modified code paths to handle
@@ -5545,7 +5644,11 @@ os_forge_exception(app_pc exception_address, exception_type_t exception_type)
     });
 
     /* get application context */
-    mcontext_to_context(&context, get_mcontext(dcontext));
+    /* context is initialized via nt_get_context, which should initialize
+     * cs and ss, so there is no nead to get them again.
+     */
+    mcontext_to_context(&context, get_mcontext(dcontext),
+                        false /* !set_cur_seg */);
     context.CXT_XIP = (ptr_uint_t)exception_address;
  
     DOLOG(2, LOG_ASYNCH, {
@@ -5938,6 +6041,15 @@ callback_setup(app_pc next_pc)
         dump_mcontext(get_mcontext(new_dcontext), old_dcontext->logfile,
                       DUMP_NOT_XML);
     });
+
+# ifdef CLIENT_INTERFACE
+    /* i#985: save TEB fields into old context via double swap */
+    if (INTERNAL_OPTION(private_peb) && should_swap_peb_pointer()) {
+        ASSERT(os_using_app_state(old_dcontext));
+        swap_peb_pointer(old_dcontext, true/*to priv*/);
+        swap_peb_pointer(old_dcontext, false/*to app*/);
+    }
+# endif
 
     /* now swap new and old */
     swap_dcontexts(new_dcontext, old_dcontext);
@@ -7295,6 +7407,8 @@ callback_interception_unintercept()
     }
     /* remove exception dispatcher last to catch errors in the meantime */
     un_intercept_call(exception_pc, (byte*)KiUserExceptionDispatcher);
+
+    free_intercept_list();
 
     DODEBUG(callback_interception_unintercepted = true;);
 }

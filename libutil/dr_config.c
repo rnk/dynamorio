@@ -796,7 +796,7 @@ static void
 write_options(opt_info_t *opt_info, TCHAR *wbuf)
 {
     size_t i;
-    char *mode_str = "";
+    const char *mode_str = "";
     ssize_t len;
     ssize_t sofar = 0;
     ssize_t bufsz = DR_MAX_OPTIONS_LENGTH;
@@ -1080,7 +1080,7 @@ dr_register_process(const char *process_name,
 
     /* set the options string last for faster updating w/ config files */
     opt_info.mode = dr_mode;
-#ifdef LINUX
+#if defined(LINUX) && !defined(STATIC_LIBRARY)
     /* FIXME i#906: Support LD_PRELOAD injection. */
     add_extra_option_char(&opt_info, "-early_inject");
 #endif

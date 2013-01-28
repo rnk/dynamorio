@@ -1,5 +1,5 @@
 # **********************************************************
-# Copyright (c) 2010-2012 Google, Inc.    All rights reserved.
+# Copyright (c) 2010-2013 Google, Inc.    All rights reserved.
 # Copyright (c) 2009-2010 VMware, Inc.    All rights reserved.
 # **********************************************************
 
@@ -94,12 +94,14 @@ set(vmap_run_list
   "SHORT::-code_api"
   # sanity check: run single app to make sure these options aren't totally broken
   "SHORT::ONLY::client.events$::-code_api -opt_memory"
+  "SHORT::ONLY::client.events$::-code_api -opt_speed"
   "SHORT::ONLY::client.events$::-code_api -thread_private"
   "SHORT::ONLY::client.events$::-code_api -disable_traces"
   "SHORT::ONLY::client.events$::-code_api -thread_private -disable_traces"
   "SHORT::LIN::ONLY::client.events$::-code_api -early_inject"
   # maybe this should be SHORT as -coarse_units will eventually be the default?
   "-code_api -opt_memory"
+  "-code_api -opt_speed"
   "-code_api -thread_private"
   "-code_api -disable_traces"
   "-code_api -thread_private -disable_traces"
@@ -269,7 +271,6 @@ include_directories(${PROJECT_SOURCE_DIR}/core/x86) # asm_defines.asm
 # FIXME i#98: improve code so can set Wall/W4
 if (UNIX)
   string(REGEX REPLACE "-Wall" "" CMAKE_C_FLAGS "${CMAKE_C_FLAGS}")
-  string(REGEX REPLACE "-std=gnu99" "" CMAKE_C_FLAGS "${CMAKE_C_FLAGS}")
   # some tests rely on specific "nop;nop" patterns that optimization ruins
   # we should probably move the -O from top level into core/CMakeLists.txt
   string(REGEX REPLACE "-O[0-9]? " " " CMAKE_C_FLAGS "${CMAKE_C_FLAGS}")
@@ -426,6 +427,10 @@ function (set_cflags source)
   else ()
     set(cflags "${ORIG_CMAKE_C_FLAGS}")
   endif ()
+  if ("${source}" MATCHES ".cpp$")
+    # Our C files need -std=gnu99, but that's an invalid flag for C++.
+    string(REGEX REPLACE "-std=gnu99" "" cflags "${cflags}")
+  endif ()
   if ("${source}" MATCHES ".dll.(c|cpp)$")
     # do nothing
   else ("${source}" MATCHES ".dll.(c|cpp)$")
@@ -461,6 +466,20 @@ function(append_link_flags target newflags)
   set_target_properties(${target} PROPERTIES
     LINK_FLAGS "${cur_ldflags} ${newflags}")
 endfunction(append_link_flags)
+
+# On Linux, the individual object files contained by an archive are
+# garbage collected by the linker if they are not referenced.  To avoid
+# this, we have to use the --whole-archive option with ld.
+function(force_static_link target lib)
+  if (UNIX)
+    # CMake ignores libraries starting with '-' and preserves the
+    # ordering, so we can pass flags through target_link_libraries, which
+    # ensures we have the right CMake dependencies.
+    target_link_libraries(${target} -Wl,--whole-archive ${lib} -Wl,--no-whole-archive)
+  else ()
+    target_link_libraries(${target} ${lib})
+  endif ()
+endfunction(force_static_link)
 
 function(add_exe test source)
   get_filename_component(srcbase ${source} NAME_WE)
@@ -517,6 +536,12 @@ function(add_exe test source)
       "${CMAKE_GENERATOR}" MATCHES "Visual Studio")
     add_dependencies(${test} ${gen_asm_tgt})
   endif ()
+
+  if (STATIC_LIBRARY AND NOT "${test}" MATCHES "api")
+    # Link DR into every test exe except the api tests, which already link
+    # against DR or the standalone decoder.
+    force_static_link(${test} dynamorio)
+  endif ()
 endfunction(add_exe)
 
 # normal app
@@ -557,6 +582,16 @@ function(tobuild_dll test source dr_ops)
   set(${test}_dr_ops ${dr_ops} PARENT_SCOPE)
 endfunction(tobuild_dll)
 
+function(get_client_path client_path_out realclient realexe)
+  if (STATIC_LIBRARY)
+    set(tgt ${realexe})
+  else()
+    set(tgt ${realclient})
+  endif ()
+  get_target_property(client_path ${tgt} LOCATION${location_suffix})
+  set(${client_path_out} "${client_path}" PARENT_SCOPE)
+endfunction(get_client_path)
+
 # client interface app with client
 # note that we can't easily have a routine that takes no ops
 # and calls this one w/ "" "" "" b/c the PARENT_SCOPE won't make
@@ -567,17 +602,26 @@ function(tobuild_ci test source client_ops dr_ops exe_ops)
 
   if (NOT "${source}" MATCHES "\\.runall$")
     add_exe(${test} ${source})
-  endif (NOT "${source}" MATCHES "\\.runall$")
+  elseif (STATIC_LIBRARY)
+    return()  # FIXME i#975: add support for STATIC_LIBRARY runall tests.
+  endif ()
 
-  add_library(${test}.dll SHARED ${client_source})
-  set_target_properties(${test}.dll PROPERTIES LINK_FLAGS "${ARCH_DEBUG}")
+  add_library(${test}.dll ${SHARED_OR_STATIC} ${client_source})
   if (NOT "${source}" MATCHES "cpp\\.cpp")
     # to avoid changing all the REG_ constants we ask for compatibility
     set(DynamoRIO_REG_COMPATIBILITY ON)
   endif (NOT "${source}" MATCHES "cpp\\.cpp")
   configure_DynamoRIO_client(${test}.dll)
+  append_property_string(TARGET ${test}.dll LINK_FLAGS "${ARCH_DEBUG}")
   add_dependencies(${test}.dll api_headers)
-  get_target_property(client_path ${test}.dll LOCATION${location_suffix})
+  get_client_path(client_path ${test}.dll ${test})
+  if (STATIC_LIBRARY)
+    # For STATIC_LIBRARY, we support a single client by linking the client into
+    # the exe.
+    force_static_link(${test} ${test}.dll)
+    # Let clients know if they're being built statically.
+    append_property_string(TARGET ${test}.dll COMPILE_FLAGS "-DSTATIC_LIBRARY")
+  endif ()
 
   set(testlist_ci ${testlist_ci} ${test} PARENT_SCOPE)
   set(${test}_source ${source} PARENT_SCOPE)
@@ -637,7 +681,7 @@ function(tobuild_gcc exe source depender extra_args)
 endfunction(tobuild_gcc)
 
 function(torunonly_ci test realexe realclient source client_ops dr_ops exe_ops)
-  get_target_property(client_path ${realclient}.dll LOCATION${location_suffix})
+  get_client_path(client_path ${realclient}.dll ${realexe})
 
   # note that b/c of cmake's ridiculous scoping we can't easily share this code
   # w/ tobuild_ci: still have to propagate out of there, so we dup.
@@ -672,17 +716,13 @@ function(tobuild_api test source dr_ops exe_ops decoder)
     set(prop_cflags "")
   endif ()
   set(prop_cflags "${prop_cflags} ${extra_flags}")
-  # we don't set -DUSE_DYNAMO on the target to avoid setting
-  # it for tools.c and thus adding dependencies on api headers
-  # to other tests
-  set_source_files_properties(${source} PROPERTIES
-    COMPILE_FLAGS "-DUSE_DYNAMO")
+  set(prop_cflags "${prop_cflags} -DUSE_DYNAMO")
   # since we're including configure.h we do not want any default defines
   string(REGEX REPLACE "-DX64" "" prop_cflags "${prop_cflags}")
   string(REGEX REPLACE "-DLINUX" "" prop_cflags "${prop_cflags}")
   string(REGEX REPLACE "-DWINDOWS" "" prop_cflags "${prop_cflags}")
   # FIXME: apparently moving cflags to a target property makes it show up
-  # in the cpp run for tools_asm, where it doesn't if in global var.
+  # in the cpp run for asm targets, where it doesn't if in global var.
   # This causes compilation failure.  Removing -g3 manually as a workaround.
   string(REGEX REPLACE "-g3" "" prop_cflags "${prop_cflags}")
   get_target_property(prop_lflags ${test} LINK_FLAGS)
@@ -986,6 +1026,9 @@ function(torun test key source native dr_ops exe_ops)
       "${dr_ops}" MATCHES "-no_private_loader")
     return()
   endif ()
+  if (STATIC_LIBRARY AND "${dr_ops}" MATCHES "-early_inject")
+    return()
+  endif ()
 
   if (DEFINED ${key}_realtest)
     set(exe ${${key}_realtest})
@@ -1162,6 +1205,9 @@ function(torun test key source native dr_ops exe_ops)
 endfunction(torun)
 
 function(torun_normal name test ops)
+  if (STATIC_LIBRARY AND "${ops}" MATCHES "-early_inject")
+    return()
+  endif ()
   torun("${name}" ${test} ${${test}_source} OFF "${${test}_dr_ops} ${ops}"
     "${${test}_exe_ops}")
   if (DEFINED ${test}_depends)
@@ -1182,6 +1228,9 @@ function(torun_ci name test ops)
       set(cli_ops "use_unlink")
     endif ()
   endif ("${test}" MATCHES "client\\.flush")
+  if (STATIC_LIBRARY AND "${${test}_dr_ops} ${ops}" MATCHES "-early_inject")
+    return()
+  endif ()
   # note that we cannot use double quotes as they'll be stripped out
   torun("${name}" ${test} ${${test}_source} OFF
     " -code_api -client_lib '${${test}_client_path}\;0\;${cli_ops}' ${${test}_dr_ops} ${ops}" "${${test}_exe_ops}")
@@ -1212,9 +1261,12 @@ endfunction(disable_optimizations_for_file)
 
 tobuild(common.broadfun common/broadfun.c)
 tobuild(common.decode-bad common/decode-bad.c)
-if (WIN32)
-  # FIXME: disabled to speed up suite: will be re-enabled as part of i#105 fix
+# FIXME i#105: get this working for 32-bit linux
+if (X64 OR WIN32)
   tobuild(common.decode common/decode.c)
+endif (X64 OR WIN32)
+# FIXME i#1025: get working on Linux
+if (WIN32)
   # We build all tests before running so decode will be built before
   # ctest -j ever ran this.  If we switch to --build-and-test then we'll
   # make these runonly tests make sure their exe is built.
@@ -1259,6 +1311,12 @@ if (CLIENT_INTERFACE)
   tobuild_ci(client.count-bbs client-interface/count-bbs.c "" "" "")
   tobuild_ci(client.syscall client-interface/syscall.c "" "-no_follow_children" "")
   tobuild_ci(client.modules client-interface/modules.c "" "" "")
+  tobuild_appdll(client.modules client-interface/modules.c)
+  if (UNIX)
+    # FIXME i#975: we can't load libc with STATIC_LIBRARY yet.
+    append_property_string(TARGET client.modules.appdll LINK_FLAGS "-nodefaultlibs")
+  endif ()
+  tobuild_ci(client.segfault client-interface/segfault.c "" "" "")
   tobuild_appdll(client.events client-interface/events.c)
   get_target_property(events_appdll_path client.events.appdll LOCATION${location_suffix})
   if (UNIX)
@@ -1373,6 +1431,7 @@ if (CLIENT_INTERFACE)
 
   tobuild_ci(client.drutil-test client-interface/drutil-test.c "" "" "")
   use_DynamoRIO_extension(client.drutil-test.dll drutil)
+  use_DynamoRIO_extension(client.drutil-test.dll drmgr)
   if (UNIX)
     target_link_libraries(client.drutil-test ${libpthread})
   endif (UNIX)
@@ -1400,6 +1459,20 @@ if (CLIENT_INTERFACE)
   tobuild_api(api.dis api/dis.c "-syntax_intel"
     "${CMAKE_CURRENT_SOURCE_DIR}/api/dis-udis86-randtest.raw" OFF)
   tobuild_api(api.ir api/ir.c "" "" OFF)
+  if ("${CMAKE_GENERATOR}" MATCHES "Unix Makefiles")
+    # CMake's Unix Makefiles dependence analysis doesn't run the preprocessor
+    # and so doesn't find headers named via macros
+    # (http://www.cmake.org/Bug/view.php?id=13718)
+    set(api_ir_headers # must be full paths:
+      ${CMAKE_CURRENT_SOURCE_DIR}/api/ir_0args.h
+      ${CMAKE_CURRENT_SOURCE_DIR}/api/ir_1args.h
+      ${CMAKE_CURRENT_SOURCE_DIR}/api/ir_2args.h
+      ${CMAKE_CURRENT_SOURCE_DIR}/api/ir_2args_mm.h
+      ${CMAKE_CURRENT_SOURCE_DIR}/api/ir_3args_avx.h
+      ${CMAKE_CURRENT_SOURCE_DIR}/api/ir_3args.h
+      ${CMAKE_CURRENT_SOURCE_DIR}/api/ir_4args.h)
+    append_property_string(SOURCE api/ir.c OBJECT_DEPENDS "${api_ir_headers}")
+  endif ()
   tobuild_api(api.startstop api/startstop.c "" "" OFF)
   # test static decoder library
   tobuild_api(api.ir-static api/ir.c "" "" ON)
@@ -1413,8 +1486,9 @@ if (CLIENT_INTERFACE)
       "" "-thread_private -cache_bb_unit_init 4K" "")
   endif ()
 
-  tobuild_ci(client.nudge_ex client-interface/nudge_ex.c "" "" "")
-  use_DynamoRIO_extension(client.nudge_ex.dll drmgr)
+  # FIXME i#953: flaky, uses sleeps
+  tobuild_ci(client.nudge_ex_FLAKY client-interface/nudge_ex.c "" "" "")
+  use_DynamoRIO_extension(client.nudge_ex_FLAKY.dll drmgr)
 
   tobuild_ci(client.retaddr client-interface/retaddr.c "" "" "")
 endif (CLIENT_INTERFACE)
@@ -1483,6 +1557,24 @@ if (UNIX)
   # We pass -native_exec_list which causes us to call strcasecmp in libc,
   # thereby exercising on our ability to copy libc's TLS data.
   tobuild_ops(linux.app_tls linux/app_tls.c "-native_exec_list libfoo.so" "")
+
+  # Test fully static executables, which we only support with early injection
+  # or STATIC_LIBRARY.
+  set(fib_static_ops "-early_inject")
+  if (STATIC_LIBRARY)
+    set(fib_static_ops "")
+  endif ()
+  tobuild_ops(linux.fib-static common/fib.c "${fib_static_ops}" "")
+  append_property_string(TARGET linux.fib-static LINK_FLAGS
+    # The default value of CMAKE_SHARED_LIBRARY_LINK_C_FLAGS has -rdynamic,
+    # which doesn't play well with clang and -static.  Adding
+    # --no-export-dynamic avoids the problem.
+    "-static -Wl,--no-export-dynamic")
+  # Test position independent executables.
+  # FIXME i#1001: fib-pie fails with -early_inject.
+  tobuild(linux.fib-pie common/fib.c)
+  append_property_string(TARGET linux.fib-pie COMPILE_FLAGS "-fPIE")
+  append_property_string(TARGET linux.fib-pie LINK_FLAGS "-pie")
 
   # FIXME i#125: bugs in these, were disabled in the past
   tobuild_ops(linux.vfork linux/vfork.c ""

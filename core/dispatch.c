@@ -840,6 +840,9 @@ dispatch_exit_fcache(dcontext_t *dcontext)
     ASSERT(!is_dynamo_address(dcontext->app_nt_rpc));
     ASSERT(dcontext->app_nt_rpc == NULL ||
            dcontext->app_nt_rpc != dcontext->priv_nt_rpc);
+    ASSERT(!is_dynamo_address(dcontext->app_nls_cache));
+    ASSERT(dcontext->app_nls_cache == NULL ||
+           dcontext->app_nls_cache != dcontext->priv_nls_cache);
 #endif
 
 #ifdef NATIVE_RETURN
@@ -1714,12 +1717,16 @@ handle_system_call(dcontext_t *dcontext)
                (DYNAMO_OPTION(hotp_only) &&
                 dcontext->next_tag == BACK_TO_NATIVE_AFTER_SYSCALL));
 #else
-        ASSERT(vsyscall_syscall_end_pc != NULL);
+        ASSERT(vsyscall_syscall_end_pc != NULL ||
+               get_os_version() >= WINDOWS_VERSION_8);
 #endif
         /* NOTE - the stack mangling must match that of intercept_nt_continue()
          * and shared_syscall as not all routines looking at the stack
          * differentiate. */
-        if (dcontext->asynch_target == vsyscall_syscall_end_pc) {
+        if (dcontext->asynch_target == vsyscall_syscall_end_pc ||
+            /* win8 x86 syscalls have inlined sysenter routines */
+            (get_os_version() >= WINDOWS_VERSION_8 &&
+             dcontext->thread_record->under_dynamo_control)) {
 #ifdef HOT_PATCHING_INTERFACE
             /* Don't expect to be here for -hotp_only */
             ASSERT_CURIOSITY(!DYNAMO_OPTION(hotp_only));

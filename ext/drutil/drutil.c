@@ -1,5 +1,5 @@
 /* **********************************************************
- * Copyright (c) 2011-2012 Google, Inc.  All rights reserved.
+ * Copyright (c) 2011-2013 Google, Inc.  All rights reserved.
  * Copyright (c) 2008-2010 VMware, Inc.  All rights reserved.
  * **********************************************************/
 
@@ -35,6 +35,22 @@
 # define ASSERT(x, msg) /* nothing */
 #endif
 
+/* There are cases where notifying the user is the right thing, even for a library.
+ * Xref i#1055 where w/o visible notification the user might not know what's
+ * going on.
+ */
+#ifdef WINDOWS
+# define USAGE_ERROR(msg) do { \
+    dr_messagebox("FATAL USAGE ERROR: %s", msg); \
+    dr_abort(); \
+} while (0);
+#else
+# define USAGE_ERROR(msg) do { \
+    dr_fprintf(STDERR, "FATAL USAGE ERROR: %s\n", msg); \
+    dr_abort(); \
+} while (0);
+#endif
+
 #define PRE instrlist_meta_preinsert
 /* for inserting an app instruction, which must have a translation ("xl8") field */
 #define PREXL8 instrlist_preinsert
@@ -43,17 +59,16 @@
  * INIT
  */
 
-static void *exit_lock;
+static int drutil_init_count;
 
 DR_EXPORT
 bool
 drutil_init(void)
 {
-    static bool initialized;
-    if (initialized)
+    /* handle multiple sets of init/exit calls */
+    int count = dr_atomic_add32_return_sum(&drutil_init_count, 1);
+    if (count > 1)
         return true;
-    initialized = true;
-    exit_lock = dr_mutex_create();
 
     /* nothing yet: but putting in API up front in case need later */
 
@@ -64,18 +79,12 @@ DR_EXPORT
 void
 drutil_exit(void)
 {
-    static bool exited;
-    /* try to handle multiple calls to exit.  still possible to crash
-     * trying to lock a destroyed lock.
-     */
-    if (exited || !dr_mutex_trylock(exit_lock) || exited)
+    /* handle multiple sets of init/exit calls */
+    int count = dr_atomic_add32_return_sum(&drutil_init_count, -1);
+    if (count != 0)
         return;
-    exited = true;
 
     /* nothing yet: but putting in API up front in case need later */
-
-    dr_mutex_unlock(exit_lock);
-    dr_mutex_destroy(exit_lock);
 }
 
 /***************************************************************************
@@ -251,10 +260,15 @@ bool
 drutil_expand_rep_string_ex(void *drcontext, instrlist_t *bb, bool *expanded OUT,
                             instr_t **stringop OUT)
 {
-    /* XXX: maybe should add drmgr_is_in_app2app() so can check */
-    instr_t *inst, *next_inst;
+    instr_t *inst, *next_inst, *first_app = NULL;
     bool delete_rest = false;
     uint opc;
+
+    if (drmgr_current_bb_phase(drcontext) != DRMGR_PHASE_APP2APP) {
+        USAGE_ERROR("drutil_expand_rep_string* must be called from "
+                    "drmgr's app2app phase");
+        return false;
+    }
 
     /* Make a rep string instr be its own bb: the loop is going to
      * duplicate the tail anyway, and have to terminate at the added cbr.
@@ -263,22 +277,29 @@ drutil_expand_rep_string_ex(void *drcontext, instrlist_t *bb, bool *expanded OUT
          inst != NULL;
          inst = next_inst) {
         next_inst = instr_get_next(inst);
-        opc = instr_get_opcode(inst);
         if (delete_rest) {
             instrlist_remove(bb, inst);
             instr_destroy(drcontext, inst);
-        } else if (opc_is_stringop_loop(opc)) {
-            delete_rest = true;
-            if (inst != instrlist_first(bb)) {
-                instrlist_remove(bb, inst);
-                instr_destroy(drcontext, inst);
+        } else if (instr_ok_to_mangle(inst)) {
+            /* We have to handle meta instrs, as drwrap_replace_native() and
+             * some other app2app xforms use them.
+             */
+            if (first_app == NULL)
+                first_app = inst;
+            opc = instr_get_opcode(inst);
+            if (opc_is_stringop_loop(opc)) {
+                delete_rest = true;
+                if (inst != first_app) {
+                    instrlist_remove(bb, inst);
+                    instr_destroy(drcontext, inst);
+                }
             }
         }
     }
 
     /* Convert to a regular loop if it's the sole instr */
-    inst = instrlist_first(bb);
-    opc = instr_get_opcode(inst);
+    inst = first_app;
+    opc = (inst == NULL) ? OP_INVALID : instr_get_opcode(inst);
     if (opc_is_stringop_loop(opc)) {
         /* A rep string instr does check for 0 up front.  DR limits us
          * to 1 cbr but drmgr will mark the extras as meta later.  If ecx is uninit

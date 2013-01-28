@@ -42,6 +42,7 @@ that use the DR API for memory allocation and synchronization.
  - \ref sec_drcontainers_setup
  - \ref sec_drcontainers_hashtable
  - \ref sec_drcontainers_vector
+ - \ref sec_drcontainers_table
 
 \section sec_drcontainers_setup Setup
 
@@ -61,5 +62,10 @@ flexible usage.  See hashtable_init_ex() and related functions.
 \section sec_drcontainers_vector DrVector
 
 The DrVector is a simple resizable array.
+
+\section sec_drcontainers_table DrTable
+
+The DrTable is a resizable array that does not relocate data,
+enabling a user to use pointers to access array entries directly.
 
 */

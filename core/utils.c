@@ -1,5 +1,5 @@
 /* **********************************************************
- * Copyright (c) 2010-2012 Google, Inc.  All rights reserved.
+ * Copyright (c) 2010-2013 Google, Inc.  All rights reserved.
  * Copyright (c) 2000-2010 VMware, Inc.  All rights reserved.
  * **********************************************************/
 
@@ -137,7 +137,7 @@ DECLARE_FREQPROT_VAR(static bool do_once_internal_error, false);
 
 /* abort on internal dynamo error */
 void
-internal_error(char *file, int line, char *expr)
+internal_error(const char *file, int line, const char *expr)
 {
     /* note that we no longer obfuscate filenames in non-internal builds
      * xref PR 303817 */
@@ -191,7 +191,7 @@ internal_error(char *file, int line, char *expr)
 
 /* abort on external application created error, i.e. apicheck */
 void
-external_error(char *file, int line, char *msg)
+external_error(const char *file, int line, const char *msg)
 {
     DO_ONCE({
         /* this syslog is before any core dump, unlike our other reports, but
@@ -396,6 +396,15 @@ locks_not_closed()
     while (cur_lock != &innermost_lock) {
         if (allow_do_threshold_leaks && cur_lock->rank == LOCK_RANK(do_threshold_mutex)) {
             ignored++;
+        } else if (cur_lock->deleted &&
+                   (IF_WINDOWS(cur_lock->rank == LOCK_RANK(debugbox_lock) ||
+                               cur_lock->rank == LOCK_RANK(dump_core_lock) ||)
+                    cur_lock->rank == LOCK_RANK(report_buf_lock) ||
+                    cur_lock->rank == LOCK_RANK(datasec_selfprot_lock) ||
+                    cur_lock->rank == LOCK_RANK(logdir_mutex) ||
+                    cur_lock->rank == LOCK_RANK(options_lock))) {
+            /* i#1058: curiosities during exit re-acquire these locks. */
+            ignored++;
         } else {
             LOG(GLOBAL, LOG_STATS, 1, "missing DELETE_LOCK on lock "PFX" %s\n",
                 cur_lock, cur_lock->name);
@@ -404,7 +413,7 @@ locks_not_closed()
         cur_lock = cur_lock->next_process_lock;
     }
     mutex_unlock(&innermost_lock);
-    LOG(GLOBAL, LOG_STATS, 3, "locks_not_closed= %d remaining, %d DO_THRESHOLD_SAFE ignored\n", 
+    LOG(GLOBAL, LOG_STATS, 3, "locks_not_closed= %d remaining, %d ignored\n",
         forgotten, ignored);
     return forgotten;
 }
@@ -933,6 +942,7 @@ mutex_delete(mutex_t *lock)
 #ifdef DEADLOCK_AVOIDANCE
     LOG(THREAD_GET, LOG_THREADS, 2, "mutex_delete" DUMP_LOCK_INFO_ARGS(0, lock, lock->prev_process_lock));
     remove_process_lock(lock);
+    lock->deleted = true;
 #endif    
     ASSERT(lock->lock_requests == LOCK_FREE_STATE);
 
@@ -1423,6 +1433,29 @@ hash_value(ptr_uint_t val, hash_function_t func, ptr_uint_t mask, uint bits)
                 return val ^ (val >> 12) ^ (val << 12);
             }
 #endif            
+        case HASH_FUNCTION_STRING:
+        case HASH_FUNCTION_STRING_NOCASE:
+            {
+                const char *s = (const char *) val;
+                char c;
+                ptr_uint_t hash = 0;
+                uint i, shift;
+                uint max_shift = ALIGN_FORWARD(bits, 8);
+                /* Simple hash function that combines unbiased via xor and
+                 * shifts to get input chars to cover the full range.  We clamp
+                 * the shift to avoid useful bits being truncated.  An
+                 * alternative is to combine blocks of 4 chars at a time but
+                 * that's more complex.
+                 */
+                for (i = 0; s[i] != '\0'; i++) {
+                    c = s[i];
+                    if (func == HASH_FUNCTION_STRING_NOCASE)
+                        c = (char) tolower(c);
+                    shift = (i % 4) * 8;
+                    hash ^= (c << MIN(shift, max_shift));
+                }
+                return hash;
+            }
         default:
             {
                 ASSERT_NOT_REACHED();
@@ -1726,7 +1759,8 @@ divide_uint64_print(uint64 numerator, uint64 denominator, bool percentage,
  * "%w.pf", a => dp(a, p, &c, &d, &s) "%s%(w-p-1)u.%.pu", s, c, d
  */
 void
-double_print(double val, uint precision, uint *top, uint *bottom, char **sign) 
+double_print(double val, uint precision, uint *top, uint *bottom,
+             const char **sign) 
 {
     uint i, precision_multiple;
     ASSERT(top != NULL && bottom != NULL && sign != NULL);
@@ -1766,7 +1800,7 @@ print_symbolic_address(app_pc tag, char *buf, int max_chars, bool exact_only) {
 #endif /* DEBUG */
 
 void 
-print_file(file_t f, char *fmt, ...)
+print_file(file_t f, const char *fmt, ...)
 {
     va_list ap;
     va_start(ap, fmt);
@@ -1818,7 +1852,7 @@ print_to_buffer(char *buf, size_t bufsz, size_t *sofar INOUT, const char *fmt, .
  * For now I'm assuming this routine changes little.
  */
 void 
-print_log(file_t logfile, uint mask, uint level, char *fmt, ...)
+print_log(file_t logfile, uint mask, uint level, const char *fmt, ...)
 {
     va_list ap;
 
@@ -1860,8 +1894,8 @@ do_syslog(syslog_event_type_t priority, uint message_id, uint substitutions_num,
  */
 void 
 notify(syslog_event_type_t priority, bool internal, bool synch, 
-       IF_WINDOWS_(uint message_id) uint substitution_num, char *prefix, 
-       char *fmt, ...)
+       IF_WINDOWS_(uint message_id) uint substitution_num, const char *prefix, 
+       const char *fmt, ...)
 {
     char msgbuf[MAX_LOG_LENGTH];
     int size;
@@ -2348,7 +2382,7 @@ is_string_readable_without_exception(char *str, size_t *str_length /* OPTIONAL O
 }
 
 
-char *
+const char *
 memprot_string(uint prot)
 {
     switch (prot) {
@@ -2871,7 +2905,7 @@ print_statistics(int *data, int size)
     PRESERVE_FLOATING_POINT_STATE_START();
     double mean, stddev, sum;
     uint top, bottom;
-    char *sign;
+    const char *sign;
 
     sum = 0.;
     min = max = data[0];
@@ -4187,7 +4221,7 @@ unit_test_utils(void)
 {
     char buf[128];
     uint c, d;
-    char *s;
+    const char *s;
 
 # define DO_TEST(a, b, p, percent, fmt, result)                           \
     divide_uint64_print(a, b, percent, p, &c, &d);                        \
@@ -4262,6 +4296,7 @@ char *
 dr_wstrdup(const wchar_t *str HEAPACCT(which_heap_t which))
 {
     char *dup;
+    ssize_t encode_len;
     size_t str_len;
     int res;
     if (str == NULL)
@@ -4270,20 +4305,29 @@ dr_wstrdup(const wchar_t *str HEAPACCT(which_heap_t which))
      * I'm assuming we're using not directly on external inputs.
      * If we do put in a max length, should do the same for dr_strdup.
      */
-    str_len = wcslen(str) + 1;      /* Extra 1 char for the '\0' at the end. */
+    encode_len = utf16_to_utf8_size(str, 0/*no max*/, NULL);
+    if (encode_len < 0)
+        str_len = 1;
+    else
+        str_len = encode_len + 1;   /* Extra 1 char for the '\0' at the end. */
     dup = (char*) heap_alloc(GLOBAL_DCONTEXT, str_len HEAPACCT(which));
-    res = snprintf(dup, str_len, "%S", str);
-    if (res < 0 || (size_t)res < str_len - 1) {
-        /* apparently for some versions of ntdll!_snprintf, if %S
-         * conversion hits a non-ASCII char it will write a NULL and
-         * snprintf will return -1 (that's the libc behavior) or the
-         * number of chars to that point.  we don't want strlen to return
-         * fewer chars than we allocated so we fill it in (i#347).
-         */
-        ASSERT_NOT_TESTED(); /* all my ntdll's stick in '?' and don't stop! */
-        if (res < 0)
-            dup[0] = '\0';
-        memset(dup + strlen(dup), '?', str_len - 1 - strlen(dup));
+    if (encode_len >= 0) {
+        res = snprintf(dup, str_len, "%S", str);
+        if (res < 0 || (size_t)res < str_len - 1) {
+            ASSERT_NOT_REACHED();
+            if (res < 0)
+                dup[0] = '\0';
+            /* apparently for some versions of ntdll!_snprintf, if %S
+             * conversion hits a non-ASCII char it will write a NULL and
+             * snprintf will return -1 (that's the libc behavior) or the
+             * number of chars to that point.  we don't want strlen to return
+             * fewer chars than we allocated so we fill it in (i#347).
+             */
+            /* Xref i#347, though we shouldn't get here b/c utf16_to_utf8_size uses
+             * the same code.  We fall back on filling with '?'.
+             */
+            memset(dup + strlen(dup), '?', str_len - 1 - strlen(dup));
+        }
     }
     dup[str_len - 1] = '\0';        /* Being on the safe side. */
     /* Ensure when we free we'll pass the same size (i#347) */

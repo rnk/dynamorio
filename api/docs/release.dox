@@ -1,5 +1,5 @@
 /* ******************************************************************************
- * Copyright (c) 2010-2012 Google, Inc.  All rights reserved.
+ * Copyright (c) 2010-2013 Google, Inc.  All rights reserved.
  * Copyright (c) 2011 Massachusetts Institute of Technology  All rights reserved.
  * Copyright (c) 2008-2010 VMware, Inc.  All rights reserved.
  * ******************************************************************************/
@@ -120,12 +120,51 @@ find . -name \*.dll -exec chmod ugo+rx {} \; -o -name \*.exe -exec chmod ugo+rx 
 
 The current version is \DR_VERSION.  
 
-The changes between version \DR_VERSION and 3.2.0 include a binary
-compatibilty change in the drsyms Extension:
+The changes between version \DR_VERSION and 4.0.1 include:
+
+ - Added the \p drtable Extension which provides simple table management
+ - Added path searching support to dr_load_aux_library()
+ - Added limited, experimental support for 32-bit WOW64 clients to use
+   64-bit libraries and code via dr_load_aux_x64_library(),
+   dr_lookup_aux_x64_library_routine(), dr_unload_aux_x64_library(), and
+   dr_invoke_x64_routine().
+ - Added drmgr_current_bb_phase()
+
+**************************************************
+<hr>
+The changes between version 4.0.1 and 4.0.0 include:
+
+ - Fixed a bug resulting in large 64-bit applications failing to allocate
+   heap (Issue 1041)
+
+**************************************************
+<hr>
+The changes between version 4.0.0 and 3.2.0 include a
+compatibility change in the drsyms Extension:
 
  - Changed the drsyms type query data structures (#drsym_type_t,
    #drsym_func_type_t, #drsym_int_type_t, #drsym_ptr_type_t).
    This is a binary compatibility change for drsym_get_func_type().
+
+And in the drmgr Extension:
+
+ - The post-syscall, module load, module unload, signal, exception,
+   and restore state events are now mediated and ordered by drmgr.
+   Thus, clients should call drmgr_register_post_syscall_event()
+   (for a default priority) or drmgr_register_post_syscall_event_ex() (to
+   specify a priority) rather than
+   dr_register_post_syscall_event().  The same applies to
+   drmgr_register_module_load_event() +
+   drmgr_register_module_load_event_ex(),
+   drmgr_register_module_unload_event() +
+   drmgr_register_module_unload_event_ex(),
+   drmgr_register_signal_event() +
+   drmgr_register_signal_event_ex(),
+   drmgr_register_exception_event() +
+   drmgr_register_exception_event_ex(), and
+   drmgr_register_restore_state_event() +
+   drmgr_register_restore_state_ex_event() +
+   drmgr_register_restore_state_ex_event_ex().
 
 And in the core API:
 
@@ -208,6 +247,10 @@ Further non-compatibility-affecting changes include:
    on client faults
  - Added conversion between UTF-16 and UTF-8 to dr_snprintf() and
    dr_snwprintf()
+ - Added simplified -c client argument form to drrun, drconfig, and drinject.
+ - Added official support for the \ref op_speed "-opt_speed" option
+   to prioritize speed over a simple code stream.
+ - Added dr_atomic_add32_return_sum()
  - Deprecated dr_save_arith_flags() and dr_restore_arith_flags()
  - Fixed performance regression involving inlined clean calls
  - Fixed bug involving 32-bit Linux support on a 64-bit Linux
@@ -216,7 +259,11 @@ Further non-compatibility-affecting changes include:
    (Issue 139)
  - Fixed bugs building and running on Ubuntu 11.10 (Issue 718, Issue 720)
  - Several other bug fixes
+ - Added dr_raw_mem_alloc() and dr_raw_mem_free(). However, they are still
+   experimental, are in flux, and are subject to change in the next release.
 
+**************************************************
+<hr>
 The changes between version 3.2.0 and 3.1.0 are:
 
  - Added support for PECOFF + DWARF2 symbols on Windows in the
@@ -252,6 +299,8 @@ The changes between version 3.2.0 and 3.1.0 are:
  - Added user data passing support among all four passes of drmgr
  - Several bug fixes
 
+**************************************************
+<hr>
 Version 3.0.0 was a development version.  3.1.0 is the first official
 released version of the 3.x series.
 
@@ -376,6 +425,8 @@ Additional changes between version 3.0.0 and 2.2.0 include the following:
  - Added hashtable_clear() to the drcontainers Extension
  - Several bug fixes
 
+**************************************************
+<hr>
 The changes between version 2.2.0 and 2.1.0 are:
 
  - Added \p drwrap Extension which provides function wrapping
@@ -388,6 +439,8 @@ The changes between version 2.2.0 and 2.1.0 are:
  - Added dr_mcontext_t.xip for syscall events (Issue 442)
  - Several bug fixes
 
+**************************************************
+<hr>
 The changes between version 2.1.0 and 2.0.0 are:
 
  - Added Windows 7 support
@@ -436,6 +489,8 @@ The changes between version 2.1.0 and 2.0.0 are:
    performance hit.
  - Support building sources using Visual Studio
 
+**************************************************
+<hr>
 In version 2.0.0, the configuration and deployment API and tools changed and
 are not backward compatible with earlier versions: see below for details.
 The changes between version 2.0.0 and 1.5.0 are:
@@ -483,6 +538,8 @@ The changes between version 2.0.0 and 1.5.0 are:
  - Added dr_get_milliseconds() and dr_get_time() impl for Linux
  - Added instr_is_undefined()
 
+**************************************************
+<hr>
 The changes between version 1.5.0 and 1.4.0 are:
 
  - Added a private loader on Windows for better support for library usage
@@ -514,6 +571,8 @@ The changes between version 1.5.0 and 1.4.0 are:
  - Clone record is now passed via dstack instead of ebp (Issue 149)
  - Fixed close() syscall handling, !HAVE_TLS assert & minor issues (Issue 151)
 
+**************************************************
+<hr>
 The changes between version 1.4.0 and 1.3.2 are:
 
  - Added directly-addressable thread-local storage slots for exclusive
@@ -542,6 +601,8 @@ The changes between version 1.4.0 and 1.3.2 are:
  - Re-arranged layout of bin and samples directories
  - Symbols for all binaries are now included
 
+**************************************************
+<hr>
 The changes between version 1.3.2 and 1.3.1 are:
 
  - Added support for Linux execve of cross-architectural executables
@@ -561,6 +622,8 @@ The changes between version 1.3.2 and 1.3.1 are:
    - signal handler sharing for NPTL threads
    - decoding across page boundaries on Linux
 
+**************************************************
+<hr>
 Version 1.3.1 is identical to 1.3.0 but is under a BSD license (see \ref
 page_license).
 
@@ -570,6 +633,8 @@ We re-numbered the previous DynamoRIO versions as follows:
  - 1.1.0 = 0.9.6 build 9601
  - 1.2.0 = 0.9.6 build 9602
 
+**************************************************
+<hr>
 The changes between version 1.3.0 and version 1.2.0 (0.9.6 9602) are:
 
  - Version numbering shift to 1.x.y instead of 0.9.6 960x
@@ -605,6 +670,8 @@ The changes between version 1.3.0 and version 1.2.0 (0.9.6 9602) are:
  - Fixed bug running 32-bit apps on 64-bit Linux on AMD processors
  - Fixed bug where OS_OPEN_APPEND overwrote instead of appending on Windows
 
+**************************************************
+<hr>
 The changes between the 0.9.6 release builds 9602 and 9601 are:
 
  - Performance improvements for both the base DynamoRIO system and for
@@ -620,6 +687,8 @@ The changes between the 0.9.6 release builds 9602 and 9601 are:
  - Disassembly now expands immed sizes to match operands
  - Fixed bug in instr_is_nop()
 
+**************************************************
+<hr>
 The changes between the 0.9.6 release builds 9601 and 9600 are:
 
  - The Windows registry key used is now "VMware, Inc." instead of "VMware"
@@ -716,6 +785,8 @@ module events and fast system calls:
    also now requires caller to specify the spill slot to be clobbered
    which must be less than dr_max_opnd_accessible_spill_slot().
 
+**************************************************
+<hr>
 The major changes between the 0.9.5 and 0.9.4 releases are:
 
  - The basic block hook (\ref sec_events_bb) passes completely unmodified
@@ -818,13 +889,16 @@ not supported.
 \endif
 
 \subsection sec_limit_platforms Platform Limitations
+  - This version of DynamoRIO has preliminary support for Windows 8.
+    However, clients that require kernelbase.dll are not supported.
+    Additionally, systemwide injection (-syswide_on) is not supported
   - DynamoRIO currently supports the following NT-based 32-bit
     Windows systems : NT (all service packs), 2000 (all service
     packs), XP (32-bit, service packs 0-3), 2003 (32-bit, service
     packs 0-2), Vista (32-bit, service packs 0-1), and Windows 7 (32-bit,
     service packs 0-1). It does not support Windows 95, 98, or ME.
     Windows Server 2008 is likely to work but has not been tested.
-  - This release of DynamoRIO has limited support for running 32-bit
+  - This release of DynamoRIO supports running 32-bit
     Windows applications on the following 64-bit Windows operating
     systems : Windows XP Professional x64 (service pack 2), Windows 2003
     x64 (service pack 2), Vista x64 (service packs 0-1), and Windows 7
@@ -852,6 +926,9 @@ not supported.
   - The statistics viewer \c DRgui.exe is no longer supported on Windows
     NT.  Statistics still work, but the graphical application itself will
     not run on NT.
+  - UTF-8 support is not yet present in drinjectlib, drconfiglib,
+    drrun.exe, drconfig.exe, or drdeploy.exe.  It is present in the
+    core DR API.
 \if linux
   - This release of DynamoRIO has support for most 32-bit and
     64-bit Linux
@@ -872,7 +949,9 @@ not supported.
     System-call-heavy applications are the ones most likely to be affected.
     Future releases may allow clients to choose performance versus
     visibility.  This release does provide the \ref op_memory "-opt_memory option"
-    to enable prioritizing memory usage.
+    to enable prioritizing memory usage and the \ref op_speed "-opt_speed option"
+    to prioritize performance at the cost of more complex basic blocks that
+    cross control transfers.
   - The performance \if vmsafe of Code Manipulation Mode and Memory 
     Firewall Mode \endif when starting up large desktop applications
     may be noticeably worse than native.  Upcoming releases will
@@ -900,10 +979,12 @@ not supported.
     interoperable with DynamoRIO.
   - Other installed software may conflict with DynamoRIO's use of the
     \c \\HKLM\\SOFTWARE\\Microsoft\\Windows\\WindowsNT\\CurrentVersion\\AppInit_DLLs
-    registry key (only very rarely an issue).
+    registry key (only very rarely an issue), which is used for
+    the -syswide_on feature.
   - On Windows 7 and Windows Server 2008 R2, the digital signature
     requirement for AppInit_DLLs libraries is disabled when systemwide
-    injection is requested.  This can be a security concern.    
+    injection is requested (-syswide_on).  This can be a security concern.    
+  - On Windows 8, system wide injection (-syswide_on) is not yet supported.
   - Cygwin processes may not work with DynamoRIO due to cygwin's
     implementation of fork being incompatible with DynamoRIO.
   - Though DynamoRIO supports running on Windows NT, the provided
@@ -963,6 +1044,8 @@ not supported.
     Don't forget to run drconfig to create a configuration for the
     application first; otherwise, libdrpreload.so will refuse to take
     control.
+  - On Linux, the private loader will fail to load libpthread.so.  Therefore
+    clients and the libraries they use cannot link against libpthread.so.
 \endif
 
 \ifnot vmsafe 

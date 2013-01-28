@@ -111,6 +111,8 @@ if (NOT DEFINED ENV{CXXFLAGS})
   set(ENV{CXXFLAGS} "$ENV{CFLAGS}")
 endif (NOT DEFINED ENV{CXXFLAGS})
 
+# Don't use the default-Debug build type set for the try-compiles
+set(specified_build_type "${CMAKE_BUILD_TYPE}")
 project(DynamoRIO NONE)
 if (DEFINED GENERATE_PDBS AND NOT GENERATE_PDBS)
   # i#310: support building over cygwin ssh where we cannot build pdbs.
@@ -121,6 +123,13 @@ if (DEFINED GENERATE_PDBS AND NOT GENERATE_PDBS)
 endif ()
 enable_language(C)
 enable_language(CXX)
+if ("${CMAKE_GENERATOR}" MATCHES "Ninja")
+  # i#1040: Ninja sets the type to Debug if it's not in the cache
+  set(CMAKE_BUILD_TYPE "${specified_build_type}" CACHE STRING
+    "Choose the type of build: Debug or Release" FORCE)
+else ()
+  set(CMAKE_BUILD_TYPE "${specified_build_type}")
+endif ()
 
 include(CheckCCompilerFlag)
 
@@ -130,8 +139,22 @@ include(CheckCCompilerFlag)
 # many are core-specific
 
 # configurations that also have defines
-option(DEBUG "build with asserts and logging enabled")
 option(DRGUI_DEMO "build DRgui without the no-longer-supported Run, etc. controls" ON)
+
+# we honor CMAKE_BUILD_TYPE since many cmake users are used to it
+if ("${CMAKE_BUILD_TYPE}" MATCHES "Debug")
+  set(DEBUG_DEFAULT ON)
+else ()
+  set(DEBUG_DEFAULT OFF)
+endif ()
+set(DEBUG_DESCR "Build with asserts and logging enabled (also controlled by CMAKE_BUILD_TYPE=Debug)")
+option(DEBUG ${DEBUG_DESCR} ${DEBUG_DEFAULT})
+# support later changes
+if ("${CMAKE_BUILD_TYPE}" MATCHES "Debug")
+  set(DEBUG ON CACHE BOOL ${DEBUG_DESCR} FORCE)
+elseif (NOT "${CMAKE_BUILD_TYPE}" STREQUAL "")
+  set(DEBUG OFF CACHE BOOL ${DEBUG_DESCR} FORCE)
+endif ()
 
 # INTERNAL option now matches DEBUG
 if (DEBUG)
@@ -191,6 +214,13 @@ if (VPS)
     set(GBOP 1)
   endif (WIN32)
 endif (VPS)
+
+option(STATIC_LIBRARY "build DR statically (not supported yet)")
+if (STATIC_LIBRARY)
+  set(SHARED_OR_STATIC STATIC)
+else ()
+  set(SHARED_OR_STATIC SHARED)
+endif ()
 
 # temporary: once build+support issues fixed, remove and add HOT_PATCHING_INTERFACE
 # to VMAP by default
@@ -281,21 +311,19 @@ mark_as_advanced(
   DRGUI_DEMO
   )
 
-# we ignore CMAKE_BUILD_TYPE (replaced by our own DEBUG, INTERNAL, etc.)
 # we clear both base and build-type cflags and then use just base.
-# XXX: or should we support build type and auto-map to ours?
-# if we do support we'll need to remove flags like /MD coming from
-# the CMAKE_C_FLAGS_*, which are added to the base CMAKE_C_FLAGS.
 # XXX: could use CMAKE_USER_MAKE_RULES_OVERRIDE to set these but not any cleaner
 #
 # i#919: Ninja generator does not leave CMAKE_BUILD_TYPE blank, and that affects
 # the exported target files, so we set it here.  This shouldn't hurt containing
 # tools as they should set our DEBUG to match the incoming CMAKE_BUILD_TYPE.
-if (DEBUG)
-  set(CMAKE_BUILD_TYPE "Debug")
-else (DEBUG)
-  set(CMAKE_BUILD_TYPE "Release")
-endif (DEBUG)
+if ("${CMAKE_BUILD_TYPE}" STREQUAL "")
+  if (DEBUG)
+    set(CMAKE_BUILD_TYPE "Debug")
+  else (DEBUG)
+    set(CMAKE_BUILD_TYPE "Release")
+  endif (DEBUG)
+endif ()
 string(TOUPPER "${CMAKE_BUILD_TYPE}" CMAKE_BUILD_TYPE_UPPER)
 foreach (config ${CMAKE_BUILD_TYPE} ${CMAKE_CONFIGURATION_TYPES})
   string(TOUPPER "${config}" config_upper)
@@ -370,9 +398,10 @@ else (EXISTS "${PROJECT_SOURCE_DIR}/.svn")
   endif (EXISTS "${PROJECT_SOURCE_DIR}/.git")
 endif (EXISTS "${PROJECT_SOURCE_DIR}/.svn")
 
-# N.B.: once VERSION_NUMBER crosses 4.x we'll need to add another
+# N.B.: if VERSION_NUMBER's major number is incremented without also
+# incrementing OLDEST_COMPATIBLE_VERSION we'll need to add another
 # symlink loop in core/CMakeLists.txt
-set(VERSION_NUMBER_DEFAULT "3.2.${VERSION_NUMBER_PATCHLEVEL}")
+set(VERSION_NUMBER_DEFAULT "4.0.${VERSION_NUMBER_PATCHLEVEL}")
 # do not store the default VERSION_NUMBER in the cache to prevent a stale one
 # from preventing future version updates in a pre-existing build dir
 set(VERSION_NUMBER "" CACHE STRING "Version number: leave empty for default")
@@ -557,7 +586,7 @@ if (UNIX)
     set(LD_FLAGS "-melf_i386")
   endif (X64)
   # there's no cmake warning control so we hardcode it
-  set(WARN "-Wall -Werror")
+  set(WARN "-Wall -Werror -Wwrite-strings")
   if (NOT CMAKE_COMPILER_IS_CLANG)
     # Old gcc's ignore unknown -W flags, but -Wall -Werror causes clang to
     # complain that it doesn't recognize it.
@@ -825,6 +854,30 @@ macro(DR_install)
     install(${ARGV})
   endif (DO_DR_INSTALL)
 endmacro(DR_install)
+# To support an including project exporting its own targets we need
+# to export dynamorio, our extensions, and our exports file, but
+# we want the includer to be able to stick the actual binaries
+# in one place.  So we have both a bool DO_DR_INSTALL_TARGETS
+# and a path DR_INSTALL_TARGETS_DEST:
+if (DO_DR_INSTALL OR NOT DEFINED DO_DR_INSTALL_TARGETS)
+  set(DO_DR_INSTALL_TARGETS ON)
+endif ()
+macro(DR_target_install)
+  if (DO_DR_INSTALL_TARGETS)
+    install(${ARGV})
+  endif (DO_DR_INSTALL_TARGETS)
+endmacro(DR_target_install)
+function (install_exported_target target dest)
+  if (DO_DR_INSTALL_TARGETS)
+    if (DEFINED DR_INSTALL_TARGETS_DEST)
+      set(inst_dst ${DR_INSTALL_TARGETS_DEST})
+    else ()
+      set(inst_dst ${dest})
+    endif ()
+    install(TARGETS ${target} EXPORT ${exported_targets_name}
+      DESTINATION ${inst_dst} ${ARGN})
+  endif (DO_DR_INSTALL_TARGETS)
+endfunction (install_exported_target)
 
 # mirror install path for easier use from build dir
 # most libs go in base; DR and preload go in {debug,release} subdir
@@ -862,8 +915,8 @@ string(REGEX REPLACE
   "^[0-9]+\\.([0-9]+)\\..*" "\\1" VERSION_NUMBER_MINOR "${VERSION_NUMBER}")
 math(EXPR VERSION_NUMBER_INTEGER
   "${VERSION_NUMBER_MAJOR}*100 + ${VERSION_NUMBER_MINOR}")
-# 3.0 broke backcompat and 3.1 was first release so it's now the oldest compat
-set(OLDEST_COMPATIBLE_VERSION "301")
+# 4.0 broke backcompat in drmgr, drsyms, drinjectlib, and dr_get_milliseconds()
+set(OLDEST_COMPATIBLE_VERSION "400")
 
 # i#955: a Windows version of ELF DT_RPATH where a local file stores lib paths
 set(DR_RPATH_SUFFIX "drpath")
@@ -1197,6 +1250,7 @@ if (BUILD_TOOLS OR WIN32)
     PATTERN "*.pdb"
     PATTERN "runstats.debug" EXCLUDE # since not installing tool
     PATTERN "run_in_bg.debug" EXCLUDE # since not installing tool
+    PATTERN "*_exe.debug" EXCLUDE # since not installing tool
     )
 endif (BUILD_TOOLS OR WIN32)
 
@@ -1293,10 +1347,10 @@ endif (BUILD_TESTS)
 # We must append to this file to avoid cmake_install.cmake's diff from thinking
 # the exports have changed and thus clobbering the other config's files.
 # This is what is copied to ${CMAKE_INSTALL_PREFIX}/${INSTALL_CMAKE}.
-DR_install(CODE "file(APPEND \"${PROJECT_BINARY_DIR}/CMakeFiles/Export/cmake/${exported_targets_name}.cmake\" \"${exported_targets_append}\")")
+DR_target_install(CODE "file(APPEND \"${PROJECT_BINARY_DIR}/CMakeFiles/Export/cmake/${exported_targets_name}.cmake\" \"${exported_targets_append}\")")
 # Create the exported targets file.  This will include all targets added
 # in subdirectories via DR_install(TARGETS ... EXPORT ${exported_targets_name}).
-DR_install(EXPORT ${exported_targets_name} DESTINATION ${INSTALL_CMAKE})
+DR_target_install(EXPORT ${exported_targets_name} DESTINATION ${INSTALL_CMAKE})
 
 ###########################################################################
 # packaging

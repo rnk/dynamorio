@@ -130,6 +130,12 @@
 #  define DR_UNS_API /* nothing */
 #endif
 
+#ifdef WINDOWS
+# define NOINLINE __declspec(noinline)
+#else
+# define NOINLINE __attribute__((noinline))
+#endif
+
 #define INLINE_ONCE inline
 
 #include <stdlib.h>
@@ -439,6 +445,8 @@ extern bool standalone_library;  /* used as standalone library */
 #endif
 #ifdef LINUX
 extern bool post_execve;         /* have we performed an execve? */
+/* i#237/PR 498284: vfork threads that execve need to be separately delay-freed */
+extern int num_execve_threads;
 #endif
 
 /* global instance of statistics struct */
@@ -690,6 +698,8 @@ struct _dcontext_t {
     void *         priv_fls_data;
     void *         app_nt_rpc;
     void *         priv_nt_rpc;
+    void *         app_nls_cache;
+    void *         priv_nls_cache;
     /* we need this to restore ptrs for other threads on detach */
     byte *         teb_base;
 # endif
@@ -979,6 +989,8 @@ int our_sscanf(const char *str, const char *format, ...);
 int our_vsscanf(const char *str, const char *fmt, va_list ap);
 const char * parse_int(const char *sp, uint64 *res_out, uint base, uint width,
                        bool is_signed);
+ssize_t
+utf16_to_utf8_size(const wchar_t *src, size_t max_chars, size_t *written/*unicode chars*/);
 #define sscanf our_sscanf
 
 /* string.c */

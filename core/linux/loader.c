@@ -1,5 +1,5 @@
 /* *******************************************************************************
- * Copyright (c) 2011-2012 Google, Inc.  All rights reserved.
+ * Copyright (c) 2011-2013 Google, Inc.  All rights reserved.
  * Copyright (c) 2011 Massachusetts Institute of Technology  All rights reserved.
  * *******************************************************************************/
 
@@ -135,33 +135,31 @@ privload_delete_os_privmod_data(privmod_t *privmod);
 static void
 privload_mod_tls_init(privmod_t *mod);
 
-typedef byte *(*map_fn_t)(file_t f, size_t *size INOUT, uint64 offs,
-                          app_pc addr, uint prot/*MEMPROT_*/, bool cow,
-                          bool image, bool fixed);
-typedef bool (*unmap_fn_t)(byte *map, size_t size);
-typedef bool (*prot_fn_t)(byte *map, size_t size, uint prot/*MEMPROT_*/);
-
 /***************************************************************************/
 
 /* os specific loader initialization prologue before finalizing the load. */
 void
 os_loader_init_prologue(void)
 {
+#ifndef STATIC_LIBRARY
     privmod_t *mod;
+#endif
 
     ASSERT_OWN_RECURSIVE_LOCK(true, &privload_lock);
 
     privload_init_search_paths();
+#ifndef STATIC_LIBRARY
     /* insert libdynamorio.so */
     mod = privload_insert(NULL,
                           get_dynamorio_dll_start(),
                           get_dynamorio_dll_end() - get_dynamorio_dll_start(),
                           get_shared_lib_name(get_dynamorio_dll_start()),
                           get_dynamorio_library_path());
+    ASSERT(mod != NULL);
     privload_create_os_privmod_data(mod);
     libdr_opd = (os_privmod_data_t *) mod->os_privmod_data;
     mod->externally_loaded = true;
-    ASSERT(mod != NULL);
+#endif
 }
 
 /* os specific loader initialization epilogue after finalizing the load. */
@@ -200,13 +198,15 @@ privload_add_gdb_cmd(const char *modpath, app_pc text_addr)
 void
 os_loader_exit(void)
 {
-    HEAP_ARRAY_FREE(GLOBAL_DCONTEXT, 
-                    libdr_opd->os_data.segments, 
-                    module_segment_t,
-                    libdr_opd->os_data.alloc_segments, 
-                    ACCT_OTHER, PROTECTED);
-    HEAP_TYPE_FREE(GLOBAL_DCONTEXT, libdr_opd,
-                   os_privmod_data_t, ACCT_OTHER, PROTECTED);
+    if (libdr_opd != NULL) {
+        HEAP_ARRAY_FREE(GLOBAL_DCONTEXT, 
+                        libdr_opd->os_data.segments, 
+                        module_segment_t,
+                        libdr_opd->os_data.alloc_segments, 
+                        ACCT_OTHER, PROTECTED);
+        HEAP_TYPE_FREE(GLOBAL_DCONTEXT, libdr_opd,
+                       os_privmod_data_t, ACCT_OTHER, PROTECTED);
+    }
 }
 
 void
@@ -330,193 +330,6 @@ dr_gdb_add_symbol_file(const char *filename, app_pc textaddr)
      */
 }
 
-/* Map in the PT_LOAD segments in an ELF's program headers.
- *
- * XXX: Instead of mapping the file twice and disturbing the address space, we
- * should use os_read to read the ELF header and program headers.  We can't do
- * this currently because we need to compute text_addr for gdb.
- */
-static app_pc
-map_elf_phdrs(const char *filename, bool fixed, size_t *size OUT,
-              ptr_int_t *load_delta OUT, app_pc *text_addr_p OUT,
-              map_fn_t map_func, unmap_fn_t unmap_func, prot_fn_t prot_func)
-{
-    file_t fd;
-    app_pc file_map, lib_base, lib_end, last_end;
-    ELF_HEADER_TYPE *elf_hdr;
-    app_pc  map_base, map_end;
-    reg_t   pg_offs;
-    size_t map_size;
-    uint64 file_size_64;
-    size_t file_size;
-    uint   seg_prot, i;
-    ptr_int_t delta;
-    app_pc text_addr;
-
-    /* Zero optional out args. */
-    if (size != NULL)
-        *size = 0;
-    if (load_delta != NULL)
-        *load_delta = 0;
-    if (text_addr_p != NULL)
-        *text_addr_p = 0;
-
-    /* open file for mmap later */
-    fd = os_open(filename, OS_OPEN_READ);
-    if (fd == INVALID_FILE) {
-        LOG(GLOBAL, LOG_LOADER, 1, "%s: failed to open %s\n", __FUNCTION__, filename);
-        return NULL;
-    }
-
-    /* get file size */
-    if (!os_get_file_size_by_handle(fd, &file_size_64)) {
-        os_close(fd);
-        LOG(GLOBAL, LOG_LOADER, 1, "%s: failed to get library %s file size\n",
-            __FUNCTION__, filename);
-        return NULL;
-    }
-    file_size = file_size_64;  /* Truncate, we have to pass it as size_t *. */
-
-    /* map the library file into memory for parsing */
-    file_map = (*map_func)(fd, &file_size, 0/*offs*/, NULL/*base*/,
-                           MEMPROT_READ /* for parsing only */,
-                           true  /*writes should not change file*/,
-                           false /*image*/,
-                           false /*!fixed*/);
-    if (file_map == NULL) {
-        os_close(fd);
-        LOG(GLOBAL, LOG_LOADER, 1, "%s: failed to map %s\n", __FUNCTION__, filename);
-        return NULL;
-    }
-
-    /* verify if it is elf so header */
-    if (!is_elf_so_header(file_map, file_size)) {
-        (*unmap_func)(file_map, file_size);
-        os_close(fd);
-        LOG(GLOBAL, LOG_LOADER, 1, "%s: %s is not a elf so header\n", 
-            __FUNCTION__, filename);
-        return NULL;
-    }
-
-    /* more sanity check */
-    elf_hdr = (ELF_HEADER_TYPE *) file_map;
-    ASSERT_CURIOSITY(elf_hdr->e_phoff != 0);
-    ASSERT_CURIOSITY(elf_hdr->e_phentsize == 
-                     sizeof(ELF_PROGRAM_HEADER_TYPE));
-
-    /* get the library size and preferred base */
-    map_base = 
-        module_vaddr_from_prog_header(file_map + elf_hdr->e_phoff,
-                                      elf_hdr->e_phnum,
-                                      &map_end);
-    map_size = map_end - map_base;
-    if (size != NULL)
-        *size = map_size;
-
-    /* reserve the memory from os for library */
-    lib_base = (*map_func)(-1, &map_size, 0, map_base,
-                           MEMPROT_WRITE | MEMPROT_READ /* prot */,
-                           true  /* copy-on-write */,
-                           true  /* image, make it reachable */,
-                           fixed);
-    ASSERT(lib_base != NULL);
-    lib_end = lib_base + map_size;
-
-    if (map_base != NULL && map_base != lib_base) {
-        /* the mapped memory is not at preferred address, 
-         * should be ok if it is still reachable for X64,
-         * which will be checked later. 
-         */
-        LOG(GLOBAL, LOG_LOADER, 1, "%s: module not loaded at preferred address\n",
-            __FUNCTION__);
-    }
-    delta = lib_base - map_base;
-    if (load_delta != NULL)
-        *load_delta = delta;
-
-    /* walk over the program header to load the individual segments */
-    last_end = lib_base;
-    for (i = 0; i < elf_hdr->e_phnum; i++) {
-        app_pc seg_base, seg_end, map, file_end;
-        size_t seg_size;
-        ELF_PROGRAM_HEADER_TYPE *prog_hdr = (ELF_PROGRAM_HEADER_TYPE *)
-            (file_map + elf_hdr->e_phoff + i * elf_hdr->e_phentsize);
-        if (prog_hdr->p_type == PT_LOAD) {
-            seg_base = (app_pc)ALIGN_BACKWARD(prog_hdr->p_vaddr, PAGE_SIZE)
-                       + delta;
-            seg_end  = (app_pc)ALIGN_FORWARD(prog_hdr->p_vaddr +
-                                             prog_hdr->p_filesz,
-                                             PAGE_SIZE) 
-                       + delta;
-            seg_size = seg_end - seg_base;
-            if (seg_base != last_end) {
-                /* XXX: a hole, I reserve this space instead of unmap it */
-                size_t hole_size = seg_base - last_end;
-                (*prot_func)(last_end, hole_size, MEMPROT_NONE);
-            }
-            seg_prot = module_segment_prot_to_osprot(prog_hdr);
-            pg_offs  = ALIGN_BACKWARD(prog_hdr->p_offset, PAGE_SIZE);
-            /* FIXME: 
-             * This function can be called after dynamorio_heap_initialized,
-             * and we will use map_file instead of os_map_file.
-             * However, map_file does not allow mmap with overlapped memory, 
-             * so we have to unmap the old memory first.
-             * This might be a problem, e.g. 
-             * one thread unmaps the memory and before mapping the actual file,
-             * another thread requests memory via mmap takes the memory here,
-             * a racy condition.
-             */
-            (*unmap_func)(seg_base, seg_size);
-            map = (*map_func)(fd, &seg_size, pg_offs,
-                              seg_base /* base */,
-                              seg_prot | MEMPROT_WRITE /* prot */,
-                              true /* writes should not change file */,
-                              true /* image */,
-                              true /* fixed */);
-            ASSERT(map != NULL);
-            /* fill zeros at extend size */
-            file_end = (app_pc)prog_hdr->p_vaddr + prog_hdr->p_filesz;
-            if (seg_end > file_end + delta)
-                memset(file_end + delta, 0, seg_end - (file_end + delta));
-            seg_end  = (app_pc)ALIGN_FORWARD(prog_hdr->p_vaddr + 
-                                             prog_hdr->p_memsz,
-                                             PAGE_SIZE) + delta;
-            seg_size = seg_end - seg_base;
-            (*prot_func)(seg_base, seg_size, seg_prot);
-            last_end = seg_end;
-        } 
-    }
-    ASSERT(last_end == lib_end);
-
-    text_addr = (app_pc)module_get_text_section(file_map, file_size) + delta;
-    if (text_addr_p != NULL)
-        *text_addr_p = text_addr;
-    /* Add debugging comment about how to get symbol information in gdb. */
-#ifdef INTERNAL
-    if (printed_gdb_commands) {
-        /* This is a dynamically loaded auxlib, so we print here.  The client
-         * and its direct dependencies are batched up and printed in
-         * os_loader_init_epilogue.
-         */
-        SYSLOG_INTERNAL_INFO("Paste into GDB to debug DynamoRIO clients:\n"
-                             "add-symbol-file '%s' %p\n", filename, text_addr);
-    }
-#endif /* INTERNAL */
-
-    LOG(GLOBAL, LOG_LOADER, 1,
-        "for debugger: add-symbol-file %s %p\n",
-        filename, text_addr);
-    if (IF_CLIENT_INTERFACE_ELSE(INTERNAL_OPTION(privload_register_gdb), false)) {
-        dr_gdb_add_symbol_file(filename, text_addr);
-    }
-
-    /* unmap the file_map */
-    (*unmap_func)(file_map, file_size);
-    os_close(fd); /* no longer needed */
-
-    return lib_base;
-}
-
 app_pc
 privload_map_and_relocate(const char *filename, size_t *size OUT)
 {
@@ -524,8 +337,10 @@ privload_map_and_relocate(const char *filename, size_t *size OUT)
     unmap_fn_t unmap_func;
     prot_fn_t prot_func;
     app_pc base = NULL;
-    ptr_int_t delta;
+    elf_loader_t loader;
+#if defined(INTERNAL) || defined(CLIENT_INTERFACE)
     app_pc text_addr;
+#endif
 
     ASSERT_OWN_RECURSIVE_LOCK(true, &privload_lock);
     /* get appropriate function */
@@ -542,16 +357,46 @@ privload_map_and_relocate(const char *filename, size_t *size OUT)
         prot_func  = os_set_protection;
     }
 
-    base = map_elf_phdrs(filename, false /* not fixed */, size, &delta,
-                         &text_addr, map_func, unmap_func, prot_func);
+    if (!elf_loader_read_headers(&loader, filename))
+        return NULL;
+
+    base = elf_loader_map_phdrs(&loader, false /* fixed */, map_func,
+                                unmap_func, prot_func);
+    if (base != NULL) {
+        if (size != NULL)
+            *size = loader.image_size;
 
 #if defined(INTERNAL) || defined(CLIENT_INTERFACE)
-    /* We record the gdb command now.  We can't recompute it later
-     * (see module_get_text_section comments), and we can't allocate a proper
-     * os_privmod_data_t yet.
-     */
-    privload_add_gdb_cmd(filename, text_addr);
+        /* Get the text addr to register the ELF with gdb.  The section headers
+         * are not part of the mapped image, so we have to map the whole file.
+         * XXX: seek to e_shoff and read the section headers to avoid this map.
+         */
+        if (elf_loader_map_file(&loader) != NULL) {
+            text_addr = (app_pc)module_get_text_section(loader.file_map,
+                                                        loader.file_size);
+            text_addr += loader.load_delta;
+            privload_add_gdb_cmd(filename, text_addr);
+            /* Add debugging comment about how to get symbol information in gdb. */
+            if (printed_gdb_commands) {
+                /* This is a dynamically loaded auxlib, so we print here.
+                 * The client and its direct dependencies are batched up and
+                 * printed in os_loader_init_epilogue.
+                 */
+                SYSLOG_INTERNAL_INFO("Paste into GDB to debug DynamoRIO clients:\n"
+                                     "add-symbol-file '%s' %p\n",
+                                     filename, text_addr);
+            }
+            LOG(GLOBAL, LOG_LOADER, 1,
+                "for debugger: add-symbol-file %s %p\n",
+                filename, text_addr);
+            if (IF_CLIENT_INTERFACE_ELSE(
+                    INTERNAL_OPTION(privload_register_gdb), false)) {
+                dr_gdb_add_symbol_file(filename, text_addr);
+            }
+        }
 #endif
+    }
+    elf_loader_destroy(&loader);
 
     return base;
 }
@@ -666,6 +511,29 @@ privload_locate_and_load(const char *impname, privmod_t *dependent)
     return NULL;
 }
 
+app_pc
+privload_load_private_library(const char *name)
+{
+    privmod_t *newmod;
+    app_pc res = NULL;
+    acquire_recursive_lock(&privload_lock);
+    newmod = privload_lookup(name);
+    if (newmod == NULL)
+        newmod = privload_locate_and_load(name, NULL);
+    else
+        newmod->ref_count++;
+    if (newmod != NULL)
+        res = newmod->base;
+    release_recursive_lock(&privload_lock);
+    return res;
+}
+
+void
+privload_load_finalized(privmod_t *mod)
+{
+    /* nothing further to do */
+}
+
 static bool
 privload_search_rpath(privmod_t *mod, const char *name,
                       char *filename OUT /* buffer size is MAXIMUM_PATH */)
@@ -731,6 +599,13 @@ privload_locate(const char *name, privmod_t *dep,
 {
     uint i;
     char *lib_paths;
+
+    /* We may be passed a full path. */
+    if (name[0] == '/' && os_file_exists(name, false/*!is_dir*/)) {
+        snprintf(filename, MAXIMUM_PATH, "%s", name);
+        filename[MAXIMUM_PATH - 1] = 0;
+        return true;
+    }
 
     /* FIXME: We have a simple implementation of library search.
      * libc implementation can be found at elf/dl-load.c:_dl_map_object.
@@ -886,14 +761,16 @@ privload_call_modules_entry(privmod_t *mod, uint reason)
 static void
 privload_call_lib_func(fp_t func)
 {
-    char *dummy_argv[1];
+    char dummy_str[] = "dummy";
+    char *dummy_argv[2];
     /* FIXME: i#475
      * The regular loader always passes argc, argv and env to libaries,
      * (see libc code elf/dl-init.c), which might be ignored by those
      * routines. 
      * we create dummy argc and argv, and passed with the real __environ.
      */
-    dummy_argv[0] = "dummy";
+    dummy_argv[0] = dummy_str;
+    dummy_argv[1] = NULL;
     func(1, dummy_argv, our_environ);
 }
 
@@ -1334,28 +1211,30 @@ privload_setup_auxv(char **envp, app_pc map, ptr_int_t delta)
     }
 }
 
-/* Iterate program headers of a mapped ELF image and find the string that
- * PT_INTERP points to.  Typically this comes early in the file and is always
- * included in PT_LOAD segments, so we safely do this after the initial
- * mapping.
+/* i#1004: as a workaround, reserve some space for sbrk() during early injection
+ * before initializing DR's heap.  With early injection, the program break comes
+ * somewhere after DR's bss section, subject to some ASLR.  When we allocate our
+ * heap, sometimes we mmap right over the break, so any brk() calls will fail.
+ * When brk() fails, most malloc() implementations fall back to mmap().
+ * However, sometimes libc startup code needs to allocate memory before libc is
+ * initialized.  In this case it calls brk(), and will crash if it fails.
+ *
+ * Ideally we'd just set the break to follow the app's exe, but the kernel
+ * forbids setting the break to a value less than the current break.  I also
+ * tried to reserve memory by increasing the break by ~20 pages and then
+ * resetting it, but the kernel unreserves it.  The current work around is to
+ * increase the break by 1.  The loader needs to allocate more than a page of
+ * memory, so this doesn't guarantee that further brk() calls will succeed.
+ * However, I haven't observed any brk() failures after adding this workaround.
  */
-static const char *
-find_pt_interp(app_pc map, ptr_int_t delta)
+static void
+reserve_brk(void)
 {
-    int i;
-    ELF_HEADER_TYPE *ehdr = (ELF_HEADER_TYPE *) map;
-    ELF_PROGRAM_HEADER_TYPE *phdrs;
-
-    ASSERT(is_elf_so_header(map, 0));
-    ASSERT(sizeof(*phdrs) == ehdr->e_phentsize);
-    phdrs = (ELF_PROGRAM_HEADER_TYPE *) (map + ehdr->e_phoff);
-    for (i = 0; i < ehdr->e_phnum; i++) {
-        if (phdrs[i].p_type == PT_INTERP) {
-            return (const char *) (phdrs[i].p_vaddr + delta);
-        }
-    }
-
-    return NULL;
+    ptr_int_t start_brk;
+    ASSERT(!dynamo_heap_initialized);
+    start_brk = dynamorio_syscall(SYS_brk, 1, 0);
+    dynamorio_syscall(SYS_brk, 1, start_brk + 1);
+    /* I'd log the results, but logs aren't initialized yet. */
 }
 
 /* Called from _start in x86.asm.  sp is the initial app stack pointer that the
@@ -1372,11 +1251,10 @@ privload_early_inject(void **sp)
     char *exe_path;
     char *exe_basename;
     app_pc exe_map;
-    size_t exe_map_size;
-    ptr_int_t exe_map_delta;
-    ELF_HEADER_TYPE *exe_ehdr;
+    elf_loader_t exe_ld;
     const char *interp;
     priv_mcontext_t mc;
+    bool success;
 
     dynamorio_set_envp(envp);
 
@@ -1391,17 +1269,18 @@ privload_early_inject(void **sp)
      */
     set_executable_path(exe_path);
 
+    success = elf_loader_read_headers(&exe_ld, exe_path);
+    apicheck(success, "Failed to read app ELF headers.  Check path and "
+             "architecture.");
     /* FIXME: PIEs with a base of 0 should not use MAP_FIXED. */
-    exe_map = map_elf_phdrs(exe_path, true /* MAP_FIXED */, &exe_map_size,
-                            &exe_map_delta, NULL /* text addr */, os_map_file,
-                            os_unmap_file, os_set_protection);
+    exe_map = elf_loader_map_phdrs(&exe_ld, true /* MAP_FIXED */, os_map_file,
+                                   os_unmap_file, os_set_protection);
     apicheck(exe_map != NULL, "Failed to load application.  "
              "Check path and architecture.");
+    ASSERT(exe_ld.load_delta == 0);
     ASSERT(is_elf_so_header(exe_map, 0));
-    ASSERT(exe_map_delta == 0);
-    exe_ehdr = (ELF_HEADER_TYPE *) exe_map;
 
-    privload_setup_auxv(envp, exe_map, exe_map_delta);
+    privload_setup_auxv(envp, exe_map, exe_ld.load_delta);
 
     /* Set the process name with prctl PR_SET_NAME.  This makes killall <app>
      * work.
@@ -1415,28 +1294,30 @@ privload_early_inject(void **sp)
     dynamorio_syscall(SYS_prctl, 5, PR_SET_NAME, (ptr_uint_t)exe_basename,
                       0, 0, 0);
 
-    interp = find_pt_interp(exe_map, exe_map_delta);
+    interp = elf_loader_find_pt_interp(&exe_ld);
     if (interp != NULL) {
         /* Load the ELF pointed at by PT_INTERP, usually ld.so. */
-        app_pc ld_map;
-        size_t ld_map_size;
-        ptr_int_t ld_map_delta;
-        ELF_HEADER_TYPE *ld_ehdr;
-
-        ld_map = map_elf_phdrs(interp, false /* fixed */, &ld_map_size,
-                               &ld_map_delta, NULL /* text */,
-                               os_map_file, os_unmap_file, os_set_protection);
-        apicheck(ld_map != NULL, "Failed to map ELF interpreter.");
+        elf_loader_t interp_ld;
+        app_pc interp_map;
+        success = elf_loader_read_headers(&interp_ld, interp);
+        apicheck(success, "Failed to read ELF interpreter headers.");
+        interp_map = elf_loader_map_phdrs(&interp_ld, false /* fixed */,
+                                          os_map_file, os_unmap_file,
+                                          os_set_protection);
+        apicheck(interp_map != NULL && is_elf_so_header(interp_map, 0),
+                 "Failed to map ELF interpreter.");
         ASSERT_MESSAGE(CHKLVL_ASSERTS, "The interpreter shouldn't have an "
                        "interpreter.",
-                       find_pt_interp(ld_map, ld_map_delta) == NULL);
-        ASSERT(is_elf_so_header(ld_map, 0));
-        ld_ehdr = (ELF_HEADER_TYPE *) ld_map;
-        entry = (app_pc)ld_ehdr->e_entry + ld_map_delta;
+                       elf_loader_find_pt_interp(&interp_ld) == NULL);
+        entry = (app_pc)interp_ld.ehdr->e_entry + interp_ld.load_delta;
+        elf_loader_destroy(&interp_ld);
     } else {
         /* No PT_INTERP, so this is a static exe. */
-        entry = (app_pc)exe_ehdr->e_entry + exe_map_delta;
+        entry = (app_pc)exe_ld.ehdr->e_entry + exe_ld.load_delta;
     }
+    elf_loader_destroy(&exe_ld);
+
+    reserve_brk();
 
     /* Initialize DR *after* we map the app image.  This is consistent with our
      * old behavior, and allows the client to do things like call
