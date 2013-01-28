@@ -33,8 +33,8 @@
 #ifndef _NATIVE_EXEC_H_
 #define _NATIVE_EXEC_H_ 1
 
-#include "globals.h"
-#include "module_shared.h"
+#include "../globals.h"
+#include "../module_shared.h"
 
 extern vm_area_vector_t *native_exec_areas;
 

@@ -74,7 +74,6 @@ set(CORE_SRCS
   buildmark.c
   loader_shared.c
   io.c
-  native_exec.c
   )
 
 if (UNIX)
@@ -117,6 +116,7 @@ set(ARCH_SRCS
   x86/sideline.c
   x86/instrument.c
   x86/retcheck.c
+  x86/native_exec.c
   )
 
 if (X64)

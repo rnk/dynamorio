@@ -31,21 +31,22 @@
  */
 
 /* Support for natively executing some of the app's code.  At Determina, native
- * exec was used to avoid performance issues and bugs in system dlls.  For
- * instrumentation clients, it offers improved performance when dealing with
- * libraries that don't need to be instrumented.
+ * exec was used primarily to avoid security violation false positives in JITs.
+ * For instrumentation clients, it can offer improved performance when dealing
+ * with libraries that don't need to be instrumented.  However, we cannot
+ * guarantee that we won't lose control or violate transparency.
  */
 
 #include "native_exec.h"
-#include "globals.h"
-#include "vmareas.h"
-#include "module_shared.h"
-#include "instrlist.h"
+#include "../globals.h"
+#include "../vmareas.h"
+#include "../module_shared.h"
+#include "../instrlist.h"
 #include "arch_exports.h"
 #include "instr.h"
 #include "decode_fast.h"
 
-/* FIXME: Centralize more of the native_exec implementation details here instead
+/* XXX: Centralize more of the native_exec implementation details here instead
  * of scattering it across interp.c, vmareas.c, etc.
  */
 
@@ -56,6 +57,8 @@ vm_area_vector_t *native_exec_areas;
 void
 native_exec_init(void)
 {
+    if (!DYNAMO_OPTION(native_exec) || DYNAMO_OPTION(thin_client))
+        return;
     VMVECTOR_ALLOC_VECTOR(native_exec_areas, GLOBAL_DCONTEXT, VECTOR_SHARED,
                           native_exec_areas);
 }
@@ -63,6 +66,8 @@ native_exec_init(void)
 void
 native_exec_exit(void)
 {
+    if (native_exec_areas == NULL)
+        return;
     vmvector_delete_vector(GLOBAL_DCONTEXT, native_exec_areas);
     native_exec_areas = NULL;
 }
@@ -72,6 +77,7 @@ on_native_exec_list(const char *modname)
 {
     bool onlist = false;
 
+    ASSERT(!DYNAMO_OPTION(thin_client));
     if (!DYNAMO_OPTION(native_exec))
         return false;
 
@@ -203,7 +209,7 @@ at_native_exec_gateway(dcontext_t *dcontext, app_pc start
              * but after last_exit checks above since overlap is more costly
              */
             if (vmvector_overlap(native_exec_areas, start, start+1) &&
-                is_readable_without_exception((app_pc)tos, 4)) {
+                is_readable_without_exception((app_pc)tos, sizeof(app_pc))) {
                 enum { MAX_CALL_CONSIDER = 6 /* ignore prefixes */ };
                 app_pc retaddr = *tos;
                 LOG(THREAD, LOG_INTERP|LOG_VMAREAS, 2,
