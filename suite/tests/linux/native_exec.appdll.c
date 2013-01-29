@@ -1,5 +1,5 @@
 /* **********************************************************
- * Copyright (c) 2012 Google, Inc.  All rights reserved.
+ * Copyright (c) 2013 VMware, Inc.  All rights reserved.
  * **********************************************************/
 
 /*
@@ -13,14 +13,14 @@
  *   this list of conditions and the following disclaimer in the documentation
  *   and/or other materials provided with the distribution.
  *
- * * Neither the name of Google, Inc. nor the names of its contributors may be
+ * * Neither the name of VMware, Inc. nor the names of its contributors may be
  *   used to endorse or promote products derived from this software without
  *   specific prior written permission.
  *
  * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
  * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
  * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
- * ARE DISCLAIMED. IN NO EVENT SHALL GOOGLE, INC. OR CONTRIBUTORS BE LIABLE
+ * ARE DISCLAIMED. IN NO EVENT SHALL VMWARE, INC. OR CONTRIBUTORS BE LIABLE
  * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
  * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
  * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
@@ -30,34 +30,16 @@
  * DAMAGE.
  */
 
-#ifndef _NATIVE_EXEC_H_
-#define _NATIVE_EXEC_H_ 1
+/* FIXME: assert that DR has control in this module.  We could add an app API
+ * like dr_is_under_dr() and use dlsym, but that won't work without LD_PRELOAD.
+ * We could parse /proc/self/maps to find DR and use get_proc_address() from
+ * module.c.
+ */
 
-#include "../globals.h"
-#include "../module_shared.h"
+#include "tools.h"
 
-extern vm_area_vector_t *native_exec_areas;
-
-bool
-at_native_exec_gateway(dcontext_t *dcontext, app_pc start
-                       _IF_DEBUG(bool xfer_target));
-
-instrlist_t *
-native_exec_build_bb_ilist(dcontext_t *dcontext, app_pc start_pc);
-
-void
-native_exec_module_load(module_area_t *ma);
-void
-native_exec_module_unload(module_area_t *ma);
-
-void
-native_exec_init(void);
-void
-native_exec_exit(void);
-
-/* Implemented by each OS. */
-
-void
-hook_module_for_native_exec(module_area_t *ma);
-
-#endif /* _NATIVE_EXEC_H_ */
+void EXPORT
+import_me1(int x)
+{
+    print("native_exec.appdll:import_me1(%d)\n", x);
+}

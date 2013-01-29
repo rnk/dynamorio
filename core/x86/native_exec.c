@@ -115,9 +115,13 @@ check_and_mark_native_exec(module_area_t *ma, bool add)
         is_native = true;
     }
 
+    print_file(STDERR, "module %s is native_exec: %d\n", name, is_native);
+
     if (add && is_native) {
         RSTATS_INC(num_native_module_loads);
         vmvector_add(native_exec_areas, ma->start, ma->end, NULL);
+        if (DYNAMO_OPTION(native_exec_retakeover))
+            hook_module_for_native_exec(ma);
     } else if (!add) {
         /* If we're removing and it's native, it should be on there already.  If
          * it's not native, then it shouldn't be present, but we'll remove

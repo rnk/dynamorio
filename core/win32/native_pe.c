@@ -1,5 +1,5 @@
 /* **********************************************************
- * Copyright (c) 2012 Google, Inc.  All rights reserved.
+ * Copyright (c) 2013 Google, Inc.  All rights reserved.
  * **********************************************************/
 
 /*
@@ -30,34 +30,12 @@
  * DAMAGE.
  */
 
-#ifndef _NATIVE_EXEC_H_
-#define _NATIVE_EXEC_H_ 1
-
-#include "../globals.h"
-#include "../module_shared.h"
-
-extern vm_area_vector_t *native_exec_areas;
-
-bool
-at_native_exec_gateway(dcontext_t *dcontext, app_pc start
-                       _IF_DEBUG(bool xfer_target));
-
-instrlist_t *
-native_exec_build_bb_ilist(dcontext_t *dcontext, app_pc start_pc);
+#include "globals.h"
+#include "native_exec.h"
+#include "module.h"
 
 void
-native_exec_module_load(module_area_t *ma);
-void
-native_exec_module_unload(module_area_t *ma);
-
-void
-native_exec_init(void);
-void
-native_exec_exit(void);
-
-/* Implemented by each OS. */
-
-void
-hook_module_for_native_exec(module_area_t *ma);
-
-#endif /* _NATIVE_EXEC_H_ */
+hook_module_for_native_exec(module_area_t *ma)
+{
+    ASSERT_NOT_IMPLEMENTED();
+}
