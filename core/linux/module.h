@@ -245,6 +245,9 @@ module_relocate_rela(app_pc modbase,
                      ELF_RELA_TYPE *end);
 
 bool
+module_get_relro(app_pc base, OUT app_pc *relro_base, OUT size_t *relro_size);
+
+bool
 module_read_os_data(app_pc base,
                     OUT ptr_int_t *delta,
                     OUT os_module_data_t *os_data,

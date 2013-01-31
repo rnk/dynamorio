@@ -343,6 +343,9 @@ static bool
 is_readable_without_exception_internal(const byte *pc, size_t size, bool query_os);
 
 static void
+module_check_relro_relocated(app_pc base, size_t len, uint prot);
+
+static void
 process_mmap(dcontext_t *dcontext, app_pc base, size_t size, uint prot,
              uint flags _IF_DEBUG(const char *map_type));
 
@@ -5656,6 +5659,9 @@ pre_system_call(dcontext_t *dcontext)
         LOG(THREAD, LOG_SYSCALLS, 2,
             "syscall: mprotect addr="PFX" size="PFX" prot=%s\n",
             addr, len, memprot_string(osprot_to_memprot(prot)));
+        print_file(STDERR,
+            "syscall: mprotect addr="PFX" size="PFX" prot=%s\n",
+            addr, len, memprot_string(osprot_to_memprot(prot)));
 
         /* PR 413109 - fail mprotect if start region is unknown; seen in hostd.
          * FIXME: get_memory_info_from_os() should be used instead of 
@@ -5688,6 +5694,9 @@ pre_system_call(dcontext_t *dcontext)
              */
             DOCHECK(1, dcontext->mprot_multi_areas = (addr + len) > end ? true : false;);
         }
+
+        /* If this is a -z relro module, then we know it's been relocated. */
+        module_check_relro_relocated(addr, len, prot);
 
         res = app_memory_protection_change(dcontext, addr, len, 
                                            osprot_to_memprot(prot),
@@ -6381,6 +6390,35 @@ mmap_check_for_module_overlap(app_pc base, size_t size, bool readable, uint64 in
     }
     os_get_module_info_unlock();
     return ma != NULL;
+}
+
+static void
+module_check_relro_relocated(app_pc mprot_base, size_t mprot_len, uint prot)
+{
+    module_area_t *ma;
+    app_pc relro_base;
+    size_t relro_len;
+
+    print_file(STDERR, "module_check_relro_relocated\n");
+    if (prot != PROT_READ)
+        return;
+    os_get_module_info_lock();
+    ma = module_pc_lookup(mprot_base);
+    print_file(STDERR, "checking %s\n", ma->full_path);
+    if (ma == NULL)
+        goto done;
+    if (!module_get_relro(ma->start, &relro_base, &relro_len))
+        goto done;
+    if (!(mprot_base == relro_base &&
+          ALIGN_FORWARD(mprot_len, PAGE_SIZE) ==
+          ALIGN_FORWARD(relro_len, PAGE_SIZE)))
+        goto done;
+
+    print_file(STDERR, "module %s is relro: "PFX"-"PFX"\n",
+               ma->full_path, mprot_base, mprot_len);
+
+done:
+    os_get_module_info_unlock();
 }
 
 /* All processing for mmap and mmap2. */

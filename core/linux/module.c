@@ -1473,6 +1473,31 @@ module_get_os_privmod_data(app_pc base, size_t size,
     }
 }
 
+bool
+module_get_relro(app_pc base, OUT app_pc *relro_base, OUT size_t *relro_size)
+{
+    ELF_HEADER_TYPE *ehdr = (ELF_HEADER_TYPE *)base;
+    uint i;
+    bool found = false;
+    app_pc mod_base;
+    ptr_int_t load_delta;
+
+    mod_base = module_vaddr_from_prog_header(base + ehdr->e_phoff,
+                                             ehdr->e_phnum, NULL);
+    load_delta = base - mod_base;
+    for (i = 0; i < ehdr->e_phnum; i++) {
+        ELF_PROGRAM_HEADER_TYPE *phdr = (ELF_PROGRAM_HEADER_TYPE *)
+            (base + ehdr->e_phoff + i * ehdr->e_phentsize);
+        if (phdr->p_type == PT_GNU_RELRO) {
+            *relro_base = (app_pc) phdr->p_vaddr + load_delta;
+            *relro_size = phdr->p_memsz;
+            found = true;
+            break;
+        }
+    }
+    return found;
+}
+
 static app_pc
 module_lookup_symbol(ELF_SYM_TYPE *sym, os_privmod_data_t *pd)
 {
