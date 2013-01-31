@@ -59,6 +59,11 @@ while ($#ARGV >= 0) {
     if ($ARGV[0] eq '-core') {
         # Take the core source dir path on the command line.
         shift;
+        if ($#ARGV < 1) {
+            print "$usage";
+            print "Expected path after -core\n";
+            exit 1;
+        }
         $core = shift;
         if (! -d $core) {
             print "$core is not a directory\n";
