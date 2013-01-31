@@ -5689,6 +5689,15 @@ pre_system_call(dcontext_t *dcontext)
             DOCHECK(1, dcontext->mprot_multi_areas = (addr + len) > end ? true : false;);
         }
 
+        /* If a module has PT_GNU_RELRO, then the loader will make it readonly,
+         * giving us a best-effort post-relocation hook.  We will not get this
+         * mprotect if the module is lazily relocated or eagerly bound without
+         * relro, making it unreliable in general.
+         */
+        if (prot == PROT_READ) {
+            check_module_pre_relro(addr, len, osprot_to_memprot(prot));
+        }
+
         res = app_memory_protection_change(dcontext, addr, len, 
                                            osprot_to_memprot(prot),
                                            &new_memprot, NULL);
