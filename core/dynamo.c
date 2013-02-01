@@ -2530,16 +2530,6 @@ dr_app_stop(void)
     /* the application regains control in here */
 }
 
-/* Returns false if executing natively, and true if under DR.  We intercept this
- * in dispatch to make it return true.  App segment mangling make checking the
- * dcontext here difficult.
- */
-DR_APP_API bool
-dr_app_is_under_dr(void)
-{
-    return false;
-}
-
 DR_APP_API int
 dr_app_setup_and_start(void)
 {

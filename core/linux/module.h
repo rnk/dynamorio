@@ -279,13 +279,6 @@ void
 module_get_os_privmod_data(app_pc base, size_t size, bool relocated,
                            OUT os_privmod_data_t *pd);
 
-bool
-module_walk_program_headers(app_pc base, size_t view_size, bool at_map,
-                            OUT app_pc *out_base /* relative pc */,
-                            OUT app_pc *out_end /* relative pc */,
-                            OUT char **out_soname,
-                            OUT os_module_data_t *out_data);
-
 ELF_ADDR 
 module_get_text_section(app_pc file_map, size_t file_size);
 
