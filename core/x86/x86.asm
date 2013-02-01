@@ -204,7 +204,6 @@ DECL_EXTERN(get_own_context_integer_control)
 DECL_EXTERN(get_xmm_vals)
 DECL_EXTERN(auto_setup)
 DECL_EXTERN(back_from_native_C)
-DECL_EXTERN(native_plt_call_C)
 DECL_EXTERN(dispatch)
 #ifdef DR_APP_EXPORTS
 DECL_EXTERN(dr_app_start_helper)

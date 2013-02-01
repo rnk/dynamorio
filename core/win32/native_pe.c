@@ -30,26 +30,15 @@
  * DAMAGE.
  */
 
-<<<<<<< HEAD
-#include "globals.h"
-=======
 /* Intercepts module transitions for native execution for ELF modules.
  */
 
 #include "../globals.h"
->>>>>>> native-exec-relro
 #include "native_exec.h"
 #include "module.h"
 
 void
-<<<<<<< HEAD
-hook_module_for_native_exec(module_area_t *ma)
-{
-    ASSERT_NOT_IMPLEMENTED();
-=======
 module_hook_transitions(module_area_t *ma, bool at_map)
 {
-    /* NYI */
     ASSERT_CURIOSITY(__FUNCTION__" NYI");
->>>>>>> native-exec-relro
 }

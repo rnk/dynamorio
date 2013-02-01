@@ -1576,25 +1576,6 @@ if (UNIX)
   append_property_string(TARGET linux.fib-pie COMPILE_FLAGS "-fPIE")
   append_property_string(TARGET linux.fib-pie LINK_FLAGS "-pie")
 
-  # i#978: native_exec retakeover.
-  # FIXME: Support Windows and move to common.
-  function (tobuild_native_exec test ld_flags)
-    tobuild_appdll(${test} linux/native_exec.c)
-    tobuild(${test} linux/native_exec.c)
-    target_link_libraries(${test} ${test}.appdll)
-    # We want rpath on Linux so we can load the appdll.
-    set_target_properties(${test} PROPERTIES SKIP_BUILD_RPATH OFF)
-    append_property_string(TARGET ${test} LINK_FLAGS "${ld_flags}")
-    get_target_property(exe ${test} LOCATION${location_suffix})
-    get_filename_component(exe_base ${exe} NAME)
-    set(testlist_normal ${testlist_normal} ${test} PARENT_SCOPE)
-    set(${test}_source "${${test}_source}" PARENT_SCOPE)
-    set(${test}_dr_ops "-native_exec_retakeover -native_exec_list ${exe_base}"
-      PARENT_SCOPE)
-  endfunction (tobuild_native_exec)
-  tobuild_native_exec(linux.native_exec_relro "-Wl,-z,relro,-z,now")
-  tobuild_native_exec(linux.native_exec_lazy "-Wl,-z,norelro,-z,lazy")
-
   # FIXME i#125: bugs in these, were disabled in the past
   tobuild_ops(linux.vfork linux/vfork.c ""
     "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/linux.execve-sub")
