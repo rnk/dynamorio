@@ -518,7 +518,7 @@ dynamorio_app_init(void)
         fragment_init();
         moduledb_init(); /* before vm_areas_init, after heap_init */
         perscache_init(); /* before vm_areas_init */
-        native_exec_init();
+        native_exec_init(); /* before vm_areas_init */
 
         if (!DYNAMO_OPTION(thin_client)) {
 #ifdef HOT_PATCHING_INTERFACE

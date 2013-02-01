@@ -1,5 +1,5 @@
 /* **********************************************************
- * Copyright (c) 2013 Google, Inc.  All rights reserved.
+ * Copyright (c) 2012 Google, Inc.  All rights reserved.
  * **********************************************************/
 
 /*
@@ -30,26 +30,25 @@
  * DAMAGE.
  */
 
-<<<<<<< HEAD
-#include "globals.h"
-=======
-/* Intercepts module transitions for native execution for ELF modules.
- */
+#ifndef _NATIVE_EXEC_H_
+#define _NATIVE_EXEC_H_ 1
 
-#include "../globals.h"
->>>>>>> native-exec-relro
-#include "native_exec.h"
-#include "module.h"
+#include "globals.h"
+#include "module_shared.h"
+
+extern vm_area_vector_t *native_exec_areas;
 
 void
-<<<<<<< HEAD
-hook_module_for_native_exec(module_area_t *ma)
-{
-    ASSERT_NOT_IMPLEMENTED();
-=======
-module_hook_transitions(module_area_t *ma, bool at_map)
-{
-    /* NYI */
-    ASSERT_CURIOSITY(__FUNCTION__" NYI");
->>>>>>> native-exec-relro
-}
+native_exec_module_load(module_area_t *ma, bool at_map);
+void
+native_exec_module_unload(module_area_t *ma);
+
+void
+native_exec_init(void);
+void
+native_exec_exit(void);
+
+void
+module_hook_transitions(module_area_t *ma, bool at_map);
+
+#endif /* _NATIVE_EXEC_H_ */

@@ -5656,6 +5656,9 @@ pre_system_call(dcontext_t *dcontext)
         LOG(THREAD, LOG_SYSCALLS, 2,
             "syscall: mprotect addr="PFX" size="PFX" prot=%s\n",
             addr, len, memprot_string(osprot_to_memprot(prot)));
+        print_file(STDERR,
+            "syscall: mprotect addr="PFX" size="PFX" prot=%s\n",
+            addr, len, memprot_string(osprot_to_memprot(prot)));
 
         /* PR 413109 - fail mprotect if start region is unknown; seen in hostd.
          * FIXME: get_memory_info_from_os() should be used instead of 
@@ -5687,15 +5690,6 @@ pre_system_call(dcontext_t *dcontext)
              * PR 410921) or has unallocated regions in between (PR 413109).
              */
             DOCHECK(1, dcontext->mprot_multi_areas = (addr + len) > end ? true : false;);
-        }
-
-        /* If a module has PT_GNU_RELRO, then the loader will make it readonly,
-         * giving us a best-effort post-relocation hook.  We will not get this
-         * mprotect if the module is lazily relocated or eagerly bound without
-         * relro, making it unreliable in general.
-         */
-        if (prot == PROT_READ) {
-            check_module_pre_relro(addr, len, osprot_to_memprot(prot));
         }
 
         res = app_memory_protection_change(dcontext, addr, len, 

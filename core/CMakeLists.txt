@@ -74,6 +74,7 @@ set(CORE_SRCS
   buildmark.c
   loader_shared.c
   io.c
+  native_exec.c
   )
 
 if (UNIX)
@@ -116,7 +117,6 @@ set(ARCH_SRCS
   x86/sideline.c
   x86/instrument.c
   x86/retcheck.c
-  x86/native_exec.c
   )
 
 if (X64)
@@ -211,6 +211,7 @@ else (UNIX)
     win32/drwinapi/kernel32_file.c
     win32/drwinapi/kernel32_sync.c
     win32/drwinapi/kernel32_misc.c
+    win32/drwinapi/rpcrt4_redir.c
     win32/resources.rc
     ${ntimp_dep}
    )

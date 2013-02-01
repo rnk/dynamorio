@@ -1,22 +1,23 @@
 /* **********************************************************
- * Copyright (c) 2012 Google, Inc.  All rights reserved.
+ * Copyright (c) 2011-2013 Google, Inc.   All rights reserved.
+ * Copyright (c) 2009-2010 Derek Bruening   All rights reserved.
  * **********************************************************/
 
 /*
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions are met:
- *
+ * 
  * * Redistributions of source code must retain the above copyright notice,
  *   this list of conditions and the following disclaimer.
- *
+ * 
  * * Redistributions in binary form must reproduce the above copyright notice,
  *   this list of conditions and the following disclaimer in the documentation
  *   and/or other materials provided with the distribution.
- *
+ * 
  * * Neither the name of Google, Inc. nor the names of its contributors may be
  *   used to endorse or promote products derived from this software without
  *   specific prior written permission.
- *
+ * 
  * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
  * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
  * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
@@ -30,34 +31,36 @@
  * DAMAGE.
  */
 
-#ifndef _NATIVE_EXEC_H_
-#define _NATIVE_EXEC_H_ 1
+/* rpcrt4 and kernelbase redirection routines.
+ * We initially target the union of the imports of C++ apps, msvcrt,
+ * and dbghelp.
+ */
 
-#include "../globals.h"
-#include "../module_shared.h"
+#ifndef _RPCRT4_REDIR_H_
+#define _RPCRT4_REDIR_H_ 1
 
-extern vm_area_vector_t *native_exec_areas;
-
-bool
-at_native_exec_gateway(dcontext_t *dcontext, app_pc start
-                       _IF_DEBUG(bool xfer_target));
-
-instrlist_t *
-native_exec_build_bb_ilist(dcontext_t *dcontext, app_pc start_pc);
+#include "../../globals.h"
+#include "../../module_shared.h"
+#include <rpc.h>
 
 void
-native_exec_module_load(module_area_t *ma);
-void
-native_exec_module_unload(module_area_t *ma);
+rpcrt4_redir_init(void);
 
 void
-native_exec_init(void);
-void
-native_exec_exit(void);
-
-/* Implemented by each OS. */
+rpcrt4_redir_exit(void);
 
 void
-hook_module_for_native_exec(module_area_t *ma);
+rpcrt4_redir_onload(privmod_t *mod);
 
-#endif /* _NATIVE_EXEC_H_ */
+app_pc
+rpcrt4_redir_lookup(const char *name);
+
+
+RPC_STATUS
+RPC_ENTRY
+redirect_UuidCreate (
+    __out UUID __RPC_FAR * Uuid
+    );
+
+
+#endif /* _RPCRT4_REDIR_H_ */

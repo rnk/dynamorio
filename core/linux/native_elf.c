@@ -34,10 +34,11 @@
  */
 
 #include "../globals.h"
-#include "native_exec.h"
+#include "../native_exec.h"
 #include "module.h"
 #include "instr.h"
 #include "decode.h"
+#include "disassemble.h"
 
 /* According to the SysV amd64 psABI docs, there are three reserved entries
  * in the PLTGOT:
@@ -55,36 +56,7 @@ enum { DL_RUNTIME_RESOLVE_IDX = 2 };
 /* The loader's _dl_fixup. */
 void *(*app_dl_fixup)(void *link_map, uint dynamic_index);
 
-static bool
-module_contains_pc(module_area_t *ma, app_pc pc)
-{
-    return pc >= ma->start && pc <= ma->end;
-}
-
-static app_pc
-module_get_pltgot(module_area_t *ma)
-{
-    os_privmod_data_t opd;
-    app_pc pltgot;
-    memset(&opd, 0, sizeof(opd));
-    module_get_os_privmod_data(ma->start, ma->end - ma->start, &opd);
-    pltgot = (app_pc) opd.pltgot;
-    if (module_contains_pc(ma, pltgot)) {
-        return pltgot;
-    }
-    /* FIXME: module_get_os_privmod_data() assumes the module hasn't already
-     * been relocated, which may be the case for loaded modules.  Try to recover
-     * by subtracting out the module base, which is typically equal to
-     * load_delta.
-     */
-    pltgot = (app_pc) (pltgot - ma->start);
-    if (module_contains_pc(ma, pltgot)) {
-        return pltgot;
-    }
-    return NULL;
-}
-
-void
+static void
 find_dl_fixup(dcontext_t *dcontext, app_pc resolver)
 {
     instr_t instr;
@@ -107,23 +79,17 @@ find_dl_fixup(dcontext_t *dcontext, app_pc resolver)
     instr_free(dcontext, &instr);
 }
 
-/* Find the _dl_runtime_resolve pointer and overwrite it with our own.
- */
-void
-hook_module_for_native_exec(module_area_t *ma)
+static void
+replace_module_resolver(module_area_t *ma, app_pc *pltgot)
 {
     dcontext_t *dcontext = get_thread_private_dcontext();
-    app_pc *pltgot = (app_pc *) module_get_pltgot(ma);
     app_pc resolver;
     ASSERT_CURIOSITY(pltgot != NULL && "unable to locate DT_PLTGOT");
     if (pltgot == NULL)
         return;
 
     resolver = pltgot[DL_RUNTIME_RESOLVE_IDX];
-    if (resolver == NULL) {
-        ASSERT_CURIOSITY(false && "loader will overwrite our stub");
-        /* NYI */
-    }
+    ASSERT_CURIOSITY(resolver != NULL && "loader will overwrite our stub");
     if (resolver != NULL && app_dl_fixup == NULL) {
         /* _dl_fixup is not exported, so we have to go find it. */
         find_dl_fixup(dcontext, resolver);
@@ -136,10 +102,51 @@ hook_module_for_native_exec(module_area_t *ma)
     pltgot[DL_RUNTIME_RESOLVE_IDX] = (app_pc) _dynamorio_runtime_resolve;
 }
 
+/* If we are not at_map, then we assume the module has been relocated.
+ * FIXME: Catch transitions out of un-relocated modules.
+ */
+void
+module_hook_transitions(module_area_t *ma, bool at_map)
+{
+    os_privmod_data_t opd;
+    app_pc relro_base;
+    size_t relro_size;
+    bool got_unprotected = false;
+
+    memset(&opd, 0, sizeof(opd));
+    module_get_os_privmod_data(ma->start, ma->end - ma->start,
+                               !at_map/*relocated*/, &opd);
+
+    /* _dl_runtime_resolve is typically inside the relro region, so we must
+     * unprotect it.
+     */
+    if (!at_map && module_get_relro(ma->start, &relro_base, &relro_size)) {
+        os_set_protection(relro_base, relro_size, MEMPROT_READ|MEMPROT_WRITE);
+    }
+
+    replace_module_resolver(ma, (app_pc *) opd.pltgot);
+
+    if (got_unprotected) {
+        /* XXX: This may not be symmetric, but we trust PT_GNU_RELRO for now. */
+        os_set_protection(relro_base, relro_size, MEMPROT_READ);
+    }
+}
+
 /* Our replacement for _dl_fixup.
+ * FIXME: Currently this exists only for logging.  Eventually it will replace
+ * the relocation with our own stub that enters the cache.
  */
 void *
 dynamorio_dl_fixup(void *link_map, uint dynamic_index)
 {
-    return app_dl_fixup(link_map, dynamic_index);
+    app_pc res;
+    ASSERT(app_dl_fixup != NULL);
+    res = app_dl_fixup(link_map, dynamic_index);
+    DOLOG(4, LOG_LOADER, {
+        dcontext_t *dcontext = get_thread_private_dcontext();
+        LOG(THREAD, LOG_LOADER, 4,
+            "%s: resolved dynamic index %d to "PFX"\n",
+            __FUNCTION__, dynamic_index, res);
+    });
+    return res;
 }
