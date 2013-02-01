@@ -42,6 +42,7 @@
 
 #include "native_exec.h"
 #include "../globals.h"
+#include "../heap.h"
 #include "../vmareas.h"
 #include "../module_shared.h"
 #include "../instrlist.h"
@@ -53,13 +54,23 @@
  */
 vm_area_vector_t *native_exec_areas;
 
+enum { MAX_STUB_MEMORY = 12 * 1024 };
+
+app_pc stub_memory;
+app_pc stub_memory_cur;
+
 void
 native_exec_init(void)
 {
+    uint rwx = MEMPROT_READ|MEMPROT_WRITE|MEMPROT_EXEC;
     if (!DYNAMO_OPTION(native_exec) || DYNAMO_OPTION(thin_client))
         return;
     VMVECTOR_ALLOC_VECTOR(native_exec_areas, GLOBAL_DCONTEXT, VECTOR_SHARED,
                           native_exec_areas);
+    /* XXX: Elimiate the hard cap. */
+    stub_memory = heap_mmap_ex(MAX_STUB_MEMORY, MAX_STUB_MEMORY, rwx,
+                               false/*!guarded*/);
+    stub_memory_cur = stub_memory;
 }
 
 void
@@ -69,6 +80,9 @@ native_exec_exit(void)
         return;
     vmvector_delete_vector(GLOBAL_DCONTEXT, native_exec_areas);
     native_exec_areas = NULL;
+    heap_munmap_ex(stub_memory, MAX_STUB_MEMORY, false/*!guarded*/);
+    stub_memory = NULL;
+    stub_memory_cur = NULL;
 }
 
 static bool
@@ -129,13 +143,28 @@ check_and_mark_native_exec(module_area_t *ma, bool add)
 }
 
 void
-native_exec_module_load(module_area_t *ma)
+native_exec_module_load(module_area_t *ma, bool at_map)
 {
     check_and_mark_native_exec(ma, true/*add*/);
+    module_hook_transitions(ma, at_map);
 }
 
 void
 native_exec_module_unload(module_area_t *ma)
 {
     check_and_mark_native_exec(ma, false/*!add*/);
+}
+
+app_pc
+native_create_stub(native_stub_t *stub_tmpl, app_pc pc_immed, app_pc jmp_tgt)
+{
+    app_pc *tgt_immed;
+    uint *jmp_opnd;
+    app_pc stub_pc = stub_memory_cur;
+    stub_memory_cur += MAX_STUB_SIZE;
+    tgt_immed = (app_pc *) (stub_pc + stub_tmpl->tgt_offset);
+    jmp_opnd = (uint *) (stub_pc + stub_tmpl->jmp_offset);
+    *tgt_immed = pc_immed;
+    insert_relative_target((app_pc) jmp_opnd, jmp_tgt, false/*!hotpatch*/);
+    return stub_pc;
 }

@@ -396,6 +396,22 @@ back_from_native_C(priv_mcontext_t *mc)
     ASSERT_NOT_REACHED();
 }
 
+#include "../module_shared.h"
+
+/* Take over execution after a native module calls into a non-native module.
+ * FIXME: NYI, currently this just logs.
+ */
+void
+native_plt_call_C(priv_mcontext_t *mc, app_pc tgt)
+{
+    module_area_t *ma;
+    os_get_module_info_lock();
+    ma = module_pc_lookup(tgt);
+    /* NOCHECKIN: LOG */
+    print_file(STDERR, "PLT call to module %s\n", GET_MODULE_NAME(&ma->names));
+    os_get_module_info_unlock();
+}
+
 /****************************************************************************/
 
 /* C-level wrapper around the asm implementation.  Shuffles arguments and

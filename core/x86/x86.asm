@@ -204,6 +204,7 @@ DECL_EXTERN(get_own_context_integer_control)
 DECL_EXTERN(get_xmm_vals)
 DECL_EXTERN(auto_setup)
 DECL_EXTERN(back_from_native_C)
+DECL_EXTERN(native_plt_call_C)
 DECL_EXTERN(dispatch)
 #ifdef DR_APP_EXPORTS
 DECL_EXTERN(dr_app_start_helper)
@@ -1485,6 +1486,35 @@ GLOBAL_LABEL(back_from_native:)
         /* should not return */
         jmp      unexpected_return
         END_FUNC(back_from_native)
+
+/* Like back_from_native, except we're calling from a native module into a
+ * module that should execute from the code cache.
+ */
+        DECLARE_FUNC(native_plt_call)
+GLOBAL_LABEL(native_plt_call:)
+        PUSHGPR
+        PUSH_PRIV_MCXT(0 /* pc */)
+        lea      REG_XAX, [REG_XSP]  /* lea priv_mcontext_t */
+#ifdef X64
+        mov      REG_XCX, r11  /* next_pc in r11 */
+#else
+        mov      REG_XCX, [REG_XSP + PRIV_MCXT_SIZE]  /* next_pc on stack */
+#endif
+        CALLC2(native_plt_call_C, REG_XAX, REG_XCX)
+        /* FIXME: native_plt_call_C doesn't do anything yet, it just logs the
+         * transition as a proof of concept.  Eventually this will be noreturn,
+         * but for now just go to target pc and let the app continue natively.
+         */
+        add      REG_XSP, PRE_XMM_PADDING + XMM_SAVED_SIZE
+        POPGPR
+        POPF
+        add      REG_XSP, ARG_SZ /* pc */
+#ifdef X64
+        jmp      r11
+#else
+        ret
+#endif
+        END_FUNC(native_plt_call)
 
         
 #ifdef RETURN_STACK

@@ -39,7 +39,7 @@
 extern vm_area_vector_t *native_exec_areas;
 
 void
-native_exec_module_load(module_area_t *ma);
+native_exec_module_load(module_area_t *ma, bool at_map);
 void
 native_exec_module_unload(module_area_t *ma);
 
@@ -47,5 +47,19 @@ void
 native_exec_init(void);
 void
 native_exec_exit(void);
+
+void
+module_hook_transitions(module_area_t *ma, bool at_map);
+
+enum { MAX_STUB_SIZE = 16 };
+
+typedef struct _native_stub_t {
+    ushort tgt_offset;
+    ushort jmp_offset;
+    byte code[MAX_STUB_SIZE];
+} native_stub_t;
+
+app_pc
+native_create_stub(native_stub_t *stub_tmpl, app_pc pc_immed, app_pc jmp_tgt);
 
 #endif /* _NATIVE_EXEC_H_ */
