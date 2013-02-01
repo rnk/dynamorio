@@ -38,7 +38,6 @@
 #include "module.h"
 #include "instr.h"
 #include "decode.h"
-#include "disassemble.h"
 
 /* According to the SysV amd64 psABI docs, there are three reserved entries
  * in the PLTGOT:
@@ -53,8 +52,11 @@
  */
 enum { DL_RUNTIME_RESOLVE_IDX = 2 };
 
-/* The loader's _dl_fixup. */
-void *(*app_dl_fixup)(void *link_map, uint dynamic_index);
+/* The loader's _dl_fixup.  For ia32 it uses regparms. */
+typedef void *(*fixup_fn_t)(void *link_map, uint dynamic_index)
+    IF_NOT_X64(__attribute__((regparm (3), stdcall, unused)));
+
+fixup_fn_t app_dl_fixup;
 
 static void
 find_dl_fixup(dcontext_t *dcontext, app_pc resolver)
@@ -69,7 +71,7 @@ find_dl_fixup(dcontext_t *dcontext, app_pc resolver)
         pc = decode(dcontext, pc, &instr);
         if (instr_get_opcode(&instr) == OP_call) {
             opnd_t tgt = instr_get_target(&instr);
-            app_dl_fixup = (void *(*)(void *, uint)) opnd_get_pc(tgt);
+            app_dl_fixup = (fixup_fn_t) opnd_get_pc(tgt);
             break;
         } else if (instr_is_cti(&instr)) {
             break;

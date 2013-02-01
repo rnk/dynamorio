@@ -30,7 +30,7 @@
  * DAMAGE.
  */
 
-/* Intercepts module transitions for native execution for ELF modules.
+/* Intercepts module transitions for native execution for PE modules.
  */
 
 #include "../globals.h"

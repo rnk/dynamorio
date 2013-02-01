@@ -2188,6 +2188,15 @@ GLOBAL_LABEL(_dynamorio_runtime_resolve:)
         add      rsp, 16        /* clear args */
         jmp      r11            /* Jump to resolved PC, or into DR. */
 # else /* !X64 */
+        push 	 REG_XAX
+        push 	 REG_XCX
+        mov      REG_XAX, [REG_XSP + 2 * ARG_SZ]  /* link map */
+        mov      REG_XCX, [REG_XSP + 3 * ARG_SZ]  /* .dynamic index */
+        CALLC2(dynamorio_dl_fixup, REG_XAX, REG_XCX)
+        mov      [REG_XSP + 2 * ARG_SZ], REG_XAX /* overwrite arg1 */
+        pop 	 REG_XCX
+        pop 	 REG_XAX
+        ret	 4 /* ret to target, pop arg2 */
 # endif /* !X64 */
         END_FUNC(_dynamorio_runtime_resolve)
 

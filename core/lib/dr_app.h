@@ -107,12 +107,4 @@ DR_APP_API void dr_app_take_over(void);
  */
 DR_APP_API int dr_app_setup_and_start(void);
 
-/**
- * Return true if the current thread is executing under DynamoRIO, and false if
- * it is executing natively.  Code will execute natively before DR has
- * initialized, or if the current module is on the native execution module list
- * specified by the user.
- */
-DR_APP_API bool dr_app_is_under_dr(void);
-
 #endif /* _DR_APP_H_ */
