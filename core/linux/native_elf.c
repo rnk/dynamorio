@@ -62,32 +62,6 @@ module_contains_pc(module_area_t *ma, app_pc pc)
     return (pc >= ma->start && pc < ma->end);
 }
 
-//app_pc *
-//module_get_pltgot(module_area_t *ma, bool at_map)
-//{
-    //os_privmod_data_t opd;
-    //app_pc pltgot;
-    //app_pc mod_base;
-    //ptr_int_t load_delta;
-    //memset(&opd, 0, sizeof(opd));
-    //module_get_os_privmod_data(ma->start, ma->end - ma->start, &opd);
-    //pltgot = (app_pc) opd.pltgot;
-    //if (!at_map && !module_contains_pc(ma, pltgot)) {
-        /* XXX: module_get_os_privmod_data() assumes the module hasn't been
-         * relocated, but for already loaded modules, we end up adding
-         * load_delta twice.  Here we subtract it back out.
-         */
-        //app_pc mod_base = module_vaddr_from_prog_header(base + ehdr->e_phoff,
-                                                 //ehdr->e_phnum, NULL);
-        //ptr_int_t load_delta = base - mod_base;
-        //pltgot -= load_delta;
-    //}
-    //if (module_contains_pc(ma, pltgot)) {
-        //return pltgot;
-    //}
-    //return NULL;
-//}
-
 /* Creates a template stub copied repeatedly for each stub we need to create.
  */
 static void
@@ -163,33 +137,24 @@ hook_plt_slot(module_area_t *ma, os_privmod_data_t *opd,
 }
 
 void
-hook_plt_imports(module_area_t *ma, bool at_map)
+hook_plt_imports(module_area_t *ma, os_privmod_data_t *opd, bool at_map)
 {
-    os_privmod_data_t opd;
-    memset(&opd, 0, sizeof(opd));
-    module_walk_program_headers(ma->start, ma->end - ma->start, at_map,
-                                NULL, NULL, NULL, &opd.os_data);
-    module_get_os_privmod_data(ma->start, ma->end - ma->start,
-                               !at_map/*relocated*/, &opd);
+    /* FIXME: Move this template into native_exec.c. */
     native_stub_t stub;
     initialize_stub(&stub);
 
-    print_file(STDERR, "processing module %s\n", GET_MODULE_NAME(&ma->names));
-
     /* We only care about jump slot relocations. */
-    if (opd.jmprel != NULL) {
-        app_pc jmprel = opd.jmprel;
-        app_pc jmprelend = opd.jmprel + opd.pltrelsz;
-        bool is_rela = (opd.pltrel == DT_RELA);
+    if (opd->jmprel != NULL) {
+        app_pc jmprel = opd->jmprel;
+        app_pc jmprelend = opd->jmprel + opd->pltrelsz;
+        bool is_rela = (opd->pltrel == DT_RELA);
         size_t relentsz = (is_rela ? sizeof(ELF_RELA_TYPE) : sizeof(ELF_REL_TYPE));
-        ASSERT(opd.pltrel == DT_REL || opd.pltrel == DT_RELA);
+        ASSERT(opd->pltrel == DT_REL || opd->pltrel == DT_RELA);
         print_file(STDERR, "jmprel: %p, jmprelend: %p\n", jmprel, jmprelend);
-        for (jmprel = opd.jmprel; jmprel < jmprelend; jmprel += relentsz) {
+        for (jmprel = opd->jmprel; jmprel < jmprelend; jmprel += relentsz) {
             ELF_REL_TYPE *rel = (ELF_REL_TYPE *) jmprel;
-            hook_plt_slot(ma, &opd, &stub, rel, is_rela);
+            hook_plt_slot(ma, opd, &stub, rel, is_rela);
         }
-    } else {
-        print_file(STDERR, "no jmprel\n");
     }
 }
 
@@ -199,14 +164,27 @@ hook_plt_imports(module_area_t *ma, bool at_map)
 void
 module_hook_transitions(module_area_t *ma, bool at_map)
 {
+    os_privmod_data_t opd;
     app_pc relro_base;
     size_t relro_size;
     bool got_unprotected = false;
+    app_pc *pltgot;
 
+    memset(&opd, 0, sizeof(opd));
+    module_walk_program_headers(ma->start, ma->end - ma->start, at_map,
+                                NULL, NULL, NULL, &opd.os_data);
+    module_get_os_privmod_data(ma->start, ma->end - ma->start,
+                               !at_map/*relocated*/, &opd);
+
+    /* _dl_runtime_resolve is typically inside the relro region, so we must
+     * unprotect it.
+     */
     if (!at_map && module_get_relro(ma->start, &relro_base, &relro_size)) {
         os_set_protection(relro_base, relro_size, MEMPROT_READ|MEMPROT_WRITE);
     }
 
+    pltgot = (app_pc *) opd.pltgot;
+    pltgot[DL_RUNTIME_RESOLVE_IDX] = (app_pc) _dynamorio_runtime_resolve;
     hook_plt_imports(ma, at_map);
 
     if (got_unprotected) {
