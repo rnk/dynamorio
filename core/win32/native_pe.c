@@ -34,7 +34,7 @@
  */
 
 #include "../globals.h"
-#include "native_exec.h"
+#include "../native_exec.h"
 #include "module.h"
 
 void
