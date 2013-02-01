@@ -133,7 +133,7 @@ void
 native_exec_module_load(module_area_t *ma, bool at_map)
 {
     bool is_native = check_and_mark_native_exec(ma, true/*add*/);
-    if (is_native)
+    if (is_native && DYNAMO_OPTION(native_exec_retakeover))
         module_hook_transitions(ma, at_map);
 }
 

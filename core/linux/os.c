@@ -5656,9 +5656,6 @@ pre_system_call(dcontext_t *dcontext)
         LOG(THREAD, LOG_SYSCALLS, 2,
             "syscall: mprotect addr="PFX" size="PFX" prot=%s\n",
             addr, len, memprot_string(osprot_to_memprot(prot)));
-        print_file(STDERR,
-            "syscall: mprotect addr="PFX" size="PFX" prot=%s\n",
-            addr, len, memprot_string(osprot_to_memprot(prot)));
 
         /* PR 413109 - fail mprotect if start region is unknown; seen in hostd.
          * FIXME: get_memory_info_from_os() should be used instead of 
