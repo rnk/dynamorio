@@ -42,7 +42,6 @@
 
 #include "native_exec.h"
 #include "../globals.h"
-#include "../heap.h"
 #include "../vmareas.h"
 #include "../module_shared.h"
 #include "../instrlist.h"
@@ -102,7 +101,11 @@ on_native_exec_list(const char *modname)
     return onlist;
 }
 
+<<<<<<< HEAD
 static bool
+=======
+static void
+>>>>>>> master
 check_and_mark_native_exec(module_area_t *ma, bool add)
 {
     bool is_native = false;
@@ -127,6 +130,7 @@ check_and_mark_native_exec(module_area_t *ma, bool add)
             vmvector_remove(native_exec_areas, ma->start, ma->end);
         ASSERT_CURIOSITY((is_native && present) || (!is_native && !present));
     }
+<<<<<<< HEAD
     return is_native;
 }
 
@@ -136,6 +140,14 @@ native_exec_module_load(module_area_t *ma, bool at_map)
     bool is_native = check_and_mark_native_exec(ma, true/*add*/);
     if (is_native)
         module_hook_transitions(ma, at_map);
+=======
+}
+
+void
+native_exec_module_load(module_area_t *ma)
+{
+    check_and_mark_native_exec(ma, true/*add*/);
+>>>>>>> master
 }
 
 void

@@ -429,6 +429,12 @@ redirect_LoadLibraryExW(
  * Memory
  */
 
+void
+kernel32_redir_init_mem(void);
+
+void
+kernel32_redir_exit_mem(void);
+
 PVOID
 WINAPI
 redirect_DecodePointer(
@@ -543,6 +549,47 @@ HLOCAL
 WINAPI
 redirect_LocalFree(
     __deref HLOCAL hMem
+    );
+
+/* These next 6 Local* routines are not part of the set we're directly
+ * targeting, but we have to provide a complete Local* replacement.
+ */
+HLOCAL
+WINAPI
+redirect_LocalReAlloc(
+    __in HLOCAL hMem,
+    __in SIZE_T uBytes,
+    __in UINT uFlags
+    );
+
+LPVOID
+WINAPI
+redirect_LocalLock(
+    __in HLOCAL hMem
+    );
+
+HLOCAL
+WINAPI
+redirect_LocalHandle(
+    __in LPCVOID pMem
+    );
+
+BOOL
+WINAPI
+redirect_LocalUnlock(
+    __in HLOCAL hMem
+    );
+
+SIZE_T
+WINAPI
+redirect_LocalSize(
+    __in HLOCAL hMem
+    );
+
+UINT
+WINAPI
+redirect_LocalFlags(
+    __in HLOCAL hMem
     );
 
 BOOL
