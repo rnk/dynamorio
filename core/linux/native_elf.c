@@ -37,7 +37,11 @@
 #include "../native_exec.h"
 #include "module.h"
 #include "instr.h"
+#include "instr_create.h"
 #include "decode.h"
+#include "disassemble.h"
+
+#include <link.h>  /* for struct link_map */
 
 /* According to the SysV amd64 psABI docs, there are three reserved entries
  * in the PLTGOT:
@@ -53,10 +57,15 @@
 enum { DL_RUNTIME_RESOLVE_IDX = 2 };
 
 /* The loader's _dl_fixup.  For ia32 it uses regparms. */
-typedef void *(*fixup_fn_t)(void *link_map, uint dynamic_index)
+typedef void *(*fixup_fn_t)(struct link_map *l_map, uint dynamic_index)
     IF_NOT_X64(__attribute__((regparm (3), stdcall, unused)));
 
 fixup_fn_t app_dl_fixup;
+
+static byte plt_stub_template[MAX_STUB_SIZE];
+static uint plt_stub_immed_offset;
+static uint plt_stub_jmp_tgt_offset;
+static size_t plt_stub_size;
 
 static void
 find_dl_fixup(dcontext_t *dcontext, app_pc resolver)
@@ -79,6 +88,50 @@ find_dl_fixup(dcontext_t *dcontext, app_pc resolver)
         instr_reset(dcontext, &instr);
     }
     instr_free(dcontext, &instr);
+}
+
+/* Creates a template stub copied repeatedly for each stub we need to create.
+ */
+static void
+initialize_plt_stub_template(void)
+{
+    dcontext_t *dc = GLOBAL_DCONTEXT;
+    instrlist_t *ilist = instrlist_create(dc);
+    app_pc code_end = plt_stub_template + BUFFER_SIZE_BYTES(plt_stub_template);
+    app_pc next_pc;
+    uint mov_len, jmp_len;
+
+    /* %r11 is scratch on x64 and the PLT resolver uses it, so we do too.  For
+     * ia32, there are scratch regs, but the loader doesn't use them.  Presumably
+     * it doesn't want to break special calling conventions, so we follow suit
+     * and push onto the stack.
+     */
+#ifdef X64
+    instrlist_append(ilist, INSTR_CREATE_mov_imm
+                     (dc, opnd_create_reg(DR_REG_R11), OPND_CREATE_INTPTR(0)));
+#else
+    instrlist_append(ilist, INSTR_CREATE_push_imm
+                     (dc, opnd_create_reg(DR_REG_R11), OPND_CREATE_INTPTR(0)));
+#endif
+    instrlist_append(ilist, INSTR_CREATE_jmp
+                     (dc, opnd_create_pc(0)));
+    next_pc = instrlist_encode_to_copy(dc, ilist, plt_stub_template, NULL,
+                                       code_end, false);
+    plt_stub_size = next_pc - plt_stub_template;
+    print_file(STDERR, "plt_stub_size: %d\n", plt_stub_size);
+
+    /* We need to get the offsets of the operands.  We assume the operands are
+     * encoded as the last part of the instruction.
+     */
+    mov_len = instr_length(dc, instrlist_first(ilist));
+    jmp_len = instr_length(dc, instrlist_last(ilist));
+    plt_stub_immed_offset = mov_len - sizeof(void*);
+    plt_stub_jmp_tgt_offset = mov_len + jmp_len - sizeof(uint);
+    DOLOG(4, LOG_LOADER, {
+        LOG(THREAD_GET, 4, LOG_LOADER, "plt_stub_template code:\n");
+        instrlist_disassemble(dc, NULL, ilist, THREAD_GET);
+    });
+    instrlist_clear_and_destroy(dc, ilist);
 }
 
 static void
@@ -134,21 +187,74 @@ module_hook_transitions(module_area_t *ma, bool at_map)
     }
 }
 
+static app_pc
+create_plt_stub(app_pc plt_target)
+{
+    app_pc stub_pc = native_allocate_stub(plt_stub_size);
+    app_pc *tgt_immed;
+    app_pc jmp_tgt;
+
+    memcpy(stub_pc, plt_stub_template, plt_stub_size);
+    tgt_immed = (app_pc *) (stub_pc + plt_stub_immed_offset);
+    jmp_tgt = stub_pc + plt_stub_jmp_tgt_offset;
+    *tgt_immed = plt_target;
+    insert_relative_target(jmp_tgt, (app_pc) native_plt_call,
+                           false/*!hotpatch*/);
+    return stub_pc;
+}
+
+static ELF_REL_TYPE *
+find_plt_reloc(struct link_map *l_map, uint reloc_arg)
+{
+    ELF_DYNAMIC_ENTRY_TYPE *dyn = l_map->l_ld;
+    app_pc jmprel;
+    uint pltrel;
+    size_t relsz;
+
+    /* XXX: We can avoid the scan if we rely on internal details of link_map. */
+    while (dyn->d_tag != DT_NULL) {
+        switch (dyn->d_tag) {
+        case DT_JMPREL:
+            jmprel = (app_pc) dyn->d_un.d_ptr; /* relocated */
+            break;
+        case DT_PLTREL:
+            pltrel = dyn->d_un.d_val;
+            break;
+        }
+        dyn++;
+    }
+
+    relsz = (pltrel == DT_REL ? sizeof(ELF_REL_TYPE) : sizeof(ELF_RELA_TYPE));
+    /* XXX: Is reloc_arg an index or an offset?  For x64 it's an index. */
+    return (ELF_REL_TYPE *) (jmprel + relsz * reloc_arg);
+}
+
 /* Our replacement for _dl_fixup.
- * FIXME: Currently this exists only for logging.  Eventually it will replace
- * the relocation with our own stub that enters the cache.
  */
 void *
-dynamorio_dl_fixup(void *link_map, uint dynamic_index)
+dynamorio_dl_fixup(struct link_map *l_map, uint reloc_arg)
 {
     app_pc res;
+    ELF_REL_TYPE *rel;
+    app_pc *r_addr;
+
     ASSERT(app_dl_fixup != NULL);
-    res = app_dl_fixup(link_map, dynamic_index);
+    res = app_dl_fixup(l_map, reloc_arg);
     DOLOG(4, LOG_LOADER, {
         dcontext_t *dcontext = get_thread_private_dcontext();
         LOG(THREAD, LOG_LOADER, 4,
-            "%s: resolved dynamic index %d to "PFX"\n",
-            __FUNCTION__, dynamic_index, res);
+            "%s: resolved reloc index %d to "PFX"\n",
+            __FUNCTION__, reloc_arg, res);
     });
+    app_pc stub = create_plt_stub(res);
+    rel = find_plt_reloc(l_map, reloc_arg);
+    r_addr = (app_pc *) (l_map->l_addr + rel->r_offset);
+    *r_addr = stub;
     return res;
+}
+
+void
+native_module_init(void)
+{
+    initialize_plt_stub_template();
 }

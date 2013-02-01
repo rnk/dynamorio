@@ -48,6 +48,21 @@ native_exec_init(void);
 void
 native_exec_exit(void);
 
+/* Returns RWX memory for creating stubs.  They live until native_exec_exit().
+ */
+app_pc
+native_allocate_stub(size_t size);
+
+/* Limit on stub sizes. */
+enum { MAX_STUB_SIZE = 16 };
+
+/* The following prototypes are implemented by various object file formats.  For
+ * now we assume a single object file format per platform.
+ */
+
+void
+native_module_init(void);
+
 void
 module_hook_transitions(module_area_t *ma, bool at_map);
 

@@ -53,6 +53,12 @@
  */
 vm_area_vector_t *native_exec_areas;
 
+enum { MAX_STUB_MEMORY = 12 * 1024 };
+enum { MEMPROT_RWX = MEMPROT_READ|MEMPROT_WRITE|MEMPROT_EXEC };
+
+app_pc stub_memory;
+app_pc stub_memory_cur;
+
 void
 native_exec_init(void)
 {
@@ -60,6 +66,12 @@ native_exec_init(void)
         return;
     VMVECTOR_ALLOC_VECTOR(native_exec_areas, GLOBAL_DCONTEXT, VECTOR_SHARED,
                           native_exec_areas);
+    /* XXX: Elimiate the hard cap. */
+    stub_memory = heap_mmap_ex(MAX_STUB_MEMORY, MAX_STUB_MEMORY, MEMPROT_RWX,
+                               false/*!guarded*/);
+    stub_memory_cur = stub_memory;
+
+    native_module_init();
 }
 
 void
@@ -69,6 +81,9 @@ native_exec_exit(void)
         return;
     vmvector_delete_vector(GLOBAL_DCONTEXT, native_exec_areas);
     native_exec_areas = NULL;
+    heap_munmap_ex(stub_memory, MAX_STUB_MEMORY, false/*!guarded*/);
+    stub_memory = NULL;
+    stub_memory_cur = NULL;
 }
 
 static bool
@@ -141,4 +156,21 @@ void
 native_exec_module_unload(module_area_t *ma)
 {
     check_and_mark_native_exec(ma, false/*!add*/);
+}
+
+app_pc
+native_allocate_stub(size_t size)
+{
+    app_pc stub_pc = stub_memory_cur;
+    /* We don't require small stubs, but really they should be small. */
+    ASSERT(size <= MAX_STUB_SIZE);
+    stub_memory_cur += size;
+    ASSERT(stub_memory_cur <= stub_memory + MAX_STUB_MEMORY);
+    return stub_pc;
+}
+
+void
+native_module_transition(priv_mcontext_t *mc, app_pc target)
+{
+    print_file(STDERR, "cross-module call to %p\n", target);
 }

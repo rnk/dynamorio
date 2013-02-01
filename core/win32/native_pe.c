@@ -38,6 +38,12 @@
 #include "module.h"
 
 void
+native_module_init(void)
+{
+    /* nothing */
+}
+
+void
 module_hook_transitions(module_area_t *ma, bool at_map)
 {
     ASSERT_CURIOSITY(__FUNCTION__" NYI");
