@@ -136,11 +136,9 @@ initialize_plt_stub_template(void)
     instrlist_append(ilist, INSTR_CREATE_mov_imm
                      (dc, opnd_create_reg(DR_REG_R11), OPND_CREATE_INTPTR(0)));
 #else
-    instrlist_append(ilist, INSTR_CREATE_push_imm
-                     (dc, opnd_create_reg(DR_REG_R11), OPND_CREATE_INTPTR(0)));
+    instrlist_append(ilist, INSTR_CREATE_push_imm(dc, OPND_CREATE_INTPTR(0)));
 #endif
-    instrlist_append(ilist, INSTR_CREATE_jmp
-                     (dc, opnd_create_pc(0)));
+    instrlist_append(ilist, INSTR_CREATE_jmp (dc, opnd_create_pc(0)));
     next_pc = instrlist_encode_to_copy(dc, ilist, plt_stub_template, NULL,
                                        code_end, false);
     plt_stub_size = next_pc - plt_stub_template;
@@ -241,25 +239,35 @@ static ELF_REL_TYPE *
 find_plt_reloc(struct link_map *l_map, uint reloc_arg)
 {
     ELF_DYNAMIC_ENTRY_TYPE *dyn = l_map->l_ld;
-    app_pc jmprel;
-    uint pltrel;
+    app_pc jmprel = NULL;
     size_t relsz;
+    IF_X64(uint pltrel = 0;)
 
-    /* XXX: We can avoid the scan if we rely on internal details of link_map. */
+    /* XXX: We can avoid the scan if we rely on internal details of link_map,
+     * which keeps a mapping of DT_TAG to .dynamic index.
+     */
     while (dyn->d_tag != DT_NULL) {
         switch (dyn->d_tag) {
         case DT_JMPREL:
             jmprel = (app_pc) dyn->d_un.d_ptr; /* relocated */
             break;
+#ifdef X64
         case DT_PLTREL:
             pltrel = dyn->d_un.d_val;
             break;
+#endif
         }
         dyn++;
     }
+    if (jmprel == NULL)
+        return NULL;
 
+    /* reloc_arg is an index on x64 and an offset on ia32. */
+#ifdef X64
     relsz = (pltrel == DT_REL ? sizeof(ELF_REL_TYPE) : sizeof(ELF_RELA_TYPE));
-    /* XXX: Is reloc_arg an index or an offset?  For x64 it's an index. */
+#else
+    relsz = 1;
+#endif
     return (ELF_REL_TYPE *) (jmprel + relsz * reloc_arg);
 }
 
@@ -286,9 +294,10 @@ dynamorio_dl_fixup(struct link_map *l_map, uint reloc_arg)
     });
     app_pc stub = create_plt_stub(res);
     rel = find_plt_reloc(l_map, reloc_arg);
+    ASSERT(rel != NULL);  /* It has to be there if we're doing fixups. */
     r_addr = (app_pc *) (l_map->l_addr + rel->r_offset);
     *r_addr = stub;
-    return res;
+    return stub;
 }
 
 void

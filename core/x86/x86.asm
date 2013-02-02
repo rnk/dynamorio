@@ -195,7 +195,7 @@ START_FILE
 #define POP_PRIV_MCXT_GPRS() \
         POPGPR                                          @N@\
         POPF                                            @N@\
-        lea      REG_XSP, [REG_XSP + PUSH_PRIV_MCXT_PRE_PC_SHIFT + ARG_SZ/*pc*/]
+        lea      REG_XSP, [REG_XSP - PUSH_PRIV_MCXT_PRE_PC_SHIFT + ARG_SZ/*pc*/]
 
 /* This is really the alignment needed by x64 code.  For now, when we bother to
  * align the stack pointer, we just go for 16 byte alignment.  We do *not*
@@ -1508,7 +1508,7 @@ GLOBAL_LABEL(native_plt_call:)
         mov      REG_XCX, r11  /* next_pc in r11 */
 # else
         mov      REG_XCX, [REG_XSP + PRIV_MCXT_SIZE]     /* next_pc on stack */
-        add      [REG_XAX + MCONTEXT_XSP_OFFS], ARG_SZ   /* adjust app xsp for arg */
+        add      DWORD [REG_XAX + MCONTEXT_XSP_OFFS], ARG_SZ   /* adjust app xsp for arg */
 # endif
         CALLC2(native_module_transition, REG_XAX, REG_XCX)
 
