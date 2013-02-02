@@ -43,16 +43,32 @@
 
 #include <link.h>  /* for struct link_map */
 
-/* According to the SysV amd64 psABI docs, there are three reserved entries
+/* According to the SysV amd64 psABI docs[1], there are three reserved entries
  * in the PLTGOT:
  * 1. offset to .dynamic section
  * 2. available for loader data, used for link map
  * 3. pointer to resolution stub, used for _dl_runtime_resolve
  *
- * We want to replace 3, _dl_runtime_resolve, with a stub in x86.asm.  See
- * Figure 5.2 for more details.
+ * 1: http://refspecs.linuxfoundation.org/elf/x86_64-abi-0.95.pdf
  *
- * FIXME: Find documentation that this is the same on ia32 and test it.
+ * We want to replace 3, _dl_runtime_resolve, with a stub in x86.asm.  Here is
+ * what the PLT generally looks like, as specified by Figure 5.2 of the ABI
+ * docs:
+ *
+ * .PLT0:   pushq GOT+8(%rip) # GOT[1]
+ *          jmp *GOT+16(%rip) # GOT[2]  # _dl_runtime_resolve here
+ *          nop ; nop ; nop ; nop
+ *
+ * .PLT1:   jmp *name1@GOTPCREL(%rip) # 16 bytes from .PLT0
+ *          pushq $index1
+ *          jmp .PLT0
+ * .PLT2:   jmp *name2@GOTPCREL(%rip) # 16 bytes from .PLT1
+ *          pushq $index2
+ *          jmp .PLT0
+ * .PLT3:   ...
+ *
+ * Testing shows that this is the same on ia32, but I wasn't able to find
+ * support for that in the docs.
  */
 enum { DL_RUNTIME_RESOLVE_IDX = 2 };
 
@@ -67,6 +83,10 @@ static uint plt_stub_immed_offset;
 static uint plt_stub_jmp_tgt_offset;
 static size_t plt_stub_size;
 
+/* Finds the call to _dl_fixup in _dl_runtime_resolve from ld.so.  _dl_fixup is
+ * not exported, but we need to call it.  We assume that _dl_runtime_resolve is
+ * straightline code until the call to _dl_fixup.
+ */
 static void
 find_dl_fixup(dcontext_t *dcontext, app_pc resolver)
 {
@@ -75,12 +95,18 @@ find_dl_fixup(dcontext_t *dcontext, app_pc resolver)
     int i = 0;
     app_pc pc = resolver;
 
+    LOG(THREAD, 5, LOG_LOADER, "%s: scanning for _dl_fixup call:\n",
+        __FUNCTION__);
     instr_init(dcontext, &instr);
     while (pc != NULL && i < max_decodes) {
+        DOLOG(5, LOG_LOADER, { disassemble(dcontext, pc, THREAD); });
         pc = decode(dcontext, pc, &instr);
         if (instr_get_opcode(&instr) == OP_call) {
             opnd_t tgt = instr_get_target(&instr);
             app_dl_fixup = (fixup_fn_t) opnd_get_pc(tgt);
+            LOG(THREAD, 1, LOG_LOADER,
+                "%s: found _dl_fixup call at "PFX", _dl_fixup is "PFX":\n",
+                __FUNCTION__, pc, app_dl_fixup);
             break;
         } else if (instr_is_cti(&instr)) {
             break;
@@ -151,14 +177,16 @@ replace_module_resolver(module_area_t *ma, app_pc *pltgot)
         ASSERT_CURIOSITY(app_dl_fixup != NULL && "failed to find _dl_fixup");
     }
 
-    LOG(THREAD, LOG_LOADER, 3,
-        "%s: replacing _dl_runtime_resolve "PFX" with "PFX"\n",
-        __FUNCTION__, resolver, _dynamorio_runtime_resolve);
-    pltgot[DL_RUNTIME_RESOLVE_IDX] = (app_pc) _dynamorio_runtime_resolve;
+    if (app_dl_fixup != NULL) {
+        LOG(THREAD, LOG_LOADER, 3,
+            "%s: replacing _dl_runtime_resolve "PFX" with "PFX"\n",
+            __FUNCTION__, resolver, _dynamorio_runtime_resolve);
+        pltgot[DL_RUNTIME_RESOLVE_IDX] = (app_pc) _dynamorio_runtime_resolve;
+    }
 }
 
-/* If we are not at_map, then we assume the module has been relocated.
- * FIXME: Catch transitions out of un-relocated modules.
+/* Hooks all module transitions through the PLT.  If we are not at_map, then we
+ * assume the module has been relocated.
  */
 void
 module_hook_transitions(module_area_t *ma, bool at_map)
@@ -168,15 +196,21 @@ module_hook_transitions(module_area_t *ma, bool at_map)
     size_t relro_size;
     bool got_unprotected = false;
 
+    /* FIXME: We can't handle un-relocated modules yet. */
+    if (at_map)
+        return;
+
     memset(&opd, 0, sizeof(opd));
     module_get_os_privmod_data(ma->start, ma->end - ma->start,
                                !at_map/*relocated*/, &opd);
 
-    /* _dl_runtime_resolve is typically inside the relro region, so we must
-     * unprotect it.
+    /* If we are !at_map, then we assume the loader has already relocated the
+     * module and applied protections for PT_GNU_RELRO.  _dl_runtime_resolve is
+     * typically inside the relro region, so we must unprotect it.
      */
     if (!at_map && module_get_relro(ma->start, &relro_base, &relro_size)) {
         os_set_protection(relro_base, relro_size, MEMPROT_READ|MEMPROT_WRITE);
+        got_unprotected = true;
     }
 
     replace_module_resolver(ma, (app_pc *) opd.pltgot);
@@ -239,6 +273,10 @@ dynamorio_dl_fixup(struct link_map *l_map, uint reloc_arg)
     app_pc *r_addr;
 
     ASSERT(app_dl_fixup != NULL);
+    /* i#978: depending on the needs of the client, they may want to run the
+     * loader natively or through the code cache.  We might want to provide that
+     * support by entering the fcache for this call here.
+     */
     res = app_dl_fixup(l_map, reloc_arg);
     DOLOG(4, LOG_LOADER, {
         dcontext_t *dcontext = get_thread_private_dcontext();
