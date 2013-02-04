@@ -85,6 +85,12 @@ static uint plt_stub_jmp_tgt_offset;
 static size_t plt_stub_size;
 static app_pc stub_heap;
 
+static bool
+module_contains_pc(module_area_t *ma, app_pc pc)
+{
+    return (pc >= ma->start && pc < ma->end);
+}
+
 /* Finds the call to _dl_fixup in _dl_runtime_resolve from ld.so.  _dl_fixup is
  * not exported, but we need to call it.  We assume that _dl_runtime_resolve is
  * straightline code until the call to _dl_fixup.
@@ -209,8 +215,89 @@ unhook_module_resolver(module_area_t *ma, app_pc *pltgot)
     }
 }
 
+static size_t
+plt_rel_entry_size(ELF_WORD pltrel)
+{
+    switch (pltrel) {
+    case DT_REL:
+        return sizeof(ELF_REL_TYPE);
+    case DT_RELA:
+        return sizeof(ELF_RELA_TYPE);
+    default:
+        ASSERT(false);
+    }
+    return sizeof(ELF_REL_TYPE);
+}
+
+static app_pc
+find_dt_jmprel(ELF_DYNAMIC_ENTRY_TYPE *dyn, size_t *relsz)
+{
+    app_pc jmprel = NULL;
+    IF_X64(uint pltrel = 0;)
+    while (dyn->d_tag != DT_NULL) {
+        switch (dyn->d_tag) {
+        case DT_JMPREL:
+            jmprel = (app_pc) dyn->d_un.d_ptr; /* relocated */
+            break;
+        case DT_PLTREL:
+            pltrel = dyn->d_un.d_val;
+            break;
+        }
+        dyn++;
+    }
+    relsz = (pltrel == DT_REL ? sizeof(ELF_REL_TYPE) : sizeof(ELF_RELA_TYPE));
+    return jmprel;
+}
+
+static void
+unhook_stub(app_pc *r_addr, app_pc stub_pc)
+{
+    /* Get the original target out of the instr.  The immediate operand of the
+     * first instruction in the stub has it.  We let the accessors assert that
+     * this is so.
+     */
+    instr_t instr;
+    app_pc orig_target;
+    decode(GLOBAL_DCONTEXT, stub_pc, &instr);
+    orig_target = opnd_get_immed_int(instr_get_src(&instr, 0));
+    *r_addr = orig_target;
+    special_heap_free(stub_pc);
+}
+
+static void
+scan_plt_relocs(module_area_t *ma, os_privmod_data_t *opd, bool add_hooks)
+{
+    app_pc jmprel;
+    app_pc jmprelend = opd->jmprel + opd->pltrelsz;
+    size_t entry_size = plt_rel_entry_size(opd->pltrel);
+    for (jmprel = opd->jmprel; jmprel != jmprelend; jmprel += entry_size) {
+        ELF_REL_TYPE *rel = (ELF_REL_TYPE *) jmprel;
+        app_pc *r_addr;
+        app_pc gotval;
+        r_addr = (app_pc *) (ma->start + rel->r_offset);
+        ASSERT(module_contains_pc((app_pc)r_addr));
+        gotval = *r_addr;
+        if (add_hooks) {
+            if (!module_contains_pc(ma, gotval)) {
+                LOG(THREAD, LOG_LOADER, 4,
+                    "%s: hooking cross-module PLT entry to "PFX"\n",
+                    __FUNCTION__, gotval);
+                print_file(STDERR,
+                    "%s: hooking cross-module PLT entry to "PFX"\n",
+                    __FUNCTION__, gotval);
+                *r_addr = create_plt_stub(gotval);
+            }
+        } else {
+            /* XXX: It would be more precise to check the special heap. */
+            if (is_dynamo_address(gotval)) {
+                unhook_stub(r_addr, gotval);
+            }
+        }
+    }
+}
+
 void
-module_change_hooks(module_area_t *ma, bool add, bool at_map)
+module_change_hooks(module_area_t *ma, bool add_hooks, bool at_map)
 {
     os_privmod_data_t opd;
     app_pc relro_base;
@@ -218,12 +305,17 @@ module_change_hooks(module_area_t *ma, bool add, bool at_map)
     bool got_unprotected = false;
 
     /* FIXME: We can't handle un-relocated modules yet. */
-    if (add && at_map)
+    if (add_hooks && at_map)
         return;
 
     memset(&opd, 0, sizeof(opd));
     module_get_os_privmod_data(ma->start, ma->end - ma->start,
                                !at_map/*relocated*/, &opd);
+    module_walk_program_headers(ma->start, ma->end - ma->start, at_map,
+                                NULL/*out base*/,
+                                NULL/*out end*/,
+                                NULL/*out soname*/,
+                                &opd.os_data);
 
     /* If we are !at_map, then we assume the loader has already relocated the
      * module and applied protections for PT_GNU_RELRO.  _dl_runtime_resolve is
@@ -234,20 +326,23 @@ module_change_hooks(module_area_t *ma, bool add, bool at_map)
         got_unprotected = true;
     }
 
-    if (add)
+    if (add_hooks)
         replace_module_resolver(ma, (app_pc *) opd.pltgot);
     else
         unhook_module_resolver(ma, (app_pc *) opd.pltgot);
 
-    /* FIXME: Scan jmprel for jump slot relocations and hook or unhook things
-     * that are already resolved.  Until this is implemented, we will leak stubs
-     * in the special heap.
-     */
+    scan_plt_relocs(ma, &opd, add_hooks);
 
     if (got_unprotected) {
         /* XXX: This may not be symmetric, but we trust PT_GNU_RELRO for now. */
         os_set_protection(relro_base, relro_size, MEMPROT_READ);
     }
+
+    /* XXX: Share this. */
+    HEAP_ARRAY_FREE(GLOBAL_DCONTEXT, opd.os_data.segments,
+                    module_segment_t,
+                    opd.os_data.alloc_segments,
+                    ACCT_OTHER, PROTECTED);
 }
 
 /* Hooks all module transitions through the PLT.  If we are not at_map, then we
@@ -287,31 +382,16 @@ find_plt_reloc(struct link_map *l_map, uint reloc_arg)
     ELF_DYNAMIC_ENTRY_TYPE *dyn = l_map->l_ld;
     app_pc jmprel = NULL;
     size_t relsz;
-    IF_X64(uint pltrel = 0;)
 
     /* XXX: We can avoid the scan if we rely on internal details of link_map,
      * which keeps a mapping of DT_TAG to .dynamic index.
      */
-    while (dyn->d_tag != DT_NULL) {
-        switch (dyn->d_tag) {
-        case DT_JMPREL:
-            jmprel = (app_pc) dyn->d_un.d_ptr; /* relocated */
-            break;
-#ifdef X64
-        case DT_PLTREL:
-            pltrel = dyn->d_un.d_val;
-            break;
-#endif
-        }
-        dyn++;
-    }
+    jmprel = find_dt_jmprel(dyn, &relsz);
     if (jmprel == NULL)
         return NULL;
 
+#ifndef X64
     /* reloc_arg is an index on x64 and an offset on ia32. */
-#ifdef X64
-    relsz = (pltrel == DT_REL ? sizeof(ELF_REL_TYPE) : sizeof(ELF_RELA_TYPE));
-#else
     relsz = 1;
 #endif
     return (ELF_REL_TYPE *) (jmprel + relsz * reloc_arg);
