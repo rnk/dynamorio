@@ -87,6 +87,10 @@ static uint plt_stub_jmp_tgt_offset;
 static size_t plt_stub_size;
 static app_pc stub_heap;
 
+static app_pc
+create_plt_stub(app_pc plt_target);
+
+
 static bool
 module_contains_pc(module_area_t *ma, app_pc pc)
 {
@@ -205,20 +209,8 @@ replace_module_resolver(module_area_t *ma, app_pc *pltgot)
     }
 }
 
-/* Puts back app_dl_runtime_resolve, only if it looks like we previously hooked
- * it.
- */
-static void
-unhook_module_resolver(module_area_t *ma, app_pc *pltgot)
-{
-    if (pltgot != NULL &&
-        pltgot[DL_RUNTIME_RESOLVE_IDX] == (app_pc) _dynamorio_runtime_resolve) {
-        pltgot[DL_RUNTIME_RESOLVE_IDX] = app_dl_runtime_resolve;
-    }
-}
-
 static size_t
-plt_rel_entry_size(ELF_WORD pltrel)
+plt_reloc_entry_size(ELF_WORD pltrel)
 {
     switch (pltrel) {
     case DT_REL:
@@ -231,26 +223,6 @@ plt_rel_entry_size(ELF_WORD pltrel)
     return sizeof(ELF_REL_TYPE);
 }
 
-static app_pc
-find_dt_jmprel(ELF_DYNAMIC_ENTRY_TYPE *dyn, size_t *relsz)
-{
-    app_pc jmprel = NULL;
-    IF_X64(uint pltrel = 0;)
-    while (dyn->d_tag != DT_NULL) {
-        switch (dyn->d_tag) {
-        case DT_JMPREL:
-            jmprel = (app_pc) dyn->d_un.d_ptr; /* relocated */
-            break;
-        case DT_PLTREL:
-            pltrel = dyn->d_un.d_val;
-            break;
-        }
-        dyn++;
-    }
-    relsz = (pltrel == DT_REL ? sizeof(ELF_REL_TYPE) : sizeof(ELF_RELA_TYPE));
-    return jmprel;
-}
-
 static void
 unhook_stub(app_pc *r_addr, app_pc stub_pc)
 {
@@ -258,12 +230,36 @@ unhook_stub(app_pc *r_addr, app_pc stub_pc)
      * first instruction in the stub has it.  We let the accessors assert that
      * this is so.
      */
+    dcontext_t *dcontext = get_thread_private_dcontext();
     instr_t instr;
     app_pc orig_target;
-    decode(GLOBAL_DCONTEXT, stub_pc, &instr);
-    orig_target = opnd_get_immed_int(instr_get_src(&instr, 0));
+    if (dcontext == NULL)  /* happens during exit */
+        dcontext = GLOBAL_DCONTEXT;
+    instr_init(dcontext, &instr);
+    decode(dcontext, stub_pc, &instr);
+    orig_target = (app_pc) opnd_get_immed_int(instr_get_src(&instr, 0));
     *r_addr = orig_target;
-    special_heap_free(stub_pc);
+    special_heap_free(stub_heap, stub_pc);
+    instr_free(dcontext, &instr);
+}
+
+static bool
+is_special_stub(app_pc stub_pc)
+{
+    special_heap_iterator_t shi;
+    bool found = false;
+    /* XXX: this acquires a lock in a nested loop. */
+    special_heap_iterator_start(stub_heap, &shi);
+    while (special_heap_iterator_hasnext(&shi)) {
+        app_pc start, end;
+        special_heap_iterator_next(&shi, &start, &end);
+        if (stub_pc >= start && stub_pc < end) {
+            found = true;
+            break;
+        }
+    }
+    special_heap_iterator_stop(&shi);
+    return found;
 }
 
 static void
@@ -271,17 +267,17 @@ scan_plt_relocs(module_area_t *ma, os_privmod_data_t *opd, bool add_hooks)
 {
     app_pc jmprel;
     app_pc jmprelend = opd->jmprel + opd->pltrelsz;
-    size_t entry_size = plt_rel_entry_size(opd->pltrel);
+    size_t entry_size = plt_reloc_entry_size(opd->pltrel);
     for (jmprel = opd->jmprel; jmprel != jmprelend; jmprel += entry_size) {
         ELF_REL_TYPE *rel = (ELF_REL_TYPE *) jmprel;
         app_pc *r_addr;
         app_pc gotval;
         r_addr = (app_pc *) (ma->start + rel->r_offset);
-        ASSERT(module_contains_pc((app_pc)r_addr));
+        ASSERT(module_contains_pc(ma, (app_pc)r_addr));
         gotval = *r_addr;
         if (add_hooks) {
             if (!module_contains_pc(ma, gotval)) {
-                LOG(THREAD, LOG_LOADER, 4,
+                LOG(THREAD_GET, LOG_LOADER, 4,
                     "%s: hooking cross-module PLT entry to "PFX"\n",
                     __FUNCTION__, gotval);
                 print_file(STDERR,
@@ -290,8 +286,10 @@ scan_plt_relocs(module_area_t *ma, os_privmod_data_t *opd, bool add_hooks)
                 *r_addr = create_plt_stub(gotval);
             }
         } else {
-            /* XXX: It would be more precise to check the special heap. */
-            if (is_dynamo_address(gotval)) {
+            /* XXX: pull the ranges out of the heap up front to avoid lock
+             * acquisitions.
+             */
+            if (is_special_stub(gotval)) {
                 unhook_stub(r_addr, gotval);
             }
         }
@@ -305,6 +303,8 @@ module_change_hooks(module_area_t *ma, bool add_hooks, bool at_map)
     app_pc relro_base;
     size_t relro_size;
     bool got_unprotected = false;
+    bool already_hooked = false;
+    app_pc *pltgot;
 
     /* FIXME: We can't handle un-relocated modules yet. */
     if (add_hooks && at_map)
@@ -313,11 +313,21 @@ module_change_hooks(module_area_t *ma, bool add_hooks, bool at_map)
     memset(&opd, 0, sizeof(opd));
     module_get_os_privmod_data(ma->start, ma->end - ma->start,
                                !at_map/*relocated*/, &opd);
-    module_walk_program_headers(ma->start, ma->end - ma->start, at_map,
-                                NULL/*out base*/,
-                                NULL/*out end*/,
-                                NULL/*out soname*/,
-                                &opd.os_data);
+    pltgot = (app_pc *) opd.pltgot;
+
+    /* We can't hook modules that don't have a pltgot. */
+    if (pltgot == NULL)
+        return;
+
+    /* Make this somewhat idempotent.  We shouldn't re-hook if we're already
+     * hooked, and we shouldn't remove hooks if we haven't hooked already.
+     */
+    if (pltgot[DL_RUNTIME_RESOLVE_IDX] == (app_pc) _dynamorio_runtime_resolve)
+        already_hooked = true;
+    if (add_hooks && already_hooked)
+        return;
+    if (!add_hooks && !already_hooked)
+        return;
 
     /* If we are !at_map, then we assume the loader has already relocated the
      * module and applied protections for PT_GNU_RELRO.  _dl_runtime_resolve is
@@ -328,23 +338,22 @@ module_change_hooks(module_area_t *ma, bool add_hooks, bool at_map)
         got_unprotected = true;
     }
 
-    if (add_hooks)
-        replace_module_resolver(ma, (app_pc *) opd.pltgot);
-    else
-        unhook_module_resolver(ma, (app_pc *) opd.pltgot);
-
-    scan_plt_relocs(ma, &opd, add_hooks);
+    if (add_hooks) {
+        replace_module_resolver(ma, pltgot);
+        scan_plt_relocs(ma, &opd, add_hooks);
+    }
+    else {
+        /* Remove our hooks, but only if it looks like the module is
+         * currently hooked.
+         */
+        pltgot[DL_RUNTIME_RESOLVE_IDX] = app_dl_runtime_resolve;
+        scan_plt_relocs(ma, &opd, add_hooks);
+    }
 
     if (got_unprotected) {
         /* XXX: This may not be symmetric, but we trust PT_GNU_RELRO for now. */
         os_set_protection(relro_base, relro_size, MEMPROT_READ);
     }
-
-    /* XXX: Share this. */
-    HEAP_ARRAY_FREE(GLOBAL_DCONTEXT, opd.os_data.segments,
-                    module_segment_t,
-                    opd.os_data.alloc_segments,
-                    ACCT_OTHER, PROTECTED);
 }
 
 /* Hooks all module transitions through the PLT.  If we are not at_map, then we
@@ -384,15 +393,28 @@ find_plt_reloc(struct link_map *l_map, uint reloc_arg)
     ELF_DYNAMIC_ENTRY_TYPE *dyn = l_map->l_ld;
     app_pc jmprel = NULL;
     size_t relsz;
+    IF_X64(uint pltrel = 0;)
 
     /* XXX: We can avoid the scan if we rely on internal details of link_map,
      * which keeps a mapping of DT_TAG to .dynamic index.
      */
-    jmprel = find_dt_jmprel(dyn, &relsz);
-    if (jmprel == NULL)
-        return NULL;
+    while (dyn->d_tag != DT_NULL) {
+        switch (dyn->d_tag) {
+        case DT_JMPREL:
+            jmprel = (app_pc) dyn->d_un.d_ptr; /* relocated */
+            break;
+#ifdef X64
+        case DT_PLTREL:
+            pltrel = dyn->d_un.d_val;
+            break;
+#endif
+        }
+        dyn++;
+    }
 
-#ifndef X64
+#ifdef X64
+    relsz = plt_reloc_entry_size(pltrel);
+#else
     /* reloc_arg is an index on x64 and an offset on ia32. */
     relsz = 1;
 #endif
@@ -439,6 +461,20 @@ native_module_init(void)
 void
 native_module_exit(void)
 {
+    /* Make sure we can scan all modules on native_exec_areas and unhook them.
+     * If this fails, we get special heak leak asserts.
+     */
+    module_iterator_t *mi;
+    module_area_t *ma;
+    mi = module_iterator_start();
+    while (module_iterator_hasnext(mi)) {
+         ma = module_iterator_next(mi);
+         if (vmvector_overlap(native_exec_areas, ma->start, ma->end)) {
+             native_module_unhook(ma);
+         }
+    }
+    module_iterator_stop(mi);
+
     if (stub_heap != NULL) {
         special_heap_exit(stub_heap);
         stub_heap = NULL;
