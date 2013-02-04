@@ -76,24 +76,27 @@ enum { DL_RUNTIME_RESOLVE_IDX = 2 };
 typedef void *(*fixup_fn_t)(struct link_map *l_map, uint dynamic_index)
     IF_NOT_X64(__attribute__((regparm (3), stdcall, unused)));
 
+app_pc app_dl_runtime_resolve;
 fixup_fn_t app_dl_fixup;
 
 static byte plt_stub_template[MAX_STUB_SIZE];
 static uint plt_stub_immed_offset;
 static uint plt_stub_jmp_tgt_offset;
 static size_t plt_stub_size;
+static app_pc stub_heap;
 
 /* Finds the call to _dl_fixup in _dl_runtime_resolve from ld.so.  _dl_fixup is
  * not exported, but we need to call it.  We assume that _dl_runtime_resolve is
  * straightline code until the call to _dl_fixup.
  */
-static void
+static app_pc
 find_dl_fixup(dcontext_t *dcontext, app_pc resolver)
 {
     instr_t instr;
     int max_decodes = 30;
     int i = 0;
     app_pc pc = resolver;
+    app_pc fixup = NULL;
 
     LOG(THREAD, 5, LOG_LOADER, "%s: scanning for _dl_fixup call:\n",
         __FUNCTION__);
@@ -103,10 +106,10 @@ find_dl_fixup(dcontext_t *dcontext, app_pc resolver)
         pc = decode(dcontext, pc, &instr);
         if (instr_get_opcode(&instr) == OP_call) {
             opnd_t tgt = instr_get_target(&instr);
-            app_dl_fixup = (fixup_fn_t) opnd_get_pc(tgt);
+            fixup = opnd_get_pc(tgt);
             LOG(THREAD, 1, LOG_LOADER,
                 "%s: found _dl_fixup call at "PFX", _dl_fixup is "PFX":\n",
-                __FUNCTION__, pc, app_dl_fixup);
+                __FUNCTION__, pc, fixup);
             break;
         } else if (instr_is_cti(&instr)) {
             break;
@@ -114,6 +117,7 @@ find_dl_fixup(dcontext_t *dcontext, app_pc resolver)
         instr_reset(dcontext, &instr);
     }
     instr_free(dcontext, &instr);
+    return fixup;
 }
 
 /* Creates a template stub copied repeatedly for each stub we need to create.
@@ -142,7 +146,6 @@ initialize_plt_stub_template(void)
     next_pc = instrlist_encode_to_copy(dc, ilist, plt_stub_template, NULL,
                                        code_end, false);
     plt_stub_size = next_pc - plt_stub_template;
-    print_file(STDERR, "plt_stub_size: %d\n", plt_stub_size);
 
     /* We need to get the offsets of the operands.  We assume the operands are
      * encoded as the last part of the instruction.
@@ -169,10 +172,21 @@ replace_module_resolver(module_area_t *ma, app_pc *pltgot)
 
     resolver = pltgot[DL_RUNTIME_RESOLVE_IDX];
     ASSERT_CURIOSITY(resolver != NULL && "loader will overwrite our stub");
-    if (resolver != NULL && app_dl_fixup == NULL) {
-        /* _dl_fixup is not exported, so we have to go find it. */
-        find_dl_fixup(dcontext, resolver);
-        ASSERT_CURIOSITY(app_dl_fixup != NULL && "failed to find _dl_fixup");
+    if (resolver != NULL) {
+        if (app_dl_runtime_resolve == NULL) {
+            app_dl_runtime_resolve = resolver;
+        } else {
+            ASSERT(resolver == app_dl_runtime_resolve &&
+                   "app has multiple resolvers: multiple loaders?");
+        }
+        if (app_dl_fixup == NULL) {
+            /* _dl_fixup is not exported, so we have to go find it. */
+            app_dl_fixup = (fixup_fn_t) find_dl_fixup(dcontext, resolver);
+            ASSERT_CURIOSITY(app_dl_fixup != NULL && "failed to find _dl_fixup");
+        } else {
+            ASSERT((app_pc) app_dl_fixup == find_dl_fixup(dcontext, resolver) &&
+                   "_dl_fixup should be the same for all modules");
+        }
     }
 
     if (app_dl_fixup != NULL) {
@@ -183,11 +197,20 @@ replace_module_resolver(module_area_t *ma, app_pc *pltgot)
     }
 }
 
-/* Hooks all module transitions through the PLT.  If we are not at_map, then we
- * assume the module has been relocated.
+/* Puts back app_dl_runtime_resolve, only if it looks like we previously hooked
+ * it.
  */
+static void
+unhook_module_resolver(module_area_t *ma, app_pc *pltgot)
+{
+    if (pltgot != NULL &&
+        pltgot[DL_RUNTIME_RESOLVE_IDX] == (app_pc) _dynamorio_runtime_resolve) {
+        pltgot[DL_RUNTIME_RESOLVE_IDX] = app_dl_runtime_resolve;
+    }
+}
+
 void
-module_hook_transitions(module_area_t *ma, bool at_map)
+module_change_hooks(module_area_t *ma, bool add, bool at_map)
 {
     os_privmod_data_t opd;
     app_pc relro_base;
@@ -195,7 +218,7 @@ module_hook_transitions(module_area_t *ma, bool at_map)
     bool got_unprotected = false;
 
     /* FIXME: We can't handle un-relocated modules yet. */
-    if (at_map)
+    if (add && at_map)
         return;
 
     memset(&opd, 0, sizeof(opd));
@@ -211,7 +234,15 @@ module_hook_transitions(module_area_t *ma, bool at_map)
         got_unprotected = true;
     }
 
-    replace_module_resolver(ma, (app_pc *) opd.pltgot);
+    if (add)
+        replace_module_resolver(ma, (app_pc *) opd.pltgot);
+    else
+        unhook_module_resolver(ma, (app_pc *) opd.pltgot);
+
+    /* FIXME: Scan jmprel for jump slot relocations and hook or unhook things
+     * that are already resolved.  Until this is implemented, we will leak stubs
+     * in the special heap.
+     */
 
     if (got_unprotected) {
         /* XXX: This may not be symmetric, but we trust PT_GNU_RELRO for now. */
@@ -219,10 +250,25 @@ module_hook_transitions(module_area_t *ma, bool at_map)
     }
 }
 
+/* Hooks all module transitions through the PLT.  If we are not at_map, then we
+ * assume the module has been relocated.
+ */
+void
+native_module_hook(module_area_t *ma, bool at_map)
+{
+    module_change_hooks(ma, true/*add*/, at_map);
+}
+
+void
+native_module_unhook(module_area_t *ma)
+{
+    module_change_hooks(ma, false/*remove*/, false/*!at_map*/);
+}
+
 static app_pc
 create_plt_stub(app_pc plt_target)
 {
-    app_pc stub_pc = native_allocate_stub(plt_stub_size);
+    app_pc stub_pc = special_heap_alloc(stub_heap);
     app_pc *tgt_immed;
     app_pc jmp_tgt;
 
@@ -304,4 +350,16 @@ void
 native_module_init(void)
 {
     initialize_plt_stub_template();
+    stub_heap = special_heap_init(plt_stub_size, true/*locked*/,
+                                  true/*executable*/, false/*!persistent*/);
 }
+
+void
+native_module_exit(void)
+{
+    if (stub_heap != NULL) {
+        special_heap_exit(stub_heap);
+        stub_heap = NULL;
+    }
+}
+
