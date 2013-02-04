@@ -150,5 +150,5 @@ native_exec_module_unload(module_area_t *ma)
 void
 native_module_transition(priv_mcontext_t *mc, app_pc target)
 {
-    print_file(STDERR, "cross-module call to %p\n", target);
+    LOG(THREAD_GET, 6, LOG_LOADER, "cross-module call to %p\n", target);
 }
