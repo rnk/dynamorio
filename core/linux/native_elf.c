@@ -79,6 +79,8 @@ typedef void *(*fixup_fn_t)(struct link_map *l_map, uint dynamic_index)
 app_pc app_dl_runtime_resolve;
 fixup_fn_t app_dl_fixup;
 
+enum { MAX_STUB_SIZE = 16 };
+
 static byte plt_stub_template[MAX_STUB_SIZE];
 static uint plt_stub_immed_offset;
 static uint plt_stub_jmp_tgt_offset;
