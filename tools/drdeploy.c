@@ -232,8 +232,10 @@ const char *usage_str =
     "       -mem               Print memory usage statistics.\n"
     "       -pidfile <file>    Print the pid of the child process to the given file.\n"
     "       -no_inject         Run the application natively.\n"
+# ifdef LINUX  /* FIXME i#725: Windows attach NYI */
     "       -attach <pid>      Attach to the process with the given pid.  Pass 0\n"
     "                          for pid to launch and inject into a new process.\n"
+# endif
     "       -use_dll <dll>     Inject given dll instead of configured DR dll.\n"
     "       -force             Inject regardless of configuration.\n"
     "       -exit0             Return a 0 exit code instead of the app's exit code.\n"
@@ -811,7 +813,9 @@ int main(int argc, char *argv[])
             limit = -1;
             continue;
         }
+# ifdef LINUX
         else if (strcmp(argv[i], "-use_ptrace") == 0) {
+            /* Undocumented option for using ptrace on a fresh process. */
             use_ptrace = true;
             continue;
         }
@@ -829,6 +833,7 @@ int main(int argc, char *argv[])
             exit0 = true;
             continue;
         }
+# endif
 #endif
         /* all other flags have an argument -- make sure it exists */
         else if (argv[i][0] == '-' && i == argc - 1) {
