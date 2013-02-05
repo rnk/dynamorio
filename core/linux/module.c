@@ -1973,6 +1973,7 @@ os_read_until(file_t fd, void *buf, size_t toread)
         if (nread < 0)
             break;
         toread -= nread;
+        buf = (app_pc)buf + nread;
     }
     return (toread == 0);
 }

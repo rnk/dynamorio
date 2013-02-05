@@ -117,6 +117,8 @@ dr_inject_prepare_to_exec(const char *app_name, const char **app_cmdline,
  * users that wish to examine config files need to check the home directory of
  * the injector's user.
  *
+ * \warning ptrace injection is still experimental and subject to change.
+ *
  * \param[in]   data           The pointer returned by dr_inject_process_create()
  *
  * \return  Whether successful.

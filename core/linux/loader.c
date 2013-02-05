@@ -1218,8 +1218,6 @@ takeover_ptrace(ptrace_stack_args_t *args)
     static char home_var[MAXIMUM_PATH+6/*HOME=path\0*/];
     static char *fake_envp[] = {home_var, NULL};
 
-    thread_sleep(1000);
-
     /* When we come in via ptrace, we have no idea where the environment
      * pointer is.  We could use /proc/self/environ to read it or go searching
      * near the stack base.  However, both are fragile and we don't really need

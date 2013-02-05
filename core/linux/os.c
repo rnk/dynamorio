@@ -4534,7 +4534,7 @@ const reg_id_t syscall_regparms[MAX_SYSCALL_ARGS] = {
     DR_REG_RDI,
     DR_REG_RSI,
     DR_REG_RDX,
-    DR_REG_R10,  /* RCX goes here in normal x64 CC. */
+    DR_REG_R10,  /* RCX goes here in normal x64 calling contention. */
     DR_REG_R8,
     DR_REG_R9
 #else
