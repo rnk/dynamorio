@@ -87,11 +87,38 @@ drwinapi_redirect_imports(privmod_t *impmod, const char *name, privmod_t *import
 DWORD
 ntstatus_to_last_error(NTSTATUS status)
 {
+    /* I don't want to rely on RtlNtStatusToDosError not working
+     * at earliest init time or something so I'm doing my own mapping.
+     */
     switch (status) {
     case STATUS_INVALID_HANDLE:        return ERROR_INVALID_HANDLE;
     case STATUS_ACCESS_DENIED:         return ERROR_ACCESS_DENIED;
     case STATUS_INVALID_PARAMETER:     return ERROR_INVALID_PARAMETER;
-    /* XXX: add more.  Hopefully none of these vary by function. */
+    case STATUS_INVALID_PARAMETER_1:   return ERROR_INVALID_PARAMETER;
+    case STATUS_INVALID_PARAMETER_2:   return ERROR_INVALID_PARAMETER;
+    case STATUS_INVALID_PARAMETER_3:   return ERROR_INVALID_PARAMETER;
+    case STATUS_INVALID_PARAMETER_4:   return ERROR_INVALID_PARAMETER;
+    case STATUS_INVALID_PARAMETER_5:   return ERROR_INVALID_PARAMETER;
+    case STATUS_INVALID_PARAMETER_6:   return ERROR_INVALID_PARAMETER;
+    case STATUS_INVALID_PARAMETER_7:   return ERROR_INVALID_PARAMETER;
+    case STATUS_INVALID_PARAMETER_8:   return ERROR_INVALID_PARAMETER;
+    case STATUS_INVALID_PARAMETER_9:   return ERROR_INVALID_PARAMETER;
+    case STATUS_INVALID_PARAMETER_10:  return ERROR_INVALID_PARAMETER;
+    case STATUS_INVALID_PARAMETER_11:  return ERROR_INVALID_PARAMETER;
+    case STATUS_INVALID_PARAMETER_12:  return ERROR_INVALID_PARAMETER;
+    case STATUS_OBJECT_NAME_EXISTS:    return ERROR_ALREADY_EXISTS;
+    case STATUS_OBJECT_NAME_COLLISION: return ERROR_ALREADY_EXISTS;
+    case STATUS_OBJECT_NAME_NOT_FOUND: return ERROR_FILE_NOT_FOUND;
+    case STATUS_OBJECT_NAME_INVALID:   return ERROR_INVALID_NAME;
+    case STATUS_OBJECT_PATH_INVALID:   return ERROR_BAD_PATHNAME;
+    case STATUS_OBJECT_PATH_NOT_FOUND: return ERROR_PATH_NOT_FOUND;
+    case STATUS_MAPPED_FILE_SIZE_ZERO: return ERROR_FILE_INVALID;
+    case STATUS_INVALID_PAGE_PROTECTION: return ERROR_INVALID_PARAMETER;
+    case STATUS_FILE_LOCK_CONFLICT:    return ERROR_LOCK_VIOLATION;
+    case STATUS_INVALID_FILE_FOR_SECTION: return ERROR_BAD_EXE_FORMAT;
+    case STATUS_SECTION_TOO_BIG:       return ERROR_NOT_ENOUGH_MEMORY;
+    case STATUS_OBJECT_TYPE_MISMATCH:  return ERROR_INVALID_HANDLE;
+    /* XXX: add more.  Variations by function are rare and handled in callers. */
     default:                           return ERROR_INVALID_PARAMETER;
     }
 }
@@ -122,6 +149,7 @@ redirect_ignore_arg12(void *arg1, void *arg2, void *arg3)
 
 #ifdef STANDALONE_UNIT_TEST
 void unit_test_drwinapi_kernel32_mem(void);
+void unit_test_drwinapi_kernel32_file(void);
 void unit_test_drwinapi_rpcrt4(void);
 
 void
@@ -132,6 +160,7 @@ unit_test_drwinapi(void)
     loader_init(); /* not called by standalone_init */
 
     unit_test_drwinapi_kernel32_mem();
+    unit_test_drwinapi_kernel32_file();
     unit_test_drwinapi_rpcrt4();
 }
 #endif
