@@ -93,6 +93,18 @@ static const redirect_import_t redirect_kernel32[] = {
     {"VirtualProtect",                 (app_pc)redirect_VirtualProtect},
     {"VirtualQuery",                   (app_pc)redirect_VirtualQuery},
     {"VirtualQueryEx",                 (app_pc)redirect_VirtualQueryEx},
+
+    /* File-related routines */
+    {"CloseHandle",                    (app_pc)redirect_CloseHandle},
+    {"CreateDirectoryA",               (app_pc)redirect_CreateDirectoryA},
+    {"CreateDirectoryW",               (app_pc)redirect_CreateDirectoryW},
+    {"CreateFileA",                    (app_pc)redirect_CreateFileA},
+    {"CreateFileW",                    (app_pc)redirect_CreateFileW},
+    {"CreateFileMappingA",             (app_pc)redirect_CreateFileMappingA},
+    {"CreateFileMappingW",             (app_pc)redirect_CreateFileMappingW},
+    {"MapViewOfFile",                  (app_pc)redirect_MapViewOfFile},
+    {"MapViewOfFileEx",                (app_pc)redirect_MapViewOfFileEx},
+    {"UnmapViewOfFile",                (app_pc)redirect_UnmapViewOfFile},
 };
 #define REDIRECT_KERNEL32_NUM (sizeof(redirect_kernel32)/sizeof(redirect_kernel32[0]))
 
@@ -115,11 +127,13 @@ kernel32_redir_init(void)
 
     kernel32_redir_init_proc();
     kernel32_redir_init_mem();
+    kernel32_redir_init_file();
 }
 
 void
 kernel32_redir_exit(void)
 {
+    kernel32_redir_exit_file();
     kernel32_redir_exit_mem();
     kernel32_redir_exit_proc();
 
@@ -152,6 +166,7 @@ kernel32_redir_onload(privmod_t *mod)
 
     kernel32_redir_onload_proc(mod);
     kernel32_redir_onload_lib(mod);
+    kernel32_redir_onload_file(mod);
 
     if (!dynamo_initialized)
         SELF_PROTECT_DATASEC(DATASEC_RARELY_PROT);

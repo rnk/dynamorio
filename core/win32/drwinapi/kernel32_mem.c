@@ -84,7 +84,14 @@ HANDLE
 WINAPI
 redirect_GetProcessHeap(VOID)
 {
+#ifdef CLIENT_INTERFACE
+    /* XXX: perhaps all of these redirection routines should be ifdef CLIENT_INTERFACE.
+     * The loader itself is not, for use w/ hotpatching, etc.
+     */
     return get_private_peb()->ProcessHeap;
+#else
+    return get_peb(NT_CURRENT_PROCESS)->ProcessHeap;
+#endif
 }
 
 __bcount(dwBytes)
@@ -269,6 +276,9 @@ redirect_LocalAlloc(
         return NULL;
     }
 
+    /* No lock is needed as the lock is to synchronize w/ other Local* routines
+     * accessing the same object, and this object has not been returned yet.
+     */
     hdr = (local_header_t *)
         redirect_RtlAllocateHeap(heap, rtl_flags, uBytes + sizeof(local_header_t));
     if (hdr == NULL) {
