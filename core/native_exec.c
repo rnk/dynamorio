@@ -147,8 +147,36 @@ native_exec_module_unload(module_area_t *ma)
         native_module_unhook(ma);
 }
 
+/* Similar to back_from_native_C() in x86/x86_code.c.  Executes on the app
+ * stack.
+ */
 void
 native_module_transition(priv_mcontext_t *mc, app_pc target)
 {
-    LOG(THREAD_GET, 6, LOG_LOADER, "cross-module call to %p\n", target);
+    dcontext_t *dcontext;
+    ASSERT(DYNAMO_OPTION(native_exec_retakeover));
+    ENTERING_DR();
+    dcontext = get_thread_private_dcontext();
+    ASSERT(dcontext != NULL);
+    LOG(THREAD, LOG_ASYNCH, 1, "%s: cross-module call to %p\n",
+        __FUNCTION__, target);
+    STATS_INC(num_native_module_exit);
+    ASSERT(dcontext->whereami == WHERE_APP);
+    ASSERT(dcontext->last_exit == get_native_exec_linkstub());
+    dcontext->next_tag = target;
+    /* tell dispatch() why we're coming there */
+    dcontext->whereami = WHERE_FCACHE;
+#ifdef WINDOWS
+    /* asynch back on */
+    set_asynch_interception(dcontext->owning_thread, true);
+#endif
+    /* FIXME: setting same var that set_asynch_interception is! */
+    dcontext->thread_record->under_dynamo_control = true;
+
+    *get_mcontext(dcontext) = *mc;
+    /* clear pc */
+    get_mcontext(dcontext)->pc = 0;
+
+    call_switch_stack(dcontext, dcontext->dstack, dispatch,
+                      false/*not on initstack*/, false/*shouldn't return*/);
 }

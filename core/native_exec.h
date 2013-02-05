@@ -48,6 +48,11 @@ native_exec_init(void);
 void
 native_exec_exit(void);
 
+/* Gets called on every cross-module call out of a native module.
+ */
+void
+native_module_transition(priv_mcontext_t *mc, app_pc target);
+
 /* The following prototypes are implemented by various object file formats.  For
  * now we assume a single object file format per platform.
  */

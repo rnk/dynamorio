@@ -384,6 +384,11 @@ create_plt_stub(app_pc plt_target)
     *tgt_immed = plt_target;
     insert_relative_target(jmp_tgt, (app_pc) native_plt_call,
                            false/*!hotpatch*/);
+
+    /* Adding the stub to native areas prevents is from trying to interpret DR
+     * if we start executing a native module from the cache.
+     */
+    vmvector_add(native_exec_areas, stub_pc, stub_pc+plt_stub_size, NULL);
     return stub_pc;
 }
 

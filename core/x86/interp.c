@@ -4023,6 +4023,9 @@ build_native_exec_bb(dcontext_t *dcontext, build_bb_t *bb)
         bb->flags &= ~FRAG_HAS_TRANSLATION_INFO;
     bb->native_exec = true;
 
+    /* We can get here if we start interpreting native modules. */
+    ASSERT(dcontext->next_tag != (app_pc) native_module_transition);
+
     BBPRINT(bb, IF_DGCDIAG_ELSE(1, 2), "build_native_exec_bb @"PFX"\n", bb->start_pc);
     DOLOG(2, LOG_INTERP, {
         dump_mcontext(get_mcontext(dcontext), THREAD, DUMP_NOT_XML); });
