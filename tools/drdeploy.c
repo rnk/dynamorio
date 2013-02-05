@@ -827,6 +827,7 @@ int main(int argc, char *argv[])
             if (pid != 0)
                 usage("attaching to running processes is not yet implemented");
             use_ptrace = true;
+            /* FIXME: use pid below to attach. */
             continue;
         }
         else if (strcmp(argv[i], "-exit0") == 0) {
