@@ -1,5 +1,5 @@
 /* **********************************************************
- * Copyright (c) 2012 Google, Inc.  All rights reserved.
+ * Copyright (c) 2012-2013 Google, Inc.  All rights reserved.
  * **********************************************************/
 
 /*
@@ -36,11 +36,16 @@
 #include "globals.h"
 
 void unit_test_io(void);
+#ifdef LINUX
 void unit_test_string(void);
-void unit_test_options(void);
 void unit_test_os(void);
+#endif
+void unit_test_options(void);
 void unit_test_vmareas(void);
 void unit_test_utils(void);
+#ifdef WINDOWS
+void unit_test_drwinapi(void);
+#endif
 
 int
 main(int argc, char **argv, char **envp)
@@ -59,5 +64,8 @@ main(int argc, char **argv, char **envp)
     unit_test_utils();
     unit_test_options();
     unit_test_vmareas();
+#ifdef WINDOWS
+    unit_test_drwinapi();
+#endif
     return 0;
 }

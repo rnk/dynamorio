@@ -60,6 +60,7 @@
 #include "aslr.h"
 #include "../synch.h"
 #include "../perscache.h"
+#include "../native_exec.h"
 
 #ifdef NOT_DYNAMORIO_CORE_PROPER
 # undef ASSERT
@@ -1796,7 +1797,7 @@ osprot_to_memprot(uint prot)
     return mem_prot;
 }
 
-static int
+int
 osprot_add_writecopy(uint prot)
 {
     int pr = prot & ~PAGE_PROTECTION_QUALIFIERS;

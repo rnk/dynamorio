@@ -607,12 +607,12 @@ function(tobuild_ci test source client_ops dr_ops exe_ops)
   endif ()
 
   add_library(${test}.dll ${SHARED_OR_STATIC} ${client_source})
-  set_target_properties(${test}.dll PROPERTIES LINK_FLAGS "${ARCH_DEBUG}")
   if (NOT "${source}" MATCHES "cpp\\.cpp")
     # to avoid changing all the REG_ constants we ask for compatibility
     set(DynamoRIO_REG_COMPATIBILITY ON)
   endif (NOT "${source}" MATCHES "cpp\\.cpp")
   configure_DynamoRIO_client(${test}.dll)
+  append_property_string(TARGET ${test}.dll LINK_FLAGS "${ARCH_DEBUG}")
   add_dependencies(${test}.dll api_headers)
   get_client_path(client_path ${test}.dll ${test})
   if (STATIC_LIBRARY)
@@ -1459,8 +1459,10 @@ if (CLIENT_INTERFACE)
   tobuild_api(api.dis api/dis.c "-syntax_intel"
     "${CMAKE_CURRENT_SOURCE_DIR}/api/dis-udis86-randtest.raw" OFF)
   tobuild_api(api.ir api/ir.c "" "" OFF)
-  if (UNIX)
-    # gcc dependence analysis doesn't find headers in macros
+  if ("${CMAKE_GENERATOR}" MATCHES "Unix Makefiles")
+    # CMake's Unix Makefiles dependence analysis doesn't run the preprocessor
+    # and so doesn't find headers named via macros
+    # (http://www.cmake.org/Bug/view.php?id=13718)
     set(api_ir_headers # must be full paths:
       ${CMAKE_CURRENT_SOURCE_DIR}/api/ir_0args.h
       ${CMAKE_CURRENT_SOURCE_DIR}/api/ir_1args.h
@@ -1470,7 +1472,7 @@ if (CLIENT_INTERFACE)
       ${CMAKE_CURRENT_SOURCE_DIR}/api/ir_3args.h
       ${CMAKE_CURRENT_SOURCE_DIR}/api/ir_4args.h)
     append_property_string(SOURCE api/ir.c OBJECT_DEPENDS "${api_ir_headers}")
-  endif (UNIX)
+  endif ()
   tobuild_api(api.startstop api/startstop.c "" "" OFF)
   # test static decoder library
   tobuild_api(api.ir-static api/ir.c "" "" ON)

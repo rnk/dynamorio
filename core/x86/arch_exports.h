@@ -1,5 +1,5 @@
 /* **********************************************************
- * Copyright (c) 2011-2012 Google, Inc.  All rights reserved.
+ * Copyright (c) 2011-2013 Google, Inc.  All rights reserved.
  * Copyright (c) 2000-2010 VMware, Inc.  All rights reserved.
  * **********************************************************/
 
@@ -808,6 +808,10 @@ ret_tgt_cache_to_app(dcontext_t *dcontext, app_pc pc);
 /* in x86.asm */
 void call_switch_stack(dcontext_t *dcontext, byte *stack, void (*func) (dcontext_t *),
                        bool free_initstack, bool return_on_return);
+# if defined (WINDOWS) && !defined(X64)
+DYNAMORIO_EXPORT int64
+dr_invoke_x64_routine(dr_auxlib64_routine_ptr_t func64, uint num_params, ...);
+# endif
 void unexpected_return(void);
 void clone_and_swap_stack(byte *stack, byte *tos);
 void go_native(dcontext_t *dcontext);
@@ -1630,6 +1634,11 @@ app_pc safe_read_resume_pc(void);
 void *memcpy(void *dst, const void *src, size_t n);
 void *memset(void *dst, int val, size_t n);
 #endif /* LINUX */
+
+#ifdef LINUX
+/* Private replacement for _dl_runtime_resolve() for native_exec. */
+void *_dynamorio_runtime_resolve(void);
+#endif
 
 #define DR_SETJMP(buf) (dr_setjmp(buf))
 

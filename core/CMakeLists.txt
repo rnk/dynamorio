@@ -74,6 +74,7 @@ set(CORE_SRCS
   buildmark.c
   loader_shared.c
   io.c
+  native_exec.c
   )
 
 if (UNIX)
@@ -161,6 +162,7 @@ if (UNIX)
     linux/diagnost.c
     linux/loader.c
     linux/nudgesig.c
+    linux/native_elf.c
     )
   if (VMKERNEL)
     set(VMKUW_DIR ${PROJECT_SOURCE_DIR}/../internal/core/linux)
@@ -196,9 +198,20 @@ else (UNIX)
     win32/inject_shared.c
     win32/module.c
     win32/module_shared.c
+    win32/native_pe.c
     win32/diagnost.c
     win32/aslr.c
     win32/loader.c
+    win32/drwinapi/drwinapi.c
+    win32/drwinapi/ntdll_redir.c
+    win32/drwinapi/kernel32_redir.c
+    win32/drwinapi/kernel32_proc.c
+    win32/drwinapi/kernel32_lib.c
+    win32/drwinapi/kernel32_mem.c
+    win32/drwinapi/kernel32_file.c
+    win32/drwinapi/kernel32_sync.c
+    win32/drwinapi/kernel32_misc.c
+    win32/drwinapi/rpcrt4_redir.c
     win32/resources.rc
     ${ntimp_dep}
    )
@@ -411,10 +424,12 @@ if (UNIX)
     if (NOT X64)
       # Localizing PIC thunks on ia32 creates references to discarded sections.
       # XXX: Hardcoding this list of symbols is fragile.  It is known to work
-      # with gcc 4.4 and 4.6.
+      # with gcc 4.4 and 4.6.  gcc 4.7 uses symbols starting with __x86.
       set (globalize_pic_thunks ${CMAKE_OBJCOPY}
         --globalize-symbol=__i686.get_pc_thunk.bx
         --globalize-symbol=__i686.get_pc_thunk.cx
+        --globalize-symbol=__x86.get_pc_thunk.bx
+        --globalize-symbol=__x86.get_pc_thunk.cx
         "${dynamorio_dot_o}" &&
         )
     endif ()

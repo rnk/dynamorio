@@ -219,6 +219,14 @@ extern const char * const reg_names[];
 extern const reg_id_t dr_reg_fixer[];
 /* DR_API EXPORT BEGIN */
 
+#define DR_REG_START_GPR DR_REG_XAX /**< Start of general register enum values */
+#ifdef X64
+# define DR_REG_STOP_GPR DR_REG_R15 /**< End of general register enum values */
+#else
+# define DR_REG_STOP_GPR DR_REG_XDI /**< End of general register enum values */
+#endif
+/**< Number of general registers */
+#define DR_NUM_GPR_REGS (DR_REG_STOP_GPR - DR_REG_START_GPR)
 #define DR_REG_START_64    DR_REG_RAX  /**< Start of 64-bit general register enum values */
 #define DR_REG_STOP_64     DR_REG_R15  /**< End of 64-bit general register enum values */  
 #define DR_REG_START_32    DR_REG_EAX  /**< Start of 32-bit general register enum values */
@@ -1500,6 +1508,17 @@ opnd_size_in_bytes(opnd_size_t size);
 
 DR_API
 /** 
+ * Returns the appropriate OPSZ_ constant for the given number of bytes.
+ * Returns OPSZ_NA if there is no such constant.
+ * The intended use case is something like "opnd_size_in_bytes(sizeof(foo))" for
+ * integer/pointer types.  This routine returns simple single-size
+ * types and will not return complex/variable size types.
+ */
+opnd_size_t
+opnd_size_from_bytes(uint bytes);
+
+DR_API
+/** 
  * Shrinks all 32-bit registers in \p opnd to their 16-bit versions.  
  * Also shrinks the size of immediate integers and memory references from
  * OPSZ_4 to OPSZ_2.
@@ -2228,6 +2247,9 @@ DR_API
 void 
 instr_set_target(instr_t *cti_instr, opnd_t target);
 
+#ifdef AVOID_API_EXPORT
+INSTR_INLINE  /* hot internally */
+#endif
 DR_API
 /** Returns true iff \p instr's operands are up to date. */
 bool 
@@ -2309,16 +2331,25 @@ DR_API
 void 
 instr_set_raw_bits_valid(instr_t *instr, bool valid);
 
+#ifdef AVOID_API_EXPORT
+INSTR_INLINE  /* internal inline */
+#endif
 DR_API
 /** Returns true iff \p instr's raw bits are a valid encoding of instr. */
 bool 
 instr_raw_bits_valid(instr_t *instr);
 
+#ifdef AVOID_API_EXPORT
+INSTR_INLINE  /* internal inline */
+#endif
 DR_API
 /** Returns true iff \p instr has its own allocated memory for raw bits. */
 bool 
 instr_has_allocated_bits(instr_t *instr);
 
+#ifdef AVOID_API_EXPORT
+INSTR_INLINE  /* internal inline */
+#endif
 DR_API
 /** Returns true iff \p instr's raw bits are not a valid encoding of \p instr. */
 bool 
