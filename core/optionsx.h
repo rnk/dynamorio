@@ -1,5 +1,5 @@
 /* *******************************************************************************
- * Copyright (c) 2010-2012 Google, Inc.  All rights reserved.
+ * Copyright (c) 2010-2013 Google, Inc.  All rights reserved.
  * Copyright (c) 2011 Massachusetts Institute of Technology  All rights reserved.
  * Copyright (c) 2003-2010 VMware, Inc.  All rights reserved.
  * *******************************************************************************/
@@ -275,6 +275,7 @@
     OPTION_DEFAULT_INTERNAL(uint, global_stats_interval, 5000,
                    "global statistics dump interval in fragments, 0 to disable periodic dump")
 #  ifdef HASHTABLE_STATISTICS
+    OPTION_DEFAULT_INTERNAL(bool, hashtable_study, true, "enable hashtable studies")
     OPTION_DEFAULT_INTERNAL(bool, hashtable_ibl_stats, true, "enable hashtable statistics for IBL routines")
     /* off by default until non-sharing bug 5846 fixed */
     OPTION_DEFAULT_INTERNAL(bool, hashtable_ibl_entry_stats, false, "enable hashtable statistics per IBL entry")
@@ -2004,9 +2005,12 @@ IF_RCT_IND_BRANCH(options->rct_ind_jump = OPTION_DISABLED;)
             IF_X64(options->coarse_split_riprel = true;)
             /* FIXME: i#660: not compatible w/ Probe API */
             IF_CLIENT_INTERFACE(DISABLE_PROBE_API(options);)
+            /* i#1051: disable reset until we decide how it interacts w/ pcaches */
+            DISABLE_RESET(options);
         } else {
             options->coarse_enable_freeze = false;
             options->use_persisted = false;
+            REENABLE_RESET(options);
         }
      }, "generate and use persisted caches", STATIC, OP_PCACHE_GLOBAL)
 
@@ -2022,8 +2026,7 @@ IF_RCT_IND_BRANCH(options->rct_ind_jump = OPTION_DISABLED;)
                 * N.B.: if we re-enable traces we'll want to turn this back on
                 */
                options->indcall2direct = false;
-               /* case 9686: for now reset is a nop until we decide what it
-                * should do wrt pcaches */
+               /* i#1051: disable reset until we decide how it interacts w/ pcaches */
                DISABLE_RESET(options);
            } else {
                /* -no_desktop: like -no_client, only use in simple
@@ -2073,6 +2076,8 @@ IF_RCT_IND_BRANCH(options->rct_ind_jump = OPTION_DISABLED;)
      * for other potentially problematic sections like .aspack, .pcle, and .sforce */
     OPTION_DEFAULT(bool, native_exec_dot_pexe, true,
         "if module has .pexe section (proxy for strange int 3 behavior), execute it natively")    
+    OPTION_DEFAULT(bool, native_exec_retakeover, false,
+        "attempt to re-takeover when a native module calls out to a non-native module")
 
     /* vestiges from our previous life as a dynamic optimizer */
     OPTION_DEFAULT_INTERNAL(bool, inline_calls, true, "inline calls in traces")

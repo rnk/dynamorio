@@ -736,7 +736,7 @@ drwrap_replace_init(void);
  * INIT
  */
 
-static int init_count;
+static int drwrap_init_count;
 
 DR_EXPORT
 bool
@@ -748,11 +748,16 @@ drwrap_init(void)
     drmgr_priority_t pri_insert = {sizeof(pri_insert), DRMGR_PRIORITY_NAME_DRWRAP,
                                    NULL, NULL, DRMGR_PRIORITY_INSERT_DRWRAP};
 #ifdef WINDOWS
+    /* DrMem i#1098: We use a late priority so we don't unwind if the client
+     * handles the fault.
+     */
+    drmgr_priority_t pri_fault = {sizeof(pri_fault), DRMGR_PRIORITY_NAME_DRWRAP,
+                                  NULL, NULL, DRMGR_PRIORITY_FAULT_DRWRAP};
     module_data_t *ntdll;
 #endif
 
     /* handle multiple sets of init/exit calls */
-    int count = dr_atomic_add32_return_sum(&init_count, 1);
+    int count = dr_atomic_add32_return_sum(&drwrap_init_count, 1);
     if (count > 1)
         return true;
 
@@ -804,7 +809,7 @@ drwrap_init(void)
         }
         dr_free_module_data(ntdll);
     }
-    dr_register_exception_event(drwrap_event_exception);
+    drmgr_register_exception_event_ex(drwrap_event_exception, &pri_fault);
 #endif
 
     drwrap_replace_init();
@@ -817,8 +822,8 @@ void
 drwrap_exit(void)
 {
     /* handle multiple sets of init/exit calls */
-    int count = dr_atomic_add32_return_sum(&init_count, -1);
-    if (count > 0)
+    int count = dr_atomic_add32_return_sum(&drwrap_init_count, -1);
+    if (count != 0)
         return;
 
     hashtable_delete(&replace_table);

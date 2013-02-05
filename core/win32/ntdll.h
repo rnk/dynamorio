@@ -1,5 +1,5 @@
 /* **********************************************************
- * Copyright (c) 2011-2012 Google, Inc.  All rights reserved.
+ * Copyright (c) 2011-2013 Google, Inc.  All rights reserved.
  * Copyright (c) 2003-2010 VMware, Inc.  All rights reserved.
  * **********************************************************/
 
@@ -848,6 +848,36 @@ typedef struct _create_thread_info_t { /* NOTE - this is speculative */
     thread_info_elm_t teb;
 } create_thread_info_t;
 
+/* PEB.ReadOnlyStaticServerData has an array of pointers sized to match the
+ * kernel (so 64-bit for WOW64).  The second pointer points at this structure.
+ * However, be careful b/c the UNICODE_STRING structs are really UNICODE_STRING_64
+ * for WOW64.
+ */
+typedef struct _BASE_STATIC_SERVER_DATA
+{
+    UNICODE_STRING WindowsDirectory;
+    UNICODE_STRING WindowsSystemDirectory;
+    UNICODE_STRING NamedObjectDirectory;
+    USHORT WindowsMajorVersion;
+    USHORT WindowsMinorVersion;
+    USHORT BuildNumber;
+    /* rest we don't care about */
+} BASE_STATIC_SERVER_DATA, *PBASE_STATIC_SERVER_DATA;
+
+#ifndef X64
+typedef struct _BASE_STATIC_SERVER_DATA_64
+{
+    UNICODE_STRING_64 WindowsDirectory;
+    UNICODE_STRING_64 WindowsSystemDirectory;
+    UNICODE_STRING_64 NamedObjectDirectory;
+    USHORT WindowsMajorVersion;
+    USHORT WindowsMinorVersion;
+    USHORT BuildNumber;
+    /* rest we don't care about */
+} BASE_STATIC_SERVER_DATA_64, *PBASE_STATIC_SERVER_DATA_64;
+#endif
+
+
 /***************************************************************************
  * convenience enums
  */
@@ -961,6 +991,11 @@ nt_read_virtual_memory(HANDLE process, const void *base, void *buffer,
 bool
 nt_write_virtual_memory(HANDLE process, void *base, const void *buffer, 
                         size_t buffer_length, size_t *bytes_written);
+
+/* returns raw NTSTATUS */
+NTSTATUS
+nt_raw_read_virtual_memory(HANDLE process, const void *base, void *buffer, 
+                           size_t buffer_length, size_t *bytes_read);
 
 /* returns raw NTSTATUS */
 NTSTATUS
@@ -1192,6 +1227,7 @@ query_full_attributes_file(PCWSTR filename,
 #define FILE_COMPLETE_IF_OPLOCKED               0x00000100
 #define FILE_NO_EA_KNOWLEDGE                    0x00000200
 #define FILE_OPEN_FOR_RECOVERY                  0x00000400
+#define FILE_OPEN_REMOTE_INSTANCE               0x00000400 /* alt name */
 #define FILE_RANDOM_ACCESS                      0x00000800
 
 #define FILE_DELETE_ON_CLOSE                    0x00001000
@@ -1261,14 +1297,37 @@ query_full_attributes_file(PCWSTR filename,
  * written to the buffer." */
 #define STATUS_BUFFER_TOO_SMALL          ((NTSTATUS)0xC0000023L)
 
+/* There is a mismatch between the type of object required by the requested operation
+ * and the type of object that is specified in the request.
+ */
+#define STATUS_OBJECT_TYPE_MISMATCH      ((NTSTATUS)0xC0000024L)
+
+/* Object Name invalid. */
+#define STATUS_OBJECT_NAME_INVALID       ((NTSTATUS)0xC0000033L)
+
 /*  Object Name not found. */
 #define STATUS_OBJECT_NAME_NOT_FOUND     ((NTSTATUS)0xC0000034L)
 
 /* Error: Object Name already exists */
 #define STATUS_OBJECT_NAME_COLLISION     ((NTSTATUS)0xC0000035L)
 
+/* Object Path Component was not a directory object. */
+#define STATUS_OBJECT_PATH_INVALID       ((NTSTATUS)0xC0000039L)
+
+/* The path does not exist. */
+#define STATUS_OBJECT_PATH_NOT_FOUND     ((NTSTATUS)0xC000003AL)
+
+/* The specified section is too big to map the file. */
+#define STATUS_SECTION_TOO_BIG           ((NTSTATUS)0xC0000040L)
+
 /*  A file cannot be opened because the share access flags are incompatible. */
 #define STATUS_SHARING_VIOLATION         ((NTSTATUS)0xC0000043L)
+
+/* The specified page protection was not valid. */
+#define STATUS_INVALID_PAGE_PROTECTION   ((NTSTATUS)0xC0000045L)
+
+/* A requested read/write cannot be granted due to a conflicting file lock. */
+#define STATUS_FILE_LOCK_CONFLICT        ((NTSTATUS)0xC0000054L)
 
 /*  A non close operation has been requested of a file object with a delete pending. */
 #define STATUS_DELETE_PENDING            ((NTSTATUS)0xC0000056L)
@@ -1285,9 +1344,6 @@ query_full_attributes_file(PCWSTR filename,
 
 /* Warning: An attempt was made to create an object and the object name already existed. */
 #define STATUS_OBJECT_NAME_EXISTS        ((NTSTATUS)0x40000000L)
-
-/*  An invalid parameter was passed to a service or function as the fourth argument. */
-#define STATUS_INVALID_PARAMETER_4       ((NTSTATUS)0xC00000F2L)
 
 /* Warning: Image Relocated
  *  "An image file could not be mapped at the address specified in the image file. "
@@ -1342,7 +1398,53 @@ query_full_attributes_file(PCWSTR filename,
 /* needed for PR 233191 */
 #define STATUS_INVALID_INFO_CLASS        ((NTSTATUS)0xC0000003L)
 
+/* An attempt was made to map a file of size zero with the maximum size specified as
+ * zero.
+ */
+#define STATUS_MAPPED_FILE_SIZE_ZERO     ((NTSTATUS)0xC000011EL)
+
 #define STATUS_PARTIAL_COPY              ((NTSTATUS)0x8000000DL)
+
+#ifndef STATUS_INVALID_PARAMETER
+/* An invalid parameter was passed to a service or function. */
+# define STATUS_INVALID_PARAMETER         ((NTSTATUS)0xC000000DL)
+#endif
+
+/* An invalid parameter was passed to a service or function as the first argument. */
+#define STATUS_INVALID_PARAMETER_1       ((NTSTATUS)0xC00000EFL)
+
+/* An invalid parameter was passed to a service or function as the second argument. */
+#define STATUS_INVALID_PARAMETER_2       ((NTSTATUS)0xC00000F0L)
+
+/* An invalid parameter was passed to a service or function as the third argument. */
+#define STATUS_INVALID_PARAMETER_3       ((NTSTATUS)0xC00000F1L)
+
+/* An invalid parameter was passed to a service or function as the fourth argument. */
+#define STATUS_INVALID_PARAMETER_4       ((NTSTATUS)0xC00000F2L)
+
+/* An invalid parameter was passed to a service or function as the fifth argument. */
+#define STATUS_INVALID_PARAMETER_5       ((NTSTATUS)0xC00000F3L)
+
+/* An invalid parameter was passed to a service or function as the sixth argument. */
+#define STATUS_INVALID_PARAMETER_6       ((NTSTATUS)0xC00000F4L)
+
+/* An invalid parameter was passed to a service or function as the seventh argument. */
+#define STATUS_INVALID_PARAMETER_7       ((NTSTATUS)0xC00000F5L)
+
+/* An invalid parameter was passed to a service or function as the eighth argument. */
+#define STATUS_INVALID_PARAMETER_8       ((NTSTATUS)0xC00000F6L)
+
+/* An invalid parameter was passed to a service or function as the ninth argument. */
+#define STATUS_INVALID_PARAMETER_9       ((NTSTATUS)0xC00000F7L)
+
+/* An invalid parameter was passed to a service or function as the tenth argument. */
+#define STATUS_INVALID_PARAMETER_10      ((NTSTATUS)0xC00000F8L)
+
+/* An invalid parameter was passed to a service or function as the eleventh argument. */
+#define STATUS_INVALID_PARAMETER_11      ((NTSTATUS)0xC00000F9L)
+
+/* An invalid parameter was passed to a service or function as the twelfth argument. */
+#define STATUS_INVALID_PARAMETER_12      ((NTSTATUS)0xC00000FAL)
 
 /* This is in VS2005 winnt.h but not in SDK winnt.h */
 #ifndef IMAGE_SIZEOF_BASE_RELOCATION
@@ -1564,6 +1666,13 @@ get_ldr_module_by_name(wchar_t *name);;
 void *
 get_own_x64_peb(void);
 
+/* caller must synchronize if not called during init */
+HANDLE
+load_library_64(const char *path);
+
+bool
+free_library_64(HANDLE lib);
+
 HANDLE
 get_module_handle_64(wchar_t *name);
 
@@ -1711,6 +1820,9 @@ typedef struct _OBJECT_NAME_INFORMATION {
 } OBJECT_NAME_INFORMATION, *POBJECT_NAME_INFORMATION;
 
 NTSTATUS
+wchar_to_unicode(PUNICODE_STRING dst, PCWSTR src);
+
+NTSTATUS
 nt_get_object_name(HANDLE handle, OBJECT_NAME_INFORMATION* object_name /* OUT */,
                    uint byte_length, uint *returned_byte_length);
 
@@ -1768,7 +1880,9 @@ nt_query_security_object(IN HANDLE Handle,
                          IN ULONG SecurityDescriptorLength,
                          OUT PULONG ReturnLength);
 
-NTSTATUS WINAPI
+#if !defined(NOT_DYNAMORIO_CORE_PROPER) && !defined(NOT_DYNAMORIO_CORE)
+
+NTSTATUS
 nt_raw_CreateFile(PHANDLE file_handle,
                   ACCESS_MASK desired_access,
                   POBJECT_ATTRIBUTES object_attributes,
@@ -1781,16 +1895,73 @@ nt_raw_CreateFile(PHANDLE file_handle,
                   PVOID ea_buffer,
                   ULONG ea_length);
 
-NTSTATUS WINAPI
-nt_raw_CreateKey(PHANDLE key_handle,
+NTSTATUS
+nt_raw_OpenFile(PHANDLE file_handle,
+                ACCESS_MASK desired_access,
+                POBJECT_ATTRIBUTES object_attributes,
+                PIO_STATUS_BLOCK io_status_block,
+                ULONG share_access,
+                ULONG open_options);
+
+NTSTATUS
+nt_raw_OpenKey(PHANDLE key_handle,
+               ACCESS_MASK desired_access,
+               POBJECT_ATTRIBUTES object_attributes);
+
+NTSTATUS
+nt_raw_OpenKeyEx(PHANDLE key_handle,
                  ACCESS_MASK desired_access,
                  POBJECT_ATTRIBUTES object_attributes,
-                 ULONG title_index,
-                 PUNICODE_STRING class,
-                 ULONG create_options,
-                 PULONG disposition);
+                 ULONG open_options);
 
-NTSTATUS WINAPI
+NTSTATUS
+nt_raw_OpenProcessTokenEx(HANDLE process_handle,
+                          ACCESS_MASK desired_access,
+                          ULONG handle_attributes,
+                          PHANDLE token_handle);
+
+NTSTATUS
+nt_raw_OpenThread(PHANDLE thread_handle,
+                  ACCESS_MASK desired_access,
+                  POBJECT_ATTRIBUTES object_attributes,
+                  PCLIENT_ID client_id);
+
+NTSTATUS
+nt_raw_OpenThreadTokenEx(HANDLE thread_handle,
+                         ACCESS_MASK desired_access,
+                         BOOLEAN open_as_self,
+                         ULONG handle_attributes,
+                         PHANDLE token_handle);
+
+NTSTATUS
+nt_raw_QueryAttributesFile(POBJECT_ATTRIBUTES object_attributes,
+                           PFILE_BASIC_INFORMATION file_information);
+
+NTSTATUS
+nt_raw_SetInformationFile(HANDLE file_handle,
+                          PIO_STATUS_BLOCK io_status_block,
+                          PVOID file_information,
+                          ULONG length,
+                          FILE_INFORMATION_CLASS file_information_class);
+
+NTSTATUS
+nt_raw_SetInformationThread(HANDLE thread_handle,
+                            THREADINFOCLASS thread_information_class,
+                            PVOID thread_information,
+                            ULONG thread_information_length);
+
+NTSTATUS
+nt_raw_UnmapViewOfSection(HANDLE process_handle,
+                          PVOID base_address);
+#endif /* !NOT_DYNAMORIO_CORE && !NOT_DYNAMORIO_CORE_PROPER */
+
+NTSTATUS
+nt_raw_OpenProcess(PHANDLE process_handle,
+                   ACCESS_MASK desired_access,
+                   POBJECT_ATTRIBUTES object_attributes,
+                   PCLIENT_ID client_id);
+
+NTSTATUS
 nt_raw_MapViewOfSection(HANDLE section_handle,
                         HANDLE process_handle,
                         PVOID *base_address,
@@ -1802,84 +1973,30 @@ nt_raw_MapViewOfSection(HANDLE section_handle,
                         ULONG allocation_type,
                         ULONG win32_protect);
 
-NTSTATUS WINAPI
-nt_raw_OpenFile(PHANDLE file_handle,
-                ACCESS_MASK desired_access,
-                POBJECT_ATTRIBUTES object_attributes,
-                PIO_STATUS_BLOCK io_status_block,
-                ULONG share_access,
-                ULONG open_options);
+NTSTATUS
+nt_raw_QueryFullAttributesFile(POBJECT_ATTRIBUTES object_attributes,
+                               PFILE_NETWORK_OPEN_INFORMATION file_information);
 
-NTSTATUS WINAPI
-nt_raw_OpenKey(PHANDLE key_handle,
-               ACCESS_MASK desired_access,
-               POBJECT_ATTRIBUTES object_attributes);
-
-NTSTATUS WINAPI
-nt_raw_OpenKeyEx(PHANDLE key_handle,
+NTSTATUS
+nt_raw_CreateKey(PHANDLE key_handle,
                  ACCESS_MASK desired_access,
                  POBJECT_ATTRIBUTES object_attributes,
-                 ULONG open_options);
+                 ULONG title_index,
+                 PUNICODE_STRING class,
+                 ULONG create_options,
+                 PULONG disposition);
 
-NTSTATUS WINAPI
-nt_raw_OpenProcess(PHANDLE process_handle,
-                   ACCESS_MASK desired_access,
-                   POBJECT_ATTRIBUTES object_attributes,
-                   PCLIENT_ID client_id);
-
-NTSTATUS WINAPI
-nt_raw_OpenProcessToken(HANDLE process_handle,
-                        ACCESS_MASK desired_access,
-                        PHANDLE token_handle);
-
-NTSTATUS WINAPI
-nt_raw_OpenProcessTokenEx(HANDLE process_handle,
-                          ACCESS_MASK desired_access,
-                          ULONG handle_attributes,
-                          PHANDLE token_handle);
-
-NTSTATUS WINAPI
-nt_raw_OpenThread(PHANDLE thread_handle,
-                  ACCESS_MASK desired_access,
-                  POBJECT_ATTRIBUTES object_attributes,
-                  PCLIENT_ID client_id);
-
-NTSTATUS WINAPI
+NTSTATUS
 nt_raw_OpenThreadToken(HANDLE thread_handle,
                        ACCESS_MASK desired_access,
                        BOOLEAN open_as_self,
                        PHANDLE token_handle);
 
-NTSTATUS WINAPI
-nt_raw_OpenThreadTokenEx(HANDLE thread_handle,
-                         ACCESS_MASK desired_access,
-                         BOOLEAN open_as_self,
-                         ULONG handle_attributes,
-                         PHANDLE token_handle);
+NTSTATUS
+nt_raw_OpenProcessToken(HANDLE process_handle,
+                        ACCESS_MASK desired_access,
+                        PHANDLE token_handle);
 
-NTSTATUS WINAPI
-nt_raw_QueryAttributesFile(POBJECT_ATTRIBUTES object_attributes,
-                           PFILE_BASIC_INFORMATION file_information);
-
-NTSTATUS WINAPI
-nt_raw_QueryFullAttributesFile(POBJECT_ATTRIBUTES object_attributes,
-                               PFILE_NETWORK_OPEN_INFORMATION file_information);
-
-NTSTATUS WINAPI
-nt_raw_SetInformationFile(HANDLE file_handle,
-                          PIO_STATUS_BLOCK io_status_block,
-                          PVOID file_information,
-                          ULONG length,
-                          FILE_INFORMATION_CLASS file_information_class);
-
-NTSTATUS WINAPI
-nt_raw_SetInformationThread(HANDLE thread_handle,
-                            THREADINFOCLASS thread_information_class,
-                            PVOID thread_information,
-                            ULONG thread_information_length);
-
-NTSTATUS WINAPI
-nt_raw_UnmapViewOfSection(HANDLE process_handle,
-                          PVOID base_address);
+#define HEAP_CLASS_PRIVATE 0x00001000
 
 #endif /* _NTDLL_H_ */

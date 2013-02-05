@@ -1,5 +1,5 @@
 /* **********************************************************
- * Copyright (c) 2010-2012 Google, Inc.  All rights reserved.
+ * Copyright (c) 2010-2013 Google, Inc.  All rights reserved.
  * Copyright (c) 2002-2010 VMware, Inc.  All rights reserved.
  * **********************************************************/
 
@@ -427,12 +427,6 @@ DECLARE_CXTSWPROT_VAR(static mutex_t lazy_delete_lock, INIT_LOCK_FREE(lazy_delet
     ASSERT_OWN_##RW##_LOCK((data == shared_data &&                 \
                             !INTERNAL_OPTION(single_thread_in_DR)), \
                            &shared_data->areas.lock)
-
-/* list of native_exec module regions 
- * FIXME: since using general routines, could allocate this elsewhere if add
- * vmvector_* interface heap alloc support
- */
-vm_area_vector_t *native_exec_areas;
 
 /* FIXME: find a way to assert that an area by itself is synchronized if
  * it points into a vector for the routines that take in only areas
@@ -1584,8 +1578,6 @@ vm_areas_init()
                           app_flushed_areas);
 # endif
 #endif
-    VMVECTOR_ALLOC_VECTOR(native_exec_areas, GLOBAL_DCONTEXT, VECTOR_SHARED,
-                          native_exec_areas);
 
     shared_data = HEAP_TYPE_ALLOC(GLOBAL_DCONTEXT, thread_data_t, ACCT_VMAREAS, PROTECTED);
 
@@ -1693,7 +1685,6 @@ vm_areas_exit()
         ASSERT(futureexec_areas == NULL);
         IF_WINDOWS(ASSERT(app_flushed_areas == NULL);)
 #endif
-        ASSERT(native_exec_areas == NULL);
         ASSERT(IAT_areas == NULL);
         return 0;
     }
@@ -1771,8 +1762,6 @@ vm_areas_exit()
 #ifdef SIMULATE_ATTACK
     DELETE_LOCK(simulate_lock);
 #endif
-    vmvector_delete_vector(GLOBAL_DCONTEXT, native_exec_areas);
-    native_exec_areas = NULL;
     vmvector_delete_vector(GLOBAL_DCONTEXT, IAT_areas);
     IAT_areas = NULL;
     return 0;
@@ -7039,6 +7028,52 @@ check_thread_vm_area_abort(dcontext_t *dcontext, void **vmlist, uint flags)
                                  self_owns_write_lock(&data->areas.lock));
 }
 
+static bool
+allow_xfer_for_frag_flags(dcontext_t *dcontext, app_pc pc,
+                          uint src_flags, uint tgt_flags)
+{
+    /* the flags we don't allow a direct cti to bridge if different */
+    const uint frag_flags_cmp = FRAG_SELFMOD_SANDBOXED | FRAG_COARSE_GRAIN
+#ifdef PROGRAM_SHEPHERDING
+        | FRAG_DYNGEN
+#endif
+        ;
+    uint src_cmp = src_flags & frag_flags_cmp;
+    uint tgt_cmp = tgt_flags & frag_flags_cmp;
+    bool allow = (src_cmp == tgt_cmp) ||
+        /* Case 8917: hack to allow elision of call* to vsyscall-in-ntdll,
+         * while still ruling out fine fragments coming in to coarse regions
+         * (where we'd rather stop the fine and build a (cheaper) coarse bb).
+         * Use == instead of TEST to rule out any other funny flags.
+         */
+        (src_cmp == 0 /* we removed FRAG_COARSE_GRAIN to make this fine */
+         && tgt_cmp == FRAG_COARSE_GRAIN /* still in coarse region though */
+         && TEST(FRAG_HAS_SYSCALL, src_flags));
+    if (TEST(FRAG_COARSE_GRAIN, src_flags)) {
+        /* FIXME case 8606: we can allow intra-module xfers but we have no
+         * way of checking here -- would have to check in
+         * interp.c:check_new_page_jmp().  So for now we disallow all xfers.
+         * If our regions match modules exactly we shouldn't see any
+         * intra-module direct xfers anyway.
+         */
+        /* N.B.: ibl entry removal (case 9636) assumes coarse fragments
+         * stay bounded within contiguous FRAG_COARSE_GRAIN regions
+         */
+        allow = false;
+    }
+    if (!allow) {
+        LOG(THREAD, LOG_VMAREAS, 3,
+            "change in vm area flags (0x%08x vs. 0x%08x %d): "
+            "stopping at "PFX"\n", src_flags, tgt_flags,
+            TEST(FRAG_COARSE_GRAIN, src_flags), pc);
+        DOSTATS({
+            if (TEST(FRAG_COARSE_GRAIN, tgt_flags))
+                STATS_INC(elisions_prevented_for_coarse);
+        });
+    }
+    return allow;
+}
+
 /* check origins of code for several purposes:
  * 1) we need list of areas where this thread's fragments come
  *    from, for faster flushing on munmaps
@@ -7081,12 +7116,6 @@ check_thread_vm_area(dcontext_t *dcontext, app_pc pc, app_pc tag, void **vmlist,
     vm_area_t *area = NULL;
     vm_area_t *local_area = NULL; /* entry for this thread */
     vm_area_t area_copy; /* local copy, so can let go of lock */
-    /* the flags we don't allow a direct cti to bridge if different */
-    const uint frag_flags_cmp = FRAG_SELFMOD_SANDBOXED | FRAG_COARSE_GRAIN
-#ifdef PROGRAM_SHEPHERDING
-        | FRAG_DYNGEN
-#endif
-        ;
     /* we can be recursively called (check_origins() calling build_app_bb_ilist())
      * so make sure we don't re-try to get a lock we already hold
      */
@@ -7601,42 +7630,9 @@ check_thread_vm_area(dcontext_t *dcontext, app_pc pc, app_pc tag, void **vmlist,
      * in the same bb as previous areas, as dictated by old flags
      * N.B.: we only care about FRAG_ flags here, not VM_ flags
      */
-    if (xfer) {
-        uint src_cmp = *flags & frag_flags_cmp;
-        uint tgt_cmp = frag_flags & frag_flags_cmp;
-        bool allow = (src_cmp == tgt_cmp) ||
-            /* Case 8917: hack to allow elision of call* to vsyscall-in-ntdll,
-             * while still ruling out fine fragments coming in to coarse regions
-             * (where we'd rather stop the fine and build a (cheaper) coarse bb).
-             * Use == instead of TEST to rule out any other funny flags.
-             */
-            (src_cmp == 0 /* we removed FRAG_COARSE_GRAIN to make this fine */
-             && tgt_cmp == FRAG_COARSE_GRAIN /* still in coarse region though */
-             && TEST(FRAG_HAS_SYSCALL, *flags));
-        if (TEST(FRAG_COARSE_GRAIN, *flags)) {
-            /* FIXME case 8606: we can allow intra-module xfers but we have no
-             * way of checking here -- would have to check in
-             * interp.c:check_new_page_jmp().  So for now we disallow all xfers.
-             * If our regions match modules exactly we shouldn't see any
-             * intra-module direct xfers anyway.
-             */
-            /* N.B.: ibl entry removal (case 9636) assumes coarse fragments
-             * stay bounded within contiguous FRAG_COARSE_GRAIN regions
-             */
-            allow = false;
-        }
-        if (!allow) {
-            LOG(THREAD, LOG_VMAREAS, 3,
-                "change in vm area flags (0x%08x vs. 0x%08x %d): "
-                "stopping at "PFX"\n", *flags, frag_flags,
-                TEST(FRAG_COARSE_GRAIN, *flags), pc);
-            DOSTATS({
-                    if (TEST(FRAG_COARSE_GRAIN, frag_flags))
-                        STATS_INC(elisions_prevented_for_coarse);
-                });
-            result = false;
-            goto check_thread_return;
-        }
+    if (xfer && !allow_xfer_for_frag_flags(dcontext, pc, *flags, frag_flags)) {
+        result = false;
+        goto check_thread_return;
     }
 
     /* Normally we return the union of flags from all vmarea regions touched.
@@ -7836,6 +7832,11 @@ check_thread_vm_area(dcontext_t *dcontext, app_pc pc, app_pc tag, void **vmlist,
         ASSERT(area != NULL);
         area_copy = *area;
         area = &area_copy;
+
+        if (xfer && !allow_xfer_for_frag_flags(dcontext, pc, *flags, frag_flags)) {
+            result = false;
+            goto check_thread_return;
+        }
     }
     if (local_area == NULL) {
         /* new area for this thread */
@@ -9854,9 +9855,10 @@ vm_area_coarse_units_reset_free()
                 if (info != info_start) {
                     coarse_unit_free(GLOBAL_DCONTEXT, info);
                     info = NULL;
-                }
+                } else
+                    coarse_unit_mark_in_use(info); /* still in-use if re-used */
                 /* The start info itself is freed in remove_vm_area, if exiting */
-                /* FIXME case 9686: should re-load persisted caches after reset */
+                /* XXX i#1051: should re-load persisted caches after reset */
                 info = next_info;
                 ASSERT(info == NULL || !info->frozen);
             }

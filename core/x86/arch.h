@@ -1,5 +1,5 @@
 /* **********************************************************
- * Copyright (c) 2010-2012 Google, Inc.  All rights reserved.
+ * Copyright (c) 2010-2013 Google, Inc.  All rights reserved.
  * Copyright (c) 2000-2010 VMware, Inc.  All rights reserved.
  * **********************************************************/
 
@@ -50,7 +50,7 @@
 #include "arch_exports.h" /* for FRAG_IS_32 and FRAG_IS_X86_TO_X64 */
 
 /* FIXME: check on all platforms: these are for Fedora 8 and XP SP2
- * Keep in synch w/ defines in pre_inject_asm.asm
+ * Keep in synch w/ defines in x86.asm
  */
 #define CS32_SELECTOR 0x23
 #define CS64_SELECTOR 0x33
@@ -738,6 +738,13 @@ get_shared_gencode(dcontext_t *dcontext _IF_X64(gencode_mode_t mode))
 #define USE_SHARED_GENCODE()                                         \
     (USE_SHARED_GENCODE_ALWAYS() || IF_LINUX(IF_HAVE_TLS_ELSE(true, false) ||) \
      SHARED_FRAGMENTS_ENABLED() || DYNAMO_OPTION(shared_trace_ibl_routine))
+
+#define USE_SHARED_BB_IBL() \
+    (USE_SHARED_GENCODE_ALWAYS() || DYNAMO_OPTION(shared_bbs))
+
+#define USE_SHARED_TRACE_IBL() \
+    (USE_SHARED_GENCODE_ALWAYS() || DYNAMO_OPTION(shared_traces) || \
+     DYNAMO_OPTION(shared_trace_ibl_routine))
 
 /* returns the thread private code or GLOBAL thread shared code */
 static inline generated_code_t*

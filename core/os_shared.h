@@ -1,5 +1,5 @@
 /* **********************************************************
- * Copyright (c) 2010-2012 Google, Inc.  All rights reserved.
+ * Copyright (c) 2010-2013 Google, Inc.  All rights reserved.
  * Copyright (c) 2003-2010 VMware, Inc.  All rights reserved.
  * **********************************************************/
 
@@ -58,7 +58,7 @@ void os_tls_init(void);
  */
 void os_tls_exit(struct _local_state_t *local_state, bool other_thread);
 void os_thread_init(dcontext_t *dcontext);
-void os_thread_exit(dcontext_t *dcontext);
+void os_thread_exit(dcontext_t *dcontext, bool other_thread);
 
 /* must only be called for the executing thread */
 void os_thread_under_dynamo(dcontext_t *dcontext);
@@ -89,6 +89,12 @@ enum {
     HEAP_ERROR_NOT_AT_PREFERRED = 2,
 };
 typedef uint heap_error_code_t;
+
+/* For dr_raw_mem_alloc, try to allocate memory at preferred address. */
+void *os_raw_mem_alloc(void *preferred, size_t size, uint prot,
+                       heap_error_code_t *error_code);
+/* For dr_raw_mem_free, free memory allocated from os_raw_mem_alloc */
+void os_raw_mem_free(void *p, size_t size, heap_error_code_t *error_code);
 
 /* Reserve size bytes of virtual address space in one piece without committing swap
  * space for it.  If preferred is non-NULL then memory will be reserved at that address
@@ -173,6 +179,8 @@ bool
 os_tls_cfree(uint offset, uint num_slots);
 #endif
 
+bool
+os_should_swap_state(void);
 bool
 os_using_app_state(dcontext_t *dcontext);
 void
@@ -302,6 +310,15 @@ void os_syslog(syslog_event_type_t priority, uint message_id,
 typedef void * dr_auxlib_handle_t;
 /** An exported routine in a loaded client auxiliary library. */
 typedef void (*dr_auxlib_routine_ptr_t)();
+#if defined(WINDOWS) && !defined(X64)
+/**
+ * A handle to a loaded 64-bit client auxiliary library.  This is a different
+ * type than module_handle_t and is not necessarily the base address.
+ */
+typedef uint64 dr_auxlib64_handle_t;
+/** An exported routine in a loaded 64-bit client auxiliary library. */
+typedef uint64 dr_auxlib64_routine_ptr_t;
+#endif
 /* DR_API EXPORT END */
 
 /* Note that this is NOT identical to module_handle_t: on Linux this
@@ -313,6 +330,10 @@ typedef void * shlib_handle_t;
 typedef void (*shlib_routine_ptr_t)();
 
 shlib_handle_t load_shared_library(const char *name);
+#elif defined(WINDOWS) && !defined(X64)
+/* Used for non-CLIENT_INTERFACE as well */
+typedef uint64 dr_auxlib64_handle_t;
+typedef uint64 dr_auxlib64_routine_ptr_t;
 #endif
 
 #if defined(CLIENT_INTERFACE)
@@ -603,7 +624,7 @@ bool remove_from_all_memory_areas(app_pc start, app_pc end);
 /* defaults to read only access, if write is not set ignores others */
 #define OS_OPEN_READ        0x01
 #define OS_OPEN_WRITE       0x02
-#define OS_OPEN_APPEND      0x04
+#define OS_OPEN_APPEND      0x04 /* if not set, the file is truncated */
 #define OS_OPEN_REQUIRE_NEW 0x08
 #define OS_EXECUTE          0x10 /* only used on win32, currently */
 #define OS_SHARE_DELETE     0x20 /* only used on win32, currently */
@@ -981,6 +1002,8 @@ void landing_pads_to_executable_areas(bool add);
 /* in loader_shared.c */
 app_pc load_private_library(const char *filename);
 bool unload_private_library(app_pc modbase);
+/* searches in standard paths instead of requiring abs path */
+app_pc locate_and_load_private_library(const char *name);
 void loader_init(void);
 void loader_exit(void);
 void loader_thread_init(dcontext_t *dcontext);

@@ -133,7 +133,7 @@ static bool verbose = false;
 /* Sideline server support */
 static const wchar_t *shmid;
 
-static int init_count;
+static int drsyms_init_count;
 
 #define IS_SIDELINE (shmid != 0)
 
@@ -163,7 +163,7 @@ drsym_error_t
 drsym_init(const wchar_t *shmid_in)
 {
     /* handle multiple sets of init/exit calls */
-    int count = dr_atomic_add32_return_sum(&init_count, 1);
+    int count = dr_atomic_add32_return_sum(&drsyms_init_count, 1);
     if (count > 1)
         return DRSYM_SUCCESS;
 
@@ -207,9 +207,11 @@ drsym_exit(void)
 {
     drsym_error_t res = DRSYM_SUCCESS;
     /* handle multiple sets of init/exit calls */
-    int count = dr_atomic_add32_return_sum(&init_count, -1);
+    int count = dr_atomic_add32_return_sum(&drsyms_init_count, -1);
     if (count > 0)
         return res;
+    if (count < 0)
+        return DRSYM_ERROR;
 
     if (!IS_SIDELINE) {
         hashtable_delete(&modtable);
@@ -988,11 +990,14 @@ decode_compound_type(type_query_t *query, ULONG type_idx, uint expand_sub,
     compound_type->name = POOL_ALLOC_SIZE(&query->pool, char,
                                           (wcslen(name) + 1) * sizeof(char));
     if (compound_type->name == NULL) {
-        HeapFree(GetProcessHeap(), 0, name);
+        LocalFree(name);
         return DRSYM_ERROR;
     }
     _snprintf(compound_type->name, wcslen(name) + 1, "%S", name);
-    HeapFree(GetProcessHeap(), 0, name);
+    /* Docs aren't very clear, but online examples use LocalFree, and new
+     * redirection of LocalAlloc proves it.
+     */
+    LocalFree(name);
 
     if (expand && field_count > 0) {
         compound_type->field_types =

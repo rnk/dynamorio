@@ -1,5 +1,5 @@
 /* **********************************************************
- * Copyright (c) 2011-2012 Google, Inc.  All rights reserved.
+ * Copyright (c) 2011-2013 Google, Inc.  All rights reserved.
  * Copyright (c) 2008-2010 VMware, Inc.  All rights reserved.
  * **********************************************************/
 
@@ -71,7 +71,13 @@ typedef enum _action_t {
 
 static bool verbose;
 static bool quiet;
-static bool DR_dll_not_needed;
+static bool DR_dll_not_needed =
+#ifdef STATIC_LIBRARY
+    true
+#else
+    false
+#endif
+    ;
 static bool nocheck;
 
 #define die() exit(1)
@@ -226,9 +232,10 @@ const char *usage_str =
     "       -mem               Print memory usage statistics.\n"
     "       -pidfile <file>    Print the pid of the child process to the given file.\n"
     "       -no_inject         Run the application natively.\n"
-# ifdef LINUX  /* XXX: Ugh ifdefs. */
+# ifdef LINUX  /* FIXME i#725: Windows attach NYI */
     "       -early             Whether to use early injection.\n"
-    "       -use_ptrace        Whether to use ptrace to inject.\n"
+    "       -attach <pid>      Attach to the process with the given pid.  Pass 0\n"
+    "                          for pid to launch and inject into a new process.\n"
 # endif
     "       -use_dll <dll>     Inject given dll instead of configured DR dll.\n"
     "       -force             Inject regardless of configuration.\n"
@@ -809,18 +816,26 @@ int main(int argc, char *argv[])
         }
 # ifdef LINUX
         else if (strcmp(argv[i], "-use_ptrace") == 0) {
+            /* Undocumented option for using ptrace on a fresh process. */
             use_ptrace = true;
-            /* Set -early_inject, since using ptrace is functionally very
-             * similar.  Otherwise we assert trying to do things like looking
-             * up libc's errno.
-             */
-            _snprintf(extra_ops + strlen(extra_ops),
-                      BUFFER_SIZE_ELEMENTS(extra_ops) - strlen(extra_ops),
-                      "%s-early_inject", (extra_ops[0] == '\0') ? "" : " ");
-            NULL_TERMINATE_BUFFER(extra_ops);
+            continue;
+        }
+        else if (strcmp(argv[i], "-attach") == 0) {
+            const char *pid_str = argv[++i];
+            process_id_t pid = strtoul(pid_str, NULL, 10);
+            if (pid == ULONG_MAX)
+                usage("-attach expects an integer pid");
+            if (pid != 0)
+                usage("attaching to running processes is not yet implemented");
+            use_ptrace = true;
+            /* FIXME: use pid below to attach. */
             continue;
         }
         else if (strcmp(argv[i], "-early") == 0) {
+            /* Appending -early_inject to extra_ops communicates our intentions to
+             * drinjectlib.
+             * XXX: reuse print_to_buffer from x86/decodelib.c and utils.c.
+             */
             _snprintf(extra_ops + strlen(extra_ops),
                       BUFFER_SIZE_ELEMENTS(extra_ops) - strlen(extra_ops),
                       "%s-early_inject", (extra_ops[0] == '\0') ? "" : " ");
@@ -1148,17 +1163,21 @@ int main(int argc, char *argv[])
         usage("no action specified");
     }
     if (syswide_on) {
+        DWORD platform;
+        if (get_platform(&platform) != ERROR_SUCCESS)
+            platform = PLATFORM_UNKNOWN;
+        if (platform >= PLATFORM_WIN_8) {
+            error("syswide_on is not yet supported on Windows 8");
+            die();
+        }
         if (!check_dr_root(dr_root, false, dr_platform, true))
             die();
         /* If this is the first setting of AppInit on NT, warn about reboot */
         if (!dr_syswide_is_on(dr_platform, dr_root)) {
-            DWORD platform;
-            if (get_platform(&platform) == ERROR_SUCCESS &&
-                platform == PLATFORM_WIN_NT_4) {
+            if (platform == PLATFORM_WIN_NT_4) {
                 warn("on Windows NT, applications will not be taken over until reboot");
             }
-            else if (get_platform(&platform) == ERROR_SUCCESS &&
-                     platform >= PLATFORM_WIN_7) {
+            else if (platform >= PLATFORM_WIN_7) {
                 /* i#323 will fix this but good to warn the user */
                 warn("on Windows 7, syswide_on relaxes system security by removing certain code signing requirements");
             }
@@ -1186,10 +1205,22 @@ int main(int argc, char *argv[])
      * our drrun shell script and makes scripting easier for the user.
      */
     if (limit == 0 && !use_ptrace) {
+        info("will exec %s", app_name);
         errcode = dr_inject_prepare_to_exec(app_name, app_argv, &inject_data);
     } else
 # endif /* LINUX */
+    {
         errcode = dr_inject_process_create(app_name, app_argv, &inject_data);
+        info("created child with pid %d for %s",
+             dr_inject_get_process_id(inject_data), app_name);
+    }
+# ifdef WINDOWS
+    if (errcode == ERROR_IMAGE_MACHINE_TYPE_MISMATCH_EXE) {
+        /* Better error message than the FormatMessage */
+        error("Target process %s is for the wrong architecture", app_name);
+        die(); /* no process created, so don't "goto error" */
+    }
+# endif
     if (errcode != 0) {
         IF_WINDOWS(int sofar =)
             _snprintf(buf, BUFFER_SIZE_ELEMENTS(buf),
@@ -1229,7 +1260,7 @@ int main(int argc, char *argv[])
 
 #ifdef LINUX
     if (use_ptrace) {
-        if (!dr_inject_use_ptrace(inject_data)) {
+        if (!dr_inject_prepare_to_ptrace(inject_data)) {
             error("unable to use ptrace");
             goto error;
         } else {
@@ -1246,7 +1277,10 @@ int main(int argc, char *argv[])
     success = false;
     IF_WINDOWS(start_time = time(NULL);)
 
-    dr_inject_process_run(inject_data);
+    if (!dr_inject_process_run(inject_data)) {
+        error("unable to run");
+        goto error;
+    }
 
 # ifdef WINDOWS
     if (limit == 0 && dr_inject_using_debug_key(inject_data)) {

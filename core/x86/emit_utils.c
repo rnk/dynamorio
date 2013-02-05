@@ -2157,7 +2157,8 @@ void
 init_patch_list(patch_list_t *patch, patch_list_type_t type)
 {
     patch->num_relocations = 0;
-    ASSERT_TRUNCATE(patch->type, ushort, type);
+    /* Cast to int to avoid a tautological comparison warning from clang. */
+    ASSERT_TRUNCATE(patch->type, ushort, (int)type);
     patch->type = (ushort) type;
 }
 
@@ -8000,6 +8001,7 @@ emit_client_ibl_xfer(dcontext_t *dcontext, byte *pc, generated_code_t *code)
     byte *ibl_tgt = client_xfer_ibl_tgt(dcontext, code, IBL_LINKED);
     bool absolute = !code->thread_shared;
 
+    ASSERT(ibl_tgt != NULL);
     instrlist_init(&ilist);
     init_patch_list(&patch, absolute ? PATCH_TYPE_ABSOLUTE : PATCH_TYPE_INDIRECT_FS);
 

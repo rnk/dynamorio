@@ -41,6 +41,7 @@
 
 #include <signal.h> /* for stack_t */
 #include "module.h" /* for os_module_data_t */
+#include "instr.h" /* for reg_id_t */
 #include <sys/time.h> /* struct itimerval */
 
 /* for inline asm */
@@ -64,6 +65,9 @@
 #define PTHREAD_CLONE_FLAGS (CLONE_VM|CLONE_FS|CLONE_FILES|CLONE_SIGHAND| \
                              CLONE_THREAD|CLONE_SYSVSEM|CLONE_SETTLS| \
                              CLONE_PARENT_SETTID|CLONE_CHILD_CLEARTID)
+
+/* Maximum number of arguments to Linux syscalls. */
+enum { MAX_SYSCALL_ARGS = 6 };
 
 /* thread-local data that's os-private, for modularity */
 typedef struct _os_thread_data_t {
@@ -144,6 +148,14 @@ set_executable_path(const char *);
 uint
 memprot_to_osprot(uint prot);
 
+bool
+mmap_syscall_succeeded(byte *retval);
+
+bool
+os_files_same(const char *path1, const char *path2);
+
+extern const reg_id_t syscall_regparms[MAX_SYSCALL_ARGS];
+
 /* in signal.c */
 struct _kernel_sigaction_t;
 typedef struct _kernel_sigaction_t kernel_sigaction_t;
@@ -151,7 +163,7 @@ typedef struct _kernel_sigaction_t kernel_sigaction_t;
 void signal_init(void);
 void signal_exit(void);
 void signal_thread_init(dcontext_t *dcontext);
-void signal_thread_exit(dcontext_t *dcontext);
+void signal_thread_exit(dcontext_t *dcontext, bool other_thread);
 void handle_clone(dcontext_t *dcontext, uint flags);
 bool handle_sigaction(dcontext_t *dcontext, int sig,
                       const kernel_sigaction_t *act, 

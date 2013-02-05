@@ -1,5 +1,5 @@
 /* **********************************************************
- * Copyright (c) 2010-2012 Google, Inc.  All rights reserved.
+ * Copyright (c) 2010-2013 Google, Inc.  All rights reserved.
  * Copyright (c) 2002-2010 VMware, Inc.  All rights reserved.
  * **********************************************************/
 
@@ -1839,6 +1839,38 @@ DR_API
 void
 dr_nonheap_free(void *mem, size_t size);
 
+DR_API
+/**
+ * \warning This raw memory allocation interface is in flux and is subject to
+ * change in the next release.  Consider it experimental in this release.
+ *
+ * Allocates \p size bytes (page size aligned) of memory as a separate
+ * allocation at preferred base \p addr that must be page size aligned,
+ * allowing for separate protection.
+ * If \p addr is NULL, an arbitrary address is picked.
+ *
+ * The \p prot protection should use the DR_MEMPROT_READ,
+ * DR_MEMPROT_WRITE, and DR_MEMPROT_EXEC bits.
+ * The allocated memory is not considered to be DynamoRIO or tool memory and
+ * thus is not kept separate from the application. Use of this memory is at the
+ * client's own risk.
+ *
+ * Returns the actual address allocated or NULL if memory allocation at 
+ * preferred base fails.
+ */
+void *
+dr_raw_mem_alloc(size_t size, uint prot, void *addr);
+
+DR_API
+/**
+ * Frees memory allocated by dr_raw_mem_alloc().
+ * \p addr and \p size must be the same as that passed to dr_raw_mem_alloc()
+ * on Windows.
+ */
+void
+dr_raw_mem_free(void *addr, size_t size);
+
+
 #ifdef LINUX
 DR_API
 /** 
@@ -2076,6 +2108,10 @@ DR_API
  * dr_memory_is_in_client() and any faults in the library will be
  * considered client faults.  The bounds of the loaded library are
  * returned in the optional out variables.  On failure, returns NULL.
+ *
+ * If only a filename and not a full path is given, this routine will
+ * search for the library in the standard search locations for DR's
+ * private loader.
  */
 dr_auxlib_handle_t
 dr_load_aux_library(const char *name,
@@ -2098,6 +2134,91 @@ DR_API
  */
 bool
 dr_unload_aux_library(dr_auxlib_handle_t lib);
+
+/* DR_API EXPORT BEGIN */
+
+#if defined(WINDOWS) && !defined(X64)
+/* DR_API EXPORT END */
+DR_API
+/**
+ * Similar to dr_load_aux_library(), but loads a 64-bit library for
+ * access from a 32-bit process running on a 64-bit Windows kernel.
+ * Fails if called from a 32-bit kernel or from a 64-bit process.
+ * The library will be located in the low part of the address space
+ * with 32-bit addresses.
+ * Functions in the library can be called with dr_invoke_x64_routine().
+ *
+ * \warning Invoking 64-bit code is fragile.  Currently, this routine
+ * uses the system loader, under the assumption that little isolation
+ * is needed versus application 64-bit state.  Consider use of this routine
+ * experimental: use at your own risk!
+ *
+ * \note Windows-only.
+ *
+ * \note Currently this routine does not support loading kernel32.dll
+ * or any library that depends on it.
+ * It also does not invoke the entry point for any dependent libraries
+ * loaded as part of loading \p name.
+ *
+ * \note Currently this routine does not support Windows 8.
+ */
+dr_auxlib64_handle_t
+dr_load_aux_x64_library(const char *name);
+
+DR_API
+/**
+ * Looks up the exported routine with the given name in the given
+ * 64-bit client auxiliary library loaded by dr_load_aux_x64_library().  Returns
+ * NULL on failure.
+ * The returned function can be called with dr_invoke_x64_routine().
+ *
+ * \note Windows-only.
+ *
+ * \note Currently this routine does not support Windows 8.
+ */
+dr_auxlib64_routine_ptr_t
+dr_lookup_aux_x64_library_routine(dr_auxlib64_handle_t lib, const char *name);
+
+DR_API
+/**
+ * Unloads the given library, which must have been loaded by
+ * dr_load_aux_x64_library().  Returns whether successful.
+ *
+ * \note Windows-only.
+ */
+bool
+dr_unload_aux_x64_library(dr_auxlib64_handle_t lib);
+
+DR_API
+/**
+ * Must be called from 32-bit mode.  Switches to 64-bit mode, calls \p
+ * func64 with the given parameters, switches back to 32-bit mode, and
+ * then returns to the caller.  Requires that \p func64 be located in
+ * the low 4GB of the address space.  All parameters must be 32-bit
+ * sized, and all are widened via sign-extension when passed to \p
+ * func64.
+ *
+ * \return -1 on failure; else returns the return value of \p func64.
+ *
+ * \warning Invoking 64-bit code is fragile.  The WOW64 layer assumes
+ * there is no other 64-bit code that will be executed.
+ * dr_invoke_x64_routine() attempts to save the WOW64 state, but it
+ * has not been tested in all versions of WOW64.  Also, invoking
+ * 64-bit code that makes callbacks is not supported, as not only a
+ * custom wrapper to call the 32-bit code in the right mode would be
+ * needed, but also a way to restore the WOW64 state in case the
+ * 32-bit callback makes a system call.  Consider use of this routine
+ * experimental: use at your own risk!
+ *
+ * \note Windows-only.
+ */
+int64
+dr_invoke_x64_routine(dr_auxlib64_routine_ptr_t func64, uint num_params, ...);
+
+/* DR_API EXPORT BEGIN */
+
+#endif /* WINDOWS && !X64 */
+/* DR_API EXPORT END */
 
 /* DR_API EXPORT BEGIN */
 
@@ -3029,6 +3150,13 @@ DR_API
 /**
  * Unmaps a portion of a file mapping previously created by dr_map_file().
  * \return whether successful.
+ *
+ * @param[in]  map   The base address to be unmapped. Must be page size aligned.
+ * @param[in]  size  The size to be unmapped.
+ *                   All pages overlapping with the range are unmapped.
+ *
+ * \note On Windows, the whole file will be unmapped instead.
+ * 
  */
 bool
 dr_unmap_file(void *map, size_t size);
@@ -3160,7 +3288,8 @@ DR_API
 /**
  * Stdout printing that won't interfere with the
  * application's own printing.  Currently non-buffered.
- * \note On Windows, this routine is not able to print to the \p cmd window
+ * \note On Windows 7 and earlier, this routine is not able to print
+ * to the \p cmd window
  * unless dr_enable_console_printing() is called ahead of time, and
  * even then there are limitations: see dr_enable_console_printing().
  * \note On Windows, this routine does not support printing floating
@@ -3176,7 +3305,7 @@ DR_API
 /**
  * Printing to a file that won't interfere with the
  * application's own printing.  Currently non-buffered.
- * \note On Windows, this routine is not able to print to STDOUT or
+ * \note On Windows 7 and earlier, this routine is not able to print to STDOUT or
  * STDERR in the \p cmd window unless dr_enable_console_printing() is
  * called ahead of time, and even then there are limitations: see
  * dr_enable_console_printing().
@@ -3197,8 +3326,9 @@ dr_fprintf(file_t f, const char *fmt, ...);
 #ifdef WINDOWS
 DR_API
 /**
- * Enables dr_printf() and dr_fprintf() to work with a console window
- * (viz., \p cmd).  Loads a private copy of kernel32.dll (if not
+ * Enables dr_printf() and dr_fprintf() to work with a legacy console
+ * window (viz., \p cmd on Windows 7 or earlier).  Loads a private
+ * copy of kernel32.dll (if not
  * already loaded) in order to accomplish this.  To keep the default
  * DR lean and mean, loading kernel32.dll is not performed by default.
  *
@@ -3206,25 +3336,28 @@ DR_API
  * If called later, it will fail.
  *
  * Without calling this routine, dr_printf() and dr_fprintf() will not
- * print anything in a console window.
+ * print anything in a console window on Windows 7 or earlier.
  *
  * Even after calling this routine, there are significant limitations
  * to console printing support in DR:
  * 
- *  - On Windows versions from Vista onward, it does not work for
+ *  - On Windows Vista and Windows 7, it does not work for
  *    64-bit applications.
  *  - On Windows versions prior to Vista, it does not work from
  *    the exit event.  Once the application terminates its state with
  *    csrss (toward the very end of ExitProcess), no output will show
  *    up on the console.  We have no good solution here yet as exiting
- *    early is not ideal.
+ *    early is not ideal.  Printing from the exit event works fine
+ *    on Windows 8+.
  *  - It does not work at all from graphical applications, even when they are
- *    launched from a console.
+ *    launched from a console.  This is true on Windows 8+ as well.
  *  - In the future, with earliest injection (Issue 234), writing to the
- *    console may not work from the client init event.
+ *    console may not work from the client init event on Windows 7 and
+ *    earlier (it will work on Windows 8).
  *
  * These limitations stem from the complex arrangement of the console
- * window in Windows, where printing to it involves sending a message
+ * window in Windows (prior to Windows 8), where printing to it
+ * involves sending a message
  * in an undocumented format to the \p csrss process, rather than a
  * simple write to a file handle.  We recommend using a terminal
  * window such as cygwin's \p rxvt rather than the \p cmd window, or
@@ -3239,7 +3372,8 @@ dr_enable_console_printing(void);
 DR_API
 /**
  * Returns true if the current standard error handle belongs to a
- * console window (viz., \p cmd).  DR's dr_printf() and dr_fprintf()
+ * legacy console window (viz., \p cmd on Windows 7 or earlier).  DR's
+ * dr_printf() and dr_fprintf()
  * do not work with such console windows unless
  * dr_enable_console_printing() is called ahead of time, and even then
  * there are limitations detailed in dr_enable_console_printing().

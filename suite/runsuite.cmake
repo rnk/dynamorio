@@ -123,8 +123,8 @@ if (DO_ALL_BUILDS)
     INTERNAL:BOOL=ON
     ")
 endif (DO_ALL_BUILDS)
-# non-official-API builds but no longer in pre-commit suite on Windows
-# where building is slow: we'll rely on bots to catch breakage in these 
+# non-official-API builds but not all are in pre-commit suite on Windows
+# where building is slow: we'll rely on bots to catch breakage in most of these 
 # builds on Windows
 if (UNIX OR DO_ALL_BUILDS)
   testbuild("vmsafe-debug-internal-32" OFF "
@@ -142,14 +142,12 @@ if (DO_ALL_BUILDS)
     INTERNAL:BOOL=OFF
     ")
 endif (DO_ALL_BUILDS)
-if (UNIX OR DO_ALL_BUILDS)
-  testbuild("vps-debug-internal-32" OFF "
-    VMAP:BOOL=OFF
-    VPS:BOOL=ON
-    DEBUG:BOOL=ON
-    INTERNAL:BOOL=ON
-    ")
-endif ()
+testbuild("vps-debug-internal-32" OFF "
+  VMAP:BOOL=OFF
+  VPS:BOOL=ON
+  DEBUG:BOOL=ON
+  INTERNAL:BOOL=ON
+  ")
 if (DO_ALL_BUILDS)
   testbuild("vps-release-external-32" OFF "
     VMAP:BOOL=OFF
@@ -173,6 +171,20 @@ if (DO_ALL_BUILDS)
     DEBUG:BOOL=ON
     INTERNAL:BOOL=ON
     ")
+  if (UNIX)
+    # i#975: revived support for STATIC_LIBRARY.
+    # FIXME: we need to implement takeover on Windows with .CRT$XCU.
+    testbuild("static-debug-internal-64" ON "
+      STATIC_LIBRARY:BOOL=ON
+      DEBUG:BOOL=ON
+      INTERNAL:BOOL=ON
+      ")
+    testbuild("static-debug-internal-32" OFF "
+      STATIC_LIBRARY:BOOL=ON
+      DEBUG:BOOL=ON
+      INTERNAL:BOOL=ON
+      ")
+  endif ()
 endif (DO_ALL_BUILDS)
 
 # FIXME: what about these builds?

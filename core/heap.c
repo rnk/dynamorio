@@ -411,7 +411,7 @@ DECLARE_NEVERPROT_VAR(static thread_units_t global_racy_units, {0});
 typedef byte *vm_addr_t;
 
 #ifdef X64
-/* designates the boundaries within which we must allocate DR heap space */
+/* designates the closed interval within which we must allocate DR heap space */
 static byte *heap_allowable_region_start = (byte *)PTR_UINT_0;
 static byte *heap_allowable_region_end = (byte *)POINTER_MAX;
 
@@ -430,7 +430,7 @@ request_region_be_heap_reachable(byte *start, size_t size)
     /* initialize so will be overridden on first call; protected by the
      * request_region_be_heap_reachable_lock */
     static byte *must_reach_region_start = (byte *)POINTER_MAX;
-    static byte *must_reach_region_end = (byte *)PTR_UINT_0;
+    static byte *must_reach_region_end = (byte *)PTR_UINT_0;  /* closed */
 
     LOG(GLOBAL, LOG_HEAP, 2,
         "Adding must-be-reachable-from-heap region "PFX"-"PFX"\n"
@@ -439,6 +439,7 @@ request_region_be_heap_reachable(byte *start, size_t size)
         start, start+size, must_reach_region_start, must_reach_region_end,
         heap_allowable_region_start, heap_allowable_region_end);
     ASSERT(!POINTER_OVERFLOW_ON_ADD(start, size));
+    ASSERT(size > 0);
 
     mutex_lock(&request_region_be_heap_reachable_lock);
     if (start < must_reach_region_start) {
@@ -457,9 +458,9 @@ request_region_be_heap_reachable(byte *start, size_t size)
         heap_allowable_region_end = allowable_end_tmp;
         SELF_PROTECT_DATASEC(DATASEC_RARELY_PROT);
     } 
-    if (start + size > must_reach_region_end) {
+    if (start + size - 1 > must_reach_region_end) {
         SELF_UNPROTECT_DATASEC(DATASEC_RARELY_PROT);
-        must_reach_region_end = start + size;
+        must_reach_region_end = start + size - 1;  /* closed */
         /* Write assumed to be atomic so we don't have to hold a lock to use
          * heap_allowable_region_start. */
         heap_allowable_region_start = REACHABLE_32BIT_START(must_reach_region_start,
@@ -908,7 +909,7 @@ rel32_reachable_from_heap(byte *tgt)
     ptr_int_t new_offs;
     /* FIXME: also check if we're now allocating memory beyond the vmm heap */
     get_vmm_heap_bounds(&heap_start, &heap_end);
-    new_offs = (tgt > heap_start) ? (tgt - heap_end) : (heap_start - tgt);
+    new_offs = (tgt > heap_start) ? (tgt - heap_start) : (heap_end - tgt);
     return REL32_REACHABLE_OFFS(new_offs);
 }
 
@@ -2344,12 +2345,18 @@ bool
 unmap_file(byte *map, size_t size)
 {
     bool success;
-    ASSERT(map != NULL);
+    ASSERT(map != NULL && ALIGNED(map, PAGE_SIZE));
+    size = ALIGN_FORWARD(size, PAGE_SIZE);
     /* memory alloc/dealloc and updating DR list must be atomic */
     dynamo_vm_areas_lock(); /* if already hold lock this is a nop */
-    update_dynamo_areas_on_release(map, map+size, true/*remove now*/);
-    STATS_SUB(file_map_capacity, size);
     success = os_unmap_file(map, size);
+    if (success) {
+        /* Only update the all_memory_areas on success.
+         * It should still be atomic to the outside observers.
+         */
+        update_dynamo_areas_on_release(map, map+size, true/*remove now*/);
+        STATS_SUB(file_map_capacity, size);
+    }
     dynamo_vm_areas_unlock();
     return success;
 }

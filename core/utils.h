@@ -1,5 +1,5 @@
 /* **********************************************************
- * Copyright (c) 2010-2012 Google, Inc.  All rights reserved.
+ * Copyright (c) 2010-2013 Google, Inc.  All rights reserved.
  * Copyright (c) 2000-2010 VMware, Inc.  All rights reserved.
  * **********************************************************/
 
@@ -258,6 +258,7 @@ typedef struct _mutex_t {
 #else
 #  define MAX_MUTEX_CALLSTACK 0 /* cannot use */
 #endif /* MUTEX_CALLSTACK */
+    bool deleted;  /* this lock has been deleted at least once */
 #endif /* DEADLOCK_AVOIDANCE */
     /* Any new field needs to be initialized with INIT_LOCK_NO_TYPE */
 } mutex_t;
@@ -433,6 +434,7 @@ enum {
     LOCK_RANK(callback_registration_lock), /* > dr_client_mutex */
     LOCK_RANK(client_tls_lock), /* > dr_client_mutex */
 #endif
+    LOCK_RANK(privload_lock), /* < modlist_areas, < table_rwlock */
     LOCK_RANK(table_rwlock), /* > dr_client_mutex */
     LOCK_RANK(loaded_module_areas),  /* < dynamo_areas < global_alloc_lock */
     LOCK_RANK(aslr_areas), /* < dynamo_areas < global_alloc_lock */
@@ -462,13 +464,16 @@ enum {
     LOCK_RANK(suspend_lock),
     LOCK_RANK(shared_lock),
 #endif
-    LOCK_RANK(privload_lock), /* < modlist_areas */
     LOCK_RANK(modlist_areas), /* < dynamo_areas < global_alloc_lock */
 #ifdef WINDOWS
     LOCK_RANK(privload_fls_lock), /* < dynamo_areas < global_alloc_lock */
+    LOCK_RANK(drwinapi_localheap_lock), /* < global_alloc_lock */
 #endif    
 #ifdef CLIENT_INTERFACE
     LOCK_RANK(client_aux_libs),
+# ifdef WINDOWS
+    LOCK_RANK(client_aux_lib64_lock),
+# endif
 #endif
     /* ADD HERE a lock around section that may allocate memory */
 
@@ -922,6 +927,8 @@ typedef enum {
     HASH_FUNCTION_SWAP_12TO15_AND_NONE = 5,
     HASH_FUNCTION_SHIFT_XOR = 6,
 #endif
+    HASH_FUNCTION_STRING = 7,
+    HASH_FUNCTION_STRING_NOCASE = 8,
     HASH_FUNCTION_ENUM_MAX,
 } hash_function_t;
 

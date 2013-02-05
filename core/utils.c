@@ -1,5 +1,5 @@
 /* **********************************************************
- * Copyright (c) 2010-2012 Google, Inc.  All rights reserved.
+ * Copyright (c) 2010-2013 Google, Inc.  All rights reserved.
  * Copyright (c) 2000-2010 VMware, Inc.  All rights reserved.
  * **********************************************************/
 
@@ -396,6 +396,15 @@ locks_not_closed()
     while (cur_lock != &innermost_lock) {
         if (allow_do_threshold_leaks && cur_lock->rank == LOCK_RANK(do_threshold_mutex)) {
             ignored++;
+        } else if (cur_lock->deleted &&
+                   (IF_WINDOWS(cur_lock->rank == LOCK_RANK(debugbox_lock) ||
+                               cur_lock->rank == LOCK_RANK(dump_core_lock) ||)
+                    cur_lock->rank == LOCK_RANK(report_buf_lock) ||
+                    cur_lock->rank == LOCK_RANK(datasec_selfprot_lock) ||
+                    cur_lock->rank == LOCK_RANK(logdir_mutex) ||
+                    cur_lock->rank == LOCK_RANK(options_lock))) {
+            /* i#1058: curiosities during exit re-acquire these locks. */
+            ignored++;
         } else {
             LOG(GLOBAL, LOG_STATS, 1, "missing DELETE_LOCK on lock "PFX" %s\n",
                 cur_lock, cur_lock->name);
@@ -404,7 +413,7 @@ locks_not_closed()
         cur_lock = cur_lock->next_process_lock;
     }
     mutex_unlock(&innermost_lock);
-    LOG(GLOBAL, LOG_STATS, 3, "locks_not_closed= %d remaining, %d DO_THRESHOLD_SAFE ignored\n", 
+    LOG(GLOBAL, LOG_STATS, 3, "locks_not_closed= %d remaining, %d ignored\n",
         forgotten, ignored);
     return forgotten;
 }
@@ -933,6 +942,7 @@ mutex_delete(mutex_t *lock)
 #ifdef DEADLOCK_AVOIDANCE
     LOG(THREAD_GET, LOG_THREADS, 2, "mutex_delete" DUMP_LOCK_INFO_ARGS(0, lock, lock->prev_process_lock));
     remove_process_lock(lock);
+    lock->deleted = true;
 #endif    
     ASSERT(lock->lock_requests == LOCK_FREE_STATE);
 
@@ -1423,6 +1433,29 @@ hash_value(ptr_uint_t val, hash_function_t func, ptr_uint_t mask, uint bits)
                 return val ^ (val >> 12) ^ (val << 12);
             }
 #endif            
+        case HASH_FUNCTION_STRING:
+        case HASH_FUNCTION_STRING_NOCASE:
+            {
+                const char *s = (const char *) val;
+                char c;
+                ptr_uint_t hash = 0;
+                uint i, shift;
+                uint max_shift = ALIGN_FORWARD(bits, 8);
+                /* Simple hash function that combines unbiased via xor and
+                 * shifts to get input chars to cover the full range.  We clamp
+                 * the shift to avoid useful bits being truncated.  An
+                 * alternative is to combine blocks of 4 chars at a time but
+                 * that's more complex.
+                 */
+                for (i = 0; s[i] != '\0'; i++) {
+                    c = s[i];
+                    if (func == HASH_FUNCTION_STRING_NOCASE)
+                        c = (char) tolower(c);
+                    shift = (i % 4) * 8;
+                    hash ^= (c << MIN(shift, max_shift));
+                }
+                return hash;
+            }
         default:
             {
                 ASSERT_NOT_REACHED();

@@ -1,5 +1,5 @@
 /* **********************************************************
- * Copyright (c) 2011-2012 Google, Inc.  All rights reserved.
+ * Copyright (c) 2011-2013 Google, Inc.  All rights reserved.
  * Copyright (c) 2000-2010 VMware, Inc.  All rights reserved.
  * **********************************************************/
 
@@ -80,6 +80,14 @@
 # define ASSERT_BITFIELD_TRUNCATE DO_NOT_USE_ASSERT_USE_CLIENT_ASSERT_INSTEAD
 # define ASSERT_NOT_REACHED DO_NOT_USE_ASSERT_USE_CLIENT_ASSERT_INSTEAD
 #endif
+
+/* forward decls */
+
+static bool
+opcode_is_ubr(int opc);
+
+static bool
+opcode_is_cbr(int opc);
 
 /*************************
  ***       opnd_t        ***
@@ -1192,6 +1200,28 @@ opnd_size_in_bytes(opnd_size_t size)
     }
 }
 
+DR_API
+opnd_size_t
+opnd_size_from_bytes(uint bytes)
+{
+    switch (bytes) {
+    case 0: return OPSZ_0;
+    case 1: return OPSZ_1;
+    case 2: return OPSZ_2;
+    case 4: return OPSZ_4;
+    case 6: return OPSZ_6;
+    case 8: return OPSZ_8;
+    case 10: return OPSZ_10;
+    case 16: return OPSZ_16;
+    case 14: return OPSZ_14;
+    case 28: return OPSZ_28;
+    case 94: return OPSZ_94;
+    case 108: return OPSZ_108;
+    case 512: return OPSZ_512;
+    default: return OPSZ_NA;
+    }
+}
+
 /* shrinks all 32-bit registers in opnd to 16 bits.  also shrinks the size of
  * immed ints and mem refs from OPSZ_4 to OPSZ_2.
  */
@@ -1922,7 +1952,7 @@ private_instr_encode(dcontext_t *dcontext, instr_t *instr, bool always_cache)
 #define inlined_instr_get_opcode(instr) \
     (IF_DEBUG_(CLIENT_ASSERT(sizeof(*instr) == sizeof(instr_t), "invalid type")) \
      (((instr)->opcode == OP_UNDECODED) ? \
-      (instr_decode_opcode(get_thread_private_dcontext(), instr), (instr)->opcode) : \
+      (instr_decode_with_current_dcontext(instr), (instr)->opcode) : \
       (instr)->opcode))
 int
 instr_get_opcode(instr_t *instr)
@@ -2491,30 +2521,6 @@ instr_set_raw_bits_valid(instr_t *instr, bool valid)
     }
 }
 
-bool
-instr_operands_valid(instr_t *instr)
-{
-    return ((instr->flags & INSTR_OPERANDS_VALID) != 0);
-}
-
-bool
-instr_raw_bits_valid(instr_t *instr)
-{
-    return ((instr->flags & INSTR_RAW_BITS_VALID) != 0);
-}
-
-bool
-instr_has_allocated_bits(instr_t *instr)
-{
-    return ((instr->flags & INSTR_RAW_BITS_ALLOCATED) != 0);
-}
-
-bool
-instr_needs_encoding(instr_t *instr)
-{
-    return ((instr->flags & INSTR_RAW_BITS_VALID) == 0);
-}
-
 void
 instr_free_raw_bits(dcontext_t *dcontext, instr_t *instr)
 {
@@ -2999,6 +3005,7 @@ instr_decode(dcontext_t *dcontext, instr_t *instr)
 /* Calls instr_decode() with the current dcontext.  Mostly useful as the slow
  * path for IR routines that get inlined.
  */
+NOINLINE  /* rarely called */
 instr_t *
 instr_decode_with_current_dcontext(instr_t *instr)
 {
@@ -3710,15 +3717,17 @@ instr_set_branch_target_pc(instr_t *cti_instr, app_pc pc)
 bool
 instr_is_exit_cti(instr_t *instr)
 {
+    int opc;
     if (!instr_operands_valid(instr) || /* implies !opcode_valid */
-        !instr_ok_to_mangle(instr) ||
-        !instr_is_cti(instr) ||
-        instr_is_call(instr) ||
-        instr_is_return(instr))
+        !instr_ok_to_mangle(instr))
         return false;
-    return (instr_num_srcs(instr) > 0 &&
-             /* far pc should only happen for mangle's call to here */
-            opnd_is_pc(instr_get_src(instr, 0)));
+    /* XXX: avoid conditional decode in instr_get_opcode() for speed. */
+    opc = instr->opcode;
+    if (opcode_is_ubr(opc) || opcode_is_cbr(opc)) {
+        /* far pc should only happen for mangle's call to here */
+        return opnd_is_pc(instr_get_target(instr));
+    }
+    return false;
 }
 
 bool 
@@ -3732,14 +3741,20 @@ instr_is_mov(instr_t *instr)
             opc == OP_mov_priv);
 }
 
-bool 
-instr_is_call(instr_t *instr)
+static bool
+opcode_is_call(int opc)
 {
-    int opc = instr_get_opcode(instr);
     return (opc == OP_call ||
             opc == OP_call_far ||
             opc == OP_call_ind ||
             opc == OP_call_far_ind);
+}
+
+bool 
+instr_is_call(instr_t *instr)
+{
+    int opc = instr_get_opcode(instr);
+    return opcode_is_call(opc);
 }
 
 bool 
@@ -3772,19 +3787,24 @@ instr_is_return(instr_t *instr)
 
 /*** WARNING!  The following rely on ordering of opcodes! ***/
 
-bool
-instr_is_cbr(instr_t *instr)      /* conditional branch */
+static bool
+opcode_is_cbr(int opc)
 {
-    int opc = instr_get_opcode(instr);
     return ((opc >= OP_jo && opc <= OP_jnle) ||
             (opc >= OP_jo_short && opc <= OP_jnle_short) ||
             (opc >= OP_loopne && opc <= OP_jecxz));
 }
 
 bool
-instr_is_mbr(instr_t *instr)      /* multi-way branch */
+instr_is_cbr(instr_t *instr)      /* conditional branch */
 {
     int opc = instr_get_opcode(instr);
+    return opcode_is_cbr(opc);
+}
+
+static bool
+opcode_is_mbr(int opc)
+{
     return (opc == OP_jmp_ind ||
             opc == OP_call_ind ||
             opc == OP_ret ||
@@ -3792,6 +3812,13 @@ instr_is_mbr(instr_t *instr)      /* multi-way branch */
             opc == OP_call_far_ind ||
             opc == OP_ret_far ||
             opc == OP_iret);
+}
+
+bool
+instr_is_mbr(instr_t *instr)      /* multi-way branch */
+{
+    int opc = instr_get_opcode(instr);
+    return opcode_is_mbr(opc);
 }
 
 bool
@@ -3813,13 +3840,19 @@ instr_is_far_abs_cti(instr_t *instr)
     return (opc == OP_jmp_far || opc == OP_call_far);
 }
 
+static bool
+opcode_is_ubr(int opc)
+{
+    return (opc == OP_jmp ||
+            opc == OP_jmp_short ||
+            opc == OP_jmp_far);
+}
+
 bool
 instr_is_ubr(instr_t *instr)      /* unconditional branch */
 {
     int opc = instr_get_opcode(instr);
-    return (opc == OP_jmp ||
-            opc == OP_jmp_short ||
-            opc == OP_jmp_far);
+    return opcode_is_ubr(opc);
 }
 
 bool
@@ -3833,8 +3866,9 @@ instr_is_near_ubr(instr_t *instr)      /* unconditional branch */
 bool 
 instr_is_cti(instr_t *instr)      /* any control-transfer instruction */
 {
-    return (instr_is_cbr(instr) || instr_is_mbr(instr) || instr_is_ubr(instr) ||
-            instr_is_call(instr));
+    int opc = instr_get_opcode(instr);
+    return (opcode_is_cbr(opc) || opcode_is_ubr(opc) || opcode_is_mbr(opc) ||
+            opcode_is_call(opc));
 }
 
 /* This routine does NOT decode the cti of instr if the raw bits are valid,
@@ -5245,6 +5279,20 @@ instr_is_tls_spill(instr_t *instr, reg_id_t reg, ushort offs)
     bool spill;
     return (instr_check_tls_spill_restore(instr, &spill, &check_reg, &check_disp) &&
             spill && check_reg == reg && check_disp == os_tls_offset(offs));
+}
+
+/* if instr is level 1, does not upgrade it and instead looks at raw bits,
+ * to support identification w/o ruining level 0 in decode_fragment, etc.
+ */
+bool
+instr_is_tls_restore(instr_t *instr, reg_id_t reg, ushort offs)
+{
+    reg_id_t check_reg;
+    int check_disp;
+    bool spill;
+    return (instr_check_tls_spill_restore(instr, &spill, &check_reg, &check_disp) &&
+            !spill && (reg == REG_NULL || check_reg == reg) &&
+            check_disp == os_tls_offset(offs));
 }
 
 /* if instr is level 1, does not upgrade it and instead looks at raw bits,

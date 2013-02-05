@@ -51,6 +51,11 @@ if (UNIX)
     set(archdefault 32)
     set(archother 64)
   endif (X64)
+  if (STATIC_LIBRARY)
+    set(static 1)
+  else ()
+    set(static 0)
+  endif ()
   set(config 1)
   set(runapp 0)
   set(name "drconfig")
@@ -80,10 +85,10 @@ if (UNIX)
     DESTINATION "${INSTALL_BIN}"
     FILE_PERMISSIONS OWNER_READ OWNER_EXECUTE 
     GROUP_READ GROUP_EXECUTE WORLD_READ WORLD_EXECUTE
-    PATTERN "run_in_bg*"
-    PATTERN "runstats*"
-    PATTERN "*_exe"  # Don't install the native drdeploy variants for now.
-    EXCLUDE)
+    PATTERN "run_in_bg*" EXCLUDE
+    PATTERN "runstats*" EXCLUDE
+    PATTERN "*_exe*" EXCLUDE # Don't install the native drdeploy tools for now.
+    )
 
   # Set up our debugging support for gdb in the build directory.
   # We need to compute the final path of libdynamorio.so, with version number

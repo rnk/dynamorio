@@ -1,5 +1,5 @@
 /* **********************************************************
- * Copyright (c) 2003-2008 VMware, Inc.  All rights reserved.
+ * Copyright (c) 2013 Google, Inc.   All rights reserved.
  * **********************************************************/
 
 /*
@@ -13,14 +13,14 @@
  *   this list of conditions and the following disclaimer in the documentation
  *   and/or other materials provided with the distribution.
  * 
- * * Neither the name of VMware, Inc. nor the names of its contributors may be
+ * * Neither the name of Google, Inc. nor the names of its contributors may be
  *   used to endorse or promote products derived from this software without
  *   specific prior written permission.
  * 
  * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
  * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
  * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
- * ARE DISCLAIMED. IN NO EVENT SHALL VMWARE, INC. OR CONTRIBUTORS BE LIABLE
+ * ARE DISCLAIMED. IN NO EVENT SHALL GOOGLE, INC. OR CONTRIBUTORS BE LIABLE
  * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
  * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
  * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
@@ -30,49 +30,11 @@
  * DAMAGE.
  */
 
-#include <string.h>
+/* kernel32.dll and kernelbase.dll memory-related redirection routines */
 
-/* these are defined in /usr/src/linux/fs/proc/array.c */
-#define MAPS_LINE_LENGTH	4096
-/* for systems with sizeof(void*) == 4: */
-#define MAPS_LINE_FORMAT4	  "%08lx-%08lx %s %*x %*s %*u %4096s"
-#define MAPS_LINE_MAX4	49 /* sum of 8  1  8  1 4 1 8 1 5 1 10 1 */
-/* for systems with sizeof(void*) == 8: */
-#define MAPS_LINE_FORMAT8	  "%016lx-%016lx %s %*x %*s %*u %4096s"
-#define MAPS_LINE_MAX8	73 /* sum of 16  1  16  1 4 1 16 1 5 1 10 1 */
+#include "kernel32_redir.h" /* must be included first */
+#include "../../globals.h"
 
-#define MAPS_LINE_MAX	MAPS_LINE_MAX8
-
-int
-find_dynamo_library()
-{
-    FILE *maps;
-    char 	line[MAPS_LINE_LENGTH];
-    int 	count = 0;
-
-    maps=fopen("/proc/self/maps","r");
-
-    while(!feof(maps)){
-	void * vm_start, * vm_end;
-	char perm[16];
-	char comment_buffer[MAPS_LINE_LENGTH];
-	int len;
-    
-	if (NULL==fgets(line, sizeof(line), maps))
-	    break;
-	len = sscanf(line,
-		     sizeof(void*) == 4 ? MAPS_LINE_FORMAT4 : MAPS_LINE_FORMAT8,
-		     (unsigned long*)&vm_start, (unsigned long*)&vm_end, perm,
-		     comment_buffer);
-	if (len<4)
-	    comment_buffer[0]='\0';
-	if (strstr(comment_buffer, "dynamorio") != 0) {
-	    fclose(maps);
-	    return 1;
-	}
-    }
-  
-    fclose(maps);
-    return 0;
-}
-
+/* FIXME i#1063: add the rest of the routines in kernel32_redir.h under
+ * Miscellaneous
+ */
