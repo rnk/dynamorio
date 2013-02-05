@@ -830,11 +830,11 @@ int main(int argc, char *argv[])
             /* FIXME: use pid below to attach. */
             continue;
         }
+# endif
         else if (strcmp(argv[i], "-exit0") == 0) {
             exit0 = true;
             continue;
         }
-# endif
 #endif
         /* all other flags have an argument -- make sure it exists */
         else if (argv[i][0] == '-' && i == argc - 1) {
