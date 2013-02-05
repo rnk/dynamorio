@@ -65,7 +65,7 @@
 static bool verbose = false;
 
 typedef enum _inject_method_t {
-    INJECT_EXEC_DR,     /* Works with self or child. */
+    INJECT_EARLY,       /* Works with self or child. */
     INJECT_LD_PRELOAD,  /* Works with self or child. */
     INJECT_PTRACE       /* Doesn't work with exec_self. */
 } inject_method_t;
@@ -145,6 +145,9 @@ report_dynamorio_problem(dcontext_t *dcontext, uint dumpcore_flag,
  * Injection implementation
  */
 
+/* Environment modifications before executing the child process for LD_PRELOAD
+ * injection.
+ */
 static void
 pre_execve_ld_preload(const char *dr_path)
 {
@@ -163,8 +166,11 @@ pre_execve_ld_preload(const char *dr_path)
     setenv("LD_USE_LOAD_BIAS", "1", false/*!overwrite, let user set it*/);
 }
 
+/* Environment modifications before executing the child process for early
+ * injection.
+ */
 static void
-pre_execve_exec_dr(const char *exe)
+pre_execve_early(const char *exe)
 {
     setenv(DYNAMORIO_VAR_EXE_PATH, exe, true/*overwrite*/);
 }
@@ -205,7 +211,7 @@ fork_suspended_child(const char *exe, const char **argv, int fds[2])
              */
             real_exe = exe;
         } else if (strstr(pipe_cmd, "exec_dr ") == pipe_cmd) {
-            pre_execve_exec_dr(exe);
+            pre_execve_early(exe);
             real_exe = arg;
         }
 #ifdef STATIC_LIBRARY
@@ -235,13 +241,13 @@ write_pipe_cmd(int pipe_fd, const char *cmd)
 }
 
 static bool
-inject_exec_dr(dr_inject_info_t *info, const char *library_path)
+inject_early(dr_inject_info_t *info, const char *library_path)
 {
     if (info->exec_self) {
         /* exec DR with the original command line and set an environment
          * variable pointing to the real exe.
          */
-        pre_execve_exec_dr(info->exe);
+        pre_execve_early(info->exe);
         execv(library_path, (char **) info->argv);
         return false;  /* if execv returns, there was an error */
     } else {
@@ -356,9 +362,8 @@ dr_inject_get_image_name(void *data)
     return (char *) info->image_name;
 }
 
-/* FIXME: Use the parser in options.c without compiling it twice.  This
- * approach will find options in quoted strings, like the client options
- * string.
+/* FIXME: Use the parser in options.c.  The implementation here will find
+ * options in quoted strings, like the client options string.
  */
 static bool
 option_present(const char *dr_ops, const char *op)
@@ -388,7 +393,7 @@ dr_inject_process_inject(void *data, bool force_injection,
 
     if (info->method == INJECT_LD_PRELOAD &&
         option_present(dr_ops, "-early_inject")) {
-        info->method = INJECT_EXEC_DR;
+        info->method = INJECT_EARLY;
     }
 
 #ifdef STATIC_LIBRARY
@@ -409,8 +414,8 @@ dr_inject_process_inject(void *data, bool force_injection,
     }
 
     switch (info->method) {
-    case INJECT_EXEC_DR:
-        return inject_exec_dr(info, library_path);
+    case INJECT_EARLY:
+        return inject_early(info, library_path);
     case INJECT_LD_PRELOAD:
         return inject_ld_preload(info, library_path);
     case INJECT_PTRACE:
