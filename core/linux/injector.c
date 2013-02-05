@@ -153,7 +153,7 @@ fork_suspended_child(const char *exe, const char **argv, int fds[2])
         char pipe_cmd[MAXIMUM_PATH];
         ssize_t nread;
         size_t sofar = 0;
-        char *real_exe;
+        char *real_exe = NULL;
         close(fds[1]);  /* Close writer in child, keep reader. */
         do {
             nread = read(fds[0], pipe_cmd + sofar,
