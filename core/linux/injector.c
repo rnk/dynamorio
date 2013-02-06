@@ -152,17 +152,44 @@ static void
 pre_execve_ld_preload(const char *dr_path)
 {
     char ld_lib_path[MAX_OPTIONS_STRING];
-    const char *last_slash = strrchr(dr_path, '/');
+    const char *last_slash = NULL;
+    const char *mode_slash = NULL;
+    const char *lib_slash = NULL;
     const char *cur_path = getenv("LD_LIBRARY_PATH");
-    ASSERT(last_slash != NULL);  /* Should be absolute. */
+    const char *cur = dr_path;
+    /* Find last three occurrences of '/'. */
+    while (*cur != '\0') {
+        if (*cur == '/') {
+            lib_slash = mode_slash;
+            mode_slash = last_slash;
+            last_slash = cur;
+        }
+        cur++;
+    }
+    /* dr_path should be absolute and have at least three components. */
+    ASSERT(lib_slash != NULL && last_slash != NULL);
+    ASSERT(strncmp(lib_slash, "lib32", 5) == 0 ||
+           strncmp(lib_slash, "lib64", 5) == 0);
+    /* Put both DR's path and the extension path on LD_LIBRARY_PATH.  We only
+     * need the extension path if -no_private_loader is used.
+     */
     snprintf(ld_lib_path, BUFFER_SIZE_ELEMENTS(ld_lib_path),
-             "%.*s%s%s", last_slash - dr_path, dr_path,
+             "%.*s:%.*s/ext%.*s%s%s",
+             last_slash - dr_path, dr_path,      /* DR path */
+             lib_slash - dr_path, dr_path,       /* pre-ext path */
+             last_slash - lib_slash, lib_slash,  /* libNN component */
              cur_path == NULL ? "" : ":",
              cur_path == NULL ? "" : cur_path);
     NULL_TERMINATE_BUFFER(ld_lib_path);
     setenv("LD_LIBRARY_PATH", ld_lib_path, true/*overwrite*/);
     setenv("LD_PRELOAD", "libdynamorio.so libdrpreload.so",
            true/*overwrite*/);
+    if (verbose) {
+        printf("Setting LD_USE_LOAD_BIAS for PIEs so the loader will honor "
+               "DR's preferred base. (i#719)\n"
+               "Set LD_USE_LOAD_BIAS=0 prior to injecting if this is a "
+               "problem.\n");
+    }
     setenv("LD_USE_LOAD_BIAS", "1", false/*!overwrite, let user set it*/);
 }
 
@@ -195,6 +222,7 @@ fork_suspended_child(const char *exe, const char **argv, int fds[2])
         pipe_cmd[sofar] = '\0';
         close(fds[0]);  /* Close reader before exec. */
         arg = pipe_cmd;
+        /* The first token is the command and the rest is an argument. */
         while (*arg != '\0' && !isspace(*arg))
             arg++;
         while (*arg != '\0' && isspace(*arg))
@@ -271,6 +299,7 @@ inject_ld_preload(dr_inject_info_t *info, const char *library_path)
         /* Write the path to DR to the pipe. */
         char cmd[MAXIMUM_PATH];
         snprintf(cmd, BUFFER_SIZE_ELEMENTS(cmd), "ld_preload %s", library_path);
+        NULL_TERMINATE_BUFFER(cmd);
         write_pipe_cmd(info->pipe_fd, cmd);
     }
     return true;
