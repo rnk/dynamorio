@@ -306,6 +306,9 @@ mangle_bb_ilist(dcontext_t *dcontext, build_bb_t *bb);
 static void
 build_native_exec_bb(dcontext_t *dcontext, build_bb_t *bb);
 
+static void
+native_bb_swap_retaddr(dcontext_t *dcontext, build_bb_t *bb);
+
 static bool
 at_native_exec_gateway(dcontext_t *dcontext, app_pc start
                        _IF_DEBUG(bool xfer_target));
@@ -4023,9 +4026,6 @@ build_native_exec_bb(dcontext_t *dcontext, build_bb_t *bb)
         bb->flags &= ~FRAG_HAS_TRANSLATION_INFO;
     bb->native_exec = true;
 
-    /* We can get here if we start interpreting native modules. */
-    ASSERT(dcontext->next_tag != (app_pc) native_module_transition);
-
     BBPRINT(bb, IF_DGCDIAG_ELSE(1, 2), "build_native_exec_bb @"PFX"\n", bb->start_pc);
     DOLOG(2, LOG_INTERP, {
         dump_mcontext(get_mcontext(dcontext), THREAD, DUMP_NOT_XML); });
@@ -4041,6 +4041,75 @@ build_native_exec_bb(dcontext_t *dcontext, build_bb_t *bb)
      * least return failure from our translate routine.
      */
     instrlist_set_our_mangling(bb->ilist, true);
+
+    /* For calls into native modules, we swizzle the return address to be
+     * back_from_native.  For returns from non-native to native modules, we
+     * enter directly.
+     */
+    if (!TEST(LINK_RETURN, dcontext->last_exit->flags)) {
+        native_bb_swap_retaddr(dcontext, bb);
+    }
+
+    /* need some cleanup prior to native: turn off asynch, clobber trace, etc. */
+    /* FIXME: mark call as do-not-mangle */
+    dr_insert_clean_call(dcontext, bb->ilist, NULL, (void *) entering_native,
+                         false/*!fp*/, 0);
+    /* this is the jump to native code */
+#ifdef X64
+    if (reachable) {
+        instrlist_append(bb->ilist,
+                         INSTR_CREATE_jmp(dcontext, opnd_create_pc(bb->start_pc)));
+    } else {
+        if (X64_CACHE_MODE_DC(dcontext) && !X64_MODE_DC(dcontext)) {
+            instrlist_append(bb->ilist, INSTR_CREATE_jmp_ind
+                             (dcontext, opnd_create_reg(REG_R9)));
+        } else {
+            instrlist_append(bb->ilist, INSTR_CREATE_jmp_ind
+                             (dcontext, opnd_create_tls_slot(os_tls_offset
+                                                             (MANGLE_XCX_SPILL_SLOT))));
+        }
+    }
+#else
+    instrlist_append(bb->ilist, INSTR_CREATE_jmp(dcontext, opnd_create_pc(bb->start_pc)));
+#endif
+
+    /* mark all as do-not-mangle, so selfmod, etc. will leave alone (in absence
+     * of selfmod only really needed for the jmp to native code)
+     */
+    for (in = instrlist_first(bb->ilist); in != NULL; in = instr_get_next(in))
+        instr_set_ok_to_mangle(in, false);
+
+    /* this is a jump for a dummy exit cti */
+    instrlist_append(bb->ilist, INSTR_CREATE_jmp(dcontext, opnd_create_pc(bb->start_pc)));
+
+    if (DYNAMO_OPTION(shared_bbs))
+        bb->flags |= FRAG_SHARED;
+
+    /* Can't be coarse-grain since has non-exit cti */
+    bb->flags &= ~FRAG_COARSE_GRAIN;
+    STATS_INC(coarse_prevent_native_exec); 
+
+    /* trace barrier */
+    bb->flags |= FRAG_MUST_END_TRACE;
+
+    /* We support mangling here, though currently we don't need it as we don't
+     * include any app code (although we mark this bb as belonging to the start
+     * pc, so we'll get flushed if this region does), and even if target is
+     * selfmod we're running it natively no matter how it modifies itself.  We
+     * only care that transition to target is via a call or call* so we can
+     * clobber the retaddr and regain control, and that no retaddr mangling
+     * happens while native before coming back out.  While the former does not
+     * depend on the target at all, unfortunately we cannot verify the latter.
+     */
+    if (TEST(FRAG_SELFMOD_SANDBOXED, bb->flags))
+        bb->flags &= ~FRAG_SELFMOD_SANDBOXED;
+    DEBUG_DECLARE(ok = ) mangle_bb_ilist(dcontext, bb);
+    ASSERT(ok);
+}
+
+static void
+native_bb_swap_retaddr(dcontext_t *dcontext, build_bb_t *bb)
+{
     /* To regain control we put our interception routine as the retaddr,
      * assuming of course no transparency problems like longjmp or retaddr examination.
      * We need to know where to go when we return -- but this can be stdcall,
@@ -4104,61 +4173,6 @@ build_native_exec_bb(dcontext_t *dcontext, build_bb_t *bb)
     instrlist_append(bb->ilist, instr_create_restore_from_dc_via_reg
                      (dcontext, REG_NULL/*default*/, REG_XAX, XAX_OFFSET));
     append_shared_restore_dcontext_reg(dcontext, bb->ilist);
-    /* need some cleanup prior to native: turn off asynch, clobber trace, etc. */
-    /* FIXME: mark call as do-not-mangle */
-    dr_insert_clean_call(dcontext, bb->ilist, NULL, (void *) entering_native,
-                         false/*!fp*/, 0);
-    /* this is the jump to native code */
-#ifdef X64
-    if (reachable) {
-        instrlist_append(bb->ilist,
-                         INSTR_CREATE_jmp(dcontext, opnd_create_pc(bb->start_pc)));
-    } else {
-        if (X64_CACHE_MODE_DC(dcontext) && !X64_MODE_DC(dcontext)) {
-            instrlist_append(bb->ilist, INSTR_CREATE_jmp_ind
-                             (dcontext, opnd_create_reg(REG_R9)));
-        } else {
-            instrlist_append(bb->ilist, INSTR_CREATE_jmp_ind
-                             (dcontext, opnd_create_tls_slot(os_tls_offset
-                                                             (MANGLE_XCX_SPILL_SLOT))));
-        }
-    }
-#else
-    instrlist_append(bb->ilist, INSTR_CREATE_jmp(dcontext, opnd_create_pc(bb->start_pc)));
-#endif
-
-    /* mark all as do-not-mangle, so selfmod, etc. will leave alone (in absence
-     * of selfmod only really needed for the jmp to native code)
-     */
-    for (in = instrlist_first(bb->ilist); in != NULL; in = instr_get_next(in))
-        instr_set_ok_to_mangle(in, false);
-
-    /* this is a jump for a dummy exit cti */
-    instrlist_append(bb->ilist, INSTR_CREATE_jmp(dcontext, opnd_create_pc(bb->start_pc)));
-
-    if (DYNAMO_OPTION(shared_bbs))
-        bb->flags |= FRAG_SHARED;
-
-    /* Can't be coarse-grain since has non-exit cti */
-    bb->flags &= ~FRAG_COARSE_GRAIN;
-    STATS_INC(coarse_prevent_native_exec); 
-
-    /* trace barrier */
-    bb->flags |= FRAG_MUST_END_TRACE;
-
-    /* We support mangling here, though currently we don't need it as we don't
-     * include any app code (although we mark this bb as belonging to the start
-     * pc, so we'll get flushed if this region does), and even if target is
-     * selfmod we're running it natively no matter how it modifies itself.  We
-     * only care that transition to target is via a call or call* so we can
-     * clobber the retaddr and regain control, and that no retaddr mangling
-     * happens while native before coming back out.  While the former does not
-     * depend on the target at all, unfortunately we cannot verify the latter.
-     */
-    if (TEST(FRAG_SELFMOD_SANDBOXED, bb->flags))
-        bb->flags &= ~FRAG_SELFMOD_SANDBOXED;
-    DEBUG_DECLARE(ok = ) mangle_bb_ilist(dcontext, bb);
-    ASSERT(ok);
 }
 
 static bool
@@ -4191,6 +4205,12 @@ at_native_exec_gateway(dcontext_t *dcontext, app_pc start
      * We count up easy-to-identify cases we've missed in the DOSTATS below.
      */ 
     bool native_exec_bb = false;
+
+    /* We can get here if we start interpreting native modules. */
+    ASSERT(start != (app_pc) back_from_native &&
+           start != (app_pc) native_module_transition &&
+           "interpreting return from native module?");
+
     if (DYNAMO_OPTION(native_exec) &&
         !vmvector_empty(native_exec_areas)) {
         /* do we KNOW that we came from an indirect call? */
@@ -4210,7 +4230,6 @@ at_native_exec_gateway(dcontext_t *dcontext, app_pc start
                             STATS_INC(num_native_module_entrances_call);
                     } else
                         STATS_INC(num_native_module_entrances_plt);
-                    
                 });
             }
         } 
@@ -4281,6 +4300,19 @@ at_native_exec_gateway(dcontext_t *dcontext, app_pc start
                 });
             }
         }
+        /* Is this a return from a non-native module into a native module? */
+        else if (DYNAMO_OPTION(native_exec_retakeover) &&
+                 LINKSTUB_INDIRECT(dcontext->last_exit->flags) &&
+                 TEST(LINK_RETURN, dcontext->last_exit->flags)) {
+            if (vmvector_overlap(native_exec_areas, start, start+1)) {
+                /* XXX: check that this is the return address of a known native
+                 * callsite where we took over on a module transition.
+                 */
+                STATS_INC(num_native_module_entrances_ret);
+                native_exec_bb = true;
+            }
+        }
+
         DOSTATS({
             /* did we reach a native dll w/o going through an ind call caught above? */
             if (!xfer_target /* else we'll re-check at the target itself */ &&
@@ -4292,7 +4324,8 @@ at_native_exec_gateway(dcontext_t *dcontext, app_pc start
                 /* do-once since once get into dll past gateway may xfer
                  * through a bunch of lastexit-null or indjmp to same dll
                  */
-                ASSERT_CURIOSITY_ONCE(false && "inside native_exec dll");
+                ASSERT_CURIOSITY_ONCE(DYNAMO_OPTION(native_exec_retakeover) &&
+                                      "inside native_exec dll");
             }
         });
     }
