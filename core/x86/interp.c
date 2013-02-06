@@ -4000,8 +4000,9 @@ static void
 build_native_exec_bb(dcontext_t *dcontext, build_bb_t *bb)
 {
     instr_t *in;
+    opnd_t jmp_tgt;
 #ifdef X64
-    bool reachable;
+    bool reachable = rel32_reachable_from_heap(bb->start_pc);
 #endif
     DEBUG_DECLARE(bool ok;)
     /* if we ever protect from simultaneous thread attacks then this will
@@ -4042,36 +4043,53 @@ build_native_exec_bb(dcontext_t *dcontext, build_bb_t *bb)
      */
     instrlist_set_our_mangling(bb->ilist, true);
 
+    append_shared_get_dcontext(dcontext, bb->ilist, true/*save xdi*/);
+    instrlist_append(bb->ilist, instr_create_save_to_dc_via_reg
+                     (dcontext, REG_NULL/*default*/, REG_XAX, XAX_OFFSET));
+
     /* For calls into native modules, we swizzle the return address to be
      * back_from_native.  For returns from non-native to native modules, we
      * enter directly.
      */
-    if (!TEST(LINK_RETURN, dcontext->last_exit->flags)) {
+    if (TEST(LINK_RETURN, dcontext->last_exit->flags)) {
+        ASSERT(DYNAMO_OPTION(native_exec_retakeover));
+    } else {
         native_bb_swap_retaddr(dcontext, bb);
     }
 
+#ifdef X64
+    if (!reachable) {
+        /* best to store the target at the end of the bb, to keep it readonly,
+         * but that requires a post-pass to patch its value: since native_exec
+         * is already hacky we just go through TLS and ignore multi-thread selfmod.
+         */
+        instrlist_append(bb->ilist, INSTR_CREATE_mov_imm
+                         (dcontext, opnd_create_reg(REG_XAX),
+                          OPND_CREATE_INTPTR((ptr_int_t)bb->start_pc)));
+        if (X64_CACHE_MODE_DC(dcontext) && !X64_MODE_DC(dcontext)) {
+            jmp_tgt = opnd_create_reg(REG_R9);
+        } else {
+            jmp_tgt = opnd_create_tls_slot(os_tls_offset(MANGLE_XCX_SPILL_SLOT));
+        }
+        instrlist_append(bb->ilist, INSTR_CREATE_mov_st
+                         (dcontext, jmp_tgt, opnd_create_reg(REG_XAX)));
+    } else
+#endif
+    {
+        jmp_tgt = opnd_create_pc(bb->start_pc);
+    }
+
+    instrlist_append(bb->ilist, instr_create_restore_from_dc_via_reg
+                     (dcontext, REG_NULL/*default*/, REG_XAX, XAX_OFFSET));
+    append_shared_restore_dcontext_reg(dcontext, bb->ilist);
+
     /* need some cleanup prior to native: turn off asynch, clobber trace, etc. */
-    /* FIXME: mark call as do-not-mangle */
     dr_insert_clean_call(dcontext, bb->ilist, NULL, (void *) entering_native,
                          false/*!fp*/, 0);
     /* this is the jump to native code */
-#ifdef X64
-    if (reachable) {
-        instrlist_append(bb->ilist,
-                         INSTR_CREATE_jmp(dcontext, opnd_create_pc(bb->start_pc)));
-    } else {
-        if (X64_CACHE_MODE_DC(dcontext) && !X64_MODE_DC(dcontext)) {
-            instrlist_append(bb->ilist, INSTR_CREATE_jmp_ind
-                             (dcontext, opnd_create_reg(REG_R9)));
-        } else {
-            instrlist_append(bb->ilist, INSTR_CREATE_jmp_ind
-                             (dcontext, opnd_create_tls_slot(os_tls_offset
-                                                             (MANGLE_XCX_SPILL_SLOT))));
-        }
-    }
-#else
-    instrlist_append(bb->ilist, INSTR_CREATE_jmp(dcontext, opnd_create_pc(bb->start_pc)));
-#endif
+    instrlist_append(bb->ilist, instr_create_0dst_1src
+                     (dcontext, (opnd_is_pc(jmp_tgt) ? OP_jmp : OP_jmp_ind),
+                      jmp_tgt));
 
     /* mark all as do-not-mangle, so selfmod, etc. will leave alone (in absence
      * of selfmod only really needed for the jmp to native code)
@@ -4121,9 +4139,6 @@ native_bb_swap_retaddr(dcontext_t *dcontext, build_bb_t *bb)
      * use the dcontext stack just like for callbacks or stack
      * native_exec_ret{val,loc} in some other manner.
      */
-    append_shared_get_dcontext(dcontext, bb->ilist, true/*save xdi*/);
-    instrlist_append(bb->ilist, instr_create_save_to_dc_via_reg
-                     (dcontext, REG_NULL/*default*/, REG_XAX, XAX_OFFSET));
     instrlist_append(bb->ilist, INSTR_CREATE_mov_ld(dcontext, opnd_create_reg(REG_XAX),
                                                     OPND_CREATE_MEMPTR(REG_XSP, 0)));
     instrlist_append(bb->ilist, instr_create_save_to_dc_via_reg
@@ -4145,34 +4160,11 @@ native_bb_swap_retaddr(dcontext_t *dcontext, build_bb_t *bb)
     instrlist_append(bb->ilist, INSTR_CREATE_mov_st
                      (dcontext, OPND_CREATE_MEMPTR(REG_XSP, 0),
                       opnd_create_reg(REG_XAX)));
-    reachable = rel32_reachable_from_heap(bb->start_pc);
-    if (!reachable) {
-        /* best to store the target at the end of the bb, to keep it readonly,
-         * but that requires a post-pass to patch its value: since native_exec
-         * is already hacky we just go through TLS and ignore multi-thread selfmod.
-         */
-        instrlist_append(bb->ilist, INSTR_CREATE_mov_imm
-                         (dcontext, opnd_create_reg(REG_XAX),
-                          OPND_CREATE_INTPTR((ptr_int_t)bb->start_pc)));
-        if (X64_CACHE_MODE_DC(dcontext) && !X64_MODE_DC(dcontext)) {
-            instrlist_append(bb->ilist, INSTR_CREATE_mov_ld
-                             (dcontext, opnd_create_reg(REG_R9),
-                              opnd_create_reg(REG_XAX)));
-        } else {
-            instrlist_append(bb->ilist, INSTR_CREATE_mov_st
-                             (dcontext, opnd_create_tls_slot(os_tls_offset
-                                                             (MANGLE_XCX_SPILL_SLOT)),
-                              opnd_create_reg(REG_XAX)));
-        }
-    }
 #else
     instrlist_append(bb->ilist, INSTR_CREATE_mov_st
                      (dcontext, OPND_CREATE_MEM32(REG_XSP, 0),
                       OPND_CREATE_INTPTR((ptr_int_t)back_from_native)));
 #endif
-    instrlist_append(bb->ilist, instr_create_restore_from_dc_via_reg
-                     (dcontext, REG_NULL/*default*/, REG_XAX, XAX_OFFSET));
-    append_shared_restore_dcontext_reg(dcontext, bb->ilist);
 }
 
 static bool
@@ -4235,6 +4227,7 @@ at_native_exec_gateway(dcontext_t *dcontext, app_pc start
         } 
         /* can we GUESS that we came from an indirect call? */
         else if (DYNAMO_OPTION(native_exec_guess_calls) &&
+                 !TEST(LINK_RETURN, dcontext->last_exit->flags) &&
                  (/* FIXME: require jmp* be in separate module? */
                   (LINKSTUB_INDIRECT(dcontext->last_exit->flags) &&
                    EXIT_IS_JMP(dcontext->last_exit->flags)) ||
@@ -4324,8 +4317,7 @@ at_native_exec_gateway(dcontext_t *dcontext, app_pc start
                 /* do-once since once get into dll past gateway may xfer
                  * through a bunch of lastexit-null or indjmp to same dll
                  */
-                ASSERT_CURIOSITY_ONCE(DYNAMO_OPTION(native_exec_retakeover) &&
-                                      "inside native_exec dll");
+                ASSERT_CURIOSITY_ONCE(false && "inside native_exec dll");
             }
         });
     }
