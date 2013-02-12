@@ -4224,7 +4224,15 @@ at_native_exec_gateway(dcontext_t *dcontext, app_pc start
                         STATS_INC(num_native_module_entrances_plt);
                 });
             }
-        } 
+        }
+        /* Is this the entry point of a native executable? */
+        else if (DYNAMO_OPTION(native_exec_retakeover) &&
+                 LINKSTUB_INDIRECT(dcontext->last_exit->flags) &&
+                 start == get_image_entry()) {
+            if (vmvector_overlap(native_exec_areas, start, start+1)) {
+                native_exec_bb = true;
+            }
+        }
         /* can we GUESS that we came from an indirect call? */
         else if (DYNAMO_OPTION(native_exec_guess_calls) &&
                  !TEST(LINK_RETURN, dcontext->last_exit->flags) &&
@@ -4310,6 +4318,7 @@ at_native_exec_gateway(dcontext_t *dcontext, app_pc start
             /* did we reach a native dll w/o going through an ind call caught above? */
             if (!xfer_target /* else we'll re-check at the target itself */ &&
                 !native_exec_bb && vmvector_overlap(native_exec_areas, start, start+1)) {
+                print_file(STDERR, "entry: "PFX", start: "PFX"\n", get_image_entry(), start);
                 LOG(THREAD, LOG_INTERP|LOG_VMAREAS, 2,
                     "WARNING: pc "PFX" is on native list but reached bypassing gateway!\n",
                     start);
