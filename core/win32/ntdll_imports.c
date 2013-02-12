@@ -846,6 +846,40 @@ NtQueryAttributesFile(POBJECT_ATTRIBUTES object_attributes,
     return STATUS_SUCCESS;
 }
 
+NTEXPORT NTSTATUS NTAPI
+NtCreateNamedPipeFile(OUT PHANDLE FileHandle,
+                      IN ACCESS_MASK DesiredAccess,
+                      IN POBJECT_ATTRIBUTES ObjectAttributes,
+                      OUT PIO_STATUS_BLOCK IoStatusBlock,
+                      IN ULONG ShareAccess,
+                      IN ULONG CreateDisposition,
+                      IN ULONG CreateOptions,
+                      IN BOOLEAN TypeMessage,
+                      IN BOOLEAN ReadmodeMessage,
+                      IN BOOLEAN Nonblocking,
+                      IN ULONG MaxInstances,
+                      IN ULONG InBufferSize,
+                      IN ULONG OutBufferSize,
+                      IN PLARGE_INTEGER DefaultTimeout OPTIONAL)
+{
+    return STATUS_SUCCESS;
+}
+
+NTEXPORT NTSTATUS NTAPI
+NtDeviceIoControlFile(IN HANDLE FileHandle,
+                      IN HANDLE Event OPTIONAL,
+                      IN PIO_APC_ROUTINE ApcRoutine OPTIONAL,
+                      IN PVOID ApcContext OPTIONAL,
+                      OUT PIO_STATUS_BLOCK IoStatusBlock,
+                      IN ULONG IoControlCode,
+                      IN PVOID InputBuffer OPTIONAL,
+                      IN ULONG InputBufferLength,
+                      OUT PVOID OutputBuffer OPTIONAL,
+                      IN ULONG OutputBufferLength)
+{
+    return STATUS_SUCCESS;
+}
+
 /***************************************************************************
  * RTL
  */
