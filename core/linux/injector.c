@@ -168,8 +168,8 @@ pre_execve_ld_preload(const char *dr_path)
     }
     /* dr_path should be absolute and have at least three components. */
     ASSERT(lib_slash != NULL && last_slash != NULL);
-    ASSERT(strncmp(lib_slash, "lib32", 5) == 0 ||
-           strncmp(lib_slash, "lib64", 5) == 0);
+    ASSERT(strncmp(lib_slash, "/lib32", 5) == 0 ||
+           strncmp(lib_slash, "/lib64", 5) == 0);
     /* Put both DR's path and the extension path on LD_LIBRARY_PATH.  We only
      * need the extension path if -no_private_loader is used.
      */
