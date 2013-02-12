@@ -4986,6 +4986,8 @@ handle_execve(dcontext_t *dcontext)
                     break;
                 default:
                     val = getenv(env_to_propagate[j]);
+                    if (val == NULL)
+                        val = "";
                     break;
                 }
                 sz = strlen(env_to_propagate[j]) + strlen(val) + 2 /* '=' + null */;
