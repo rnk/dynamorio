@@ -37,10 +37,12 @@
 #include "../ntdll.h"
 #include "../os_private.h"
 #include "drwinapi_private.h"
+#include <winioctl.h> /* DEVICE_TYPE_FROM_CTL_CODE */
 
 static HANDLE (WINAPI *priv_kernel32_OpenConsoleW)(LPCWSTR, DWORD, BOOL, DWORD);
 
 static HANDLE base_named_obj_dir;
+static HANDLE base_named_pipe_dir;
 
 static wchar_t *
 get_base_named_obj_dir_name(void)
@@ -83,11 +85,19 @@ kernel32_redir_init_file(void)
                                             get_base_named_obj_dir_name(),
                                             true/*create perms*/);
     ASSERT(NT_SUCCESS(res));
+
+    /* The trailing \ is critical: w/o it, NtCreateNamedPipeFile returns
+     * STATUS_OBJECT_NAME_INVALID.
+     */
+    res = nt_open_file(&base_named_pipe_dir, L"\\Device\\NamedPipe\\",
+                       GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE);
+    ASSERT(NT_SUCCESS(res));
 }
 
 void
 kernel32_redir_exit_file(void)
 {
+    close_handle(base_named_pipe_dir);
     nt_close_object_directory(base_named_obj_dir);
 }
 
@@ -96,15 +106,6 @@ kernel32_redir_onload_file(privmod_t *mod)
 {
     priv_kernel32_OpenConsoleW = (HANDLE (WINAPI *)(LPCWSTR, DWORD, BOOL, DWORD))
         get_proc_address_ex(mod->base, "OpenConsoleW", NULL);
-}
-
-BOOL
-WINAPI
-redirect_CloseHandle(
-    __in HANDLE hObject
-    )
-{
-    return (BOOL) close_handle(hObject);
 }
 
 static void
@@ -123,6 +124,10 @@ init_object_attr_for_files(OBJECT_ATTRIBUTES *oa, UNICODE_STRING *us,
     if (sqos != NULL)
         oa->SecurityQualityOfService = sqos;
 }
+
+/***************************************************************************
+ * DIRECTORIES
+ */
 
 BOOL
 WINAPI
@@ -169,7 +174,6 @@ redirect_CreateDirectoryA(
     return TRUE;
 }
 
-
 BOOL
 WINAPI
 redirect_CreateDirectoryW(
@@ -189,6 +193,10 @@ redirect_CreateDirectoryW(
     NULL_TERMINATE_BUFFER(buf);
     return redirect_CreateDirectoryA(buf, lpSecurityAttributes);
 }
+
+/***************************************************************************
+ * FILES
+ */
 
 static DWORD
 file_create_disp_winapi_to_nt(DWORD winapi)
@@ -387,6 +395,47 @@ redirect_CreateFileW(
                                 hTemplateFile);
 }
 
+BOOL
+WINAPI
+redirect_DeleteFileA(
+    __in LPCSTR lpFileName
+    )
+{
+    NTSTATUS res;
+    wchar_t wbuf[MAX_PATH];
+    if (lpFileName == NULL ||
+        !convert_to_NT_file_path(wbuf, lpFileName, BUFFER_SIZE_ELEMENTS(wbuf))) {
+        set_last_error(ERROR_PATH_NOT_FOUND);
+        return FALSE;
+    }
+    NULL_TERMINATE_BUFFER(wbuf); /* be paranoid */
+    res = nt_delete_file(wbuf);
+    if (!NT_SUCCESS(res)) {
+        set_last_error(ntstatus_to_last_error(res));
+        return FALSE;
+    }
+    return TRUE;
+}
+
+BOOL
+WINAPI
+redirect_DeleteFileW(
+    __in LPCWSTR lpFileName
+    )
+{
+    /* convert_to_NT_file_path takes in UTF-8 and converts back to UTF-16.
+     * XXX: have a convert_to_NT_file_path_wide() or sthg to avoid double conversion.
+     */
+    char buf[MAX_PATH];
+    int len = _snprintf(buf, BUFFER_SIZE_ELEMENTS(buf), "%ls", lpFileName);
+    if (len <= 0 || len >= BUFFER_SIZE_ELEMENTS(buf)) {
+        set_last_error(ERROR_PATH_NOT_FOUND);
+        return FALSE;
+    }
+    return redirect_DeleteFileA(buf);
+}
+
+
 /***************************************************************************
  * FILE MAPPING
  */
@@ -560,6 +609,179 @@ redirect_UnmapViewOfFile(
     return TRUE;
 }
 
+
+/***************************************************************************
+ * DEVICES
+ */
+
+BOOL
+WINAPI
+redirect_CreatePipe(
+    __out_ecount_full(1) PHANDLE hReadPipe,
+    __out_ecount_full(1) PHANDLE hWritePipe,
+    __in_opt LPSECURITY_ATTRIBUTES lpPipeAttributes,
+    __in     DWORD nSize
+    )
+{
+    NTSTATUS res;
+    OBJECT_ATTRIBUTES oa;
+    UNICODE_STRING us = {0,};
+    IO_STATUS_BLOCK iob = {0,0};
+    ACCESS_MASK access = SYNCHRONIZE | GENERIC_READ | FILE_WRITE_ATTRIBUTES;
+    DWORD size = (nSize != 0) ? nSize : PAGE_SIZE; /* default size */
+    LARGE_INTEGER timeout;
+    GET_NTDLL(NtCreateNamedPipeFile,
+              (OUT PHANDLE FileHandle,
+               IN ACCESS_MASK DesiredAccess,
+               IN POBJECT_ATTRIBUTES ObjectAttributes,
+               OUT PIO_STATUS_BLOCK IoStatusBlock,
+               IN ULONG ShareAccess,
+               IN ULONG CreateDisposition,
+               IN ULONG CreateOptions,
+               /* XXX: when these are BOOLEAN, as Nebbett has them, we just
+                * set the LSB and we get STATUS_INVALID_PARAMETER!
+                * So I'm considering to be BOOOL.
+                */
+               IN BOOL TypeMessage,
+               IN BOOL ReadmodeMessage,
+               IN BOOL Nonblocking,
+               IN ULONG MaxInstances,
+               IN ULONG InBufferSize,
+               IN ULONG OutBufferSize,
+               IN PLARGE_INTEGER DefaultTimeout OPTIONAL));
+
+    timeout.QuadPart = -1200000000; /* 120s */
+
+    /* We leave us with 0 length and NULL buffer b/c we don't want a name. */
+    init_object_attr_for_files(&oa, &us, lpPipeAttributes, NULL);
+    oa.RootDirectory = base_named_pipe_dir;
+    res = NtCreateNamedPipeFile(hReadPipe, access, &oa, &iob,
+                                FILE_SHARE_READ | FILE_SHARE_WRITE,
+                                FILE_CREATE,
+                                FILE_SYNCHRONOUS_IO_NONALERT,
+                                FILE_PIPE_BYTE_STREAM_TYPE,
+                                FILE_PIPE_BYTE_STREAM_MODE,
+                                FILE_PIPE_QUEUE_OPERATION,
+                                1, size, size, &timeout);
+    if (!NT_SUCCESS(res)) {
+        set_last_error(ntstatus_to_last_error(res));
+        return FALSE;
+    }
+    /* open the write handle */
+    oa.RootDirectory = *hReadPipe;
+    res = nt_raw_OpenFile(hWritePipe, SYNCHRONIZE | FILE_GENERIC_WRITE,
+                          &oa, &iob, FILE_SHARE_READ,
+                          FILE_SYNCHRONOUS_IO_NONALERT | FILE_NON_DIRECTORY_FILE);
+    if (!NT_SUCCESS(res)) {
+        close_handle(*hReadPipe);
+        set_last_error(ntstatus_to_last_error(res));
+        return FALSE;
+    }
+    return TRUE;
+}
+
+BOOL
+WINAPI
+redirect_DeviceIoControl(
+    __in        HANDLE hDevice,
+    __in        DWORD dwIoControlCode,
+    __in_bcount_opt(nInBufferSize) LPVOID lpInBuffer,
+    __in        DWORD nInBufferSize,
+    __out_bcount_part_opt(nOutBufferSize, *lpBytesReturned) LPVOID lpOutBuffer,
+    __in        DWORD nOutBufferSize,
+    __out_opt   LPDWORD lpBytesReturned,
+    __inout_opt LPOVERLAPPED lpOverlapped
+    )
+{
+    NTSTATUS res;
+    HANDLE event = NULL;
+    PVOID apc_cxt = NULL;
+    IO_STATUS_BLOCK iob = {0,0};
+    bool is_fs = (DEVICE_TYPE_FROM_CTL_CODE(dwIoControlCode) == FILE_DEVICE_FILE_SYSTEM);
+
+    GET_NTDLL(NtDeviceIoControlFile,
+              (IN HANDLE FileHandle,
+               IN HANDLE Event OPTIONAL,
+               IN PIO_APC_ROUTINE ApcRoutine OPTIONAL,
+               IN PVOID ApcContext OPTIONAL,
+               OUT PIO_STATUS_BLOCK IoStatusBlock,
+               IN ULONG IoControlCode,
+               IN PVOID InputBuffer OPTIONAL,
+               IN ULONG InputBufferLength,
+               OUT PVOID OutputBuffer OPTIONAL,
+               IN ULONG OutputBufferLength));
+
+    if (lpOverlapped != NULL) {
+        event = lpOverlapped->hEvent;
+        apc_cxt = (PVOID) lpOverlapped;
+        lpOverlapped->Internal = STATUS_PENDING;
+    }
+
+    if (is_fs) {
+        res = NtFsControlFile(hDevice, event, NULL, apc_cxt, &iob, dwIoControlCode,
+                              lpInBuffer, nInBufferSize, lpOutBuffer, nOutBufferSize);
+    } else {
+        res = NtDeviceIoControlFile(hDevice, event, NULL, apc_cxt, &iob, dwIoControlCode,
+                                    lpInBuffer, nInBufferSize,
+                                    lpOutBuffer, nOutBufferSize);
+    }
+
+    if (lpOverlapped == NULL && res == STATUS_PENDING) {
+        /* If synchronous, wait for it */
+        res = NtWaitForSingleObject(hDevice, FALSE, NULL);
+        if (NT_SUCCESS(res))
+            res = iob.Status;
+    }
+
+    /* Warning error codes may still set the size */
+    if (!NT_ERROR(res) && lpBytesReturned != NULL) {
+        if (lpOverlapped != NULL)
+            *lpBytesReturned = (DWORD) lpOverlapped->InternalHigh;
+        else
+            *lpBytesReturned = (DWORD) iob.Information;
+    }
+    if (!NT_SUCCESS(res) || res == STATUS_PENDING) {
+        set_last_error(ntstatus_to_last_error(res));
+        return FALSE;
+    }
+    return TRUE;
+}
+
+/***************************************************************************
+ * HANDLES
+ */
+
+BOOL
+WINAPI
+redirect_CloseHandle(
+    __in HANDLE hObject
+    )
+{
+    return (BOOL) close_handle(hObject);
+}
+
+BOOL
+WINAPI
+redirect_DuplicateHandle(
+    __in        HANDLE hSourceProcessHandle,
+    __in        HANDLE hSourceHandle,
+    __in        HANDLE hTargetProcessHandle,
+    __deref_out LPHANDLE lpTargetHandle,
+    __in        DWORD dwDesiredAccess,
+    __in        BOOL bInheritHandle,
+    __in        DWORD dwOptions
+    )
+{
+    NTSTATUS res = duplicate_handle(hSourceProcessHandle, hSourceHandle,
+                                    hTargetProcessHandle, lpTargetHandle,
+                                    /* real impl doesn't add SYNCHRONIZE, so we don't */
+                                    dwDesiredAccess,
+                                    bInheritHandle ? HANDLE_FLAG_INHERIT : 0,
+                                    dwOptions);
+    return NT_SUCCESS(res);
+}
+
+
 /* FIXME i#1063: add the rest of the routines in kernel32_redir.h under
  * Files
  */
@@ -570,10 +792,56 @@ redirect_UnmapViewOfFile(
  */
 
 #ifdef STANDALONE_UNIT_TEST
+static void
+test_DeviceIoControl(void)
+{
+    HANDLE dev;
+    BOOL ok;
+    DWORD res;
+    DISK_GEOMETRY geo;
+    OVERLAPPED overlap;
+    HANDLE e;
+
+    /* Test synchronous */
+    dev = redirect_CreateFileW(L"\\\\.\\PhysicalDrive0", 0,
+                               FILE_SHARE_READ | FILE_SHARE_WRITE,
+                               NULL, OPEN_EXISTING, 0, NULL);
+    EXPECT(dev != INVALID_HANDLE_VALUE, true);
+    ok = redirect_DeviceIoControl(dev, IOCTL_DISK_GET_DRIVE_GEOMETRY,
+                                  NULL, 0, &geo, sizeof(geo), &res, NULL);
+    EXPECT(ok, true);
+    EXPECT(res > 0, true);
+    EXPECT(geo.Cylinders.QuadPart > 0, true);
+    ok = redirect_CloseHandle(dev);
+    EXPECT(ok, true);
+
+    /* Test asynchronous */
+    dev = redirect_CreateFileW(L"\\\\.\\PhysicalDrive0", 0,
+                               FILE_SHARE_READ | FILE_SHARE_WRITE,
+                               NULL, OPEN_EXISTING, FILE_FLAG_OVERLAPPED, NULL);
+    EXPECT(dev != INVALID_HANDLE_VALUE, true);
+    e = CreateEvent(NULL, TRUE, FALSE, "myevent");
+    EXPECT(e != NULL, true);
+    overlap.hEvent = e;
+    ok = redirect_DeviceIoControl(dev, IOCTL_DISK_GET_DRIVE_GEOMETRY,
+                                  NULL, 0, &geo, sizeof(geo), &res, &overlap);
+    EXPECT(ok, true);
+    ok = GetOverlappedResult(dev, &overlap, &res, TRUE/*wait*/);
+    EXPECT(ok, true);
+    EXPECT(res > 0, true);
+    EXPECT(geo.Cylinders.QuadPart > 0, true);
+
+    ok = redirect_CloseHandle(dev);
+    EXPECT(ok, true);
+    ok = redirect_CloseHandle(e);
+    EXPECT(ok, true);
+}
+
+
 void
 unit_test_drwinapi_kernel32_file(void)
 {
-    HANDLE h, h2;
+    HANDLE h, h2, h3;
     PVOID p;
     BOOL ok;
     char env[MAX_PATH];
@@ -595,7 +863,7 @@ unit_test_drwinapi_kernel32_file(void)
     EXPECT(get_last_error(), ERROR_ALREADY_EXISTS);
 
     /* test creating files */
-    h = redirect_CreateFileW(L"c:\\cygwin\\tmp\\_kernel32_file_test_bogus.txt",
+    h = redirect_CreateFileW(L"c:\\_kernel32_file_test_bogus.txt",
                              GENERIC_READ, FILE_SHARE_READ, NULL,
                              OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
     EXPECT(h == INVALID_HANDLE_VALUE, true);
@@ -618,6 +886,14 @@ unit_test_drwinapi_kernel32_file(void)
     EXPECT(h2 != INVALID_HANDLE_VALUE, true);
     EXPECT(get_last_error(), ERROR_ALREADY_EXISTS);
     ok = redirect_CloseHandle(h2);
+    EXPECT(ok, true);
+    /* re-create and then test deleting it */
+    h = redirect_CreateFileA(buf, GENERIC_WRITE, 0, NULL,
+                             CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    EXPECT(h != INVALID_HANDLE_VALUE, true);
+    ok = redirect_CloseHandle(h);
+    EXPECT(ok, true);
+    ok = redirect_DeleteFileA(buf);
     EXPECT(ok, true);
 
     /* test anonymous mappings */
@@ -669,5 +945,29 @@ unit_test_drwinapi_kernel32_file(void)
     EXPECT(ok, true);
     ok = redirect_CloseHandle(h);
     EXPECT(ok, true);
+
+    /* test pipe */
+    ok = redirect_CreatePipe(&h, &h2, NULL, 0);
+    EXPECT(ok, true);
+    /* FIXME: once we redirect ReadFile and WriteFile, use those versions */
+    /* This will block if the buffer is full, but we assume the buffer
+     * is much bigger than the size of a handle for our single-threaded test.
+     */
+    ok = WriteFile(h2, &h2, sizeof(h2), (LPDWORD) &res, NULL);
+    EXPECT(ok, true);
+    ok = ReadFile(h, &p, sizeof(p), (LPDWORD) &res, NULL);
+    EXPECT(ok, true);
+    EXPECT((HANDLE)p == h2, true);
+    ok = redirect_DuplicateHandle(GetCurrentProcess(), h, GetCurrentProcess(), &h3,
+                                  0, FALSE, 0);
+    EXPECT(ok, true);
+    ok = redirect_CloseHandle(h3);
+    EXPECT(ok, true);
+    ok = redirect_CloseHandle(h2);
+    EXPECT(ok, true);
+    ok = redirect_CloseHandle(h);
+    EXPECT(ok, true);
+
+    test_DeviceIoControl();
 }
 #endif
