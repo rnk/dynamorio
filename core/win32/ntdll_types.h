@@ -29,6 +29,7 @@ typedef unsigned int uint;
 typedef LONG NTSTATUS;
 /* make sure to cast to signed in case passed reg_t */
 #define NT_SUCCESS(Status) ((NTSTATUS)(Status) >= 0)
+#define NT_ERROR(Status) ((((ULONG)(Status)) >> 30) == 3)
 #define STATUS_SUCCESS ((NTSTATUS)0x00000000L)
 #define STATUS_UNSUCCESSFUL ((NTSTATUS)0xC0000001L)
 
@@ -439,5 +440,17 @@ typedef struct _RTL_USER_PROCESS_PARAMETERS {
     UNICODE_STRING RuntimeData;
     // RTL_DRIVE_LETTER_CURDIR DLCurrentDirectory[0x20]
 } RTL_USER_PROCESS_PARAMETERS, *PRTL_USER_PROCESS_PARAMETERS;
+
+/* NtCreateNamedPipeFilePipe: TypeMessage parameter */
+#define FILE_PIPE_BYTE_STREAM_TYPE          0x00000000
+#define FILE_PIPE_MESSAGE_TYPE              0x00000001
+
+/* NtCreateNamedPipeFilePipe: ReadmodeMessage parameter */
+#define FILE_PIPE_BYTE_STREAM_MODE      0x00000000
+#define FILE_PIPE_MESSAGE_MODE          0x00000001
+
+/* NtCreateNamedPipeFilePipe: Nonblocking parameter */
+#define FILE_PIPE_QUEUE_OPERATION       0x00000000
+#define FILE_PIPE_COMPLETE_OPERATION    0x00000001
 
 #endif /* _NTDLL_TYPES_H_ */

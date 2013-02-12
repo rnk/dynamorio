@@ -143,6 +143,7 @@ initialize_plt_stub_template(void)
     app_pc next_pc;
     uint mov_len, jmp_len;
 
+    ASSERT(plt_stub_size == 0 && "stub template should only be init once");
     /* %r11 is scratch on x64 and the PLT resolver uses it, so we do too.  For
      * ia32, there are scratch regs, but the loader doesn't use them.  Presumably
      * it doesn't want to break special calling conventions, so we follow suit
@@ -453,9 +454,12 @@ dynamorio_dl_fixup(struct link_map *l_map, uint reloc_arg)
 void
 native_module_init(void)
 {
+    if (!DYNAMO_OPTION(native_exec_retakeover))
+        return;
+    ASSERT(stub_heap == NULL && "init should only happen once");
     initialize_plt_stub_template();
     stub_heap = special_heap_init(plt_stub_size, true/*locked*/,
-                                  true/*executable*/, false/*!persistent*/);
+                                  true/*executable*/, true/*persistent*/);
 }
 
 void
