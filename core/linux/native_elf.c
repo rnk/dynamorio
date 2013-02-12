@@ -352,6 +352,8 @@ dynamorio_dl_fixup(struct link_map *l_map, uint reloc_arg)
 void
 native_module_init(void)
 {
+    if (!DYNAMO_OPTION(native_exec_retakeover))
+        return;
     ASSERT(stub_heap == NULL && "init should only happen once");
     initialize_plt_stub_template();
     stub_heap = special_heap_init(plt_stub_size, true/*locked*/,
