@@ -2172,14 +2172,18 @@ get_section_attributes(HANDLE h, uint *section_attributes /* OUT */,
     }
 }
 
+NTSTATUS
+nt_raw_close(HANDLE h)
+{
+    GET_RAW_SYSCALL(Close,
+                    IN HANDLE Handle);
+    return NT_SYSCALL(Close, h);
+}
+
 bool
 close_handle(HANDLE h)
 {
-    NTSTATUS res;
-    GET_RAW_SYSCALL(Close,
-                    IN HANDLE Handle);
-    res = NT_SYSCALL(Close, h);
-    return NT_SUCCESS(res);
+    return NT_SUCCESS(nt_raw_close(h));
 }
 
 /* Note returns raw NTSTATUS */
@@ -2285,6 +2289,23 @@ query_full_attributes_file(IN PCWSTR filename,
     return NT_SUCCESS(result);
 }
 
+NTSTATUS
+nt_query_value_key(IN HANDLE key,
+                   IN PUNICODE_STRING value_name,
+                   IN KEY_VALUE_INFORMATION_CLASS class,
+                   OUT PVOID info,
+                   IN ULONG info_length,
+                   OUT PULONG res_length)
+{
+    GET_NTDLL(NtQueryValueKey, (IN HANDLE KeyHandle,
+                                IN PUNICODE_STRING ValueName,
+                                IN KEY_VALUE_INFORMATION_CLASS KeyValueInformationClass,
+                                OUT PVOID KeyValueInformation,
+                                IN ULONG Length,
+                                OUT PULONG ResultLength));
+    return NtQueryValueKey(key, value_name, class, info, info_length, res_length);
+}
+
 /* rights should be KEY_READ or KEY_WRITE or both */
 /* parent handle HAS to be opened with an absolute name */
 HANDLE
@@ -2381,13 +2402,6 @@ reg_query_value(IN PCWSTR keyname,
     UNICODE_STRING valuename;
     HANDLE hkey = reg_open_key(keyname, KEY_READ | rights);
 
-    GET_NTDLL(NtQueryValueKey, (IN HANDLE KeyHandle,
-                                IN PUNICODE_STRING ValueName,
-                                IN KEY_VALUE_INFORMATION_CLASS KeyValueInformationClass,
-                                OUT PVOID KeyValueInformation,
-                                IN ULONG Length,
-                                OUT PULONG ResultLength));
-
     if (hkey == NULL) 
         return REG_QUERY_FAILURE;
     
@@ -2395,7 +2409,7 @@ reg_query_value(IN PCWSTR keyname,
     if (!NT_SUCCESS(res)) 
         return REG_QUERY_FAILURE;
 
-    res = NtQueryValueKey(hkey, &valuename, info_class, info, info_size, &outlen);
+    res = nt_query_value_key(hkey, &valuename, info_class, info, info_size, &outlen);
     reg_close_key(hkey);
 #if VERBOSE
     if (!NT_SUCCESS(res))
@@ -3116,30 +3130,65 @@ create_file(PCWSTR filename, bool is_dir, ACCESS_MASK rights,
         return hfile;
 }
 
-#if 0
-/* FIXME : enable and test once we have a use for it */
-bool
-delete_file(PCWSTR filename)
+#if !defined(NOT_DYNAMORIO_CORE_PROPER) && !defined(NOT_DYNAMORIO_CORE)
+NTSTATUS
+nt_open_file(HANDLE *handle OUT, PCWSTR filename, ACCESS_MASK rights, uint sharing)
 {
     NTSTATUS res;
-    OBJECT_ATTRIBUTES attr;
-    UNICODE_STRING objname;
+    OBJECT_ATTRIBUTES oa;
+    IO_STATUS_BLOCK iob = {0,0};
+    UNICODE_STRING us;
 
-    GET_NTDLL(NtDeleteFile, (IN POBJECT_ATTRIBUTES  ObjectAttributes));
-    
-    res = wchar_to_unicode(&objname, filename);
+    res = wchar_to_unicode(&us, filename);
     if (!NT_SUCCESS(res))
-        return false;
-    
-    InitializeObjectAttributes(&attr, &objname,
-                               OBJ_CASE_INSENSITIVE,
-                               NULL, NULL);
-    
-    res = NtDeleteFile(&attr);
-    
-    return NT_SUCCESS(res);
+        return res;
+
+    InitializeObjectAttributes(&oa, &us, OBJ_CASE_INSENSITIVE, NULL, NULL);
+    res = nt_raw_OpenFile(handle, rights | SYNCHRONIZE,
+                          &oa, &iob, sharing, FILE_SYNCHRONOUS_IO_NONALERT);
+    return res;
 }
 #endif
+
+NTSTATUS
+nt_delete_file(PCWSTR nt_filename)
+{
+    /* We follow the lead of Win32 and use FileDispositionInformation
+     * and not NtDeleteFile.
+     */
+    /* Xref os_delete_mapped_file() which does more: but here we want
+     * to match something more like Win32 DeleteFile().
+     */
+    NTSTATUS res;
+    HANDLE hf;
+    FILE_DISPOSITION_INFORMATION file_dispose_info;
+
+    res = nt_create_file(&hf, nt_filename, NULL, 0, SYNCHRONIZE | DELETE,
+                         FILE_ATTRIBUTE_NORMAL,
+                         FILE_SHARE_DELETE | /* if already deleted */
+                         FILE_SHARE_READ,
+                         FILE_OPEN,
+                         FILE_SYNCHRONOUS_IO_NONALERT 
+                         | FILE_DELETE_ON_CLOSE
+                         /* This should open a handle on a symlink rather
+                          * than its target, and avoid other reparse code.
+                          * Otherwise the FILE_DELETE_ON_CLOSE would cause
+                          * us to delete the target of a symlink!
+                          * FIXME: fully test this: case 10067
+                          */
+                         | FILE_OPEN_REPARSE_POINT);
+    if (!NT_SUCCESS(res))
+        return res;
+
+    file_dispose_info.DeleteFile = TRUE;
+    res = nt_set_file_info(hf,
+                           &file_dispose_info,
+                           sizeof(file_dispose_info),
+                           FileDispositionInformation);
+    /* close regardless of success */
+    close_handle(hf);
+    return res;
+}
 
 bool
 flush_file_buffers(HANDLE file_handle)
@@ -3453,9 +3502,6 @@ nt_close_event(HANDLE hevent)
 wait_status_t
 nt_wait_event_with_timeout(HANDLE hevent, PLARGE_INTEGER timeout)
 {
-    GET_NTDLL(NtWaitForSingleObject, (IN HANDLE ObjectHandle, 
-                                      IN BOOLEAN Alertable, 
-                                      IN PLARGE_INTEGER TimeOut ));
     NTSTATUS res;
     res = NtWaitForSingleObject(hevent, 
                                 false /* not alertable */,
@@ -3549,10 +3595,6 @@ nt_query_performance_counter(PLARGE_INTEGER counter, PLARGE_INTEGER frequency)
     ((DeviceType) << 16) | ((Access) << 14) | ((Function) << 2) | (Method)      \
 )
 
-// Define the interesting device type values
-#define FILE_DEVICE_FILE_SYSTEM         0x00000009
-#define FILE_DEVICE_NAMED_PIPE          0x00000011
-
 // Define the method codes for how buffers are passed for I/O and FS controls
 #define METHOD_BUFFERED                 0
 #define METHOD_IN_DIRECT                1
@@ -3565,14 +3607,6 @@ nt_query_performance_counter(PLARGE_INTEGER counter, PLARGE_INTEGER frequency)
 
 #define FSCTL_PIPE_TRANSCEIVE CTL_CODE(FILE_DEVICE_NAMED_PIPE, 5, \
               METHOD_NEITHER,  FILE_READ_DATA | FILE_WRITE_DATA) /* 0x11c017 */
-
-#if _MSC_VER <= 1200
-/* from ntstatus.h, NtFsControlFile typically returns this, if not using 
- * overlapped (i.e. asynch io) then TransactNamedPipe specifically checks for 
- * this value to determine whether or not it should wait on the pipe, this is
- * the only return code it specifically checks for */
-# define STATUS_PENDING 0x103
-#endif
 
 #ifdef DEBUG
 # if defined(NOT_DYNAMORIO_CORE_PROPER) || defined(NOT_DYNAMORIO_CORE)
@@ -3594,16 +3628,6 @@ nt_pipe_transceive(HANDLE hpipe, void *input, uint input_size,
 
     /* NOTE use an event => asynch IO, if event caller will be notified 
      * that routine finishes by signaling the event */
-    GET_NTDLL(NtFsControlFile, (IN HANDLE               FileHandle,
-                                IN HANDLE               Event OPTIONAL,
-                                IN PIO_APC_ROUTINE      ApcRoutine OPTIONAL,
-                                IN PVOID                ApcContext OPTIONAL,
-                                OUT PIO_STATUS_BLOCK    IoStatusBlock,
-                                IN ULONG                FsControlCode,
-                                IN PVOID                InputBuffer OPTIONAL,
-                                IN ULONG                InputBufferLength,
-                                OUT PVOID               OutputBuffer OPTIONAL,
-                                IN ULONG                OutputBufferLength));
 
     /* FIXME shared utility for this style of computation, 
      * is used in several places in os.c */
@@ -5462,4 +5486,3 @@ nt_raw_OpenProcessToken(HANDLE process_handle,
 # endif
     return res;
 }
-

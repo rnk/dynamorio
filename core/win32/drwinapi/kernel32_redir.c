@@ -66,7 +66,7 @@ static const redirect_import_t redirect_kernel32[] = {
 
     /* Memory-related routines */
     {"DecodePointer",                  (app_pc)redirect_DecodePointer},
-    {"EncodePointer ",                 (app_pc)redirect_EncodePointer },
+    {"EncodePointer",                  (app_pc)redirect_EncodePointer},
     {"GetProcessHeap",                 (app_pc)redirect_GetProcessHeap},
     {"HeapAlloc",                      (app_pc)redirect_HeapAlloc},
     {"HeapCompact",                    (app_pc)redirect_HeapCompact},
@@ -74,7 +74,7 @@ static const redirect_import_t redirect_kernel32[] = {
     {"HeapDestroy",                    (app_pc)redirect_HeapDestroy},
     {"HeapFree",                       (app_pc)redirect_HeapFree},
     {"HeapReAlloc",                    (app_pc)redirect_HeapReAlloc},
-    {"HeapSetInformation ",            (app_pc)redirect_HeapSetInformation },
+    {"HeapSetInformation ",            (app_pc)redirect_HeapSetInformation},
     {"HeapSize",                       (app_pc)redirect_HeapSize},
     {"HeapValidate",                   (app_pc)redirect_HeapValidate},
     {"HeapWalk",                       (app_pc)redirect_HeapWalk},
@@ -95,16 +95,25 @@ static const redirect_import_t redirect_kernel32[] = {
     {"VirtualQueryEx",                 (app_pc)redirect_VirtualQueryEx},
 
     /* File-related routines */
-    {"CloseHandle",                    (app_pc)redirect_CloseHandle},
     {"CreateDirectoryA",               (app_pc)redirect_CreateDirectoryA},
     {"CreateDirectoryW",               (app_pc)redirect_CreateDirectoryW},
     {"CreateFileA",                    (app_pc)redirect_CreateFileA},
     {"CreateFileW",                    (app_pc)redirect_CreateFileW},
+    {"DeleteFileA",                    (app_pc)redirect_DeleteFileA},
+    {"DeleteFileW",                    (app_pc)redirect_DeleteFileW},
     {"CreateFileMappingA",             (app_pc)redirect_CreateFileMappingA},
     {"CreateFileMappingW",             (app_pc)redirect_CreateFileMappingW},
     {"MapViewOfFile",                  (app_pc)redirect_MapViewOfFile},
     {"MapViewOfFileEx",                (app_pc)redirect_MapViewOfFileEx},
     {"UnmapViewOfFile",                (app_pc)redirect_UnmapViewOfFile},
+    {"CreatePipe",                     (app_pc)redirect_CreatePipe},
+    {"DeviceIoControl",                (app_pc)redirect_DeviceIoControl},
+    {"CloseHandle",                    (app_pc)redirect_CloseHandle},
+    {"DuplicateHandle",                (app_pc)redirect_DuplicateHandle},
+
+    /* Miscellaneous routines */
+    {"GetLastError",                   (app_pc)redirect_GetLastError},
+    {"SetLastError",                   (app_pc)redirect_SetLastError},
 };
 #define REDIRECT_KERNEL32_NUM (sizeof(redirect_kernel32)/sizeof(redirect_kernel32[0]))
 
@@ -149,20 +158,6 @@ kernel32_redir_onload(privmod_t *mod)
     /* Rather than statically linking to real kernel32 we want to invoke
      * routines in the private kernel32 so we look them up here.
      */
-
-    /* XP's kernel32!SetLastError is forwarded on xp64, and our
-     * get_proc_address_ex can't handle forwarded exports, so we directly
-     * invoke the Rtl version that it forwards to.  On win7 it's not
-     * forwarded but just calls the Rtl directly.  On 2K or earlier though
-     * there is no Rtl version (so we can't statically link).
-     */
-    priv_SetLastError = (void (WINAPI *)(DWORD))
-        get_proc_address_ex(get_ntdll_base(), "RtlSetLastWin32Error", NULL);
-    if (priv_SetLastError == NULL) {
-        priv_SetLastError = (void (WINAPI *)(DWORD))
-            get_proc_address_ex(mod->base, "SetLastError", NULL);
-        ASSERT(priv_SetLastError != NULL);
-    }
 
     kernel32_redir_onload_proc(mod);
     kernel32_redir_onload_lib(mod);

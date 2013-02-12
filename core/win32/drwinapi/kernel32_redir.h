@@ -68,9 +68,6 @@ kernel32_redir_onload(privmod_t *mod);
 app_pc
 kernel32_redir_lookup(const char *name);
 
-/* Pointers to routines in the (private copy of the) system library itself */
-void (WINAPI *priv_SetLastError)(DWORD val); /* kernel32 or ntdll */
-
 /* Note that we keep the declarations for these redirect_* routines
  * matching the Windows header style, rather than DR's internal style,
  * to make it easier to compare to Windows headers and docs.
@@ -661,12 +658,6 @@ kernel32_redir_onload_file(privmod_t *mod);
 
 BOOL
 WINAPI
-redirect_CloseHandle(
-    __in HANDLE hObject
-    );
-
-BOOL
-WINAPI
 redirect_CreateDirectoryA(
     __in     LPCSTR lpPathName,
     __in_opt LPSECURITY_ATTRIBUTES lpSecurityAttributes
@@ -703,6 +694,18 @@ redirect_CreateFileW(
     __in     DWORD dwCreationDisposition,
     __in     DWORD dwFlagsAndAttributes,
     __in_opt HANDLE hTemplateFile
+    );
+
+BOOL
+WINAPI
+redirect_DeleteFileA(
+    __in LPCSTR lpFileName
+    );
+
+BOOL
+WINAPI
+redirect_DeleteFileW(
+    __in LPCWSTR lpFileName
     );
 
 HANDLE
@@ -765,18 +768,6 @@ redirect_CreatePipe(
 
 BOOL
 WINAPI
-redirect_DeleteFileA(
-    __in LPCSTR lpFileName
-    );
-
-BOOL
-WINAPI
-redirect_DeleteFileW(
-    __in LPCWSTR lpFileName
-    );
-
-BOOL
-WINAPI
 redirect_DeviceIoControl(
     __in        HANDLE hDevice,
     __in        DWORD dwIoControlCode,
@@ -786,6 +777,12 @@ redirect_DeviceIoControl(
     __in        DWORD nOutBufferSize,
     __out_opt   LPDWORD lpBytesReturned,
     __inout_opt LPOVERLAPPED lpOverlapped
+    );
+
+BOOL
+WINAPI
+redirect_CloseHandle(
+    __in HANDLE hObject
     );
 
 BOOL
@@ -1250,6 +1247,18 @@ redirect_WaitForSingleObject(
  * Miscellaneous
  */
 
+DWORD
+WINAPI
+redirect_GetLastError(
+    VOID
+    );
+
+VOID
+WINAPI
+redirect_SetLastError(
+    __in DWORD dwErrCode
+    );
+
 BOOL
 WINAPI
 redirect_Beep(
@@ -1376,13 +1385,6 @@ __nullnullterminated
 LPWCH
 WINAPI
 redirect_GetEnvironmentStringsW(
-    VOID
-    );
-
-__checkReturn
-DWORD
-WINAPI
-redirect_GetLastError(
     VOID
     );
 
@@ -1581,33 +1583,6 @@ redirect_RaiseException(
     __in_ecount_opt(nNumberOfArguments) CONST ULONG_PTR *lpArguments
     );
 
-LSTATUS
-WINAPI
-redirect_RegCloseKey (
-    __in HKEY hKey
-    );
-
-LSTATUS
-WINAPI
-redirect_RegOpenKeyExA (
-    __in HKEY hKey,
-    __in_opt LPCSTR lpSubKey,
-    __in_opt DWORD ulOptions,
-    __in REGSAM samDesired,
-    __out PHKEY phkResult
-    );
-
-LSTATUS
-WINAPI
-redirect_RegQueryValueExA (
-    __in HKEY hKey,
-    __in_opt LPCSTR lpValueName,
-    __reserved LPDWORD lpReserved,
-    __out_opt LPDWORD lpType,
-    __out_bcount_part_opt(*lpcbData, *lpcbData) __out_data_source(REGISTRY) LPBYTE lpData,
-    __inout_opt LPDWORD lpcbData
-    );
-
 VOID
 NTAPI
 redirect_RtlGetNtVersionNumbers (
@@ -1706,12 +1681,6 @@ UINT
 WINAPI
 redirect_SetHandleCount(
     __in UINT uNumber
-    );
-
-VOID
-WINAPI
-redirect_SetLastError(
-    __in DWORD dwErrCode
     );
 
 BOOL

@@ -858,6 +858,9 @@ thread_id_t dynamorio_clone(uint flags, byte *newsp, void *ptid, void *tls,
                             void *ctid, void (*func)(void));
 #endif
 void back_from_native(void);
+#ifdef LINUX
+void native_plt_call(void);
+#endif
 DEBUG_DECLARE(void debug_infinite_loop(void); /* handy cpu eating infinite loop */)
 void hashlookup_null_handler(void);
 
@@ -906,17 +909,6 @@ dump_callstack_to_buffer(char *buf, size_t bufsz, size_t *sofar,
 void disassemble_fragment_header(dcontext_t *dcontext, fragment_t *f, file_t outfile);
 void disassemble_fragment_body(dcontext_t *dcontext, fragment_t *f, file_t outfile);
 void disassemble_app_bb(dcontext_t *dcontext, app_pc tag, file_t outfile);
-
-/* DR_API EXPORT TOFILE dr_ir_instrlist.h */
-DR_API
-/**
- * Prints each instruction in \p ilist in sequence to \p outfile.
- * The default is to use AT&T-style syntax, unless the \ref op_syntax_intel
- * "-syntax_intel" runtime option is specified.
- */
-void 
-instrlist_disassemble(dcontext_t *dcontext, app_pc tag,
-                      instrlist_t *ilist, file_t outfile);
 #endif /* INTERNAL || DEBUG || CLIENT_INTERFACE */
 
 /* in emit_utils.c */

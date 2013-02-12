@@ -1,22 +1,22 @@
 /* **********************************************************
- * Copyright (c) 2013 Google, Inc.  All rights reserved.
+ * Copyright (c) 2013 Google, Inc.   All rights reserved.
  * **********************************************************/
 
 /*
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions are met:
- *
+ * 
  * * Redistributions of source code must retain the above copyright notice,
  *   this list of conditions and the following disclaimer.
- *
+ * 
  * * Redistributions in binary form must reproduce the above copyright notice,
  *   this list of conditions and the following disclaimer in the documentation
  *   and/or other materials provided with the distribution.
- *
+ * 
  * * Neither the name of Google, Inc. nor the names of its contributors may be
  *   used to endorse or promote products derived from this software without
  *   specific prior written permission.
- *
+ * 
  * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
  * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
  * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
@@ -30,33 +30,77 @@
  * DAMAGE.
  */
 
-/* Intercepts module transitions for native execution for PE modules.
+/* advapi32 redirection routines.
+ * We initially target the union of the imports of C++ apps, msvcrt,
+ * and dbghelp.
  */
 
-#include "../globals.h"
-#include "../native_exec.h"
-#include "module.h"
+#ifndef _ADVAPI32_REDIR_H_
+#define _ADVAPI32_REDIR_H_ 1
+
+#include "../../globals.h"
+#include "../../module_shared.h"
 
 void
-native_module_init(void)
-{
-    /* nothing */
-}
+advapi32_redir_init(void);
 
 void
-native_module_exit(void)
-{
-    /* nothing */
-}
+advapi32_redir_exit(void);
 
 void
-native_module_hook(module_area_t *ma, bool at_map)
-{
-    ASSERT_CURIOSITY(__FUNCTION__" NYI");
-}
+advapi32_redir_onload(privmod_t *mod);
 
-void
-native_module_unhook(module_area_t *ma)
-{
-    ASSERT_CURIOSITY(__FUNCTION__" NYI");
-}
+app_pc
+advapi32_redir_lookup(const char *name);
+
+
+LSTATUS
+WINAPI
+redirect_RegCloseKey (
+    __in HKEY hKey
+    );
+
+LSTATUS
+WINAPI
+redirect_RegOpenKeyExA (
+    __in HKEY hKey,
+    __in_opt LPCSTR lpSubKey,
+    __in_opt DWORD ulOptions,
+    __in REGSAM samDesired,
+    __out PHKEY phkResult
+    );
+
+LSTATUS
+WINAPI
+redirect_RegOpenKeyExW (
+    __in HKEY hKey,
+    __in_opt LPCWSTR lpSubKey,
+    __in_opt DWORD ulOptions,
+    __in REGSAM samDesired,
+    __out PHKEY phkResult
+    );
+
+LSTATUS
+WINAPI
+redirect_RegQueryValueExA (
+    __in HKEY hKey,
+    __in_opt LPCSTR lpValueName,
+    __reserved LPDWORD lpReserved,
+    __out_opt LPDWORD lpType,
+    __out_bcount_part_opt(*lpcbData, *lpcbData) __out_data_source(REGISTRY) LPBYTE lpData,
+    __inout_opt LPDWORD lpcbData
+    );
+
+LSTATUS
+WINAPI
+redirect_RegQueryValueExW (
+    __in HKEY hKey,
+    __in_opt LPCWSTR lpValueName,
+    __reserved LPDWORD lpReserved,
+    __out_opt LPDWORD lpType,
+    __out_bcount_part_opt(*lpcbData, *lpcbData) __out_data_source(REGISTRY) LPBYTE lpData,
+    __inout_opt LPDWORD lpcbData
+    );
+
+
+#endif /* _ADVAPI32_REDIR_H_ */
