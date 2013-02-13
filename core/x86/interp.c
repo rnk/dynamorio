@@ -192,6 +192,7 @@ typedef struct {
     void *vmlist;
     app_pc end_pc;
     bool native_exec;        /* replace cur ilist with a native_exec version */
+    bool native_call;        /* the gateway is a call */
 #ifdef CLIENT_INTERFACE
     instrlist_t **unmangled_ilist; /* PR 299808: clone ilist pre-mangling */
 #endif
@@ -307,7 +308,7 @@ static void
 build_native_exec_bb(dcontext_t *dcontext, build_bb_t *bb);
 
 static bool
-at_native_exec_gateway(dcontext_t *dcontext, app_pc start
+at_native_exec_gateway(dcontext_t *dcontext, app_pc start, bool *is_call
                        _IF_DEBUG(bool xfer_target));
 
 #ifdef DEBUG
@@ -3389,7 +3390,8 @@ build_bb_ilist(dcontext_t *dcontext, build_bb_t *bb)
          */
         app_pc tgt = opnd_get_pc(instr_get_target(bb->instr));
         if (vmvector_overlap(native_exec_areas, tgt, tgt+1) &&
-            at_native_exec_gateway(dcontext, tgt _IF_DEBUG(true/*xfer tgt*/))) {
+            at_native_exec_gateway(dcontext, tgt, &bb->native_call
+                                   _IF_DEBUG(true/*xfer tgt*/))) {
             /* replace this ilist w/ a native exec one */
             LOG(THREAD, LOG_INTERP, 2,
                 "direct xfer @gateway @"PFX" to native_exec module "PFX"\n",
@@ -4095,10 +4097,11 @@ build_native_exec_bb(dcontext_t *dcontext, build_bb_t *bb)
      * replace it with back_from_native.  For returns from non-native to native
      * modules, we enter directly.
      */
-    if (TEST(LINK_RETURN, dcontext->last_exit->flags)) {
-        ASSERT(DYNAMO_OPTION(native_exec_retakeover));
-    } else {
+    if (bb->native_call) {
         native_bb_swap_retaddr(dcontext, bb);
+    } else {
+        ASSERT(DYNAMO_OPTION(native_exec_retakeover) &&
+               "shouldn't jump to native without callout interception");
     }
 
 #ifdef X64
@@ -4170,7 +4173,7 @@ build_native_exec_bb(dcontext_t *dcontext, build_bb_t *bb)
 }
 
 static bool
-at_native_exec_gateway(dcontext_t *dcontext, app_pc start
+at_native_exec_gateway(dcontext_t *dcontext, app_pc start, bool *is_call
                        _IF_DEBUG(bool xfer_target))
 {
     /* ASSUMPTION: transfer to another module will always be by indirect call
@@ -4204,6 +4207,8 @@ at_native_exec_gateway(dcontext_t *dcontext, app_pc start
     ASSERT(start != (app_pc) back_from_native &&
            start != (app_pc) native_module_callout &&
            "interpreting return from native module?");
+    ASSERT(is_call != NULL);
+    *is_call = false;
 
     if (DYNAMO_OPTION(native_exec) &&
         !vmvector_empty(native_exec_areas)) {
@@ -4216,6 +4221,7 @@ at_native_exec_gateway(dcontext_t *dcontext, app_pc start
             /* we do the overlap check last since it's more costly */
             if (vmvector_overlap(native_exec_areas, start, start+1)) {
                 native_exec_bb = true;
+                *is_call = true;
                 DOSTATS({
                     if (EXIT_IS_CALL(dcontext->last_exit->flags)) {
                         if (LINKSTUB_INDIRECT(dcontext->last_exit->flags))
@@ -4237,6 +4243,7 @@ at_native_exec_gateway(dcontext_t *dcontext, app_pc start
                  */
                 STATS_INC(num_native_module_entrances_ret);
                 native_exec_bb = true;
+                *is_call = false;
             }
         }
         /* can we GUESS that we came from an indirect call? */
@@ -4263,6 +4270,7 @@ at_native_exec_gateway(dcontext_t *dcontext, app_pc start
 #ifdef RETURN_AFTER_CALL
                 if (DYNAMO_OPTION(ret_after_call)) {
                     native_exec_bb = is_observed_call_site(dcontext, retaddr);
+                    *is_call = true;
                     LOG(THREAD, LOG_INTERP|LOG_VMAREAS, 2,
                         "native_exec: *TOS is %sa call site in ret-after-call table\n",
                         native_exec_bb ? "" : "NOT ");
@@ -4286,6 +4294,7 @@ at_native_exec_gateway(dcontext_t *dcontext, app_pc start
                             STATS_INC(num_native_entrance_TOS_decodes);
                             if (next_pc == retaddr && instr_is_call(&instr)) {
                                 native_exec_bb = true;
+                                *is_call = true;
                                 LOG(THREAD, LOG_INTERP|LOG_VMAREAS, 2,
                                     "native_exec: found call @ pre-*TOS "PFX"\n", pc);
                                 break;
@@ -4433,7 +4442,8 @@ build_basic_block_fragment(dcontext_t *dcontext, app_pc start, uint initial_flag
 
     init_interp_build_bb(dcontext, &bb, start, initial_flags
                          _IF_CLIENT(for_trace) _IF_CLIENT(unmangled_ilist));
-    if (at_native_exec_gateway(dcontext, start _IF_DEBUG(false/*not xfer tgt*/))) {
+    if (at_native_exec_gateway(dcontext, start, &bb.native_call
+                               _IF_DEBUG(false/*not xfer tgt*/))) {
         DODEBUG({ report_native_module(dcontext, bb.start_pc); });
 #ifdef CLIENT_INTERFACE
         /* PR 232617 - build_native_exec_bb doesn't support setting translation
