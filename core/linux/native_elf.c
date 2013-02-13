@@ -170,8 +170,12 @@ initialize_plt_stub_template(void)
     instrlist_clear_and_destroy(dc, ilist);
 }
 
+/* Replaces the resolver with our own or the app's original resolver.
+ * XXX: We assume there is only one loader in the app and hence only one
+ * resolver, but conceivably there could be two separate loaders.
+ */
 static void
-replace_module_resolver(module_area_t *ma, app_pc *pltgot)
+replace_module_resolver(module_area_t *ma, app_pc *pltgot, bool to_dr)
 {
     dcontext_t *dcontext = get_thread_private_dcontext();
     app_pc resolver;
@@ -181,6 +185,14 @@ replace_module_resolver(module_area_t *ma, app_pc *pltgot)
 
     resolver = pltgot[DL_RUNTIME_RESOLVE_IDX];
     ASSERT_CURIOSITY(resolver != NULL && "loader will overwrite our stub");
+
+    if (!to_dr) {
+        ASSERT(resolver == (app_pc) _dynamorio_runtime_resolve);
+        ASSERT(app_dl_runtime_resolve != NULL);
+        pltgot[DL_RUNTIME_RESOLVE_IDX] = app_dl_runtime_resolve;
+        return;
+    }
+
     if (resolver != NULL) {
         if (app_dl_runtime_resolve == NULL) {
             app_dl_runtime_resolve = resolver;
@@ -349,14 +361,8 @@ module_change_hooks(module_area_t *ma, bool add_hooks, bool at_map)
         got_unprotected = true;
     }
 
-    if (add_hooks) {
-        replace_module_resolver(ma, pltgot);
-    } else {
-        ASSERT(app_dl_runtime_resolve != NULL);
-        pltgot[DL_RUNTIME_RESOLVE_IDX] = app_dl_runtime_resolve;
-    }
-
     /* Insert or remove our PLT stubs. */
+    replace_module_resolver(ma, pltgot, add_hooks/*to_dr*/);
     update_plt_relocations(ma, &opd, add_hooks);
 
     if (got_unprotected) {
