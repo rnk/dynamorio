@@ -4051,7 +4051,8 @@ build_native_exec_bb(dcontext_t *dcontext, build_bb_t *bb)
      * back_from_native.  For returns from non-native to native modules, we
      * enter directly.
      */
-    if (TEST(LINK_RETURN, dcontext->last_exit->flags)) {
+    if (TEST(LINK_RETURN, dcontext->last_exit->flags) ||
+        bb->start_pc == get_image_entry()) {
         ASSERT(DYNAMO_OPTION(native_exec_retakeover));
     } else {
         native_bb_swap_retaddr(dcontext, bb);
