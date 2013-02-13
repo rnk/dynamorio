@@ -48,6 +48,7 @@
 #include "arch_exports.h"
 #include "instr.h"
 #include "decode_fast.h"
+#include "monitor.h"
 
 /* list of native_exec module regions 
  */
@@ -147,20 +148,58 @@ native_exec_module_unload(module_area_t *ma)
         native_module_unhook(ma);
 }
 
-/* Similar to back_from_native_C() in x86/x86_code.c.  Executes on the app
- * stack.
+/* Clean call called on every fcache to native transition.  Turns on and off
+ * asynch handling and updates some state.  Called from native bbs built by
+ * build_native_exec_bb() in x86/interp.c.
  */
 void
-native_module_transition(priv_mcontext_t *mc, app_pc target)
+entering_native(void)
 {
     dcontext_t *dcontext;
-    ASSERT(DYNAMO_OPTION(native_exec_retakeover));
     ENTERING_DR();
     dcontext = get_thread_private_dcontext();
     ASSERT(dcontext != NULL);
-    LOG(THREAD, LOG_ASYNCH, 1, "%s: cross-module call to %p\n",
-        __FUNCTION__, target);
-    STATS_INC(num_native_module_exit);
+#ifdef WINDOWS
+    /* turn off asynch interception for this thread while native
+     * FIXME: what if callbacks and apcs are destined for other modules?
+     * should instead run dispatcher under DR every time, if going to native dll
+     * will go native then?  have issues w/ missing the cb ret, though...
+     * N.B.: if allow some asynch, have to find another place to store the real
+     * return addr (currently in next_tag)
+     *
+     * We can't revert memory prots, since other threads are under DR
+     * control, but we do handle our-fault write faults in native threads.
+     */
+    set_asynch_interception(dcontext->owning_thread, false);
+#endif
+    /* FIXME: setting same var that set_asynch_interception is! */
+    dcontext->thread_record->under_dynamo_control = false;
+
+    /* if we were building a trace, kill it */
+    if (is_building_trace(dcontext)) {
+        LOG(THREAD, LOG_ASYNCH, 2, "entering_native: squashing old trace\n");
+        trace_abort(dcontext);
+    }
+    set_last_exit(dcontext, (linkstub_t *) get_native_exec_linkstub());
+    /* now we're in app! */
+    dcontext->whereami = WHERE_APP;
+    SYSLOG_INTERNAL_WARNING_ONCE("entered at least one module natively");
+    LOG(THREAD, LOG_ASYNCH, 1, "!!!! Entering module NATIVELY, retaddr="PFX"\n\n",
+        dcontext->native_exec_retval);
+    STATS_INC(num_native_module_enter);
+    EXITING_DR();
+}
+
+/* Re-enters DR at the target PC.  Used on returns back from native modules and
+ * calls out of native modules.  Inverse of entering_native().
+ */
+NORETURN
+static void
+back_from_native_C(dcontext_t *dcontext, priv_mcontext_t *mc, app_pc target)
+{
+    /* ASSUMPTION: was native entire time, don't need to initialize dcontext
+     * or anything, and next_tag is still there!
+     */
     ASSERT(dcontext->whereami == WHERE_APP);
     ASSERT(dcontext->last_exit == get_native_exec_linkstub());
     dcontext->next_tag = target;
@@ -170,7 +209,7 @@ native_module_transition(priv_mcontext_t *mc, app_pc target)
     /* asynch back on */
     set_asynch_interception(dcontext->owning_thread, true);
 #endif
-    /* FIXME: setting same var that set_asynch_interception is! */
+    /* XXX: setting same var that set_asynch_interception is! */
     dcontext->thread_record->under_dynamo_control = true;
 
     *get_mcontext(dcontext) = *mc;
@@ -179,4 +218,45 @@ native_module_transition(priv_mcontext_t *mc, app_pc target)
 
     call_switch_stack(dcontext, dcontext->dstack, dispatch,
                       false/*not on initstack*/, false/*shouldn't return*/);
+    ASSERT_NOT_REACHED();
+}
+
+/* Re-enters DR after a call to a native module returns.  Called from the asm
+ * routine back_from_native() in x86.asm.
+ */
+void
+back_from_native_ret(priv_mcontext_t *mc)
+{
+    dcontext_t *dcontext;
+    app_pc target;
+    ENTERING_DR();
+    dcontext = get_thread_private_dcontext();
+    ASSERT(dcontext != NULL);
+    LOG(THREAD, LOG_ASYNCH, 1, "\n!!!! Returned from NATIVE module to "PFX"\n",
+        dcontext->native_exec_retval);
+    SYSLOG_INTERNAL_WARNING_ONCE("returned from at least one native module");
+    ASSERT(dcontext->native_exec_retval != NULL);
+    ASSERT(dcontext->native_exec_retloc != NULL);
+    target = dcontext->native_exec_retval;
+    dcontext->native_exec_retval = NULL;
+    dcontext->native_exec_retloc = NULL;
+    back_from_native_C(dcontext, mc, target); /* noreturn */
+    ASSERT_NOT_REACHED();
+}
+
+/* Re-enters DR on calls from native modules to non-native modules.  Called from
+ * x86.asm.
+ */
+void
+native_module_callout(priv_mcontext_t *mc, app_pc target)
+{
+    dcontext_t *dcontext;
+    ENTERING_DR();
+    dcontext = get_thread_private_dcontext();
+    ASSERT(dcontext != NULL);
+    ASSERT(DYNAMO_OPTION(native_exec_retakeover));
+    LOG(THREAD, LOG_ASYNCH, 4, "%s: cross-module call to %p\n",
+        __FUNCTION__, target);
+    back_from_native_C(dcontext, mc, target);
+    ASSERT_NOT_REACHED();
 }
