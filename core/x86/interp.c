@@ -4048,8 +4048,8 @@ build_native_exec_bb(dcontext_t *dcontext, build_bb_t *bb)
                      (dcontext, REG_NULL/*default*/, REG_XAX, XAX_OFFSET));
 
     /* For calls into native modules, we swizzle the return address to be
-     * back_from_native.  For returns from non-native to native modules, we
-     * enter directly.
+     * back_from_native.  For the image entry point and returns from non-native
+     * to native modules, we enter directly.
      */
     if (TEST(LINK_RETURN, dcontext->last_exit->flags) ||
         bb->start_pc == get_image_entry()) {
@@ -4319,7 +4319,6 @@ at_native_exec_gateway(dcontext_t *dcontext, app_pc start
             /* did we reach a native dll w/o going through an ind call caught above? */
             if (!xfer_target /* else we'll re-check at the target itself */ &&
                 !native_exec_bb && vmvector_overlap(native_exec_areas, start, start+1)) {
-                print_file(STDERR, "entry: "PFX", start: "PFX"\n", get_image_entry(), start);
                 LOG(THREAD, LOG_INTERP|LOG_VMAREAS, 2,
                     "WARNING: pc "PFX" is on native list but reached bypassing gateway!\n",
                     start);
