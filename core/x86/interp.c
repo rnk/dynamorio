@@ -4456,6 +4456,7 @@ build_basic_block_fragment(dcontext_t *dcontext, app_pc start, uint initial_flag
         build_bb_ilist(dcontext, &bb);
         if (bb.native_exec) {
             /* change bb to be a native_exec gateway */
+            bool is_call = bb.native_call;
             LOG(THREAD, LOG_INTERP, 2, "replacing built bb with native_exec bb\n");
             instrlist_clear_and_destroy(dcontext, bb.ilist);
             vm_area_destroy_list(dcontext, bb.vmlist);
@@ -4468,6 +4469,7 @@ build_basic_block_fragment(dcontext_t *dcontext, app_pc start, uint initial_flag
              * client (it contains no app code) so we don't need it. */
             bb.record_translation = false;
 #endif
+            bb.native_call = is_call;
             build_native_exec_bb(dcontext, &bb);
         }
     }
