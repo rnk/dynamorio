@@ -182,9 +182,14 @@ replace_module_resolver(module_area_t *ma, app_pc *pltgot, bool to_dr)
     ASSERT_CURIOSITY(pltgot != NULL && "unable to locate DT_PLTGOT");
     if (pltgot == NULL)
         return;
-
     resolver = pltgot[DL_RUNTIME_RESOLVE_IDX];
-    ASSERT_CURIOSITY(resolver != NULL && "loader will overwrite our stub");
+
+    /* If the module is eagerly bound due to LD_BIND_NOW, RTLD_NOW, or
+     * DT_BIND_NOW, then the resolver will be NULL and we don't need to do any
+     * lazy resolution.
+     */
+    if (resolver == NULL)
+        return;
 
     if (!to_dr) {
         ASSERT(resolver == (app_pc) _dynamorio_runtime_resolve);
@@ -193,21 +198,19 @@ replace_module_resolver(module_area_t *ma, app_pc *pltgot, bool to_dr)
         return;
     }
 
-    if (resolver != NULL) {
-        if (app_dl_runtime_resolve == NULL) {
-            app_dl_runtime_resolve = resolver;
-        } else {
-            ASSERT(resolver == app_dl_runtime_resolve &&
-                   "app has multiple resolvers: multiple loaders?");
-        }
-        if (app_dl_fixup == NULL) {
-            /* _dl_fixup is not exported, so we have to go find it. */
-            app_dl_fixup = (fixup_fn_t) find_dl_fixup(dcontext, resolver);
-            ASSERT_CURIOSITY(app_dl_fixup != NULL && "failed to find _dl_fixup");
-        } else {
-            ASSERT((app_pc) app_dl_fixup == find_dl_fixup(dcontext, resolver) &&
-                   "_dl_fixup should be the same for all modules");
-        }
+    if (app_dl_runtime_resolve == NULL) {
+        app_dl_runtime_resolve = resolver;
+    } else {
+        ASSERT(resolver == app_dl_runtime_resolve &&
+               "app has multiple resolvers: multiple loaders?");
+    }
+    if (app_dl_fixup == NULL) {
+        /* _dl_fixup is not exported, so we have to go find it. */
+        app_dl_fixup = (fixup_fn_t) find_dl_fixup(dcontext, resolver);
+        ASSERT_CURIOSITY(app_dl_fixup != NULL && "failed to find _dl_fixup");
+    } else {
+        ASSERT((app_pc) app_dl_fixup == find_dl_fixup(dcontext, resolver) &&
+               "_dl_fixup should be the same for all modules");
     }
 
     if (app_dl_fixup != NULL) {
@@ -342,21 +345,6 @@ module_change_hooks(module_area_t *ma, bool add_hooks, bool at_map)
     if (pltgot == NULL)
         return;
 
-    if (!opd.bind_now) {
-        /* Make this somewhat idempotent.  We shouldn't re-hook if we're already
-         * hooked, and we shouldn't remove hooks if we haven't hooked already.
-         * If object is eagerly bound, then we ignore the resolver and always
-         * scan the PLT.
-         */
-        bool already_hooked = false;
-        if (pltgot[DL_RUNTIME_RESOLVE_IDX] == (app_pc) _dynamorio_runtime_resolve)
-            already_hooked = true;
-        if (add_hooks && already_hooked)
-            return;
-        if (!add_hooks && !already_hooked)
-            return;
-    }
-
     /* If we are !at_map, then we assume the loader has already relocated the
      * module and applied protections for PT_GNU_RELRO.  _dl_runtime_resolve is
      * typically inside the relro region, so we must unprotect it.
@@ -366,11 +354,8 @@ module_change_hooks(module_area_t *ma, bool add_hooks, bool at_map)
         got_unprotected = true;
     }
 
-    /* Insert or remove our lazy dynamic resolver.  If the module disallows lazy
-     * binding with DT_BIND_NOW, then we don't need to do this.
-     */
-    if (!opd.bind_now)
-        replace_module_resolver(ma, pltgot, add_hooks/*to_dr*/);
+    /* Insert or remove our lazy dynamic resolver. */
+    replace_module_resolver(ma, pltgot, add_hooks/*to_dr*/);
     /* Insert or remove our PLT stubs. */
     update_plt_relocations(ma, &opd, add_hooks);
 
