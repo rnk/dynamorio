@@ -670,7 +670,44 @@ redirect_CreateDirectoryW(
     __in_opt LPSECURITY_ATTRIBUTES lpSecurityAttributes
     );
 
-__out
+BOOL
+WINAPI
+redirect_RemoveDirectoryA(
+    __in LPCSTR lpPathName
+    );
+
+BOOL
+WINAPI
+redirect_RemoveDirectoryW(
+    __in LPCWSTR lpPathName
+    );
+
+DWORD
+WINAPI
+redirect_GetCurrentDirectoryA(
+    __in DWORD nBufferLength,
+    __out_ecount_part_opt(nBufferLength, return + 1) LPSTR lpBuffer
+    );
+
+DWORD
+WINAPI
+redirect_GetCurrentDirectoryW(
+    __in DWORD nBufferLength,
+    __out_ecount_part_opt(nBufferLength, return + 1) LPWSTR lpBuffer
+    );
+
+BOOL
+WINAPI
+redirect_SetCurrentDirectoryA(
+    __in LPCSTR lpPathName
+    );
+
+BOOL
+WINAPI
+redirect_SetCurrentDirectoryW(
+    __in LPCWSTR lpPathName
+    );
+
 HANDLE
 WINAPI
 redirect_CreateFileA(
@@ -755,6 +792,13 @@ BOOL
 WINAPI
 redirect_UnmapViewOfFile(
     __in LPCVOID lpBaseAddress
+    );
+
+BOOL
+WINAPI
+redirect_FlushViewOfFile(
+    __in LPCVOID lpBaseAddress,
+    __in SIZE_T dwNumberOfBytesToFlush
     );
 
 BOOL
@@ -855,7 +899,6 @@ redirect_FindClose(
     __inout HANDLE hFindFile
     );
 
-__out
 HANDLE
 WINAPI
 redirect_FindFirstFileA(
@@ -863,7 +906,6 @@ redirect_FindFirstFileA(
     __out LPWIN32_FIND_DATAA lpFindFileData
     );
 
-__out
 HANDLE
 WINAPI
 redirect_FindFirstFileW(
@@ -889,27 +931,6 @@ BOOL
 WINAPI
 redirect_FlushFileBuffers(
     __in HANDLE hFile
-    );
-
-BOOL
-WINAPI
-redirect_FlushViewOfFile(
-    __in LPCVOID lpBaseAddress,
-    __in SIZE_T dwNumberOfBytesToFlush
-    );
-
-DWORD
-WINAPI
-redirect_GetCurrentDirectoryA(
-    __in DWORD nBufferLength,
-    __out_ecount_part_opt(nBufferLength, return + 1) LPSTR lpBuffer
-    );
-
-DWORD
-WINAPI
-redirect_GetCurrentDirectoryW(
-    __in DWORD nBufferLength,
-    __out_ecount_part_opt(nBufferLength, return + 1) LPWSTR lpBuffer
     );
 
 BOOL
@@ -966,6 +987,8 @@ redirect_GetFileType(
     __in HANDLE hFile
     );
 
+
+/* XXX: when implemented, use in redirect_SetCurrentDirectoryW() */
 DWORD
 WINAPI
 redirect_GetFullPathNameA(
@@ -1056,6 +1079,7 @@ redirect_ReadConsoleW(
     __in_opt PCONSOLE_READCONSOLE_CONTROL pInputControl
     );
 
+/* XXX: when implemented, use in place of un-redirected call in unit test */
 BOOL
 WINAPI
 redirect_ReadFile(
@@ -1064,30 +1088,6 @@ redirect_ReadFile(
     __in        DWORD nNumberOfBytesToRead,
     __out_opt   LPDWORD lpNumberOfBytesRead,
     __inout_opt LPOVERLAPPED lpOverlapped
-    );
-
-BOOL
-WINAPI
-redirect_RemoveDirectoryA(
-    __in LPCSTR lpPathName
-    );
-
-BOOL
-WINAPI
-redirect_RemoveDirectoryW(
-    __in LPCWSTR lpPathName
-    );
-
-BOOL
-WINAPI
-redirect_SetCurrentDirectoryA(
-    __in LPCSTR lpPathName
-    );
-
-BOOL
-WINAPI
-redirect_SetCurrentDirectoryW(
-    __in LPCWSTR lpPathName
     );
 
 BOOL

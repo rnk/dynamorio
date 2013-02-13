@@ -97,6 +97,12 @@ static const redirect_import_t redirect_kernel32[] = {
     /* File-related routines */
     {"CreateDirectoryA",               (app_pc)redirect_CreateDirectoryA},
     {"CreateDirectoryW",               (app_pc)redirect_CreateDirectoryW},
+    {"RemoveDirectoryA",               (app_pc)redirect_RemoveDirectoryA},
+    {"RemoveDirectoryW",               (app_pc)redirect_RemoveDirectoryW},
+    {"GetCurrentDirectoryA",           (app_pc)redirect_GetCurrentDirectoryA},
+    {"GetCurrentDirectoryW",           (app_pc)redirect_GetCurrentDirectoryW},
+    {"SetCurrentDirectoryA",           (app_pc)redirect_SetCurrentDirectoryA},
+    {"SetCurrentDirectoryW",           (app_pc)redirect_SetCurrentDirectoryW},
     {"CreateFileA",                    (app_pc)redirect_CreateFileA},
     {"CreateFileW",                    (app_pc)redirect_CreateFileW},
     {"DeleteFileA",                    (app_pc)redirect_DeleteFileA},
@@ -106,6 +112,7 @@ static const redirect_import_t redirect_kernel32[] = {
     {"MapViewOfFile",                  (app_pc)redirect_MapViewOfFile},
     {"MapViewOfFileEx",                (app_pc)redirect_MapViewOfFileEx},
     {"UnmapViewOfFile",                (app_pc)redirect_UnmapViewOfFile},
+    {"FlushViewOfFile",                (app_pc)redirect_FlushViewOfFile},
     {"CreatePipe",                     (app_pc)redirect_CreatePipe},
     {"DeviceIoControl",                (app_pc)redirect_DeviceIoControl},
     {"CloseHandle",                    (app_pc)redirect_CloseHandle},
@@ -117,6 +124,12 @@ static const redirect_import_t redirect_kernel32[] = {
     {"GetSystemTimeAsFileTime",        (app_pc)redirect_GetSystemTimeAsFileTime},
     {"GetFileTime",                    (app_pc)redirect_GetFileTime},
     {"SetFileTime",                    (app_pc)redirect_SetFileTime},
+    {"FindClose",                      (app_pc)redirect_FindClose},
+    {"FindFirstFileA",                 (app_pc)redirect_FindFirstFileA},
+    {"FindFirstFileW",                 (app_pc)redirect_FindFirstFileW},
+    {"FindNextFileA",                  (app_pc)redirect_FindNextFileA},
+    {"FindNextFileW",                  (app_pc)redirect_FindNextFileW},
+    {"FlushFileBuffers",               (app_pc)redirect_FlushFileBuffers},
 
     /* Miscellaneous routines */
     {"GetLastError",                   (app_pc)redirect_GetLastError},

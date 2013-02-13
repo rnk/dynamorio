@@ -3155,7 +3155,8 @@ create_file(PCWSTR filename, bool is_dir, ACCESS_MASK rights,
 
 #if !defined(NOT_DYNAMORIO_CORE_PROPER) && !defined(NOT_DYNAMORIO_CORE)
 NTSTATUS
-nt_open_file(HANDLE *handle OUT, PCWSTR filename, ACCESS_MASK rights, uint sharing)
+nt_open_file(HANDLE *handle OUT, PCWSTR filename, ACCESS_MASK rights, uint sharing,
+             uint options)
 {
     NTSTATUS res;
     OBJECT_ATTRIBUTES oa;
@@ -3168,7 +3169,7 @@ nt_open_file(HANDLE *handle OUT, PCWSTR filename, ACCESS_MASK rights, uint shari
 
     InitializeObjectAttributes(&oa, &us, OBJ_CASE_INSENSITIVE, NULL, NULL);
     res = nt_raw_OpenFile(handle, rights | SYNCHRONIZE,
-                          &oa, &iob, sharing, FILE_SYNCHRONOUS_IO_NONALERT);
+                          &oa, &iob, sharing, FILE_SYNCHRONOUS_IO_NONALERT | options);
     return res;
 }
 #endif
@@ -3213,18 +3214,15 @@ nt_delete_file(PCWSTR nt_filename)
     return res;
 }
 
-bool
-flush_file_buffers(HANDLE file_handle)
+NTSTATUS
+nt_flush_file_buffers(HANDLE file_handle)
 {
-    NTSTATUS res;
     IO_STATUS_BLOCK ret;
-    
+
     GET_NTDLL(NtFlushBuffersFile, (IN HANDLE FileHandle,
                                    OUT PIO_STATUS_BLOCK IoStatusBlock));
 
-    res = NtFlushBuffersFile(file_handle, &ret);
-
-    return NT_SUCCESS(res);
+    return NtFlushBuffersFile(file_handle, &ret);
 }
 
 bool

@@ -120,6 +120,8 @@ EXPORTS
         NtQueryAttributesFile
         NtCreateNamedPipeFile
         NtDeviceIoControlFile
+        NtQueryDirectoryFile
+        NtFlushVirtualMemory
         RtlInitializeCriticalSection
         RtlDeleteCriticalSection
         RtlEnterCriticalSection

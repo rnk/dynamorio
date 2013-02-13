@@ -877,6 +877,23 @@ typedef struct _BASE_STATIC_SERVER_DATA_64
 } BASE_STATIC_SERVER_DATA_64, *PBASE_STATIC_SERVER_DATA_64;
 #endif
 
+/* NtQueryDirectoryFile information, from ntifs.h */
+typedef struct _FILE_BOTH_DIR_INFORMATION {
+    ULONG NextEntryOffset;
+    ULONG FileIndex;
+    LARGE_INTEGER CreationTime;
+    LARGE_INTEGER LastAccessTime;
+    LARGE_INTEGER LastWriteTime;
+    LARGE_INTEGER ChangeTime;
+    LARGE_INTEGER EndOfFile;
+    LARGE_INTEGER AllocationSize;
+    ULONG FileAttributes;
+    ULONG FileNameLength;
+    ULONG EaSize;
+    CCHAR ShortNameLength;
+    WCHAR ShortName[12];
+    WCHAR FileName[1];
+} FILE_BOTH_DIR_INFORMATION, *PFILE_BOTH_DIR_INFORMATION;
 
 /***************************************************************************
  * convenience enums
@@ -1302,6 +1319,9 @@ query_full_attributes_file(PCWSTR filename,
 /* The requested operation is not implemented. */
 #define STATUS_NOT_IMPLEMENTED           ((NTSTATUS)0xC0000002L)
 
+/* The file does not exist. */
+#define STATUS_NO_SUCH_FILE              ((NTSTATUS)0xC000000FL)
+
 /* {Conflicting Address Range}  The specified address range conflicts with the address space. */
 #define STATUS_CONFLICTING_ADDRESSES     ((NTSTATUS)0xC0000018L)
 
@@ -1310,6 +1330,9 @@ query_full_attributes_file(PCWSTR filename,
 
 /* "The data was too large to fit into the specified buffer." */
 #define STATUS_BUFFER_OVERFLOW           ((NTSTATUS)0x80000005L)
+
+/* No more files were found which match the file specification. */
+#define STATUS_NO_MORE_FILES             ((NTSTATUS)0x80000006L)
 
 /*  {Bad File} The attributes of the specified mapping file for a
 *  section of memory cannot be read. */
@@ -1436,6 +1459,9 @@ query_full_attributes_file(PCWSTR filename,
 # define STATUS_INVALID_PARAMETER         ((NTSTATUS)0xC000000DL)
 #endif
 
+/* Specified section to flush does not map a data file. */
+#define STATUS_NOT_MAPPED_DATA           ((NTSTATUS)0xC0000088L)
+
 /* An invalid parameter was passed to a service or function as the first argument. */
 #define STATUS_INVALID_PARAMETER_1       ((NTSTATUS)0xC00000EFL)
 
@@ -1472,6 +1498,12 @@ query_full_attributes_file(PCWSTR filename,
 /* An invalid parameter was passed to a service or function as the twelfth argument. */
 #define STATUS_INVALID_PARAMETER_12      ((NTSTATUS)0xC00000FAL)
 
+/* An attempt was made to access a thread that has begun termination. */
+#define STATUS_THREAD_IS_TERMINATING     ((NTSTATUS)0xC000004BL)
+
+/* An attempt was made to access an exiting process. */
+#define STATUS_PROCESS_IS_TERMINATING    ((NTSTATUS)0xC000010AL)
+
 /* This is in VS2005 winnt.h but not in SDK winnt.h */
 #ifndef IMAGE_SIZEOF_BASE_RELOCATION
 # define IMAGE_SIZEOF_BASE_RELOCATION         8
@@ -1492,14 +1524,15 @@ create_file(PCWSTR filename, bool is_dir, ACCESS_MASK rights, uint sharing,
 
 #if !defined(NOT_DYNAMORIO_CORE_PROPER) && !defined(NOT_DYNAMORIO_CORE)
 NTSTATUS
-nt_open_file(HANDLE *handle OUT, PCWSTR filename, ACCESS_MASK rights, uint sharing);
+nt_open_file(HANDLE *handle OUT, PCWSTR filename, ACCESS_MASK rights, uint sharing,
+             uint options);
 #endif
 
 NTSTATUS
 nt_delete_file(PCWSTR nt_filename);
 
-bool
-flush_file_buffers(HANDLE file_handle);
+NTSTATUS
+nt_flush_file_buffers(HANDLE file_handle);
 
 bool
 read_file(HANDLE file_handle, void *buffer, uint num_bytes_to_read, 

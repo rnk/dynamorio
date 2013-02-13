@@ -90,7 +90,7 @@ kernel32_redir_init_file(void)
      * STATUS_OBJECT_NAME_INVALID.
      */
     res = nt_open_file(&base_named_pipe_dir, L"\\Device\\NamedPipe\\",
-                       GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE);
+                       GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, 0);
     ASSERT(NT_SUCCESS(res));
 }
 
@@ -207,6 +207,123 @@ redirect_CreateDirectoryW(
         convert_to_NT_file_path_wide_free(nt_path, alloc_sz);
     return res;
 }
+
+BOOL
+WINAPI
+redirect_RemoveDirectoryA(
+    __in LPCSTR lpPathName
+    )
+{
+    /* Existing file code should work on dirs and links.
+     * XXX: what about removing mount points for volumes?
+     */
+    return redirect_DeleteFileA(lpPathName);
+}
+
+BOOL
+WINAPI
+redirect_RemoveDirectoryW(
+    __in LPCWSTR lpPathName
+    )
+{
+    /* Existing file code should work on dirs and links.
+     * XXX: what about removing mount points for volumes?
+     */
+    return redirect_DeleteFileW(lpPathName);
+}
+
+DWORD
+WINAPI
+redirect_GetCurrentDirectoryA(
+    __in DWORD nBufferLength,
+    __out_ecount_part_opt(nBufferLength, return + 1) LPSTR lpBuffer
+    )
+{
+    wchar_t *wbuf = NULL;
+    DWORD res;
+    if (lpBuffer != NULL) {
+        wbuf = (wchar_t *)
+            global_heap_alloc(nBufferLength*sizeof(wchar_t) HEAPACCT(ACCT_OTHER));
+    }
+    res = redirect_GetCurrentDirectoryW(nBufferLength, wbuf);
+    if (lpBuffer != NULL && res > 0 && res < nBufferLength) {
+        int len = _snprintf(lpBuffer, nBufferLength, "%S", wbuf);
+        if (len < 0) {
+            set_last_error(ERROR_BAD_PATHNAME); /* any better errno to use? */
+            res = 0;
+        }
+    }
+    if (wbuf != NULL)
+        global_heap_free(wbuf, nBufferLength*sizeof(wchar_t) HEAPACCT(ACCT_OTHER));
+    return res;
+}
+
+DWORD
+WINAPI
+redirect_GetCurrentDirectoryW(
+    __in DWORD nBufferLength,
+    __out_ecount_part_opt(nBufferLength, return + 1) LPWSTR lpBuffer
+    )
+{
+    /* For the cur dir, we do not try to grab the PEB lock.
+     * The Win32 API docs warn that accessing the cur dir is racy, and it's
+     * not supported when there's more than one thread.
+     * We could use TRY/EXCEPT but we'll assume that priv libs won't abuse these.
+     */
+    PEB *peb = get_own_peb();
+    int len;
+    DWORD total = peb->ProcessParameters->CurrentDirectoryPath.Length/sizeof(wchar_t)
+        + 1/*null*/;
+    if (lpBuffer == NULL)
+        return total; /* no errno */
+    else {
+        len = _snwprintf(lpBuffer, nBufferLength, L"%.*s",
+                         /* we've seen too many non-null-terminated paths */
+                         peb->ProcessParameters->CurrentDirectoryPath.Length,
+                         peb->ProcessParameters->CurrentDirectoryPath.Buffer);
+        if (len < 0) {
+            set_last_error(ERROR_BAD_PATHNAME); /* any better errno to use? */
+            return 0;
+        }
+        if ((DWORD)len < nBufferLength)
+            return (DWORD) len;
+        else
+            return total;
+    }
+}
+
+BOOL
+WINAPI
+redirect_SetCurrentDirectoryA(
+    __in LPCSTR lpPathName
+    )
+{
+    wchar_t wbuf[MAX_PATH];
+    int len = _snwprintf(wbuf, BUFFER_SIZE_ELEMENTS(wbuf), L"%hs", lpPathName);
+    if (len < 0)
+        return FALSE;
+    NULL_TERMINATE_BUFFER(wbuf);
+    return redirect_SetCurrentDirectoryW(wbuf);
+}
+
+BOOL
+WINAPI
+redirect_SetCurrentDirectoryW(
+    __in LPCWSTR lpPathName
+    )
+{
+    PEB *peb = get_own_peb();
+    UNICODE_STRING *us = &peb->ProcessParameters->CurrentDirectoryPath;
+    int len;
+    /* FIXME: once we have redirect_GetFullPathNameW() we should use it here.
+     * For now we don't support relative paths.
+     */
+    /* CurrentDirectoryPath.Buffer should have MAX_PATH space in it */
+    len = _snwprintf(us->Buffer, us->MaximumLength, L"%s", lpPathName);
+    us->Buffer[us->MaximumLength-1] = L'\0';
+    return (len > 0);
+}
+
 
 /***************************************************************************
  * FILES
@@ -653,6 +770,30 @@ redirect_UnmapViewOfFile(
     return TRUE;
 }
 
+BOOL
+WINAPI
+redirect_FlushViewOfFile(
+    __in LPCVOID lpBaseAddress,
+    __in SIZE_T dwNumberOfBytesToFlush
+    )
+{
+    NTSTATUS res;
+    PVOID base = (PVOID) lpBaseAddress;
+    ULONG size = (ULONG) dwNumberOfBytesToFlush;
+    IO_STATUS_BLOCK iob = {0,0};
+    GET_NTDLL(NtFlushVirtualMemory,
+              (IN HANDLE ProcessHandle,
+               IN OUT PVOID *BaseAddress,
+               IN OUT PULONG FlushSize,
+               OUT PIO_STATUS_BLOCK IoStatusBlock));
+    res = NtFlushVirtualMemory(NT_CURRENT_PROCESS, &base, &size, &iob);
+    if (!NT_SUCCESS(res)) {
+        set_last_error(ntstatus_to_last_error(res));
+        return FALSE;
+    }
+    return TRUE;
+}
+
 
 /***************************************************************************
  * DEVICES
@@ -916,6 +1057,13 @@ redirect_GetSystemTimeAsFileTime(
     redirect_SystemTimeToFileTime(&st, lpSystemTimeAsFileTime);
 }
 
+static void
+largeint_to_filetime(const LARGE_INTEGER *li, FILETIME *ft OUT)
+{
+    ft->dwHighDateTime = li->HighPart;
+    ft->dwLowDateTime = li->LowPart;
+}
+
 BOOL
 WINAPI
 redirect_GetFileTime(
@@ -934,16 +1082,13 @@ redirect_GetFileTime(
         return FALSE;
     }
     if (lpCreationTime != NULL) {
-        lpCreationTime->dwHighDateTime = info.CreationTime.HighPart;
-        lpCreationTime->dwLowDateTime  = info.CreationTime.LowPart;
+        largeint_to_filetime(&info.CreationTime, lpCreationTime);
     }
     if (lpLastAccessTime != NULL) {
-        lpLastAccessTime->dwHighDateTime = info.LastAccessTime.HighPart;
-        lpLastAccessTime->dwLowDateTime  = info.LastAccessTime.LowPart;
+        largeint_to_filetime(&info.LastAccessTime, lpLastAccessTime);
     }
     if (lpLastWriteTime != NULL) {
-        lpLastWriteTime->dwHighDateTime = info.LastWriteTime.HighPart;
-        lpLastWriteTime->dwLowDateTime  = info.LastWriteTime.LowPart;
+        largeint_to_filetime(&info.LastWriteTime, lpLastWriteTime);
     }
     return TRUE;
 }
@@ -981,6 +1126,318 @@ redirect_SetFileTime(
     return TRUE;
 }
 
+/***************************************************************************
+ * FILE ITERATOR
+ *
+ * Because NtQueryDirectoryFile stores the wildcard passed in on the first
+ * invocation for a given handle, we can just use the directory handle
+ * as the return value for FindFirstFile.
+ */
+
+#define FIND_FILE_INFO_SZ \
+    (sizeof(FILE_BOTH_DIR_INFORMATION) + MAX_PATH*sizeof(wchar_t))
+
+BOOL
+WINAPI
+redirect_FindClose(
+    __inout HANDLE hFindFile
+    )
+{
+    return redirect_CloseHandle(hFindFile);
+}
+
+/* Fills in the fields shared between LPWIN32_FIND_DATAA and LPWIN32_FIND_DATAW, but
+ * does not fill in the name fields.  This allows the caller to pass LPWIN32_FIND_DATAA
+ * in and use info to fill in the names.
+ */
+static BOOL
+find_next_file_common(
+    __in  HANDLE dir,
+    __in  LPCWSTR pattern, /* pass pattern for first, NULL for next */
+    __out LPWIN32_FIND_DATAW lpFindFileData,
+    __out FILE_BOTH_DIR_INFORMATION *info /* FIND_FILE_INFO_SZ bytes in length */
+    )
+{
+    NTSTATUS res;
+    IO_STATUS_BLOCK iob = {0,0};
+    UNICODE_STRING us;
+    GET_NTDLL(NtQueryDirectoryFile,
+              (IN HANDLE FileHandle,
+               IN HANDLE Event OPTIONAL,
+               IN PIO_APC_ROUTINE ApcRoutine OPTIONAL,
+               IN PVOID ApcContext OPTIONAL,
+               OUT PIO_STATUS_BLOCK IoStatusBlock,
+               OUT PVOID FileInformation,
+               IN ULONG FileInformationLength,
+               IN FILE_INFORMATION_CLASS FileInformationClass,
+               IN BOOLEAN ReturnSingleEntry,
+               IN PUNICODE_STRING FileName OPTIONAL,
+               IN BOOLEAN RestartScan));
+
+    res = wchar_to_unicode(&us, pattern);
+    if (!NT_SUCCESS(res)) {
+        set_last_error(ERROR_PATH_NOT_FOUND);
+        return FALSE;
+    }
+
+    /* NtQueryDirectoryFile does the globbing for us */
+    res = NtQueryDirectoryFile(dir, NULL, NULL, NULL, &iob, info,
+                               FIND_FILE_INFO_SZ, FileBothDirectoryInformation,
+                               TRUE, &us, (pattern != NULL));
+    if (!NT_SUCCESS(res)) {
+        set_last_error(ntstatus_to_last_error(res));
+        return FALSE;
+    }
+
+    lpFindFileData->dwFileAttributes = info->FileAttributes;
+    largeint_to_filetime(&info->CreationTime, &lpFindFileData->ftCreationTime);
+    largeint_to_filetime(&info->LastAccessTime, &lpFindFileData->ftLastAccessTime);
+    largeint_to_filetime(&info->LastWriteTime, &lpFindFileData->ftLastWriteTime);
+    lpFindFileData->nFileSizeHigh = info->AllocationSize.HighPart;
+    lpFindFileData->nFileSizeLow = info->AllocationSize.LowPart;
+    /* caller fills in the names */
+    return TRUE;
+}
+
+/* nt_file_name must already be in NT format.
+ * Fills in the fields shared between LPWIN32_FIND_DATAA and LPWIN32_FIND_DATAW, but
+ * does not fill in the name fields.  This allows the caller to pass LPWIN32_FIND_DATAA
+ * in and use info to fill in the names.
+ */
+static HANDLE
+find_first_file_common(
+    LPCWSTR nt_file_name,
+    __out LPWIN32_FIND_DATAW lpFindFileData,
+    __out FILE_BOTH_DIR_INFORMATION *info /* FIND_FILE_INFO_SZ bytes in length */
+    )
+{
+    NTSTATUS res;
+    HANDLE dir = INVALID_HANDLE_VALUE;
+    wchar_t *sep = NULL;
+    wchar_t *dirname = NULL, *fname = NULL;
+    size_t fname_len = 0, dirname_len = 0;
+
+    /* First see if we were passed a plain dir */
+    res = nt_open_file(&dir, nt_file_name, GENERIC_READ | FILE_LIST_DIRECTORY,
+                       FILE_SHARE_READ | FILE_SHARE_WRITE, FILE_DIRECTORY_FILE);
+    if (!NT_SUCCESS(res)) {
+        /* Extract the dir from the file path.
+         * While convert_to_NT_file_path*() ensures there are no forward slashes,
+         * a path w/ \\? prefix will come here w/ the rest of it unchanged.
+         */
+        sep = (wchar_t *) double_wcsrchr(nt_file_name, L_EXPAND_LEVEL(DIRSEP),
+                                         L_EXPAND_LEVEL(ALT_DIRSEP));
+        if (sep == NULL) {
+            set_last_error(ERROR_PATH_NOT_FOUND);
+            return INVALID_HANDLE_VALUE;
+        }
+        /* we can't assume nt_file_name is writable so we must make a copy */
+        dirname_len = (size_t) (sep - nt_file_name);
+        dirname = (wchar_t *)
+            global_heap_alloc((dirname_len + 1/*null*/)*sizeof(wchar_t)
+                              HEAPACCT(ACCT_OTHER));
+        memcpy(dirname, nt_file_name, dirname_len*sizeof(wchar_t));
+        dirname[dirname_len] = L'\0';
+        res = nt_open_file(&dir, dirname, GENERIC_READ | FILE_LIST_DIRECTORY,
+                           FILE_SHARE_READ | FILE_SHARE_WRITE, FILE_DIRECTORY_FILE);
+        if (!NT_SUCCESS(res)) {
+            set_last_error(ntstatus_to_last_error(res));
+            goto find_first_file_error;
+        }
+
+        /* Now separate the file name pattern */
+        fname_len = wcslen(nt_file_name) - (dirname_len + 1/*dir separator*/);
+        fname = (wchar_t *) global_heap_alloc((fname_len + 1/*null*/)*sizeof(wchar_t)
+                                              HEAPACCT(ACCT_OTHER));
+        memcpy(fname, sep + 1, fname_len*sizeof(wchar_t));
+        fname[fname_len] = L'\0';
+    }
+
+    if (!find_next_file_common(dir, fname/*==NULL for plain dir */,
+                               lpFindFileData, info))
+        goto find_first_file_error;
+    return dir;
+
+ find_first_file_error:
+    if (dirname != NULL) {
+        global_heap_free(dirname, (dirname_len + 1/*null*/)*sizeof(wchar_t)
+                         HEAPACCT(ACCT_OTHER));
+    }
+    if (fname != NULL) {
+        global_heap_free(fname, (fname_len + 1/*null*/)*sizeof(wchar_t)
+                         HEAPACCT(ACCT_OTHER));
+    }
+    if (dir != INVALID_HANDLE_VALUE)
+        close_handle(dir);
+    return INVALID_HANDLE_VALUE;
+}
+
+/* Just fills in the name fields */
+static bool
+find_nt_to_win32A(FILE_BOTH_DIR_INFORMATION *info, WIN32_FIND_DATAA *win32 OUT)
+{
+    int len;
+    /* Names in info are not null-terminated so we have to copy the count
+     * specified and then add a null ourselves.
+     */
+    len = _snprintf(win32->cFileName, BUFFER_SIZE_ELEMENTS(win32->cFileName),
+                    "%.*S", info->FileNameLength/sizeof(wchar_t), info->FileName);
+    /* MSDN doesn't say what happens if we hit MAX_PATH.  It's unlikely to happen
+     * as most NTFS volumes have a 255 limit on path components.  We return error.
+     */
+    if (len < 0 || len == BUFFER_SIZE_ELEMENTS(win32->cFileName)) {
+        set_last_error(ERROR_FILE_INVALID); /* XXX: not sure what to return */
+        return false;
+    }
+    if (info->FileNameLength/sizeof(wchar_t) < BUFFER_SIZE_ELEMENTS(win32->cFileName))
+        win32->cFileName[info->FileNameLength/sizeof(wchar_t)] = '\0';
+    NULL_TERMINATE_BUFFER(win32->cFileName);
+    len = _snprintf(win32->cAlternateFileName,
+                    BUFFER_SIZE_ELEMENTS(win32->cAlternateFileName),
+                    "%.*S", info->ShortNameLength/sizeof(wchar_t),
+                    info->ShortName);
+    if (len < 0 || len == BUFFER_SIZE_ELEMENTS(win32->cAlternateFileName)) {
+        set_last_error(ERROR_FILE_INVALID); /* XXX: not sure what to return */
+        return false;
+    }
+    if (info->ShortNameLength/sizeof(wchar_t) <
+        BUFFER_SIZE_ELEMENTS(win32->cAlternateFileName)) {
+        win32->cAlternateFileName[info->ShortNameLength/sizeof(wchar_t)] = '\0';
+    }
+    NULL_TERMINATE_BUFFER(win32->cAlternateFileName);
+    return true;
+}
+
+/* Just fills in the name fields */
+static bool
+find_nt_to_win32W(FILE_BOTH_DIR_INFORMATION *info, WIN32_FIND_DATAW *win32 OUT)
+{
+    int len;
+    /* See comments in find_nt_to_win32A. */
+    len = _snwprintf(win32->cFileName, BUFFER_SIZE_ELEMENTS(win32->cFileName),
+                     L"%.*s", info->FileNameLength/sizeof(wchar_t),
+                     info->FileName);
+    if (len < 0 || len == BUFFER_SIZE_ELEMENTS(win32->cFileName)) {
+        set_last_error(ERROR_FILE_INVALID); /* XXX: not sure what to return */
+        return false;
+    }
+    if (info->FileNameLength < BUFFER_SIZE_BYTES(win32->cFileName))
+        win32->cFileName[info->FileNameLength/sizeof(wchar_t)] = L'\0';
+    NULL_TERMINATE_BUFFER(win32->cFileName);
+    len = _snwprintf(win32->cAlternateFileName,
+                     BUFFER_SIZE_ELEMENTS(win32->cAlternateFileName),
+                     L"%.*s", info->ShortNameLength/sizeof(wchar_t),
+                     info->ShortName);
+    if (len < 0 || len == BUFFER_SIZE_ELEMENTS(win32->cAlternateFileName)) {
+        set_last_error(ERROR_FILE_INVALID); /* XXX: not sure what to return */
+        return false;
+    }
+    if (info->ShortNameLength < BUFFER_SIZE_BYTES(win32->cAlternateFileName)) {
+        win32->cAlternateFileName[info->ShortNameLength/sizeof(wchar_t)] = L'\0';
+    }
+    NULL_TERMINATE_BUFFER(win32->cAlternateFileName);
+    return true;
+}
+
+HANDLE
+WINAPI
+redirect_FindFirstFileA(
+    __in  LPCSTR lpFileName,
+    __out LPWIN32_FIND_DATAA lpFindFileData
+    )
+{
+    wchar_t wbuf[MAX_PATH];
+    HANDLE dir;
+    byte info_buf[FIND_FILE_INFO_SZ]; /* 616 bytes => ok to stack alloc */
+    FILE_BOTH_DIR_INFORMATION *info = (FILE_BOTH_DIR_INFORMATION *) info_buf;
+    if (lpFileName == NULL ||
+        !convert_to_NT_file_path(wbuf, lpFileName, BUFFER_SIZE_ELEMENTS(wbuf))) {
+        set_last_error(ERROR_PATH_NOT_FOUND);
+        return INVALID_HANDLE_VALUE;
+    }
+    /* convert_to_NT_file_path guarantees to null-terminate on success */
+    dir = find_first_file_common(wbuf, (WIN32_FIND_DATAW *)lpFindFileData, info);
+    if (dir != INVALID_HANDLE_VALUE) {
+        if (!find_nt_to_win32A(info, lpFindFileData))
+            return INVALID_HANDLE_VALUE;
+    }
+    return dir;
+}
+
+HANDLE
+WINAPI
+redirect_FindFirstFileW(
+    __in  LPCWSTR lpFileName,
+    __out LPWIN32_FIND_DATAW lpFindFileData
+    )
+{
+    wchar_t wbuf[MAX_PATH];
+    wchar_t *nt_path = NULL;
+    size_t alloc_sz = 0;
+    HANDLE dir;
+    char info_buf[FIND_FILE_INFO_SZ]; /* 616 bytes => ok to stack alloc */
+    FILE_BOTH_DIR_INFORMATION *info = (FILE_BOTH_DIR_INFORMATION *) info_buf;
+    if (lpFileName != NULL) {
+        nt_path = convert_to_NT_file_path_wide(wbuf, lpFileName,
+                                               BUFFER_SIZE_ELEMENTS(wbuf), &alloc_sz);
+    }
+    if (nt_path == NULL) {
+        set_last_error(ERROR_PATH_NOT_FOUND);
+        return INVALID_HANDLE_VALUE;
+    }
+    dir = find_first_file_common(nt_path, lpFindFileData, info);
+    if (nt_path != NULL && nt_path != wbuf)
+        convert_to_NT_file_path_wide_free(nt_path, alloc_sz);
+    if (dir != INVALID_HANDLE_VALUE) {
+        if (!find_nt_to_win32W(info, lpFindFileData))
+            return INVALID_HANDLE_VALUE;
+    }
+    return dir;
+}
+
+BOOL
+WINAPI
+redirect_FindNextFileA(
+    __in  HANDLE hFindFile,
+    __out LPWIN32_FIND_DATAA lpFindFileData
+    )
+{
+    char info_buf[FIND_FILE_INFO_SZ]; /* 616 bytes => ok to stack alloc */
+    FILE_BOTH_DIR_INFORMATION *info = (FILE_BOTH_DIR_INFORMATION *) info_buf;
+    return (find_next_file_common(hFindFile, NULL,
+                                  (WIN32_FIND_DATAW *)lpFindFileData, info) &&
+            find_nt_to_win32A(info, lpFindFileData));
+}
+
+BOOL
+WINAPI
+redirect_FindNextFileW(
+    __in  HANDLE hFindFile,
+    __out LPWIN32_FIND_DATAW lpFindFileData
+    )
+{
+    char info_buf[FIND_FILE_INFO_SZ]; /* 616 bytes => ok to stack alloc */
+    FILE_BOTH_DIR_INFORMATION *info = (FILE_BOTH_DIR_INFORMATION *) info_buf;
+    return (find_next_file_common(hFindFile, NULL, lpFindFileData, info) &&
+            find_nt_to_win32W(info, lpFindFileData));
+}
+
+/***************************************************************************/
+
+BOOL
+WINAPI
+redirect_FlushFileBuffers(
+    __in HANDLE hFile
+    )
+{
+    NTSTATUS res = nt_flush_file_buffers(hFile);
+    if (!NT_SUCCESS(res)) {
+        set_last_error(ntstatus_to_last_error(res));
+        return FALSE;
+    }
+    return TRUE;
+}
+
 
 /* FIXME i#1063: add the rest of the routines in kernel32_redir.h under
  * Files
@@ -992,6 +1449,103 @@ redirect_SetFileTime(
  */
 
 #ifdef STANDALONE_UNIT_TEST
+static void
+test_directories(void)
+{
+    char buf[MAX_PATH];
+    wchar_t wbuf[MAX_PATH];
+    DWORD dw, dw2;
+    BOOL ok;
+
+    EXPECT(redirect_CreateDirectoryA("xyz:\\bogus\\name", NULL), FALSE);
+    EXPECT(get_last_error(), ERROR_PATH_NOT_FOUND);
+
+    /* XXX: should look at SYSTEMDRIVE instead of assuming c:\windows exists */
+    EXPECT(redirect_CreateDirectoryW(L"c:\\windows", NULL), FALSE);
+    EXPECT(get_last_error(), ERROR_ALREADY_EXISTS);
+
+    /* current dir */
+    dw = redirect_GetCurrentDirectoryA(0, NULL);
+    EXPECT(dw > 0 && dw < BUFFER_SIZE_ELEMENTS(buf), true);
+    dw2 = redirect_GetCurrentDirectoryA(dw, buf);
+    EXPECT(dw2 == dw-1/*null*/, true);
+    dw2 = redirect_GetCurrentDirectoryA(dw-1, buf);
+    EXPECT(dw2 == dw, true);
+    dw2 = redirect_GetCurrentDirectoryW(dw-1, wbuf);
+    EXPECT(dw2 == dw, true);
+
+    ok = redirect_SetCurrentDirectoryW(L"c:\\windows");
+    EXPECT(ok, true);
+    dw = redirect_GetCurrentDirectoryW(BUFFER_SIZE_ELEMENTS(wbuf), wbuf);
+    EXPECT(dw < BUFFER_SIZE_ELEMENTS(wbuf), true);
+    EXPECT(wcscmp(L"c:\\windows", wbuf) == 0, true);
+
+    /* Successfully creating a new dir, and redirect_RemoveDirectoryA,
+     * are tested in test_find_file().
+     */
+}
+
+static void
+test_file_mapping(void)
+{
+    HANDLE h, h2;
+    BOOL ok;
+    PVOID p;
+    int res;
+    char env[MAX_PATH];
+    char buf[MAX_PATH];
+
+    /* test anonymous mappings */
+    h2 = CreateEvent(NULL, TRUE, TRUE, "Local\\mymapping"); /* for conflict */
+    EXPECT(h2 != NULL, true);
+    h = redirect_CreateFileMappingA(INVALID_HANDLE_VALUE, NULL, PAGE_READWRITE,
+                                    0, 0x1000, "Local\\mymapping");
+    EXPECT(h == NULL, true);
+    EXPECT(get_last_error(), ERROR_INVALID_HANDLE);
+    CloseHandle(h2); /* removes conflict */
+    h = redirect_CreateFileMappingA(INVALID_HANDLE_VALUE, NULL, PAGE_READWRITE,
+                                    0, 0x1000, "Local\\mymapping");
+    EXPECT(h != NULL, true);
+    h2 = redirect_CreateFileMappingA(INVALID_HANDLE_VALUE, NULL, PAGE_READWRITE,
+                                     0, 0x1000, "Local\\mymapping");
+    EXPECT(h2 != NULL, true);
+    EXPECT(get_last_error(), ERROR_ALREADY_EXISTS);
+    ok = redirect_CloseHandle(h2);
+    EXPECT(ok, true);
+    p = redirect_MapViewOfFileEx(h, FILE_MAP_WRITE, 0, 0, 0x800, NULL);
+    EXPECT(p != NULL, true);
+    *(int *)p = 42; /* test writing: shouldn't crash */
+    ok = redirect_UnmapViewOfFile(p);
+    EXPECT(ok, true);
+    ok = redirect_CloseHandle(h);
+    EXPECT(ok, true);
+
+    /* test file mappings */
+    res = GetEnvironmentVariableA("SystemRoot", env, BUFFER_SIZE_ELEMENTS(env));
+    EXPECT(res > 0, true);
+    NULL_TERMINATE_BUFFER(env);
+    res = _snprintf(buf, BUFFER_SIZE_ELEMENTS(buf),
+                    "%s\\system32\\notepad.exe", env);
+    EXPECT(res > 0 && res < BUFFER_SIZE_ELEMENTS(buf), true);
+    NULL_TERMINATE_BUFFER(buf);
+    h = redirect_CreateFileA(buf, GENERIC_READ, 0, NULL,
+                             OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    EXPECT(h != INVALID_HANDLE_VALUE, true);
+    h2 = redirect_CreateFileMappingA(h, NULL, PAGE_READONLY, 0, 0, NULL);
+    EXPECT(h2 != NULL, true);
+    p = redirect_MapViewOfFileEx(h2, FILE_MAP_READ, 0, 0, 0, NULL);
+    EXPECT(p != NULL, true);
+    EXPECT(*(WORD *)p == IMAGE_DOS_SIGNATURE, true); /* PE image */
+    ok = redirect_FlushViewOfFile(p, 0);
+    EXPECT(ok, true);
+    ok = redirect_UnmapViewOfFile(p);
+    EXPECT(ok, true);
+    ok = redirect_CloseHandle(h2);
+    EXPECT(ok, true);
+    ok = redirect_CloseHandle(h);
+    EXPECT(ok, true);
+}
+
 static void
 test_DeviceIoControl(void)
 {
@@ -1115,6 +1669,102 @@ test_file_times(void)
 }
 
 static void
+test_find_file(void)
+{
+    WIN32_FIND_DATAA data;
+    WIN32_FIND_DATAW wdata;
+    HANDLE f1, f2, find;
+    BOOL ok;
+    char env[MAX_PATH];
+    char dir[MAX_PATH];
+    char buf[MAX_PATH];
+    wchar_t wbuf[MAX_PATH];
+    int res;
+    const char *testdir = "_kernel32_test_dir";
+
+    /* deliberately omitting NULL_TERMINATE_BUFFER b/c EXPECT ensures no overflow */
+
+    /* create some files in a temp dir */
+    res = GetEnvironmentVariableA("TMP", env, BUFFER_SIZE_ELEMENTS(env));
+    EXPECT(res > 0 && res < BUFFER_SIZE_ELEMENTS(env), true);
+
+    res = _snprintf(dir, BUFFER_SIZE_ELEMENTS(dir), "%s\\%s", env, testdir);
+    EXPECT(res > 0 && res < BUFFER_SIZE_ELEMENTS(dir), true);
+    ok = redirect_CreateDirectoryA(dir, NULL);
+    EXPECT(ok || get_last_error() == ERROR_ALREADY_EXISTS, TRUE);
+
+    res = _snprintf(buf, BUFFER_SIZE_ELEMENTS(buf), "%s\\%s\\test123.txt", env, testdir);
+    EXPECT(res > 0 && res < BUFFER_SIZE_ELEMENTS(buf), true);
+    f1 = redirect_CreateFileA(buf, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS,
+                             FILE_ATTRIBUTE_NORMAL | FILE_FLAG_DELETE_ON_CLOSE, NULL);
+    EXPECT(f1 != INVALID_HANDLE_VALUE, true);
+
+    res = _snprintf(buf, BUFFER_SIZE_ELEMENTS(buf), "%s\\%s\\test113.txt", env, testdir);
+    EXPECT(res > 0 && res < BUFFER_SIZE_ELEMENTS(buf), true);
+    f2 = redirect_CreateFileA(buf, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS,
+                             FILE_ATTRIBUTE_NORMAL | FILE_FLAG_DELETE_ON_CLOSE, NULL);
+    EXPECT(f2 != INVALID_HANDLE_VALUE, true);
+
+    /* search for a pattern */
+    res = _snprintf(buf, BUFFER_SIZE_ELEMENTS(buf), "%s\\%s\\test1?3.txt", env, testdir);
+    EXPECT(res > 0 && res < BUFFER_SIZE_ELEMENTS(buf), true);
+    find = redirect_FindFirstFileA(buf, &data);
+    EXPECT(find != INVALID_HANDLE_VALUE, true);
+    EXPECT(data.nFileSizeHigh == 0 && data.nFileSizeLow == 0, true); /* empty file */
+    EXPECT(check_filter_with_wildcards("test1?3.txt", data.cFileName), true);
+    ok = redirect_FindNextFileA(find, &data);
+    EXPECT(ok, true);
+    EXPECT(data.nFileSizeHigh == 0 && data.nFileSizeLow == 0, true); /* empty file */
+    EXPECT(check_filter_with_wildcards("test1?3.txt", data.cFileName), true);
+    ok = redirect_FindNextFileA(find, &data);
+    EXPECT(!ok && get_last_error() == ERROR_NO_MORE_FILES, true); /* only 2 matches */
+    ok = redirect_CloseHandle(find);
+    EXPECT(ok, TRUE);
+
+    /* iterate all files in dir */
+    res = _snprintf(buf, BUFFER_SIZE_ELEMENTS(buf), "%s\\%s", env, testdir);
+    EXPECT(res > 0 && res < BUFFER_SIZE_ELEMENTS(buf), true);
+    find = redirect_FindFirstFileA(buf, &data);
+    EXPECT(find != INVALID_HANDLE_VALUE, true);
+    EXPECT(check_filter_with_wildcards("test1?3.txt", data.cFileName) ||
+           strcmp(".", data.cFileName) == 0 || strcmp("..", data.cFileName) == 0, true);
+    ok = redirect_FindNextFileA(find, &data);
+    EXPECT(ok, true);
+    EXPECT(check_filter_with_wildcards("test1?3.txt", data.cFileName) ||
+           strcmp(".", data.cFileName) == 0 || strcmp("..", data.cFileName) == 0, true);
+    ok = redirect_FindNextFileA(find, &data);
+    EXPECT(ok, true);
+    EXPECT(check_filter_with_wildcards("test1?3.txt", data.cFileName) ||
+           strcmp(".", data.cFileName) == 0 || strcmp("..", data.cFileName) == 0, true);
+    ok = redirect_FindNextFileA(find, &data);
+    EXPECT(ok, true);
+    EXPECT(check_filter_with_wildcards("test1?3.txt", data.cFileName) ||
+           strcmp(".", data.cFileName) == 0 || strcmp("..", data.cFileName) == 0, true);
+    ok = redirect_FindNextFileA(find, &data);
+    EXPECT(!ok && get_last_error() == ERROR_NO_MORE_FILES, true);
+    ok = redirect_CloseHandle(find);
+    EXPECT(ok, TRUE);
+
+    /* iterate in wide-char dir */
+    res = _snwprintf(wbuf, BUFFER_SIZE_ELEMENTS(wbuf), L"%S\\%S", env, testdir);
+    EXPECT(res > 0 && res < BUFFER_SIZE_ELEMENTS(wbuf), true);
+    find = redirect_FindFirstFileW(wbuf, &wdata);
+    EXPECT(find != INVALID_HANDLE_VALUE, true);
+    ok = redirect_CloseHandle(find);
+    EXPECT(ok, TRUE);
+
+    ok = redirect_CloseHandle(f1);
+    EXPECT(ok, TRUE);
+    ok = redirect_CloseHandle(f2);
+    EXPECT(ok, TRUE);
+
+    EXPECT(os_file_exists(dir, true), true);
+    ok = redirect_RemoveDirectoryA(dir);
+    EXPECT(ok, TRUE);
+    EXPECT(os_file_exists(dir, true), false);
+}
+
+static void
 test_file_paths(void)
 {
     HANDLE f;
@@ -1122,10 +1772,6 @@ test_file_paths(void)
     wchar_t env[MAX_PATH];
     wchar_t wbuf[MAX_PATH*2];
     int res;
-
-    /* deliberately omitting NULL_TERMINATE_BUFFER b/c EXPECT ensures no overflow */
-
-    /* create some files in a temp dir */
     res = GetEnvironmentVariableW(L"TMP", env, BUFFER_SIZE_ELEMENTS(env));
     EXPECT(res > 0 && res < BUFFER_SIZE_ELEMENTS(env), true);
 
@@ -1171,7 +1817,6 @@ test_file_paths(void)
     EXPECT(f != INVALID_HANDLE_VALUE, true);
     ok = redirect_CloseHandle(f);
     EXPECT(ok, TRUE);
-
 }
 
 void
@@ -1186,17 +1831,11 @@ unit_test_drwinapi_kernel32_file(void)
 
     print_file(STDERR, "testing drwinapi kernel32 file-related routines\n");
 
+    test_directories();
+
     res = GetEnvironmentVariableA("TMP", env, BUFFER_SIZE_ELEMENTS(env));
     EXPECT(res > 0, true);
     NULL_TERMINATE_BUFFER(env);
-
-    /* test directories */
-    EXPECT(redirect_CreateDirectoryA("xyz:\\bogus\\name", NULL), FALSE);
-    EXPECT(get_last_error(), ERROR_PATH_NOT_FOUND);
-
-    /* XXX: should look at SYSTEMDRIVE instead of assuming c:\windows exists */
-    EXPECT(redirect_CreateDirectoryW(L"c:\\windows", NULL), FALSE);
-    EXPECT(get_last_error(), ERROR_ALREADY_EXISTS);
 
     /* test creating files */
     h = redirect_CreateFileW(L"c:\\_kernel32_file_test_bogus.txt",
@@ -1221,6 +1860,8 @@ unit_test_drwinapi_kernel32_file(void)
                               FILE_FLAG_DELETE_ON_CLOSE, NULL);
     EXPECT(h2 != INVALID_HANDLE_VALUE, true);
     EXPECT(get_last_error(), ERROR_ALREADY_EXISTS);
+    ok = redirect_FlushFileBuffers(h2);
+    EXPECT(ok, true);
     ok = redirect_CloseHandle(h2);
     EXPECT(ok, true);
     /* re-create and then test deleting it */
@@ -1230,56 +1871,6 @@ unit_test_drwinapi_kernel32_file(void)
     ok = redirect_CloseHandle(h);
     EXPECT(ok, true);
     ok = redirect_DeleteFileA(buf);
-    EXPECT(ok, true);
-
-    /* test anonymous mappings */
-    h2 = CreateEvent(NULL, TRUE, TRUE, "Local\\mymapping"); /* for conflict */
-    EXPECT(h2 != NULL, true);
-    h = CreateFileMappingA(INVALID_HANDLE_VALUE, NULL, PAGE_READWRITE,
-                           0, 0x1000, "Local\\mymapping");
-    h = redirect_CreateFileMappingA(INVALID_HANDLE_VALUE, NULL, PAGE_READWRITE,
-                                    0, 0x1000, "Local\\mymapping");
-    EXPECT(h == NULL, true);
-    EXPECT(get_last_error(), ERROR_INVALID_HANDLE);
-    CloseHandle(h2); /* removes conflict */
-    h = redirect_CreateFileMappingA(INVALID_HANDLE_VALUE, NULL, PAGE_READWRITE,
-                                    0, 0x1000, "Local\\mymapping");
-    EXPECT(h != NULL, true);
-    h2 = redirect_CreateFileMappingA(INVALID_HANDLE_VALUE, NULL, PAGE_READWRITE,
-                                     0, 0x1000, "Local\\mymapping");
-    EXPECT(h2 != NULL, true);
-    EXPECT(get_last_error(), ERROR_ALREADY_EXISTS);
-    ok = redirect_CloseHandle(h2);
-    EXPECT(ok, true);
-    p = redirect_MapViewOfFileEx(h, FILE_MAP_WRITE, 0, 0, 0x800, NULL);
-    EXPECT(p != NULL, true);
-    *(int *)p = 42; /* test writing: shouldn't crash */
-    ok = redirect_UnmapViewOfFile(p);
-    EXPECT(ok, true);
-    ok = redirect_CloseHandle(h);
-    EXPECT(ok, true);
-
-    /* test file mappings */
-    res = GetEnvironmentVariableA("SystemRoot", env, BUFFER_SIZE_ELEMENTS(env));
-    EXPECT(res > 0, true);
-    NULL_TERMINATE_BUFFER(env);
-    res = _snprintf(buf, BUFFER_SIZE_ELEMENTS(buf),
-                    "%s\\system32\\notepad.exe", env);
-    EXPECT(res > 0 && res < BUFFER_SIZE_ELEMENTS(buf), true);
-    NULL_TERMINATE_BUFFER(buf);
-    h = redirect_CreateFileA(buf, GENERIC_READ, 0, NULL,
-                             OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
-    EXPECT(h != INVALID_HANDLE_VALUE, true);
-    h2 = redirect_CreateFileMappingA(h, NULL, PAGE_READONLY, 0, 0, NULL);
-    EXPECT(h2 != NULL, true);
-    p = redirect_MapViewOfFileEx(h2, FILE_MAP_READ, 0, 0, 0, NULL);
-    EXPECT(p != NULL, true);
-    EXPECT(*(WORD *)p == IMAGE_DOS_SIGNATURE, true); /* PE image */
-    ok = redirect_UnmapViewOfFile(p);
-    EXPECT(ok, true);
-    ok = redirect_CloseHandle(h2);
-    EXPECT(ok, true);
-    ok = redirect_CloseHandle(h);
     EXPECT(ok, true);
 
     /* test pipe */
@@ -1304,9 +1895,13 @@ unit_test_drwinapi_kernel32_file(void)
     ok = redirect_CloseHandle(h);
     EXPECT(ok, true);
 
+    test_file_mapping();
+
     test_DeviceIoControl();
 
     test_file_times();
+
+    test_find_file();
 
     test_file_paths();
 }
