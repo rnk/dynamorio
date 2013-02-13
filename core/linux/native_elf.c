@@ -326,10 +326,10 @@ module_change_hooks(module_area_t *ma, bool add_hooks, bool at_map)
     app_pc relro_base;
     size_t relro_size;
     bool got_unprotected = false;
-    bool already_hooked = false;
     app_pc *pltgot;
 
     /* FIXME: We can't handle un-relocated modules yet. */
+    ASSERT_CURIOSITY(!at_map && "hooking at map NYI");
     if (add_hooks && at_map)
         return;
 
@@ -342,15 +342,20 @@ module_change_hooks(module_area_t *ma, bool add_hooks, bool at_map)
     if (pltgot == NULL)
         return;
 
-    /* Make this somewhat idempotent.  We shouldn't re-hook if we're already
-     * hooked, and we shouldn't remove hooks if we haven't hooked already.
-     */
-    if (pltgot[DL_RUNTIME_RESOLVE_IDX] == (app_pc) _dynamorio_runtime_resolve)
-        already_hooked = true;
-    if (add_hooks && already_hooked)
-        return;
-    if (!add_hooks && !already_hooked)
-        return;
+    if (!opd.bind_now) {
+        /* Make this somewhat idempotent.  We shouldn't re-hook if we're already
+         * hooked, and we shouldn't remove hooks if we haven't hooked already.
+         * If object is eagerly bound, then we ignore the resolver and always
+         * scan the PLT.
+         */
+        bool already_hooked = false;
+        if (pltgot[DL_RUNTIME_RESOLVE_IDX] == (app_pc) _dynamorio_runtime_resolve)
+            already_hooked = true;
+        if (add_hooks && already_hooked)
+            return;
+        if (!add_hooks && !already_hooked)
+            return;
+    }
 
     /* If we are !at_map, then we assume the loader has already relocated the
      * module and applied protections for PT_GNU_RELRO.  _dl_runtime_resolve is
@@ -361,8 +366,12 @@ module_change_hooks(module_area_t *ma, bool add_hooks, bool at_map)
         got_unprotected = true;
     }
 
+    /* Insert or remove our lazy dynamic resolver.  If the module disallows lazy
+     * binding with DT_BIND_NOW, then we don't need to do this.
+     */
+    if (!opd.bind_now)
+        replace_module_resolver(ma, pltgot, add_hooks/*to_dr*/);
     /* Insert or remove our PLT stubs. */
-    replace_module_resolver(ma, pltgot, add_hooks/*to_dr*/);
     update_plt_relocations(ma, &opd, add_hooks);
 
     if (got_unprotected) {

@@ -200,6 +200,7 @@ typedef struct _os_privmod_data_t {
     size_t         pltrelsz;
     ELF_WORD       pltrel;
     bool           textrel;
+    bool           bind_now;
     app_pc         jmprel;
     ELF_REL_TYPE  *rel;
     size_t         relsz;

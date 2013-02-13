@@ -1394,6 +1394,7 @@ module_get_os_privmod_data(app_pc base, size_t size, bool relocated,
      * and it should not be called often.
      */
     pd->textrel = false;
+    pd->bind_now = false;
     /* We assume the segments are mapped into memory, so the actual address
      * is calculated by adding d_ptr and load_delta, unless the loader already
      * relocated the module.
@@ -1415,9 +1416,18 @@ module_get_os_privmod_data(app_pc base, size_t size, bool relocated,
         case DT_TEXTREL:
             pd->textrel = true;
             break;
+        case DT_BIND_NOW:
+            pd->bind_now = true;
+            break;
         case DT_FLAGS:
             if (TEST(DF_TEXTREL, dyn->d_un.d_val))
                 pd->textrel = true;
+            if (TEST(DF_BIND_NOW, dyn->d_un.d_val))
+                pd->bind_now = true;
+            break;
+        case DT_FLAGS_1:
+            if (TEST(DF_1_NOW, dyn->d_un.d_val))
+                pd->bind_now = true;  /* Sun's variant of DF_BIND_NOW */
             break;
         case DT_JMPREL:
             pd->jmprel = (app_pc)(dyn->d_un.d_ptr + load_delta);
