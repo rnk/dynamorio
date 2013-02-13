@@ -682,8 +682,8 @@ struct _dcontext_t {
      * We assume that callbacks and native_exec executions are properly nested, and
      * we don't share these across callbacks, using the original value on returning.
      */
-    app_pc         native_exec_retval; /* native_exec return address */
-    app_pc         native_exec_retloc; /* native_exec return address app stack location */
+    app_pc *       native_retstack;     /* native_exec retaddr and retsp stack */
+    app_pc *       native_retstack_top; /* native_exec return address app stack location */
 
 #ifdef RETURN_STACK
     byte *         rstack;          /* bottom of return stack */
