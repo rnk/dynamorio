@@ -2982,9 +2982,9 @@ query_time_seconds()
 #if !defined(NOT_DYNAMORIO_CORE_PROPER) && !defined(NOT_DYNAMORIO_CORE)
 /* note that ntdll!RtlTimeToTimeFields has this same functionality */
 void
-query_system_time(SYSTEMTIME *st)
+convert_100ns_to_system_time(uint64 time_in_100ns, SYSTEMTIME *st OUT)
 {
-    LONGLONG time = query_time_100ns() / TIMER_UNITS_PER_MILLISECOND;
+    LONGLONG time = time_in_100ns / TIMER_UNITS_PER_MILLISECOND;
     dr_time_t dr_time;
     convert_millis_to_date((uint64)time, &dr_time);
     st->wYear = (WORD) dr_time.year;
@@ -2995,6 +2995,29 @@ query_system_time(SYSTEMTIME *st)
     st->wMinute = (WORD) dr_time.minute;
     st->wSecond = (WORD) dr_time.second;
     st->wMilliseconds = (WORD) dr_time.milliseconds;
+}
+
+void
+convert_system_time_to_100ns(const SYSTEMTIME *st, uint64 *time_in_100ns OUT)
+{
+    uint64 time;
+    dr_time_t dr_time;
+    dr_time.year = st->wYear;
+    dr_time.month = st->wMonth;
+    dr_time.day_of_week = st->wDayOfWeek;
+    dr_time.day = st->wDay;
+    dr_time.hour = st->wHour;
+    dr_time.minute = st->wMinute;
+    dr_time.second = st->wSecond;
+    dr_time.milliseconds = st->wMilliseconds;
+    convert_date_to_millis(&dr_time, &time);
+    *time_in_100ns = time * TIMER_UNITS_PER_MILLISECOND;
+}
+
+void
+query_system_time(SYSTEMTIME *st OUT)
+{
+    convert_100ns_to_system_time(query_time_100ns(), st);
 }
 #endif
 
@@ -3132,7 +3155,8 @@ create_file(PCWSTR filename, bool is_dir, ACCESS_MASK rights,
 
 #if !defined(NOT_DYNAMORIO_CORE_PROPER) && !defined(NOT_DYNAMORIO_CORE)
 NTSTATUS
-nt_open_file(HANDLE *handle OUT, PCWSTR filename, ACCESS_MASK rights, uint sharing)
+nt_open_file(HANDLE *handle OUT, PCWSTR filename, ACCESS_MASK rights, uint sharing,
+             uint options)
 {
     NTSTATUS res;
     OBJECT_ATTRIBUTES oa;
@@ -3145,7 +3169,7 @@ nt_open_file(HANDLE *handle OUT, PCWSTR filename, ACCESS_MASK rights, uint shari
 
     InitializeObjectAttributes(&oa, &us, OBJ_CASE_INSENSITIVE, NULL, NULL);
     res = nt_raw_OpenFile(handle, rights | SYNCHRONIZE,
-                          &oa, &iob, sharing, FILE_SYNCHRONOUS_IO_NONALERT);
+                          &oa, &iob, sharing, FILE_SYNCHRONOUS_IO_NONALERT | options);
     return res;
 }
 #endif
@@ -3190,18 +3214,15 @@ nt_delete_file(PCWSTR nt_filename)
     return res;
 }
 
-bool
-flush_file_buffers(HANDLE file_handle)
+NTSTATUS
+nt_flush_file_buffers(HANDLE file_handle)
 {
-    NTSTATUS res;
     IO_STATUS_BLOCK ret;
-    
+
     GET_NTDLL(NtFlushBuffersFile, (IN HANDLE FileHandle,
                                    OUT PIO_STATUS_BLOCK IoStatusBlock));
 
-    res = NtFlushBuffersFile(file_handle, &ret);
-
-    return NT_SUCCESS(res);
+    return NtFlushBuffersFile(file_handle, &ret);
 }
 
 bool
