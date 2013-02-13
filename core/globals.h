@@ -132,10 +132,8 @@
 
 #ifdef WINDOWS
 # define NOINLINE __declspec(noinline)
-# define NORETURN __declspec(noreturn)
 #else
 # define NOINLINE __attribute__((noinline))
-# define NORETURN __attribute__((noreturn))
 #endif
 
 #define INLINE_ONCE inline

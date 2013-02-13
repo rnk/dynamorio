@@ -193,7 +193,6 @@ entering_native(void)
 /* Re-enters DR at the target PC.  Used on returns back from native modules and
  * calls out of native modules.  Inverse of entering_native().
  */
-NORETURN
 static void
 back_from_native_C(dcontext_t *dcontext, priv_mcontext_t *mc, app_pc target)
 {

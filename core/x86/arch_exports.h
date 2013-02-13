@@ -806,7 +806,6 @@ ret_tgt_cache_to_app(dcontext_t *dcontext, app_pc pc);
 #endif
 
 /* in x86.asm */
-NORETURN
 void call_switch_stack(dcontext_t *dcontext, byte *stack, void (*func) (dcontext_t *),
                        bool free_initstack, bool return_on_return);
 # if defined (WINDOWS) && !defined(X64)
