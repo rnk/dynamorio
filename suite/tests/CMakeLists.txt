@@ -1064,7 +1064,7 @@ function(torun test key source native dr_ops exe_ops)
     if (UNIX)
       # swap from runstats to run_in_bg to run the test in the background
       set(tmpfile "${CMAKE_CURRENT_BINARY_DIR}/${test}-out")
-      string(REGEX REPLACE "^.(${MAIN_RUNTIME_OUTPUT_DIRECTORY}/drrun)" 
+      string(REGEX REPLACE "^.*(${MAIN_RUNTIME_OUTPUT_DIRECTORY}/drrun)" 
         "${MAIN_RUNTIME_OUTPUT_DIRECTORY}/run_in_bg;-out;${tmpfile};\\1"
         rundr "${rundr}")
       # Remove timeout args to drrun to ensure that it doesn't fork the app.
