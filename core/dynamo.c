@@ -1541,6 +1541,8 @@ initialize_dynamo_context(dcontext_t *dcontext)
     dcontext->native_exec_retval = NULL;
     dcontext->native_exec_retloc = NULL;
     dcontext->native_exec_postsyscall = NULL;
+    memset(dcontext->native_retstack, 0, sizeof(dcontext->native_retstack));
+    dcontext->native_retstack_cur = dcontext->native_retstack;
 #ifdef RETURN_STACK
     dcontext->top_of_rstack = dcontext->rstack;
 #endif

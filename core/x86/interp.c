@@ -3991,6 +3991,7 @@ report_native_module(dcontext_t *dcontext, app_pc modpc)
 }
 #endif
 
+#if 0
 /* Appends code to a native bb to save the retaddr on the stack into the
  * dcontext and replace it with back_from_native().  We assume the dcontext is
  * already set up in the default register and that REG_XAX is scratch.
@@ -4037,6 +4038,7 @@ native_bb_swap_retaddr(dcontext_t *dcontext, build_bb_t *bb)
                       OPND_CREATE_INTPTR((ptr_int_t)back_from_native)));
 #endif
 }
+#endif
 
 /* WARNING: breaks all kinds of rules, like ret addr transparency and
  * assuming app stack and not doing calls out of the cache and not having
@@ -4093,15 +4095,15 @@ build_native_exec_bb(dcontext_t *dcontext, build_bb_t *bb)
     instrlist_append(bb->ilist, instr_create_save_to_dc_via_reg
                      (dcontext, REG_NULL/*default*/, REG_XAX, XAX_OFFSET));
 
-    /* For calls into native modules, we save the retaddr in the dcontext and
-     * replace it with back_from_native.  For returns from non-native to native
-     * modules, we enter directly.
+    /* need some cleanup prior to native: turn off asynch, clobber trace, etc.
+     * Now that we have a stack of native retaddrs, we save the app retaddr in C
+     * code.
      */
     if (bb->native_call) {
-        native_bb_swap_retaddr(dcontext, bb);
+        dr_insert_clean_call(dcontext, bb->ilist, NULL, call_to_native, false/*!fp*/, 1,
+                             opnd_create_reg(REG_XSP));
     } else {
-        ASSERT(DYNAMO_OPTION(native_exec_retakeover) &&
-               "shouldn't jump to native without callout interception");
+        dr_insert_clean_call(dcontext, bb->ilist, NULL, return_to_native, false/*!fp*/, 0);
     }
 
 #ifdef X64
@@ -4130,9 +4132,6 @@ build_native_exec_bb(dcontext_t *dcontext, build_bb_t *bb)
                      (dcontext, REG_NULL/*default*/, REG_XAX, XAX_OFFSET));
     append_shared_restore_dcontext_reg(dcontext, bb->ilist);
 
-    /* need some cleanup prior to native: turn off asynch, clobber trace, etc. */
-    dr_insert_clean_call(dcontext, bb->ilist, NULL, (void *) entering_native,
-                         false/*!fp*/, 0);
     /* this is the jump to native code */
     instrlist_append(bb->ilist, instr_create_0dst_1src
                      (dcontext, (opnd_is_pc(jmp_tgt) ? OP_jmp : OP_jmp_ind),

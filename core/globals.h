@@ -598,6 +598,17 @@ enum {
     WRITABLE=true
 };
 
+/* Number of nested calls into native modules that we support.
+ * FIXME: Remove this limitation if we ever need to support true mutual
+ * recursion between native and non-native modules.
+ */
+enum { MAX_NATIVE_RETSTACK = 10 };
+
+typedef struct _pc_sp_pair_t {
+    app_pc pc;
+    app_pc sp;
+} pc_sp_pair_t;
+
 /* To handle TRY/EXCEPT/FINALLY setjmp */
 typedef struct try_except_context_t {
     /* FIXME: we are using a local dr_jmp_buf which is relatively
@@ -678,12 +689,8 @@ struct _dcontext_t {
     linkstub_t *     last_exit;       /* last exit from cache */
     byte *         dstack;          /* thread-private dynamo stack */
 
-    /* These are expected to retain their values across an entire native execution.
-     * We assume that callbacks and native_exec executions are properly nested, and
-     * we don't share these across callbacks, using the original value on returning.
-     */
-    app_pc *       native_retstack;     /* native_exec retaddr and retsp stack */
-    app_pc *       native_retstack_top; /* native_exec return address app stack location */
+    app_pc         native_exec_retval; /* no longer used */
+    app_pc         native_exec_retloc; /* no longer used */
 
 #ifdef RETURN_STACK
     byte *         rstack;          /* bottom of return stack */
@@ -813,6 +820,12 @@ struct _dcontext_t {
      * dispatch() for native_exec syscalls
      */
     app_pc         native_exec_postsyscall;
+
+    /* Stack of app return addresses and stack locations of callsites where we
+     * called into a native module.
+     */
+    pc_sp_pair_t native_retstack[MAX_NATIVE_RETSTACK];
+    pc_sp_pair_t *native_retstack_cur;
 
 #ifdef PROGRAM_SHEPHERDING
     bool           alloc_no_reserve; /* to implement executable_if_alloc policy */

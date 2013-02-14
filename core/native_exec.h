@@ -50,7 +50,11 @@ native_exec_exit(void);
 
 /* Gets called on every call into a native module. */
 void
-entering_native(void);
+call_to_native(app_pc *sp);
+
+/* Gets called on every return to a native module. */
+void
+return_to_native(void);
 
 /* Gets called on every cross-module call out of a native module. */
 void

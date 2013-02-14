@@ -152,13 +152,9 @@ native_exec_module_unload(module_area_t *ma)
  * asynch handling and updates some state.  Called from native bbs built by
  * build_native_exec_bb() in x86/interp.c.
  */
-void
-entering_native(void)
+static void
+entering_native(dcontext_t *dcontext)
 {
-    dcontext_t *dcontext;
-    ENTERING_DR();
-    dcontext = get_thread_private_dcontext();
-    ASSERT(dcontext != NULL);
 #ifdef WINDOWS
     /* turn off asynch interception for this thread while native
      * FIXME: what if callbacks and apcs are destined for other modules?
@@ -184,9 +180,43 @@ entering_native(void)
     /* now we're in app! */
     dcontext->whereami = WHERE_APP;
     SYSLOG_INTERNAL_WARNING_ONCE("entered at least one module natively");
-    LOG(THREAD, LOG_ASYNCH, 1, "!!!! Entering module NATIVELY, retaddr="PFX"\n\n",
-        dcontext->native_exec_retval);
     STATS_INC(num_native_module_enter);
+}
+
+void
+call_to_native(app_pc *sp)
+{
+    dcontext_t *dcontext;
+    ENTERING_DR();
+    dcontext = get_thread_private_dcontext();
+    ASSERT(dcontext != NULL);
+    /* Push the retaddr and stack location onto our stack.  The current entry
+     * should be free and we should have enough space.
+     * XXX: it would be nice to abort in a release build, but this can be perf
+     * critical.
+     */
+    ASSERT(dcontext->native_retstack_cur <
+           &dcontext->native_retstack[MAX_NATIVE_RETSTACK]);
+    ASSERT(dcontext->native_retstack_cur->pc == NULL);
+    ASSERT(dcontext->native_retstack_cur->sp == NULL);
+    dcontext->native_retstack_cur->pc = *sp;
+    dcontext->native_retstack_cur->sp = (app_pc) sp;
+    dcontext->native_retstack_cur++;
+    LOG(THREAD, LOG_ASYNCH, 1,
+        "!!!! Entering module NATIVELY, retaddr="PFX"\n\n", *sp);
+    *sp = (app_pc) back_from_native;
+    entering_native(dcontext);
+    EXITING_DR();
+}
+
+void
+return_to_native(void)
+{
+    dcontext_t *dcontext;
+    ENTERING_DR();
+    dcontext = get_thread_private_dcontext();
+    ASSERT(dcontext != NULL);
+    entering_native(dcontext);
     EXITING_DR();
 }
 
@@ -227,18 +257,37 @@ void
 back_from_native_ret(priv_mcontext_t *mc)
 {
     dcontext_t *dcontext;
+    app_pc retloc;
     app_pc target;
     ENTERING_DR();
     dcontext = get_thread_private_dcontext();
     ASSERT(dcontext != NULL);
-    LOG(THREAD, LOG_ASYNCH, 1, "\n!!!! Returned from NATIVE module to "PFX"\n",
-        dcontext->native_exec_retval);
     SYSLOG_INTERNAL_WARNING_ONCE("returned from at least one native module");
-    ASSERT(dcontext->native_exec_retval != NULL);
-    ASSERT(dcontext->native_exec_retloc != NULL);
-    target = dcontext->native_exec_retval;
-    dcontext->native_exec_retval = NULL;
-    dcontext->native_exec_retloc = NULL;
+    retloc = (app_pc) mc->xsp;
+#ifdef X86
+    /* Adjust the SP to match the SP we saved after the call. */
+    retloc -= sizeof(void *);
+#endif
+    /* Current pointer points to next free entry so decrement first. */
+    ASSERT(dcontext->native_retstack_cur > &dcontext->native_retstack[0]);
+    dcontext->native_retstack_cur--;
+    while (dcontext->native_retstack_cur > &dcontext->native_retstack[0] &&
+           dcontext->native_retstack_cur->sp != retloc) {
+        /* The app must have unwound the stack.  Clear entries until we find the
+         * current SP.
+         */
+        ASSERT(dcontext->native_retstack_cur > &dcontext->native_retstack[0]);
+        dcontext->native_retstack_cur->pc = NULL;
+        dcontext->native_retstack_cur->sp = NULL;
+        dcontext->native_retstack_cur--;
+    }
+    ASSERT(dcontext->native_retstack_cur->sp == retloc &&
+           "failed to find current sp in native_retstack");
+    target = dcontext->native_retstack_cur->pc;
+    dcontext->native_retstack_cur->pc = NULL;
+    dcontext->native_retstack_cur->sp = NULL;
+    LOG(THREAD, LOG_ASYNCH, 1, "\n!!!! Returned from NATIVE module to "PFX"\n",
+        target);
     back_from_native_C(dcontext, mc, target); /* noreturn */
     ASSERT_NOT_REACHED();
 }
