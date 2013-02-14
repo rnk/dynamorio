@@ -4233,16 +4233,9 @@ at_native_exec_gateway(dcontext_t *dcontext, app_pc start, bool *is_call
                 });
             }
         }
-        /* Is this the entry point of a native executable? */
-        else if (DYNAMO_OPTION(native_exec_retakeover) &&
-                 LINKSTUB_INDIRECT(dcontext->last_exit->flags) &&
-                 start == get_image_entry()) {
-            if (vmvector_overlap(native_exec_areas, start, start+1)) {
-                native_exec_bb = true;
-                *is_call = false;
-            }
-        }
-        /* Is this a return from a non-native module into a native module? */
+        /* Is this a return from a non-native module into a native module, or
+         * the entry point of the exe?
+         */
         else if (DYNAMO_OPTION(native_exec_retakeover) &&
                  (start == get_image_entry() ||
                   (LINKSTUB_INDIRECT(dcontext->last_exit->flags) &&
