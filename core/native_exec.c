@@ -309,7 +309,7 @@ native_module_callout(priv_mcontext_t *mc, app_pc target)
     ASSERT_NOT_REACHED();
 }
 
-void
+bool
 put_back_native_retaddrs(dcontext_t *dcontext)
 {
     pc_sp_pair_t *retstack = dcontext->native_retstack;
@@ -319,4 +319,5 @@ put_back_native_retaddrs(dcontext_t *dcontext)
         ASSERT(*retloc == (app_pc) back_from_native);
         *retloc = retstack[i].pc;
     }
+    return i > 0;
 }
