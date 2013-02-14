@@ -61,6 +61,24 @@ import_me4(int_fn_t fn, int x)
     fn(x);
 }
 
+void EXPORT
+unwind_level1(int_fn_t fn, int x)
+{
+    fn(x);
+}
+
+void EXPORT
+unwind_level3(int_fn_t fn, int x)
+{
+    fn(x);
+}
+
+void EXPORT
+unwind_level5(int_fn_t fn, int x)
+{
+    fn(x);
+}
+
 #ifdef WINDOWS
 BOOL APIENTRY 
 DllMain(HANDLE hModule, DWORD reason_for_call, LPVOID Reserved)

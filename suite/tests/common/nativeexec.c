@@ -37,6 +37,8 @@
  */
 #include "tools.h"
 
+#include <setjmp.h>
+
 typedef void (*int_fn_t)(int);
 
 /* from nativeexec.dll.dll */
@@ -45,14 +47,46 @@ IMPORT void import_me2(int x);
 IMPORT void import_me3(int x);
 IMPORT void import_me4(int_fn_t fn, int x);
 
+/* Test unwinding across back_from_native retaddrs. */
+IMPORT void unwind_level1(int_fn_t fn, int x);
+static void unwind_setjmp(int x);
+IMPORT void unwind_level3(int_fn_t fn, int x);
+static void unwind_level4(int x);
+IMPORT void unwind_level5(int_fn_t fn, int x);
+static void unwind_longjmp(int x);
+
 void call_plt(int_fn_t fn);
 void call_funky(int_fn_t fn);
 
-EXPORT
 void
 print_int(int x)
 {
     print("nativeexec.exe:print_int(%d)\n", x);
+}
+
+static jmp_buf jump_buf;
+
+void
+unwind_setjmp(int x)
+{
+    if (setjmp(jump_buf)) {
+        print("after longjmp\n");
+    } else {
+        unwind_level3(unwind_level4, x - 1);
+    }
+}
+
+void
+unwind_level4(int x)
+{
+    unwind_level5(unwind_longjmp, x - 1);
+}
+
+void
+unwind_longjmp(int x)
+{
+    print("before longjmp, %d\n", x);
+    longjmp(jump_buf, 1);
 }
 
 int
@@ -102,6 +136,9 @@ main(int argc, char **argv)
 
     print("calling nested native\n");
     import_me4(print_int, 42);
+
+    print("calling cross-module unwinder\n");
+    unwind_level1(unwind_setjmp, 3);
 
     print("all done\n");
 
