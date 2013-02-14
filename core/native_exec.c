@@ -332,7 +332,7 @@ interpret_back_from_native(dcontext_t *dcontext)
         "interpreting retaddr "PFX" instead\n", dcontext->next_tag);
 }
 
-void
+bool
 put_back_native_retaddrs(dcontext_t *dcontext)
 {
     pc_sp_pair_t *retstack = dcontext->native_retstack;
@@ -342,4 +342,5 @@ put_back_native_retaddrs(dcontext_t *dcontext)
         ASSERT(*retloc == (app_pc) back_from_native);
         *retloc = retstack[i].pc;
     }
+    return i > 0;
 }
