@@ -254,7 +254,7 @@ back_from_native_C(dcontext_t *dcontext, priv_mcontext_t *mc, app_pc target)
  * routine back_from_native() in x86.asm.
  */
 void
-back_from_native_ret(priv_mcontext_t *mc)
+return_from_native(priv_mcontext_t *mc)
 {
     dcontext_t *dcontext;
     app_pc retloc;
