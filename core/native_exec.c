@@ -250,20 +250,16 @@ back_from_native_C(dcontext_t *dcontext, priv_mcontext_t *mc, app_pc target)
     ASSERT_NOT_REACHED();
 }
 
-/* Re-enters DR after a call to a native module returns.  Called from the asm
- * routine back_from_native() in x86.asm.
+/* Finds the return address that corresponds with the given SP.  Clears all
+ * non-matching entries from the top of the stack until a match is found.  This
+ * assumes that the app is only doing unwinding, and not re-entering frames
+ * after returning past them.
  */
-void
-back_from_native_ret(priv_mcontext_t *mc)
+static app_pc
+pop_retaddr_for_sp(dcontext_t *dcontext, app_pc sp)
 {
-    dcontext_t *dcontext;
-    app_pc retloc;
-    app_pc target;
-    ENTERING_DR();
-    dcontext = get_thread_private_dcontext();
-    ASSERT(dcontext != NULL);
-    SYSLOG_INTERNAL_WARNING_ONCE("returned from at least one native module");
-    retloc = (app_pc) mc->xsp;
+    app_pc retaddr;
+    app_pc retloc = sp;
 #ifdef X86
     /* Adjust the SP to match the SP we saved after the call. */
     retloc -= sizeof(void *);
@@ -283,9 +279,25 @@ back_from_native_ret(priv_mcontext_t *mc)
     }
     ASSERT(dcontext->native_retstack_cur->sp == retloc &&
            "failed to find current sp in native_retstack");
-    target = dcontext->native_retstack_cur->pc;
+    retaddr = dcontext->native_retstack_cur->pc;
     dcontext->native_retstack_cur->pc = NULL;
     dcontext->native_retstack_cur->sp = NULL;
+    return retaddr;
+}
+
+/* Re-enters DR after a call to a native module returns.  Called from the asm
+ * routine back_from_native() in x86.asm.
+ */
+void
+back_from_native_ret(priv_mcontext_t *mc)
+{
+    dcontext_t *dcontext;
+    app_pc target;
+    ENTERING_DR();
+    dcontext = get_thread_private_dcontext();
+    ASSERT(dcontext != NULL);
+    SYSLOG_INTERNAL_WARNING_ONCE("returned from at least one native module");
+    target = pop_retaddr_for_sp(dcontext, (app_pc) mc->xsp);
     LOG(THREAD, LOG_ASYNCH, 1, "\n!!!! Returned from NATIVE module to "PFX"\n",
         target);
     back_from_native_C(dcontext, mc, target); /* noreturn */
@@ -314,6 +326,9 @@ void
 interpret_back_from_native(dcontext_t *dcontext)
 {
     ASSERT(dcontext->next_tag == (app_pc) back_from_native);
-    ASSERT_NOT_IMPLEMENTED();
+    dcontext->next_tag =
+        pop_retaddr_for_sp(dcontext, (app_pc) get_mcontext(dcontext)->xsp);
+    LOG(THREAD, LOG_ASYNCH, 2, "%s: tried to interpret back_from_native, "
+        "interpreting retaddr "PFX" instead\n", dcontext->next_tag);
 }
 
