@@ -35,6 +35,8 @@
  */
 #include "tools.h"
 
+typedef void (*int_fn_t)(int);
+
 void EXPORT
 import_me1(int x)
 {
@@ -51,6 +53,12 @@ void EXPORT
 import_me3(int x)
 {
     print("nativeexec.dll:import_me3(%d)\n", x);
+}
+
+void EXPORT
+import_me4(int_fn_t fn, int x)
+{
+    fn(x);
 }
 
 #ifdef WINDOWS

@@ -37,13 +37,23 @@
  */
 #include "tools.h"
 
+typedef void (*int_fn_t)(int);
+
 /* from nativeexec.dll.dll */
 IMPORT void import_me1(int x);
 IMPORT void import_me2(int x);
 IMPORT void import_me3(int x);
+IMPORT void import_me4(int_fn_t fn, int x);
 
-void call_plt(void (*fn)(int));
-void call_funky(void (*fn)(int));
+void call_plt(int_fn_t fn);
+void call_funky(int_fn_t fn);
+
+EXPORT
+void
+print_int(int x)
+{
+    print("nativeexec.exe:print_int(%d)\n", x);
+}
 
 int
 main(int argc, char **argv)
@@ -89,6 +99,9 @@ main(int argc, char **argv)
 
     print("calling via funky ind call\n");
     call_funky(&import_me3);
+
+    print("calling nested native\n");
+    import_me4(print_int, 42);
 
     print("all done\n");
 

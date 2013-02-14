@@ -224,7 +224,7 @@ return_to_native(void)
  * calls out of native modules.  Inverse of entering_native().
  */
 static void
-back_from_native_C(dcontext_t *dcontext, priv_mcontext_t *mc, app_pc target)
+back_from_native_common(dcontext_t *dcontext, priv_mcontext_t *mc, app_pc target)
 {
     /* ASSUMPTION: was native entire time, don't need to initialize dcontext
      * or anything, and next_tag is still there!
@@ -288,7 +288,7 @@ return_from_native(priv_mcontext_t *mc)
     dcontext->native_retstack_cur->sp = NULL;
     LOG(THREAD, LOG_ASYNCH, 1, "\n!!!! Returned from NATIVE module to "PFX"\n",
         target);
-    back_from_native_C(dcontext, mc, target); /* noreturn */
+    back_from_native_common(dcontext, mc, target); /* noreturn */
     ASSERT_NOT_REACHED();
 }
 
@@ -305,6 +305,6 @@ native_module_callout(priv_mcontext_t *mc, app_pc target)
     ASSERT(DYNAMO_OPTION(native_exec_retakeover));
     LOG(THREAD, LOG_ASYNCH, 4, "%s: cross-module call to %p\n",
         __FUNCTION__, target);
-    back_from_native_C(dcontext, mc, target);
+    back_from_native_common(dcontext, mc, target);
     ASSERT_NOT_REACHED();
 }
