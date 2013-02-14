@@ -371,13 +371,15 @@ module_change_hooks(module_area_t *ma, bool add_hooks, bool at_map)
 void
 native_module_hook(module_area_t *ma, bool at_map)
 {
-    module_change_hooks(ma, true/*add*/, at_map);
+    if (DYNAMO_OPTION(native_exec_retakeover))
+        module_change_hooks(ma, true/*add*/, at_map);
 }
 
 void
 native_module_unhook(module_area_t *ma)
 {
-    module_change_hooks(ma, false/*remove*/, false/*!at_map*/);
+    if (DYNAMO_OPTION(native_exec_retakeover))
+        module_change_hooks(ma, false/*remove*/, false/*!at_map*/);
 }
 
 static ELF_REL_TYPE *
