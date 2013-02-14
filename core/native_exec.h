@@ -74,4 +74,8 @@ native_module_hook(module_area_t *ma, bool at_map);
 void
 native_module_unhook(module_area_t *ma);
 
+/* Update next_tag with the real app return address. */
+void
+interpret_back_from_native(dcontext_t *dcontext);
+
 #endif /* _NATIVE_EXEC_H_ */

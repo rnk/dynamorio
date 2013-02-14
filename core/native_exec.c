@@ -308,3 +308,12 @@ native_module_callout(priv_mcontext_t *mc, app_pc target)
     back_from_native_C(dcontext, mc, target);
     ASSERT_NOT_REACHED();
 }
+
+/* Update next_tag with the real app return address. */
+void
+interpret_back_from_native(dcontext_t *dcontext)
+{
+    ASSERT(dcontext->next_tag == (app_pc) back_from_native);
+    ASSERT_NOT_IMPLEMENTED();
+}
+
