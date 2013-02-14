@@ -151,6 +151,16 @@ else (UNIX)
       COMPILE_FLAGS "${tool_cflags} ${unicode_cflags} -DRC_IS_${tgt}")
   endforeach (tgt)
 
+  # drdeploy.exe links to libutil/drconfiglib.dll.  When we build drdeploy,
+  # we'll copy the DLL to the tools directory so users won't need to
+  # update their path.
+
+  # We could add a manifest so that we can request elevation on Vista
+  # (xref PR 233520).  Works fine for double clicking the app, but
+  # running from a cmd shell just gives access denied if the cmd shell
+  # isn't runas admin which isn't quite as nice.  Disable for now.
+  # $(MT) -manifest drdeploy.exe.manifest -outputresource:drdeploy.exe
+
 endif (UNIX)
 
 # we generate 3 different tools from drdeploy.c
@@ -170,19 +180,13 @@ foreach (deploytgt drconfig drrun drinject)
     target_link_libraries(${deploytgt}
       policy_static user32 advapi32 pdh imagehlp shell32)
   endif ()
-  target_link_libraries(${deploytgt} drconfiglib drinjectlib)
-  add_rel_rpaths(${deploytgt} drconfiglib drinjectlib)
+  target_link_libraries(${deploytgt} drconfiglib)
+  add_rel_rpaths(${deploytgt} drconfiglib)
+  if (${deploytgt} NOT MATCHES "drconfig")
+    target_link_libraries(${deploytgt} drconfiglib)
+    add_rel_rpaths(${deploytgt} drconfiglib)
+  endif ()
 endforeach ()
-
-# drdeploy.exe links to libutil/drconfiglib.dll.  When we build drdeploy,
-# we'll copy the DLL to the tools directory so users won't need to
-# update their path.
-
-# We could add a manifest so that we can request elevation on Vista
-# (xref PR 233520).  Works fine for double clicking the app, but
-# running from a cmd shell just gives access denied if the cmd shell
-# isn't runas admin which isn't quite as nice.  Disable for now.
-# $(MT) -manifest drdeploy.exe.manifest -outputresource:drdeploy.exe
 
 DR_install(TARGETS ${tgts} DESTINATION "${INSTALL_BIN}")
 
