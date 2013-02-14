@@ -4051,10 +4051,12 @@ build_native_exec_bb(dcontext_t *dcontext, build_bb_t *bb)
      * code.
      */
     if (bb->native_call) {
-        dr_insert_clean_call(dcontext, bb->ilist, NULL, call_to_native, false/*!fp*/, 1,
+        dr_insert_clean_call(dcontext, bb->ilist, NULL,
+                             (void *)call_to_native, false/*!fp*/, 1,
                              opnd_create_reg(REG_XSP));
     } else {
-        dr_insert_clean_call(dcontext, bb->ilist, NULL, return_to_native, false/*!fp*/, 0);
+        dr_insert_clean_call(dcontext, bb->ilist, NULL,
+                             (void *) return_to_native, false/*!fp*/, 0);
     }
 
 #ifdef X64
