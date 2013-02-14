@@ -74,4 +74,11 @@ native_module_hook(module_area_t *ma, bool at_map);
 void
 native_module_unhook(module_area_t *ma);
 
+/* Put back the native return addresses that we swapped to maintain control.  We
+ * do this when detaching.  If we're coordinating with the app, then we could do
+ * this before the app takes a stack trace.
+ */
+void
+put_back_native_retaddrs(dcontext_t *dcontext);
+
 #endif /* _NATIVE_EXEC_H_ */

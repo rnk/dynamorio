@@ -308,3 +308,15 @@ native_module_callout(priv_mcontext_t *mc, app_pc target)
     back_from_native_common(dcontext, mc, target);
     ASSERT_NOT_REACHED();
 }
+
+void
+put_back_native_retaddrs(dcontext_t *dcontext)
+{
+    pc_sp_pair_t *retstack = dcontext->native_retstack;
+    int i;
+    for (i = 0; i < MAX_NATIVE_RETSTACK && retstack[i].sp != NULL; i++) {
+        app_pc *retloc = (app_pc *) retstack[i].sp;
+        ASSERT(*retloc == (app_pc) back_from_native);
+        *retloc = retstack[i].pc;
+    }
+}
