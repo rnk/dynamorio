@@ -4235,8 +4235,8 @@ at_native_exec_gateway(dcontext_t *dcontext, app_pc start, bool *is_call
         }
         /* Is this a return from a non-native module into a native module? */
         else if (DYNAMO_OPTION(native_exec_retakeover) &&
-                 (LINKSTUB_INDIRECT(dcontext->last_exit->flags) &&
-                  TEST(LINK_RETURN, dcontext->last_exit->flags))) {
+                 LINKSTUB_INDIRECT(dcontext->last_exit->flags) &&
+                 TEST(LINK_RETURN, dcontext->last_exit->flags)) {
             if (vmvector_overlap(native_exec_areas, start, start+1)) {
                 /* XXX: check that this is the return address of a known native
                  * callsite where we took over on a module transition.
