@@ -168,7 +168,7 @@ START_FILE
 # define dstack_OFFSET     (PRIV_MCXT_SIZE+UPCXT_EXTRA+3*ARG_SZ)
 # define MCONTEXT_PC_OFFS  (9*ARG_SZ)
 #endif
-#define is_exiting_OFFSET (dstack_OFFSET+3*ARG_SZ)
+#define is_exiting_OFFSET (dstack_OFFSET+1*ARG_SZ)
 #define PUSHGPR_XSP_OFFS  (3*ARG_SZ)
 #define MCONTEXT_XSP_OFFS (PUSHGPR_XSP_OFFS)
 #define PUSH_PRIV_MCXT_PRE_PC_SHIFT (- XMM_SAVED_SIZE - PRE_XMM_PADDING)

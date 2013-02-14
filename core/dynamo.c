@@ -1538,8 +1538,6 @@ initialize_dynamo_context(dcontext_t *dcontext)
     dcontext->initialized = true;
     dcontext->whereami = WHERE_APP;
     dcontext->next_tag = NULL;
-    dcontext->native_exec_retval = NULL;
-    dcontext->native_exec_retloc = NULL;
     dcontext->native_exec_postsyscall = NULL;
     memset(dcontext->native_retstack, 0, sizeof(dcontext->native_retstack));
     dcontext->native_retstack_cur = dcontext->native_retstack;
