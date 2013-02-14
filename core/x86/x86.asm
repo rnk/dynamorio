@@ -211,7 +211,7 @@ START_FILE
 DECL_EXTERN(get_own_context_integer_control)
 DECL_EXTERN(get_xmm_vals)
 DECL_EXTERN(auto_setup)
-DECL_EXTERN(back_from_native_ret)
+DECL_EXTERN(return_from_native)
 DECL_EXTERN(native_module_callout)
 DECL_EXTERN(dispatch)
 #ifdef DR_APP_EXPORTS
@@ -1487,11 +1487,11 @@ GLOBAL_LABEL(back_from_native:)
         PUSH_PRIV_MCXT(0 /* for priv_mcontext_t.pc */)
         lea      REG_XAX, [REG_XSP] /* stack grew down, so priv_mcontext_t at tos */
 
-        /* Call back_from_native_ret passing the priv_mcontext_t.  It will 
+        /* Call return_from_native passing the priv_mcontext_t.  It will 
          * obtain this thread's dcontext pointer and
          * begin execution with the passed-in state.
          */
-        CALLC1(back_from_native_ret, REG_XAX)
+        CALLC1(return_from_native, REG_XAX)
         /* should not return */
         jmp      unexpected_return
         END_FUNC(back_from_native)

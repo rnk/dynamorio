@@ -52,9 +52,47 @@
 #include "../../globals.h"
 #include "../../module_shared.h"
 
-#ifndef __drv_interlocked /* support older VS versions */
+/**************************************************
+ * support older VS versions
+ */
+
+#ifndef __drv_interlocked
 # define __drv_interlocked /* nothing */
 #endif
+
+#if _MSC_VER <= 1400 /* VS2005- */
+enum {
+    HeapEnableTerminationOnCorruption = 1,
+};
+
+/* wincon.h */
+typedef struct _CONSOLE_READCONSOLE_CONTROL {
+    ULONG nLength;
+    ULONG nInitialChars;
+    ULONG dwCtrlWakeupMask;
+    ULONG dwControlKeyState;
+} CONSOLE_READCONSOLE_CONTROL, *PCONSOLE_READCONSOLE_CONTROL;
+
+/* winbase.h */
+typedef enum _FILE_INFO_BY_HANDLE_CLASS {
+    FileBasicInfo,
+    FileStandardInfo,
+    FileNameInfo,
+    FileRenameInfo,
+    FileDispositionInfo,
+    FileAllocationInfo,
+    FileEndOfFileInfo,
+    FileStreamInfo,
+    FileCompressionInfo,
+    FileAttributeTagInfo,
+    FileIdBothDirectoryInfo,
+    FileIdBothDirectoryRestartInfo,
+    FileIoPriorityHintInfo,
+    FileRemoteProtocolInfo,
+    MaximumFileInfoByHandleClass
+} FILE_INFO_BY_HANDLE_CLASS, *PFILE_INFO_BY_HANDLE_CLASS;
+#endif
+
 
 void
 kernel32_redir_init(void);
@@ -343,8 +381,8 @@ kernel32_redir_onload_lib(privmod_t *mod);
 FARPROC
 WINAPI
 redirect_DelayLoadFailureHook(
-  _In_  LPCSTR pszDllName,
-  _In_  LPCSTR pszProcName
+  __in  LPCSTR pszDllName,
+  __in  LPCSTR pszProcName
 );
 
 BOOL
@@ -745,6 +783,26 @@ redirect_DeleteFileW(
     __in LPCWSTR lpFileName
     );
 
+BOOL
+WINAPI
+redirect_ReadFile(
+    __in        HANDLE hFile,
+    __out_bcount_part(nNumberOfBytesToRead, *lpNumberOfBytesRead) LPVOID lpBuffer,
+    __in        DWORD nNumberOfBytesToRead,
+    __out_opt   LPDWORD lpNumberOfBytesRead,
+    __inout_opt LPOVERLAPPED lpOverlapped
+    );
+
+BOOL
+WINAPI
+redirect_WriteFile(
+    __in        HANDLE hFile,
+    __in_bcount(nNumberOfBytesToWrite) LPCVOID lpBuffer,
+    __in        DWORD nNumberOfBytesToWrite,
+    __out_opt   LPDWORD lpNumberOfBytesWritten,
+    __inout_opt LPOVERLAPPED lpOverlapped
+    );
+
 HANDLE
 WINAPI
 redirect_CreateFileMappingA(
@@ -1079,17 +1137,6 @@ redirect_ReadConsoleW(
     __in_opt PCONSOLE_READCONSOLE_CONTROL pInputControl
     );
 
-/* XXX: when implemented, use in place of un-redirected call in unit test */
-BOOL
-WINAPI
-redirect_ReadFile(
-    __in        HANDLE hFile,
-    __out_bcount_part(nNumberOfBytesToRead, *lpNumberOfBytesRead) LPVOID lpBuffer,
-    __in        DWORD nNumberOfBytesToRead,
-    __out_opt   LPDWORD lpNumberOfBytesRead,
-    __inout_opt LPOVERLAPPED lpOverlapped
-    );
-
 BOOL
 WINAPI
 redirect_SetEndOfFile(
@@ -1119,6 +1166,7 @@ redirect_SetFileInformationByHandle(
     __in  DWORD dwBufferSize
 );
 
+/* XXX: once we have redirect_SetFilePointer, replace SetFilePointer in unit test */
 DWORD
 WINAPI
 redirect_SetFilePointer(
@@ -1163,16 +1211,6 @@ redirect_WriteConsoleW(
     IN DWORD nNumberOfCharsToWrite,
     OUT LPDWORD lpNumberOfCharsWritten,
     IN LPVOID lpReserved
-    );
-
-BOOL
-WINAPI
-redirect_WriteFile(
-    __in        HANDLE hFile,
-    __in_bcount(nNumberOfBytesToWrite) LPCVOID lpBuffer,
-    __in        DWORD nNumberOfBytesToWrite,
-    __out_opt   LPDWORD lpNumberOfBytesWritten,
-    __inout_opt LPOVERLAPPED lpOverlapped
     );
 
 /***************************************************************************
