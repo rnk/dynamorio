@@ -216,12 +216,8 @@ static enum {
  */
 #ifdef X64
 # define TEB_TLS64_OFFSET 0x1480
-# define PEB_SIZE          0x358
-# define TEB_SIZE         0x17d8
 #else
 # define TEB_TLS64_OFFSET 0xe10
-# define PEB_SIZE         0x230 
-# define TEB_SIZE         0xfbc
 #endif
 
 /***************************************************************************
@@ -599,9 +595,6 @@ ntdll_init()
      * from there?
      */
     ASSERT(offsetof(TEB, TlsSlots) == TEB_TLS64_OFFSET);
-    /* Ensure we have all our other types right */
-    ASSERT(sizeof(TEB) == TEB_SIZE);
-    ASSERT(sizeof(PEB) == PEB_SIZE);
 #if !defined(NOT_DYNAMORIO_CORE_PROPER) && !defined(NOT_DYNAMORIO_CORE)
     nt_get_context_extended_functions((app_pc)get_ntdll_base());
 #endif
@@ -3234,16 +3227,6 @@ read_file(HANDLE file_handle, void *buffer, uint num_bytes_to_read,
     IO_STATUS_BLOCK ret = {0};
     LARGE_INTEGER ByteOffset;   /* should be the same as uint64 */
 
-    GET_NTDLL(NtReadFile, (IN HANDLE FileHandle,
-                           IN HANDLE Event OPTIONAL,
-                           IN PIO_APC_ROUTINE ApcRoutine OPTIONAL,
-                           IN PVOID ApcContext OPTIONAL,
-                           OUT PIO_STATUS_BLOCK IoStatusBlock,
-                           OUT PVOID Buffer,
-                           IN ULONG Length,
-                           IN PLARGE_INTEGER ByteOffset OPTIONAL,
-                           IN PULONG Key OPTIONAL));
-
     if (file_byte_offset != NULL) {
         ByteOffset.QuadPart = *file_byte_offset;
     }
@@ -3271,16 +3254,6 @@ write_file(HANDLE file_handle, const void *buffer, uint num_bytes_to_write,
     IO_STATUS_BLOCK ret = {0};
     LARGE_INTEGER ByteOffset;
     
-    GET_NTDLL(NtWriteFile, (IN HANDLE FileHandle,
-                            IN HANDLE Event OPTIONAL,
-                            IN PIO_APC_ROUTINE ApcRoutine OPTIONAL,
-                            IN PVOID ApcContext OPTIONAL,
-                            OUT PIO_STATUS_BLOCK IoStatusBlock,
-                            IN const void *Buffer, /* PVOID, but need const */
-                            IN ULONG Length,
-                            IN PLARGE_INTEGER ByteOffset OPTIONAL,
-                            IN PULONG Key OPTIONAL));
-
     if (file_byte_offset != NULL) {
         ByteOffset.QuadPart = *file_byte_offset;
     }

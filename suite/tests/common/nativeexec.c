@@ -37,27 +37,74 @@
  */
 #include "tools.h"
 
-#ifdef USE_DYNAMO
-#include "dynamorio.h"
-#endif
+#include <setjmp.h>
+
+typedef void (*int_fn_t)(int);
 
 /* from nativeexec.dll.dll */
 IMPORT void import_me1(int x);
 IMPORT void import_me2(int x);
 IMPORT void import_me3(int x);
+IMPORT void import_me4(int_fn_t fn, int x);
 
-void call_plt(void (*fn)(int));
-void call_funky(void (*fn)(int));
+/* Test unwinding across back_from_native retaddrs. */
+IMPORT void unwind_level1(int_fn_t fn, int x);
+static void unwind_setjmp(int x);
+IMPORT void unwind_level3(int_fn_t fn, int x);
+static void unwind_level4(int x);
+IMPORT void unwind_level5(int_fn_t fn, int x);
+static void unwind_longjmp(int x);
+
+void call_plt(int_fn_t fn);
+void call_funky(int_fn_t fn);
+
+void
+print_int(int x)
+{
+    print("nativeexec.exe:print_int(%d)\n", x);
+}
+
+static jmp_buf jump_buf;
+
+void
+unwind_setjmp(int x)
+{
+    if (setjmp(jump_buf)) {
+        print("after longjmp\n");
+    } else {
+        unwind_level3(unwind_level4, x - 1);
+    }
+}
+
+void
+unwind_level4(int x)
+{
+    unwind_level5(unwind_longjmp, x - 1);
+}
+
+void
+unwind_longjmp(int x)
+{
+    print("before longjmp, %d\n", x);
+    longjmp(jump_buf, 1);
+}
 
 int
-main(void)
+main(int argc, char **argv)
 {
-#ifdef USE_DYNAMO
-    dynamorio_app_init();
-    dynamorio_app_start();
-#endif
-
     INIT();
+
+    if (argc > 2 && strcmp("LD_BIND_NOW", argv[1])) {
+#ifdef WINDOWS
+        print("bind_now is Linux-only\n");
+#else
+        /* Re-exec the test with LD_BIND_NOW in the environment to force eager
+         * binding.
+         */
+        setenv("LD_BIND_NOW", "1", true/*overwrite*/);
+        execv(argv[0], argv);
+#endif
+    }
 
     print("calling via IAT-style call\n");
     import_me1(57);
@@ -87,12 +134,14 @@ main(void)
     print("calling via funky ind call\n");
     call_funky(&import_me3);
 
+    print("calling nested native\n");
+    import_me4(print_int, 42);
+
+    print("calling cross-module unwinder\n");
+    unwind_level1(unwind_setjmp, 3);
+
     print("all done\n");
 
-#ifdef USE_DYNAMO
-    dynamorio_app_stop();
-    dynamorio_app_exit();
-#endif
     return 0;
 }
 

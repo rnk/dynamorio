@@ -3991,55 +3991,6 @@ report_native_module(dcontext_t *dcontext, app_pc modpc)
 }
 #endif
 
-#if 0
-/* Appends code to a native bb to save the retaddr on the stack into the
- * dcontext and replace it with back_from_native().  We assume the dcontext is
- * already set up in the default register and that REG_XAX is scratch.
- * WARNING: breaks transparency rules.
- */
-static void
-native_bb_swap_retaddr(dcontext_t *dcontext, build_bb_t *bb)
-{
-    /* To regain control we put our interception routine as the retaddr,
-     * assuming of course no transparency problems like longjmp or retaddr examination.
-     * We need to know where to go when we return -- but this can be stdcall,
-     * where it's tough to just push our retaddr after real one as earlier args will be
-     * "cleaned up" and beyond TOS and we don't know how many args there were!
-     * We use two special fields to store the original return address as well as its
-     * stack location.  We assume that we do not re-takeover on exceptions or
-     * APCs (callbacks will be ok) -- if we ever decide to we'll have to either
-     * use the dcontext stack just like for callbacks or stack
-     * native_exec_ret{val,loc} in some other manner.
-     */
-    instrlist_append(bb->ilist, INSTR_CREATE_mov_ld(dcontext, opnd_create_reg(REG_XAX),
-                                                    OPND_CREATE_MEMPTR(REG_XSP, 0)));
-    instrlist_append(bb->ilist, instr_create_save_to_dc_via_reg
-                     (dcontext, REG_NULL/*default*/, REG_XAX,
-                      NATIVE_EXEC_RETVAL_OFFSET));
-    /* we don't count on mcontext being preserved (native syscalls will clobber it),
-     * and when we re-takeover we need the new app state anyway, so we have to use
-     * a special field to store where we clobbered the app retaddr in order to restore
-     * it on a detach
-     */
-    instrlist_append(bb->ilist, instr_create_save_to_dc_via_reg
-                     (dcontext, REG_NULL/*default*/, REG_XSP,
-                      NATIVE_EXEC_RETLOC_OFFSET));
-#ifdef X64
-    /* must go through a register */
-    instrlist_append(bb->ilist, INSTR_CREATE_mov_imm
-                     (dcontext, opnd_create_reg(REG_XAX),
-                      OPND_CREATE_INTPTR((ptr_int_t)back_from_native)));
-    instrlist_append(bb->ilist, INSTR_CREATE_mov_st
-                     (dcontext, OPND_CREATE_MEMPTR(REG_XSP, 0),
-                      opnd_create_reg(REG_XAX)));
-#else
-    instrlist_append(bb->ilist, INSTR_CREATE_mov_st
-                     (dcontext, OPND_CREATE_MEM32(REG_XSP, 0),
-                      OPND_CREATE_INTPTR((ptr_int_t)back_from_native)));
-#endif
-}
-#endif
-
 /* WARNING: breaks all kinds of rules, like ret addr transparency and
  * assuming app stack and not doing calls out of the cache and not having
  * control during dll loads, etc...
@@ -4100,10 +4051,12 @@ build_native_exec_bb(dcontext_t *dcontext, build_bb_t *bb)
      * code.
      */
     if (bb->native_call) {
-        dr_insert_clean_call(dcontext, bb->ilist, NULL, call_to_native, false/*!fp*/, 1,
+        dr_insert_clean_call(dcontext, bb->ilist, NULL,
+                             (void *)call_to_native, false/*!fp*/, 1,
                              opnd_create_reg(REG_XSP));
     } else {
-        dr_insert_clean_call(dcontext, bb->ilist, NULL, return_to_native, false/*!fp*/, 0);
+        dr_insert_clean_call(dcontext, bb->ilist, NULL,
+                             (void *) return_to_native, false/*!fp*/, 0);
     }
 
 #ifdef X64
@@ -4232,20 +4185,10 @@ at_native_exec_gateway(dcontext_t *dcontext, app_pc start, bool *is_call
                 });
             }
         }
-        /* Is this the entry point of a native executable? */
-        else if (DYNAMO_OPTION(native_exec_retakeover) &&
-                 LINKSTUB_INDIRECT(dcontext->last_exit->flags) &&
-                 start == get_image_entry()) {
-            if (vmvector_overlap(native_exec_areas, start, start+1)) {
-                native_exec_bb = true;
-                *is_call = false;
-            }
-        }
         /* Is this a return from a non-native module into a native module? */
         else if (DYNAMO_OPTION(native_exec_retakeover) &&
-                 (start == get_image_entry() ||
-                  (LINKSTUB_INDIRECT(dcontext->last_exit->flags) &&
-                   TEST(LINK_RETURN, dcontext->last_exit->flags)))) {
+                 LINKSTUB_INDIRECT(dcontext->last_exit->flags) &&
+                 TEST(LINK_RETURN, dcontext->last_exit->flags)) {
             if (vmvector_overlap(native_exec_areas, start, start+1)) {
                 /* XXX: check that this is the return address of a known native
                  * callsite where we took over on a module transition.
@@ -4255,6 +4198,19 @@ at_native_exec_gateway(dcontext_t *dcontext, app_pc start, bool *is_call
                 *is_call = false;
             }
         }
+#ifdef LINUX
+        /* Is this the entry point of a native ELF executable?  The entry point
+         * (usually _start) cannot return as there is no retaddr.
+         */
+        else if (DYNAMO_OPTION(native_exec_retakeover) &&
+                 LINKSTUB_INDIRECT(dcontext->last_exit->flags) &&
+                 start == get_image_entry()) {
+            if (vmvector_overlap(native_exec_areas, start, start+1)) {
+                native_exec_bb = true;
+                *is_call = false;
+            }
+        }
+#endif
         /* can we GUESS that we came from an indirect call? */
         else if (DYNAMO_OPTION(native_exec_guess_calls) &&
                  (/* FIXME: require jmp* be in separate module? */

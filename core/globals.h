@@ -689,9 +689,6 @@ struct _dcontext_t {
     linkstub_t *     last_exit;       /* last exit from cache */
     byte *         dstack;          /* thread-private dynamo stack */
 
-    app_pc         native_exec_retval; /* no longer used */
-    app_pc         native_exec_retloc; /* no longer used */
-
 #ifdef RETURN_STACK
     byte *         rstack;          /* bottom of return stack */
     byte *         top_of_rstack;   /* top of return stack */

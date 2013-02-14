@@ -224,7 +224,7 @@ return_to_native(void)
  * calls out of native modules.  Inverse of entering_native().
  */
 static void
-back_from_native_C(dcontext_t *dcontext, priv_mcontext_t *mc, app_pc target)
+back_from_native_common(dcontext_t *dcontext, priv_mcontext_t *mc, app_pc target)
 {
     /* ASSUMPTION: was native entire time, don't need to initialize dcontext
      * or anything, and next_tag is still there!
@@ -289,7 +289,7 @@ pop_retaddr_for_sp(dcontext_t *dcontext, app_pc sp)
  * routine back_from_native() in x86.asm.
  */
 void
-back_from_native_ret(priv_mcontext_t *mc)
+return_from_native(priv_mcontext_t *mc)
 {
     dcontext_t *dcontext;
     app_pc target;
@@ -300,7 +300,7 @@ back_from_native_ret(priv_mcontext_t *mc)
     target = pop_retaddr_for_sp(dcontext, (app_pc) mc->xsp);
     LOG(THREAD, LOG_ASYNCH, 1, "\n!!!! Returned from NATIVE module to "PFX"\n",
         target);
-    back_from_native_C(dcontext, mc, target); /* noreturn */
+    back_from_native_common(dcontext, mc, target); /* noreturn */
     ASSERT_NOT_REACHED();
 }
 
@@ -317,7 +317,7 @@ native_module_callout(priv_mcontext_t *mc, app_pc target)
     ASSERT(DYNAMO_OPTION(native_exec_retakeover));
     LOG(THREAD, LOG_ASYNCH, 4, "%s: cross-module call to %p\n",
         __FUNCTION__, target);
-    back_from_native_C(dcontext, mc, target);
+    back_from_native_common(dcontext, mc, target);
     ASSERT_NOT_REACHED();
 }
 
@@ -332,3 +332,14 @@ interpret_back_from_native(dcontext_t *dcontext)
         "interpreting retaddr "PFX" instead\n", dcontext->next_tag);
 }
 
+void
+put_back_native_retaddrs(dcontext_t *dcontext)
+{
+    pc_sp_pair_t *retstack = dcontext->native_retstack;
+    int i;
+    for (i = 0; i < MAX_NATIVE_RETSTACK && retstack[i].sp != NULL; i++) {
+        app_pc *retloc = (app_pc *) retstack[i].sp;
+        ASSERT(*retloc == (app_pc) back_from_native);
+        *retloc = retstack[i].pc;
+    }
+}

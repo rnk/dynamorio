@@ -1,5 +1,5 @@
 /* **********************************************************
- * Copyright (c) 2005 VMware, Inc.  All rights reserved.
+ * Copyright (c) 2013 Google, Inc.  All rights reserved.
  * **********************************************************/
 
 /*
@@ -30,59 +30,43 @@
  * DAMAGE.
  */
 
-/* nativexec.dll.dll
- * nativeexec.exe calls routines here w/ different call* constructions
- */
-#include "tools.h"
+#include <windows.h>
+#define _IMAGEHLP_SOURCE_ /* export, not import */
+#include <dbghelp.h>
 
-typedef void (*int_fn_t)(int);
-
-void EXPORT
-import_me1(int x)
+BOOL
+IMAGEAPI
+SymInitializeW(
+    __in HANDLE hProcess,
+    __in_opt PCWSTR UserSearchPath,
+    __in BOOL fInvadeProcess
+    )
 {
-    print("nativeexec.dll:import_me1(%d)\n", x);
+    return FALSE;
 }
 
-void EXPORT
-import_me2(int x)
+BOOL
+IMAGEAPI
+SymSetSearchPathW(
+    __in HANDLE hProcess,
+    __in_opt PCWSTR SearchPath
+    )
 {
-    print("nativeexec.dll:import_me2(%d)\n", x);
+    return FALSE;
 }
 
-void EXPORT
-import_me3(int x)
+DWORD64
+IMAGEAPI
+SymLoadModuleExW(
+    __in HANDLE hProcess,
+    __in_opt HANDLE hFile,
+    __in_opt PCWSTR ImageName,
+    __in_opt PCWSTR ModuleName,
+    __in DWORD64 BaseOfDll,
+    __in DWORD DllSize,
+    __in_opt PMODLOAD_DATA Data,
+    __in_opt DWORD Flags
+    )
 {
-    print("nativeexec.dll:import_me3(%d)\n", x);
+    return 0;
 }
-
-void EXPORT
-import_me4(int_fn_t fn, int x)
-{
-    fn(x);
-}
-
-void EXPORT
-unwind_level1(int_fn_t fn, int x)
-{
-    fn(x);
-}
-
-void EXPORT
-unwind_level3(int_fn_t fn, int x)
-{
-    fn(x);
-}
-
-void EXPORT
-unwind_level5(int_fn_t fn, int x)
-{
-    fn(x);
-}
-
-#ifdef WINDOWS
-BOOL APIENTRY 
-DllMain(HANDLE hModule, DWORD reason_for_call, LPVOID Reserved)
-{
-    return TRUE;
-}
-#endif
