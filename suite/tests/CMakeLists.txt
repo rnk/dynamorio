@@ -978,6 +978,7 @@ function(rundr_cmd outcmd outops native dr_ops_aux is_runall)
     endif ()
     if (WIN32)
       file(TO_CMAKE_PATH "${MAIN_LIBRARY_OUTPUT_DIRECTORY}/dynamorio.dll" dllpath)
+      # forward slashes work fine: we just need drive-letter path
       set(cmd ${cmd} -use_dll ${dllpath})
       # we pass -exit0 to avoid ctest from considering our segfault and other tests
       # to have failed (also xref PR 548997).
