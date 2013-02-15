@@ -230,7 +230,9 @@ const char *usage_str =
     "                          specified number of hours.\n"
 #ifdef LINUX
     "       -killpg            Create a new process group for the app.  If the app\n"
-    "                          times out, kill the entire process group.\n"
+    "                          times out, kill the entire process group.  This forces\n"
+    "                          the child to be a new process with a new pid, rather than\n"
+    "                          reusing the parent's pid.\n"
 #endif
     "       -stats             Print /usr/bin/time-style elapsed time and memory used.\n"
     "       -mem               Print memory usage statistics.\n"
@@ -1284,7 +1286,6 @@ int main(int argc, char *argv[])
         goto error;
     }
 
-    success = false;
     IF_WINDOWS(start_time = time(NULL);)
 
     if (!dr_inject_process_run(inject_data)) {
@@ -1306,21 +1307,20 @@ int main(int argc, char *argv[])
         uint64 limit_millis = limit * 1000;
         info("waiting %sfor app to exit...", (limit <= 0) ? "forever " : "");
         success = dr_inject_wait_for_child(inject_data, limit_millis);
-        if (!success)
-            info("timeout after %d seconds\n", limit);
 # ifdef WINDOWS
         end_time = time(NULL);
         wallclock = difftime(end_time, start_time);
         if (showstats || showmem)
             dr_inject_print_stats(inject_data, (int) wallclock, showstats, showmem);
 # endif
+        if (!success)
+            info("timeout after %d seconds\n", limit);
+        exitcode = dr_inject_process_exit(inject_data, !success/*kill process*/);
     } else {
         /* Don't wait, just return success. */
         exitcode = 0;
-        success = true;
     }
 
-    exitcode = dr_inject_process_exit(inject_data, !success/*kill process*/);
     if (exit0)
         exitcode = 0;
 

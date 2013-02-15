@@ -142,7 +142,10 @@ dr_inject_prepare_to_ptrace(void *data);
  * Put the child in a new process group.  If termination is requested with
  * dr_inject_process_exit(), the entire child process group is killed.  Using
  * this option creates a new process group, so if the process group of the
- * injector is killed, the child will survive, which may not be desireable.
+ * injector is killed, the child will survive, which may not be desirable.
+ * This routine only operates on child process, and will fail if
+ * dr_inject_prepare_to_exec() has been called instead of
+ * dr_inject_process_create().
  *
  * \note Only available on Linux.
  *
