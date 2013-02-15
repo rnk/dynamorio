@@ -126,7 +126,6 @@ dr_inject_prepare_to_exec(const char *app_name, const char **app_cmdline,
 bool
 dr_inject_prepare_to_ptrace(void *data);
 
-DR_EXPORT
 /**
  * Put the child in a new process group.  If termination is requested with
  * dr_inject_process_exit(), the entire child process group is killed.  Using
@@ -184,7 +183,6 @@ dr_inject_process_run(void *data);
 bool
 dr_inject_wait_for_child(void *data, uint64 timeout_millis);
 
-DR_EXPORT
 /**
  * Frees resources used by dr_inject_process_create().
  *
