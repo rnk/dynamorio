@@ -336,34 +336,6 @@ GetFullPathName(const char *rel, size_t abs_len, char *abs, char **ext)
     }
 }
 
-# if defined(DRRUN) || defined(DRINJECT)
-/* PID of child to kill when alarm goes off. */
-static process_id_t alarm_child_pid;
-static bool kill_group;
-
-/* Handles SIGALRM for -s timeouts set for drrun.
- */
-static void
-alarm_handler(int sig)
-{
-    if (sig == SIGALRM) {
-        /* XXX: Could check if the timeout has been reached yet.  For now we
-         * rely on alarm().
-         */
-        process_id_t pid = alarm_child_pid;
-        alarm_child_pid = 0;
-        /* Go straight for SIGKILL to match Windows.  If DR is hung, its signal
-         * handler may be confused.
-         */
-        if (kill_group) {
-            killpg(pid, SIGKILL);
-        } else {
-            kill(pid, SIGKILL);
-        }
-    }
-}
-# endif /* DRRUN || DRINJECT */
-
 #endif /* LINUX */
 
 /* Unregister a process */
@@ -709,6 +681,7 @@ int main(int argc, char *argv[])
     time_t start_time, end_time;
 # else
     bool use_ptrace = false;
+    bool kill_group = false;
 # endif
     char *app_name;
     char full_app_name[MAXIMUM_PATH];
@@ -1222,7 +1195,7 @@ int main(int argc, char *argv[])
     /* On Linux, we use exec by default to create the app process.  This matches
      * our drrun shell script and makes scripting easier for the user.
      */
-    if (limit == 0 && !use_ptrace) {
+    if (limit == 0 && !use_ptrace && !kill_group) {
         info("will exec %s", app_name);
         errcode = dr_inject_prepare_to_exec(app_name, app_argv, &inject_data);
     } else
@@ -1232,17 +1205,6 @@ int main(int argc, char *argv[])
         info("created child with pid %d for %s",
              dr_inject_get_process_id(inject_data), app_name);
     }
-# ifdef LINUX
-    if (limit != 0 && kill_group) {
-        /* Move the child to its own process group. */
-        process_id_t child_pid = dr_inject_get_process_id(inject_data);
-        int res = setpgid(child_pid, child_pid);
-        if (res < 0) {
-            perror("ERROR in setpgid");
-            die();  /* no child to clean up */
-        }
-    }
-# endif
 # ifdef WINDOWS
     if (errcode == ERROR_IMAGE_MACHINE_TYPE_MISMATCH_EXE) {
         /* Better error message than the FormatMessage */
@@ -1287,7 +1249,7 @@ int main(int argc, char *argv[])
     }
 # endif
 
-#ifdef LINUX
+# ifdef LINUX
     if (use_ptrace) {
         if (!dr_inject_prepare_to_ptrace(inject_data)) {
             error("unable to use ptrace");
@@ -1296,7 +1258,15 @@ int main(int argc, char *argv[])
             info("using ptrace to inject");
         }
     }
-#endif
+    if (kill_group) {
+        /* Move the child to its own process group. */
+        bool res = dr_inject_prepare_new_process_group(inject_data);
+        if (!res) {
+            error("error moving child to new process group");
+            goto error;
+        }
+    }
+# endif
 
     if (inject && !dr_inject_process_inject(inject_data, force_injection, drlib_path)) {
         error("unable to inject: did you forget to run drconfig first?");
@@ -1316,7 +1286,9 @@ int main(int argc, char *argv[])
         info("%s", "Using debugger key injection");
         limit = -1; /* no wait */
     }
+# endif
 
+#if 0
     if (limit >= 0) {
         double wallclock;
         int wait_result;
@@ -1330,8 +1302,6 @@ int main(int argc, char *argv[])
         else
             info("timeout after %d seconds\n", limit);
 
-        if (showstats || showmem)
-            dr_inject_print_stats(inject_data, (int) wallclock, showstats, showmem);
         exitcode = dr_inject_process_exit(inject_data, !success/*kill process*/);
         if (exit0)
             exitcode = 0;
@@ -1342,45 +1312,39 @@ int main(int argc, char *argv[])
         success = true;
         return 0;
     }
-# else /* LINUX */
-    if (limit > 0) {
-        /* Set a timer ala runstats. */
-        struct sigaction act;
-
-        /* Set an alarm handler. */
-        alarm_child_pid = dr_inject_get_process_id(inject_data);
-        memset(&act, 0, sizeof(act));
-        act.sa_handler = alarm_handler;
-        sigaction(SIGALRM, &act, NULL);
-
-        /* No interval, one shot only. */
-        alarm(limit);
-    }
-
+# endif
     if (limit >= 0) {
+# ifdef WINDOWS
+        double wallclock;
+# endif
+        uint64 limit_millis = limit * 1000;
         info("waiting %sfor app to exit...", (limit <= 0) ? "forever " : "");
-        pid_t r;
-        do {
-            r = waitpid(dr_inject_get_process_id(inject_data), &exitcode, 0);
-        } while (r != dr_inject_get_process_id(inject_data) && r != -1);
-        /* FIXME i#840: We can't actually match exit status on Linux perfectly
-         * since the kernel reserves most of the bits for signal codes.  At the
-         * very least, we should ensure if the app exits with a signal we exit
-         * non-zero.
-         */
+        success = dr_inject_wait_for_child(inject_data, limit_millis);
+        if (!success)
+            info("timeout after %d seconds\n", limit);
+# ifdef WINDOWS
+        end_time = time(NULL);
+        wallclock = difftime(end_time, start_time);
+        if (showstats || showmem)
+            dr_inject_print_stats(inject_data, (int) wallclock, showstats, showmem);
+# endif
     } else {
         /* Don't wait, just return success. */
-        exitcode = 0; 
+        exitcode = 0;
+        success = true;
     }
 
-    /* No need to kill the child process.  If the timeout expired, our signal
-     * handler does the kill.
-     */
-    dr_inject_process_exit(inject_data, false);
+    exitcode = dr_inject_process_exit(inject_data, !success/*kill process*/);
     if (exit0)
         exitcode = 0;
+
+    /* FIXME i#840: We can't actually match exit status on Linux perfectly
+     * since the kernel reserves most of the bits for signal codes.  At the
+     * very least, we should ensure if the app exits with a signal we exit
+     * non-zero.
+     */
     return exitcode;
-# endif
+
  error:
     /* we created the process suspended so if we later had an error be sure
      * to kill it instead of leaving it hanging

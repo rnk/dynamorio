@@ -126,6 +126,20 @@ dr_inject_prepare_to_exec(const char *app_name, const char **app_cmdline,
 bool
 dr_inject_prepare_to_ptrace(void *data);
 
+DR_EXPORT
+/**
+ * Put the child in a new process group.  If termination is requested with
+ * dr_inject_process_exit(), the entire child process group is killed.  Using
+ * this option creates a new process group, so if the process group of the
+ * injector is killed, the child will survive, which may not be desireable.
+ *
+ * \note Only available on Linux.
+ *
+ * \param[in]   data           The pointer returned by dr_inject_process_create()
+ */
+bool
+dr_inject_prepare_new_process_group(void *data);
+
 #endif /* LINUX */
 
 /**
@@ -157,6 +171,20 @@ dr_inject_process_inject(void *data, bool force_injection,
 bool
 dr_inject_process_run(void *data);
 
+/**
+ * Waits for the child process to exit with the given timeout.
+ *
+ * \param[in]   data           The pointer returned by dr_inject_process_create()
+ * \param[in]   timeout_millis The timeout in milliseconds.
+ *
+ * \return  Return true if the child exited, and false if we timed out.
+ *
+ * \note On Linux, this sets a signal handler for SIGALRM.
+ */
+bool
+dr_inject_wait_for_child(void *data, uint64 timeout_millis);
+
+DR_EXPORT
 /**
  * Frees resources used by dr_inject_process_create().
  *
