@@ -803,9 +803,13 @@ dr_inject_wait_for_child(void *data, uint64 timeout_millis)
 {
     dr_inject_info_t *info = (dr_inject_info_t *) data;
     bool exited;
+    int wait_result;
     if (timeout_millis == 0)
         timeout_millis = INFINITE;
-    wait_result = WaitForSingleObject(info->pi.hProcess, timeout_millis);
+    /* XXX: The API takes uint64, but we don't support waiting longer than 24
+     * days, or UINT_MAX in milliseconds.
+     */
+    wait_result = WaitForSingleObject(info->pi.hProcess, (DWORD)timeout_millis);
     exited = wait_result == WAIT_OBJECT_0;
     return exited;
 }

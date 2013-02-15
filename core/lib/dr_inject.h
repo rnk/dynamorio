@@ -174,7 +174,8 @@ dr_inject_process_run(void *data);
  * Waits for the child process to exit with the given timeout.
  *
  * \param[in]   data           The pointer returned by dr_inject_process_create()
- * \param[in]   timeout_millis The timeout in milliseconds.
+ * \param[in]   timeout_millis The timeout in milliseconds.  Zero means wait
+ *                             forever.
  *
  * \return  Return true if the child exited, and false if we timed out.
  *
