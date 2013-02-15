@@ -811,10 +811,19 @@ dr_inject_wait_for_child(void *data, uint64 timeout_millis)
 {
     dr_inject_info_t *info = (dr_inject_info_t *) data;
     int wait_result;
-    /* XXX: We don't support waiting longer than 24 days, or UINT_MAX in
-     * milliseconds.  Using nt_wait_event_with_timeout() is not trivial.
-     */
-    wait_result = WaitForSingleObject(info->pi.hProcess, (DWORD)timeout_millis);
+    LARGE_INTEGER timeout_large;
+    LARGE_INTEGER *timeout;
+    if (timeout_millis == 0) {
+        timeout = INFINITE_WAIT;
+    } else {
+        /* nt_wait_event_with_timeout() takes timer units.  Negative means
+         * relative in the future, and positive means absolute time.
+         */
+        timeout_large.QuadPart = -(int64)timeout_millis * TIMER_UNITS_PER_MILLISECOND;
+        timeout = &timeout_large;
+    }
+    /* We use the Nt version to avoid loss of precision. */
+    wait_result = nt_wait_event_with_timeout(info->pi.hProcess, timeout);
     return (wait_result == WAIT_SIGNALED);
 }
 
