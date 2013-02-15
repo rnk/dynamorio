@@ -179,6 +179,7 @@ replace_module_resolver(module_area_t *ma, app_pc *pltgot, bool to_dr)
 {
     dcontext_t *dcontext = get_thread_private_dcontext();
     app_pc resolver;
+    bool already_hooked = false;
     ASSERT_CURIOSITY(pltgot != NULL && "unable to locate DT_PLTGOT");
     if (pltgot == NULL)
         return;
@@ -191,8 +192,17 @@ replace_module_resolver(module_area_t *ma, app_pc *pltgot, bool to_dr)
     if (resolver == NULL)
         return;
 
+    /* Make this somewhat idempotent.  We shouldn't re-hook if we're already
+     * hooked, and we shouldn't remove hooks if we haven't hooked already.
+     */
+    if (resolver == (app_pc) _dynamorio_runtime_resolve)
+        already_hooked = true;
+    if (to_dr && already_hooked)
+        return;
+    if (!to_dr && !already_hooked)
+        return;
+
     if (!to_dr) {
-        ASSERT(resolver == (app_pc) _dynamorio_runtime_resolve);
         ASSERT(app_dl_runtime_resolve != NULL);
         pltgot[DL_RUNTIME_RESOLVE_IDX] = app_dl_runtime_resolve;
         return;

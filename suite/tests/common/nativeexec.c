@@ -94,9 +94,9 @@ main(int argc, char **argv)
 {
     INIT();
 
-    if (argc > 2 && strcmp("LD_BIND_NOW", argv[1])) {
+    if (argc > 2 && strcmp("-bind_now", argv[1])) {
 #ifdef WINDOWS
-        print("bind_now is Linux-only\n");
+        print("-bind_now is Linux-only\n");
 #else
         /* Re-exec the test with LD_BIND_NOW in the environment to force eager
          * binding.
