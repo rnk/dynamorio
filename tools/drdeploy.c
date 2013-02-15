@@ -1288,31 +1288,6 @@ int main(int argc, char *argv[])
     }
 # endif
 
-#if 0
-    if (limit >= 0) {
-        double wallclock;
-        int wait_result;
-        info("waiting %sfor app to exit...", (limit <= 0) ? "forever " : "");
-        wait_result = WaitForSingleObject(dr_inject_get_process_handle(inject_data),
-                                          (limit==0) ? INFINITE : (limit*1000));
-        end_time = time(NULL);
-        wallclock = difftime(end_time, start_time);
-        if (wait_result == WAIT_OBJECT_0)
-            success = true;
-        else
-            info("timeout after %d seconds\n", limit);
-
-        exitcode = dr_inject_process_exit(inject_data, !success/*kill process*/);
-        if (exit0)
-            exitcode = 0;
-        return exitcode;
-    } else {
-        /* if we are using env -> registry our changes won't get undone!
-         * we can't unset now, the app may still reference them */
-        success = true;
-        return 0;
-    }
-# endif
     if (limit >= 0) {
 # ifdef WINDOWS
         double wallclock;

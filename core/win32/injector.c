@@ -798,6 +798,19 @@ dr_inject_process_run(void *data)
 }
 
 DYNAMORIO_EXPORT
+bool
+dr_inject_wait_for_child(void *data, uint64 timeout_millis)
+{
+    dr_inject_info_t *info = (dr_inject_info_t *) data;
+    bool exited;
+    if (timeout_millis == 0)
+        timeout_millis = INFINITE;
+    wait_result = WaitForSingleObject(info->pi.hProcess, timeout_millis);
+    exited = wait_result == WAIT_OBJECT_0;
+    return exited;
+}
+
+DYNAMORIO_EXPORT
 int
 dr_inject_process_exit(void *data, bool terminate)
 {
