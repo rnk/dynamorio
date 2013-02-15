@@ -1205,6 +1205,17 @@ int main(int argc, char *argv[])
         info("created child with pid %d for %s",
              dr_inject_get_process_id(inject_data), app_name);
     }
+# ifdef LINUX
+    if (limit != 0 && kill_group) {
+        /* Move the child to its own process group. */
+        process_id_t child_pid = dr_inject_get_process_id(inject_data);
+        int res = setpgid(child_pid, child_pid);
+        if (res < 0) {
+            perror("ERROR in setpgid");
+            goto error;
+        }
+    }
+# endif
 # ifdef WINDOWS
     if (errcode == ERROR_IMAGE_MACHINE_TYPE_MISMATCH_EXE) {
         /* Better error message than the FormatMessage */

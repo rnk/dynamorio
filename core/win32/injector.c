@@ -64,6 +64,7 @@
 #include "ntdll.h"
 #include "inject_shared.h"
 #include "os_private.h"
+#include "dr_inject.h"
 
 #ifdef UNICODE
 # error dr_inject.h and drdeploy.c not set up for unicde
@@ -598,9 +599,11 @@ get_image_name(const TCHAR *app_name)
  * children, we require the child to match our bitwidth.
  * module_is_64bit() takes in a base, but there's no need to map the
  * whole thing in.  Thus we have our own impl.
+ * Once we fix i#803, remove the ERROR_IMAGE_MACHINE_TYPE_MISMATCH_EXE
+ * comment in the docs for dr_inject_process_create.
  */
 static bool
-exe_is_right_bitwidth(const char *exe)
+exe_is_right_bitwidth(const char *exe, int *errcode)
 {
     bool res = false;
     HANDLE f;
@@ -626,8 +629,11 @@ exe_is_right_bitwidth(const char *exe)
     res = (nt.OptionalHeader.Magic ==
            IF_X64_ELSE(IMAGE_NT_OPTIONAL_HDR64_MAGIC, IMAGE_NT_OPTIONAL_HDR_MAGIC));
     CloseHandle(f);
+    if (!res)
+        *errcode = ERROR_IMAGE_MACHINE_TYPE_MISMATCH_EXE;
     return res;
  read_nt_headers_error:
+    *errcode = ERROR_FILE_NOT_FOUND;
     if (f != INVALID_HANDLE_VALUE)
         CloseHandle(f);
     return false;
@@ -652,7 +658,9 @@ dr_inject_process_create(const char *app_name, const char **argv,
     if (data == NULL)
         return ERROR_INVALID_PARAMETER;
 
-    if (!exe_is_right_bitwidth(app_name))
+    if (!exe_is_right_bitwidth(app_name, &errcode) &&
+        /* don't return here if couldn't find app: get appropriate errcode below */
+        errcode == ERROR_IMAGE_MACHINE_TYPE_MISMATCH_EXE)
         return ERROR_IMAGE_MACHINE_TYPE_MISMATCH_EXE;
 
     /* Quote and concatenate the array of strings to pass to CreateProcess. */
