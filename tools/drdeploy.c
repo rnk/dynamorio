@@ -1239,7 +1239,7 @@ int main(int argc, char *argv[])
         int res = setpgid(child_pid, child_pid);
         if (res < 0) {
             perror("ERROR in setpgid");
-            die();  /* no child to clean up */
+            goto error;
         }
     }
 # endif
