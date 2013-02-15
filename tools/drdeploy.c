@@ -867,7 +867,9 @@ int main(int argc, char *argv[])
         }
 
         /* params with an arg */
-        if (strcmp(argv[i], "-root") == 0) {
+        if (strcmp(argv[i], "-root") == 0 ||
+            /* support -dr_home alias used by script */
+            strcmp(argv[i], "-dr_home") == 0) {
             dr_root = argv[++i];
         }
 #ifdef DRCONFIG
