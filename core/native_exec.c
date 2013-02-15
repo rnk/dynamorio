@@ -197,10 +197,10 @@ call_to_native(app_pc *sp)
      */
     ASSERT(dcontext->native_retstack_cur <
            &dcontext->native_retstack[MAX_NATIVE_RETSTACK]);
-    ASSERT(dcontext->native_retstack_cur->pc == NULL);
-    ASSERT(dcontext->native_retstack_cur->sp == NULL);
-    dcontext->native_retstack_cur->pc = *sp;
-    dcontext->native_retstack_cur->sp = (app_pc) sp;
+    ASSERT(dcontext->native_retstack_cur->retaddr == NULL);
+    ASSERT(dcontext->native_retstack_cur->retloc == NULL);
+    dcontext->native_retstack_cur->retaddr = *sp;
+    dcontext->native_retstack_cur->retloc = (app_pc) sp;
     dcontext->native_retstack_cur++;
     LOG(THREAD, LOG_ASYNCH, 1,
         "!!!! Entering module NATIVELY, retaddr="PFX"\n\n", *sp);
@@ -272,20 +272,20 @@ return_from_native(priv_mcontext_t *mc)
     ASSERT(dcontext->native_retstack_cur > &dcontext->native_retstack[0]);
     dcontext->native_retstack_cur--;
     while (dcontext->native_retstack_cur > &dcontext->native_retstack[0] &&
-           dcontext->native_retstack_cur->sp != retloc) {
+           dcontext->native_retstack_cur->retloc != retloc) {
         /* The app must have unwound the stack.  Clear entries until we find the
          * current SP.
          */
         ASSERT(dcontext->native_retstack_cur > &dcontext->native_retstack[0]);
-        dcontext->native_retstack_cur->pc = NULL;
-        dcontext->native_retstack_cur->sp = NULL;
+        dcontext->native_retstack_cur->retaddr = NULL;
+        dcontext->native_retstack_cur->retloc = NULL;
         dcontext->native_retstack_cur--;
     }
-    ASSERT(dcontext->native_retstack_cur->sp == retloc &&
+    ASSERT(dcontext->native_retstack_cur->retloc == retloc &&
            "failed to find current sp in native_retstack");
-    target = dcontext->native_retstack_cur->pc;
-    dcontext->native_retstack_cur->pc = NULL;
-    dcontext->native_retstack_cur->sp = NULL;
+    target = dcontext->native_retstack_cur->retaddr;
+    dcontext->native_retstack_cur->retaddr = NULL;
+    dcontext->native_retstack_cur->retloc = NULL;
     LOG(THREAD, LOG_ASYNCH, 1, "\n!!!! Returned from NATIVE module to "PFX"\n",
         target);
     back_from_native_common(dcontext, mc, target); /* noreturn */
@@ -312,12 +312,14 @@ native_module_callout(priv_mcontext_t *mc, app_pc target)
 bool
 put_back_native_retaddrs(dcontext_t *dcontext)
 {
-    pc_sp_pair_t *retstack = dcontext->native_retstack;
+    retaddr_and_retloc_t *retstack = dcontext->native_retstack;
     int i;
-    for (i = 0; i < MAX_NATIVE_RETSTACK && retstack[i].sp != NULL; i++) {
-        app_pc *retloc = (app_pc *) retstack[i].sp;
+    for (i = 0; i < MAX_NATIVE_RETSTACK && retstack[i].retloc != NULL; i++) {
+        app_pc *retloc = (app_pc *) retstack[i].retloc;
         ASSERT(*retloc == (app_pc) back_from_native);
-        *retloc = retstack[i].pc;
+        *retloc = retstack[i].retaddr;
+        retstack[i].retaddr = NULL;
+        retstack[i].retloc = NULL;
     }
     return i > 0;
 }

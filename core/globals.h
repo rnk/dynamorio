@@ -604,10 +604,10 @@ enum {
  */
 enum { MAX_NATIVE_RETSTACK = 10 };
 
-typedef struct _pc_sp_pair_t {
-    app_pc pc;
-    app_pc sp;
-} pc_sp_pair_t;
+typedef struct _retaddr_and_retloc_t {
+    app_pc retaddr;
+    app_pc retloc;
+} retaddr_and_retloc_t;
 
 /* To handle TRY/EXCEPT/FINALLY setjmp */
 typedef struct try_except_context_t {
@@ -821,8 +821,8 @@ struct _dcontext_t {
     /* Stack of app return addresses and stack locations of callsites where we
      * called into a native module.
      */
-    pc_sp_pair_t native_retstack[MAX_NATIVE_RETSTACK];
-    pc_sp_pair_t *native_retstack_cur;
+    retaddr_and_retloc_t native_retstack[MAX_NATIVE_RETSTACK];
+    retaddr_and_retloc_t *native_retstack_cur;
 
 #ifdef PROGRAM_SHEPHERDING
     bool           alloc_no_reserve; /* to implement executable_if_alloc policy */
