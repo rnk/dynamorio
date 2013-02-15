@@ -47,6 +47,7 @@
 #include "decode.h"
 #include "disassemble.h"
 #include "os_private.h"
+#include "module.h"
 
 #include <assert.h>
 #include <ctype.h>
@@ -157,6 +158,7 @@ pre_execve_ld_preload(const char *dr_path)
     const char *lib_slash = NULL;
     const char *cur_path = getenv("LD_LIBRARY_PATH");
     const char *cur = dr_path;
+    printf("dr_path: %s\n", dr_path);
     /* Find last three occurrences of '/'. */
     while (*cur != '\0') {
         if (*cur == '/') {
@@ -404,6 +406,15 @@ option_present(const char *dr_ops, const char *op)
             (cur == dr_ops || isspace(cur[-1])));
 }
 
+static bool
+get_elf_platform_path(const char *exe_path, dr_platform_t *platform)
+{
+    file_t fd = os_open(exe_path, OS_OPEN_READ);
+    bool res = get_elf_platform(fd, platform);
+    os_close(fd);
+    return res;
+}
+
 DR_EXPORT
 bool
 dr_inject_process_inject(void *data, bool force_injection,
@@ -412,8 +423,12 @@ dr_inject_process_inject(void *data, bool force_injection,
     dr_inject_info_t *info = (dr_inject_info_t *) data;
     char dr_path_buf[MAXIMUM_PATH];
     char dr_ops[MAX_OPTIONS_STRING];
+    dr_platform_t platform;
 
-    if (!get_config_val_other_app(info->image_name, info->pid,
+    if (!get_elf_platform_path(info->exe, &platform))
+        return false; /* couldn't read header */
+
+    if (!get_config_val_other_app(info->image_name, info->pid, platform,
                                   DYNAMORIO_VAR_OPTIONS, dr_ops,
                                   BUFFER_SIZE_ELEMENTS(dr_ops), NULL,
                                   NULL, NULL)) {
@@ -433,7 +448,7 @@ dr_inject_process_inject(void *data, bool force_injection,
      * override it.
      */
     if (library_path == NULL) {
-        if (!get_config_val_other_app(info->image_name, info->pid,
+        if (!get_config_val_other_app(info->image_name, info->pid, platform,
                                       DYNAMORIO_VAR_AUTOINJECT, dr_path_buf,
                                       BUFFER_SIZE_ELEMENTS(dr_path_buf), NULL,
                                       NULL, NULL)) {
