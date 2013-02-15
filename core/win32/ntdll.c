@@ -216,12 +216,8 @@ static enum {
  */
 #ifdef X64
 # define TEB_TLS64_OFFSET 0x1480
-# define PEB_SIZE          0x358
-# define TEB_SIZE         0x17d8
 #else
 # define TEB_TLS64_OFFSET 0xe10
-# define PEB_SIZE         0x230 
-# define TEB_SIZE         0xfbc
 #endif
 
 /***************************************************************************
@@ -599,9 +595,6 @@ ntdll_init()
      * from there?
      */
     ASSERT(offsetof(TEB, TlsSlots) == TEB_TLS64_OFFSET);
-    /* Ensure we have all our other types right */
-    ASSERT(sizeof(TEB) == TEB_SIZE);
-    ASSERT(sizeof(PEB) == PEB_SIZE);
 #if !defined(NOT_DYNAMORIO_CORE_PROPER) && !defined(NOT_DYNAMORIO_CORE)
     nt_get_context_extended_functions((app_pc)get_ntdll_base());
 #endif
@@ -1297,8 +1290,6 @@ tls_alloc_helper(int synch, uint *teb_offs /* OUT */, int num_slots,
     bool using_local_bitmap = false;
 
     NTSTATUS res;
-    GET_NTDLL(RtlEnterCriticalSection, (IN OUT RTL_CRITICAL_SECTION *crit));
-    GET_NTDLL(RtlLeaveCriticalSection, (IN OUT RTL_CRITICAL_SECTION *crit));
     if (synch) {
         /* FIXME: I read somewhere they are removing more PEB pointers in Vista or earlier..  */
         /* TlsAlloc calls RtlAcquirePebLock which calls RtlEnterCriticalSection */
@@ -1540,7 +1531,6 @@ tls_free_helper(int synch, uint teb_offs, int num)
 
     NTSTATUS res;
     GET_NTDLL(RtlTryEnterCriticalSection, (IN OUT RTL_CRITICAL_SECTION *crit));
-    GET_NTDLL(RtlLeaveCriticalSection, (IN OUT RTL_CRITICAL_SECTION *crit));
 
     if (synch) {
         /* TlsFree calls RtlAcquirePebLock which calls RtlEnterCriticalSection
@@ -2982,9 +2972,9 @@ query_time_seconds()
 #if !defined(NOT_DYNAMORIO_CORE_PROPER) && !defined(NOT_DYNAMORIO_CORE)
 /* note that ntdll!RtlTimeToTimeFields has this same functionality */
 void
-query_system_time(SYSTEMTIME *st)
+convert_100ns_to_system_time(uint64 time_in_100ns, SYSTEMTIME *st OUT)
 {
-    LONGLONG time = query_time_100ns() / TIMER_UNITS_PER_MILLISECOND;
+    LONGLONG time = time_in_100ns / TIMER_UNITS_PER_MILLISECOND;
     dr_time_t dr_time;
     convert_millis_to_date((uint64)time, &dr_time);
     st->wYear = (WORD) dr_time.year;
@@ -2995,6 +2985,29 @@ query_system_time(SYSTEMTIME *st)
     st->wMinute = (WORD) dr_time.minute;
     st->wSecond = (WORD) dr_time.second;
     st->wMilliseconds = (WORD) dr_time.milliseconds;
+}
+
+void
+convert_system_time_to_100ns(const SYSTEMTIME *st, uint64 *time_in_100ns OUT)
+{
+    uint64 time;
+    dr_time_t dr_time;
+    dr_time.year = st->wYear;
+    dr_time.month = st->wMonth;
+    dr_time.day_of_week = st->wDayOfWeek;
+    dr_time.day = st->wDay;
+    dr_time.hour = st->wHour;
+    dr_time.minute = st->wMinute;
+    dr_time.second = st->wSecond;
+    dr_time.milliseconds = st->wMilliseconds;
+    convert_date_to_millis(&dr_time, &time);
+    *time_in_100ns = time * TIMER_UNITS_PER_MILLISECOND;
+}
+
+void
+query_system_time(SYSTEMTIME *st OUT)
+{
+    convert_100ns_to_system_time(query_time_100ns(), st);
 }
 #endif
 
@@ -3132,7 +3145,8 @@ create_file(PCWSTR filename, bool is_dir, ACCESS_MASK rights,
 
 #if !defined(NOT_DYNAMORIO_CORE_PROPER) && !defined(NOT_DYNAMORIO_CORE)
 NTSTATUS
-nt_open_file(HANDLE *handle OUT, PCWSTR filename, ACCESS_MASK rights, uint sharing)
+nt_open_file(HANDLE *handle OUT, PCWSTR filename, ACCESS_MASK rights, uint sharing,
+             uint options)
 {
     NTSTATUS res;
     OBJECT_ATTRIBUTES oa;
@@ -3145,7 +3159,7 @@ nt_open_file(HANDLE *handle OUT, PCWSTR filename, ACCESS_MASK rights, uint shari
 
     InitializeObjectAttributes(&oa, &us, OBJ_CASE_INSENSITIVE, NULL, NULL);
     res = nt_raw_OpenFile(handle, rights | SYNCHRONIZE,
-                          &oa, &iob, sharing, FILE_SYNCHRONOUS_IO_NONALERT);
+                          &oa, &iob, sharing, FILE_SYNCHRONOUS_IO_NONALERT | options);
     return res;
 }
 #endif
@@ -3190,18 +3204,15 @@ nt_delete_file(PCWSTR nt_filename)
     return res;
 }
 
-bool
-flush_file_buffers(HANDLE file_handle)
+NTSTATUS
+nt_flush_file_buffers(HANDLE file_handle)
 {
-    NTSTATUS res;
     IO_STATUS_BLOCK ret;
-    
+
     GET_NTDLL(NtFlushBuffersFile, (IN HANDLE FileHandle,
                                    OUT PIO_STATUS_BLOCK IoStatusBlock));
 
-    res = NtFlushBuffersFile(file_handle, &ret);
-
-    return NT_SUCCESS(res);
+    return NtFlushBuffersFile(file_handle, &ret);
 }
 
 bool
@@ -3212,16 +3223,6 @@ read_file(HANDLE file_handle, void *buffer, uint num_bytes_to_read,
     NTSTATUS res;
     IO_STATUS_BLOCK ret = {0};
     LARGE_INTEGER ByteOffset;   /* should be the same as uint64 */
-
-    GET_NTDLL(NtReadFile, (IN HANDLE FileHandle,
-                           IN HANDLE Event OPTIONAL,
-                           IN PIO_APC_ROUTINE ApcRoutine OPTIONAL,
-                           IN PVOID ApcContext OPTIONAL,
-                           OUT PIO_STATUS_BLOCK IoStatusBlock,
-                           OUT PVOID Buffer,
-                           IN ULONG Length,
-                           IN PLARGE_INTEGER ByteOffset OPTIONAL,
-                           IN PULONG Key OPTIONAL));
 
     if (file_byte_offset != NULL) {
         ByteOffset.QuadPart = *file_byte_offset;
@@ -3250,16 +3251,6 @@ write_file(HANDLE file_handle, const void *buffer, uint num_bytes_to_write,
     IO_STATUS_BLOCK ret = {0};
     LARGE_INTEGER ByteOffset;
     
-    GET_NTDLL(NtWriteFile, (IN HANDLE FileHandle,
-                            IN HANDLE Event OPTIONAL,
-                            IN PIO_APC_ROUTINE ApcRoutine OPTIONAL,
-                            IN PVOID ApcContext OPTIONAL,
-                            OUT PIO_STATUS_BLOCK IoStatusBlock,
-                            IN const void *Buffer, /* PVOID, but need const */
-                            IN ULONG Length,
-                            IN PLARGE_INTEGER ByteOffset OPTIONAL,
-                            IN PULONG Key OPTIONAL));
-
     if (file_byte_offset != NULL) {
         ByteOffset.QuadPart = *file_byte_offset;
     }

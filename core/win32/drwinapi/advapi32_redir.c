@@ -373,7 +373,9 @@ unit_test_drwinapi_advapi32(void)
     LSTATUS res;
     HKEY key;
     DWORD type, size, handle_count = 0;
-    char buf[512];
+    /* NetworkService gets bigger then 512 so we go for 1024 */
+#   define REG_KEY_DATA_SZ 1024
+    char buf[REG_KEY_DATA_SZ];
     BOOL ok;
 
     print_file(STDERR, "testing drwinapi advapi32\n");
@@ -433,7 +435,10 @@ unit_test_drwinapi_advapi32(void)
     res = redirect_RegOpenKeyExW(HKEY_CURRENT_USER, L"Environment", 0, KEY_READ, &key);
     EXPECT(res == ERROR_SUCCESS, true);
     size = BUFFER_SIZE_BYTES(buf);
-    res = redirect_RegQueryValueExW(key, L"PATH", 0, &type, (LPBYTE) buf, &size);
+    /* PATH is sometimes REG_SZ and sometimes REG_EXPAND_SZ.  TEMP always seems
+     * to be REG_EXPAND_SZ, so far at least.
+     */
+    res = redirect_RegQueryValueExW(key, L"TEMP", 0, &type, (LPBYTE) buf, &size);
     EXPECT(res == ERROR_SUCCESS, true);
     EXPECT(type == REG_EXPAND_SZ, true);
     res = redirect_RegCloseKey(key);

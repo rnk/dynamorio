@@ -52,9 +52,47 @@
 #include "../../globals.h"
 #include "../../module_shared.h"
 
-#ifndef __drv_interlocked /* support older VS versions */
+/**************************************************
+ * support older VS versions
+ */
+
+#ifndef __drv_interlocked
 # define __drv_interlocked /* nothing */
 #endif
+
+#if _MSC_VER <= 1400 /* VS2005- */
+enum {
+    HeapEnableTerminationOnCorruption = 1,
+};
+
+/* wincon.h */
+typedef struct _CONSOLE_READCONSOLE_CONTROL {
+    ULONG nLength;
+    ULONG nInitialChars;
+    ULONG dwCtrlWakeupMask;
+    ULONG dwControlKeyState;
+} CONSOLE_READCONSOLE_CONTROL, *PCONSOLE_READCONSOLE_CONTROL;
+
+/* winbase.h */
+typedef enum _FILE_INFO_BY_HANDLE_CLASS {
+    FileBasicInfo,
+    FileStandardInfo,
+    FileNameInfo,
+    FileRenameInfo,
+    FileDispositionInfo,
+    FileAllocationInfo,
+    FileEndOfFileInfo,
+    FileStreamInfo,
+    FileCompressionInfo,
+    FileAttributeTagInfo,
+    FileIdBothDirectoryInfo,
+    FileIdBothDirectoryRestartInfo,
+    FileIoPriorityHintInfo,
+    FileRemoteProtocolInfo,
+    MaximumFileInfoByHandleClass
+} FILE_INFO_BY_HANDLE_CLASS, *PFILE_INFO_BY_HANDLE_CLASS;
+#endif
+
 
 void
 kernel32_redir_init(void);
@@ -88,6 +126,31 @@ kernel32_redir_onload_proc(privmod_t *mod);
 
 DWORD WINAPI
 redirect_FlsAlloc(PFLS_CALLBACK_FUNCTION cb);
+
+HANDLE
+WINAPI
+redirect_GetCurrentProcess(
+    VOID
+    );
+
+DWORD
+WINAPI
+redirect_GetCurrentProcessId(
+    VOID
+    );
+
+__out
+HANDLE
+WINAPI
+redirect_GetCurrentThread(
+    VOID
+    );
+
+DWORD
+WINAPI
+redirect_GetCurrentThreadId(
+    VOID
+    );
 
 BOOL
 WINAPI
@@ -188,32 +251,6 @@ __out
 LPWSTR
 WINAPI
 redirect_GetCommandLineW(
-    VOID
-    );
-
-__out
-HANDLE
-WINAPI
-redirect_GetCurrentProcess(
-    VOID
-    );
-
-DWORD
-WINAPI
-redirect_GetCurrentProcessId(
-    VOID
-    );
-
-__out
-HANDLE
-WINAPI
-redirect_GetCurrentThread(
-    VOID
-    );
-
-DWORD
-WINAPI
-redirect_GetCurrentThreadId(
     VOID
     );
 
@@ -343,8 +380,8 @@ kernel32_redir_onload_lib(privmod_t *mod);
 FARPROC
 WINAPI
 redirect_DelayLoadFailureHook(
-  _In_  LPCSTR pszDllName,
-  _In_  LPCSTR pszProcName
+  __in  LPCSTR pszDllName,
+  __in  LPCSTR pszProcName
 );
 
 BOOL
@@ -670,7 +707,44 @@ redirect_CreateDirectoryW(
     __in_opt LPSECURITY_ATTRIBUTES lpSecurityAttributes
     );
 
-__out
+BOOL
+WINAPI
+redirect_RemoveDirectoryA(
+    __in LPCSTR lpPathName
+    );
+
+BOOL
+WINAPI
+redirect_RemoveDirectoryW(
+    __in LPCWSTR lpPathName
+    );
+
+DWORD
+WINAPI
+redirect_GetCurrentDirectoryA(
+    __in DWORD nBufferLength,
+    __out_ecount_part_opt(nBufferLength, return + 1) LPSTR lpBuffer
+    );
+
+DWORD
+WINAPI
+redirect_GetCurrentDirectoryW(
+    __in DWORD nBufferLength,
+    __out_ecount_part_opt(nBufferLength, return + 1) LPWSTR lpBuffer
+    );
+
+BOOL
+WINAPI
+redirect_SetCurrentDirectoryA(
+    __in LPCSTR lpPathName
+    );
+
+BOOL
+WINAPI
+redirect_SetCurrentDirectoryW(
+    __in LPCWSTR lpPathName
+    );
+
 HANDLE
 WINAPI
 redirect_CreateFileA(
@@ -706,6 +780,26 @@ BOOL
 WINAPI
 redirect_DeleteFileW(
     __in LPCWSTR lpFileName
+    );
+
+BOOL
+WINAPI
+redirect_ReadFile(
+    __in        HANDLE hFile,
+    __out_bcount_part(nNumberOfBytesToRead, *lpNumberOfBytesRead) LPVOID lpBuffer,
+    __in        DWORD nNumberOfBytesToRead,
+    __out_opt   LPDWORD lpNumberOfBytesRead,
+    __inout_opt LPOVERLAPPED lpOverlapped
+    );
+
+BOOL
+WINAPI
+redirect_WriteFile(
+    __in        HANDLE hFile,
+    __in_bcount(nNumberOfBytesToWrite) LPCVOID lpBuffer,
+    __in        DWORD nNumberOfBytesToWrite,
+    __out_opt   LPDWORD lpNumberOfBytesWritten,
+    __inout_opt LPOVERLAPPED lpOverlapped
     );
 
 HANDLE
@@ -759,6 +853,13 @@ redirect_UnmapViewOfFile(
 
 BOOL
 WINAPI
+redirect_FlushViewOfFile(
+    __in LPCVOID lpBaseAddress,
+    __in SIZE_T dwNumberOfBytesToFlush
+    );
+
+BOOL
+WINAPI
 redirect_CreatePipe(
     __out_ecount_full(1) PHANDLE hReadPipe,
     __out_ecount_full(1) PHANDLE hWritePipe,
@@ -806,9 +907,47 @@ redirect_FileTimeToLocalFileTime(
 
 BOOL
 WINAPI
+redirect_LocalFileTimeToFileTime(
+    __in  CONST FILETIME *lpLocalFileTime,
+    __out LPFILETIME lpFileTime
+    );
+
+BOOL
+WINAPI
 redirect_FileTimeToSystemTime(
     __in  CONST FILETIME *lpFileTime,
     __out LPSYSTEMTIME lpSystemTime
+    );
+
+BOOL
+WINAPI
+redirect_SystemTimeToFileTime(
+    __in  CONST SYSTEMTIME *lpSystemTime,
+    __out LPFILETIME lpFileTime
+    );
+
+VOID
+WINAPI
+redirect_GetSystemTimeAsFileTime(
+    __out LPFILETIME lpSystemTimeAsFileTime
+    );
+
+BOOL
+WINAPI
+redirect_GetFileTime(
+    __in      HANDLE hFile,
+    __out_opt LPFILETIME lpCreationTime,
+    __out_opt LPFILETIME lpLastAccessTime,
+    __out_opt LPFILETIME lpLastWriteTime
+    );
+
+BOOL
+WINAPI
+redirect_SetFileTime(
+    __in     HANDLE hFile,
+    __in_opt CONST FILETIME *lpCreationTime,
+    __in_opt CONST FILETIME *lpLastAccessTime,
+    __in_opt CONST FILETIME *lpLastWriteTime
     );
 
 BOOL
@@ -817,7 +956,6 @@ redirect_FindClose(
     __inout HANDLE hFindFile
     );
 
-__out
 HANDLE
 WINAPI
 redirect_FindFirstFileA(
@@ -825,7 +963,6 @@ redirect_FindFirstFileA(
     __out LPWIN32_FIND_DATAA lpFindFileData
     );
 
-__out
 HANDLE
 WINAPI
 redirect_FindFirstFileW(
@@ -851,27 +988,6 @@ BOOL
 WINAPI
 redirect_FlushFileBuffers(
     __in HANDLE hFile
-    );
-
-BOOL
-WINAPI
-redirect_FlushViewOfFile(
-    __in LPCVOID lpBaseAddress,
-    __in SIZE_T dwNumberOfBytesToFlush
-    );
-
-DWORD
-WINAPI
-redirect_GetCurrentDirectoryA(
-    __in DWORD nBufferLength,
-    __out_ecount_part_opt(nBufferLength, return + 1) LPSTR lpBuffer
-    );
-
-DWORD
-WINAPI
-redirect_GetCurrentDirectoryW(
-    __in DWORD nBufferLength,
-    __out_ecount_part_opt(nBufferLength, return + 1) LPWSTR lpBuffer
     );
 
 BOOL
@@ -928,6 +1044,8 @@ redirect_GetFileType(
     __in HANDLE hFile
     );
 
+
+/* XXX: when implemented, use in redirect_SetCurrentDirectoryW() */
 DWORD
 WINAPI
 redirect_GetFullPathNameA(
@@ -953,23 +1071,10 @@ redirect_GetStdHandle(
     __in DWORD nStdHandle
     );
 
-VOID
-WINAPI
-redirect_GetSystemTimeAsFileTime(
-    __out LPFILETIME lpSystemTimeAsFileTime
-    );
-
 DWORD
 WINAPI
 redirect_GetLogicalDrives(
     VOID
-    );
-
-BOOL
-WINAPI
-redirect_LocalFileTimeToFileTime(
-    __in  CONST FILETIME *lpLocalFileTime,
-    __out LPFILETIME lpFileTime
     );
 
 BOOL
@@ -1033,40 +1138,6 @@ redirect_ReadConsoleW(
 
 BOOL
 WINAPI
-redirect_ReadFile(
-    __in        HANDLE hFile,
-    __out_bcount_part(nNumberOfBytesToRead, *lpNumberOfBytesRead) LPVOID lpBuffer,
-    __in        DWORD nNumberOfBytesToRead,
-    __out_opt   LPDWORD lpNumberOfBytesRead,
-    __inout_opt LPOVERLAPPED lpOverlapped
-    );
-
-BOOL
-WINAPI
-redirect_RemoveDirectoryA(
-    __in LPCSTR lpPathName
-    );
-
-BOOL
-WINAPI
-redirect_RemoveDirectoryW(
-    __in LPCWSTR lpPathName
-    );
-
-BOOL
-WINAPI
-redirect_SetCurrentDirectoryA(
-    __in LPCSTR lpPathName
-    );
-
-BOOL
-WINAPI
-redirect_SetCurrentDirectoryW(
-    __in LPCWSTR lpPathName
-    );
-
-BOOL
-WINAPI
 redirect_SetEndOfFile(
     __in HANDLE hFile
     );
@@ -1094,6 +1165,7 @@ redirect_SetFileInformationByHandle(
     __in  DWORD dwBufferSize
 );
 
+/* XXX: once we have redirect_SetFilePointer, replace SetFilePointer in unit test */
 DWORD
 WINAPI
 redirect_SetFilePointer(
@@ -1105,25 +1177,9 @@ redirect_SetFilePointer(
 
 BOOL
 WINAPI
-redirect_SetFileTime(
-    __in     HANDLE hFile,
-    __in_opt CONST FILETIME *lpCreationTime,
-    __in_opt CONST FILETIME *lpLastAccessTime,
-    __in_opt CONST FILETIME *lpLastWriteTime
-    );
-
-BOOL
-WINAPI
 redirect_SetStdHandle(
     __in DWORD nStdHandle,
     __in HANDLE hHandle
-    );
-
-BOOL
-WINAPI
-redirect_SystemTimeToFileTime(
-    __in  CONST SYSTEMTIME *lpSystemTime,
-    __out LPFILETIME lpFileTime
     );
 
 BOOL
@@ -1156,31 +1212,9 @@ redirect_WriteConsoleW(
     IN LPVOID lpReserved
     );
 
-BOOL
-WINAPI
-redirect_WriteFile(
-    __in        HANDLE hFile,
-    __in_bcount(nNumberOfBytesToWrite) LPCVOID lpBuffer,
-    __in        DWORD nNumberOfBytesToWrite,
-    __out_opt   LPDWORD lpNumberOfBytesWritten,
-    __inout_opt LPOVERLAPPED lpOverlapped
-    );
-
 /***************************************************************************
  * Synchronization
  */
-
-VOID
-WINAPI
-redirect_DeleteCriticalSection(
-    __inout LPCRITICAL_SECTION lpCriticalSection
-    );
-
-VOID
-WINAPI
-redirect_EnterCriticalSection(
-    __inout LPCRITICAL_SECTION lpCriticalSection
-    );
 
 VOID
 WINAPI
@@ -1203,8 +1237,26 @@ redirect_InitializeCriticalSectionEx(
     __in  DWORD Flags
     );
 
+VOID
+WINAPI
+redirect_DeleteCriticalSection(
+    __inout LPCRITICAL_SECTION lpCriticalSection
+    );
+
+VOID
+WINAPI
+redirect_EnterCriticalSection(
+    __inout LPCRITICAL_SECTION lpCriticalSection
+    );
+
+VOID
+WINAPI
+redirect_LeaveCriticalSection(
+    __inout LPCRITICAL_SECTION lpCriticalSection
+    );
+
 LONG
-__cdecl
+WINAPI
 redirect_InterlockedCompareExchange (
     __inout __drv_interlocked LONG volatile *Destination,
     __in LONG ExChange,
@@ -1212,28 +1264,22 @@ redirect_InterlockedCompareExchange (
     );
 
 LONG
-__cdecl
+WINAPI
 redirect_InterlockedDecrement(
     __inout __drv_interlocked LONG volatile *Addend
     );
 
 LONG
-__cdecl
+WINAPI
 redirect_InterlockedExchange(
     __inout __drv_interlocked LONG volatile *Target,
     __in LONG Value
     );
 
 LONG
-__cdecl
+WINAPI
 redirect_InterlockedIncrement(
     __inout __drv_interlocked LONG volatile *Addend
-    );
-
-VOID
-WINAPI
-redirect_LeaveCriticalSection(
-    __inout LPCRITICAL_SECTION lpCriticalSection
     );
 
 DWORD
