@@ -810,20 +810,11 @@ bool
 dr_inject_wait_for_child(void *data, uint64 timeout_millis)
 {
     dr_inject_info_t *info = (dr_inject_info_t *) data;
-    int wait_result;
-    LARGE_INTEGER timeout_large;
-    LARGE_INTEGER *timeout;
-    if (timeout_millis == 0) {
-        timeout = INFINITE_WAIT;
-    } else {
-        /* nt_wait_event_with_timeout() takes timer units.  Negative means
-         * relative in the future, and positive means absolute time.
-         */
-        timeout_large.QuadPart = -(int64)timeout_millis * TIMER_UNITS_PER_MILLISECOND;
-        timeout = &timeout_large;
-    }
+    wait_status_t wait_result;
+    if (timeout_millis == 0)
+        timeout_millis = INFINITE;
     /* We use the Nt version to avoid loss of precision. */
-    wait_result = nt_wait_event_with_timeout(info->pi.hProcess, timeout);
+    wait_result = os_wait_handle(info->pi.hProcess, timeout_millis);
     return (wait_result == WAIT_SIGNALED);
 }
 
