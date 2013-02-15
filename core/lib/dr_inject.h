@@ -202,6 +202,7 @@ DR_EXPORT
 bool
 dr_inject_wait_for_child(void *data, uint64 timeout_millis);
 
+DR_EXPORT
 /**
  * Frees resources used by dr_inject_process_create().
  *

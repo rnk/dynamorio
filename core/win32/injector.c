@@ -810,16 +810,12 @@ bool
 dr_inject_wait_for_child(void *data, uint64 timeout_millis)
 {
     dr_inject_info_t *info = (dr_inject_info_t *) data;
-    bool exited;
     int wait_result;
-    LARGE_INTEGER timeout_large;
-    if (timeout_millis == 0)
-        timeout_millis = INFINITE;
-    /* Use our ntdll wrapper so we don't lose precision on uint64. */
-    timeout_large.QuadPart = timeout_millis;
-    wait_result = nt_wait_event_with_timeout(info->pi.hProcess, &timeout_large);
-    exited = (wait_result == WAIT_OBJECT_0);
-    return exited;
+    /* XXX: We don't support waiting longer than 24 days, or UINT_MAX in
+     * milliseconds.  Using nt_wait_event_with_timeout() is not trivial.
+     */
+    wait_result = WaitForSingleObject(info->pi.hProcess, (DWORD)timeout_millis);
+    return (wait_result == WAIT_SIGNALED);
 }
 
 DYNAMORIO_EXPORT
