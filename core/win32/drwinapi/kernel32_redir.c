@@ -51,6 +51,7 @@ static const redirect_import_t redirect_kernel32[] = {
     {"GetCurrentProcessId",            (app_pc)redirect_GetCurrentProcessId},
     {"GetCurrentThread",               (app_pc)redirect_GetCurrentThread},
     {"GetCurrentThreadId",             (app_pc)redirect_GetCurrentThreadId},
+    {"ExitProcess",                    (app_pc)redirect_ExitProcess},
     /* To avoid the FlsCallback being interpreted */
     {"FlsAlloc",                       (app_pc)redirect_FlsAlloc},
 
@@ -136,6 +137,15 @@ static const redirect_import_t redirect_kernel32[] = {
     {"FindNextFileA",                  (app_pc)redirect_FindNextFileA},
     {"FindNextFileW",                  (app_pc)redirect_FindNextFileW},
     {"FlushFileBuffers",               (app_pc)redirect_FlushFileBuffers},
+    {"GetDiskFreeSpaceA",              (app_pc)redirect_GetDiskFreeSpaceA},
+    {"GetDiskFreeSpaceW",              (app_pc)redirect_GetDiskFreeSpaceW},
+    {"GetDriveTypeA",                  (app_pc)redirect_GetDriveTypeA},
+    {"GetDriveTypeW",                  (app_pc)redirect_GetDriveTypeW},
+    {"GetFileAttributesA",             (app_pc)redirect_GetFileAttributesA},
+    {"GetFileAttributesW",             (app_pc)redirect_GetFileAttributesW},
+    {"GetFileInformationByHandle",     (app_pc)redirect_GetFileInformationByHandle},
+    {"GetFileSize",                    (app_pc)redirect_GetFileSize},
+    {"GetFileType",                    (app_pc)redirect_GetFileType},
 
     /* Synchronization routines */
     {"InitializeCriticalSectionAndSpinCount",
