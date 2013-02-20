@@ -627,16 +627,6 @@ get_config_val_other_app(const char *appname, process_id_t pid,
 }
 
 bool
-get_config_val_other_app_arch(const char *appname, process_id_t pid,
-                              dr_platform_t arch,
-                              const char *var, char *val, size_t valsz,
-                              bool *app_specific, bool *from_env, bool *from_1config)
-{
-    return get_config_val_other(appname, pid, CFG_SFX, var, val, valsz,
-                                app_specific, from_env, from_1config);
-}
-
-bool
 get_config_val_other_arch(const char *var, char *val, size_t valsz,
                           bool *app_specific, bool *from_env, bool *from_1config)
 {

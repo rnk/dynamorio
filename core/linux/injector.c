@@ -166,7 +166,6 @@ pre_execve_ld_preload(const char *dr_path)
     const char *lib_slash = NULL;
     const char *cur_path = getenv("LD_LIBRARY_PATH");
     const char *cur = dr_path;
-    printf("dr_path: %s\n", dr_path);
     /* Find last three occurrences of '/'. */
     while (*cur != '\0') {
         if (*cur == '/') {
@@ -439,8 +438,11 @@ static bool
 get_elf_platform_path(const char *exe_path, dr_platform_t *platform)
 {
     file_t fd = os_open(exe_path, OS_OPEN_READ);
-    bool res = get_elf_platform(fd, platform);
-    os_close(fd);
+    bool res = false;
+    if (fd != INVALID_FILE) {
+        res = get_elf_platform(fd, platform);
+        os_close(fd);
+    }
     return res;
 }
 
