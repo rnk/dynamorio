@@ -478,7 +478,8 @@ drsym_lookup_address_local(const char *modpath, size_t modoffs,
          * do this without breaking the ABI.  Perhaps in the future we should
          * drop the trailing variable length array so we can safely add new
          * fields to drsym_info_t.
-         * FIXME: MSDN docs imply that FileName is reused on subsequent calls.
+         * FIXME i#1085: MSDN docs imply that FileName is reused on subsequent
+         * calls.
          */
         out->file = line.FileName;
         out->line = line.LineNumber;
