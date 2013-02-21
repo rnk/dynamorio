@@ -471,10 +471,15 @@ drsym_lookup_address_local(const char *modpath, size_t modoffs,
     free_symbol_info(info);
 
     line.SizeOfStruct = sizeof(line);
-    /* FIXME i#943: Get wide path and convert to UTF-8. */
     if (SymGetLineFromAddr64(GetCurrentProcess(), base + modoffs, &line_disp, &line)) {
         NOTIFY("%s:%u+0x%x\n", line.FileName, line.LineNumber, line_disp);
-        /* We assume that line.FileName has a permanent lifetime */
+        /* FIXME i#943: Get wide path with SymGetLineFromAddrW64 and convert to
+         * UTF-8.  The caller doesn't give any storage for filename so we can't
+         * do this without breaking the ABI.  Perhaps in the future we should
+         * drop the trailing variable length array so we can safely add new
+         * fields to drsym_info_t.
+         * FIXME: MSDN docs imply that FileName is reused on subsequent calls.
+         */
         out->file = line.FileName;
         out->line = line.LineNumber;
         out->line_offs = line_disp;
