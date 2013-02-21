@@ -473,7 +473,7 @@ drsym_lookup_address_local(const char *modpath, size_t modoffs,
     line.SizeOfStruct = sizeof(line);
     if (SymGetLineFromAddr64(GetCurrentProcess(), base + modoffs, &line_disp, &line)) {
         NOTIFY("%s:%u+0x%x\n", line.FileName, line.LineNumber, line_disp);
-        /* FIXME i#943: Get wide path with SymGetLineFromAddrW64 and convert to
+        /* FIXME i#1085: Get wide path with SymGetLineFromAddrW64 and convert to
          * UTF-8.  The caller doesn't give any storage for filename so we can't
          * do this without breaking the ABI.  Perhaps in the future we should
          * drop the trailing variable length array so we can safely add new
