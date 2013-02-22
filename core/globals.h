@@ -822,7 +822,7 @@ struct _dcontext_t {
      * called into a native module.
      */
     retaddr_and_retloc_t native_retstack[MAX_NATIVE_RETSTACK];
-    retaddr_and_retloc_t *native_retstack_cur;
+    uint native_retstack_cur;
 
 #ifdef PROGRAM_SHEPHERDING
     bool           alloc_no_reserve; /* to implement executable_if_alloc policy */

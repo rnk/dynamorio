@@ -858,6 +858,14 @@ thread_id_t dynamorio_clone(uint flags, byte *newsp, void *ptid, void *tls,
                             void *ctid, void (*func)(void));
 #endif
 void back_from_native(void);
+/* These two are labels, not functions. */
+void back_from_native_retstubs(void);
+void back_from_native_retstubs_end(void);
+/* Each stub should be 7 bytes, unless the assembler gets smart and uses
+ * jmp rel8 on us:
+ * push imm8 + jmp rel32
+ */
+enum { BACK_FROM_NATIVE_RETSTUB_SIZE = 7 };
 #ifdef LINUX
 void native_plt_call(void);
 #endif

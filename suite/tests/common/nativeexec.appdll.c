@@ -30,6 +30,8 @@
  * DAMAGE.
  */
 
+#ifndef ASM_CODE_ONLY
+
 /* nativexec.dll.dll
  * nativeexec.exe calls routines here w/ different call* constructions
  */
@@ -85,4 +87,22 @@ DllMain(HANDLE hModule, DWORD reason_for_call, LPVOID Reserved)
 {
     return TRUE;
 }
+#endif
+
+#else /* ASM_CODE_ONLY */
+
+#include "asm_defines.asm"
+
+START_FILE
+
+        DECLARE_EXPORTED_FUNC(import_stdcall)
+GLOBAL_LABEL(import_stdcall:)
+        /* XXX: Not doing SEH prologue for test code. */
+        mov      REG_XAX, [REG_XSP + 1 * ARG_SZ] /* arg1 */
+        add      REG_XAX, [REG_XSP + 2 * ARG_SZ] /* arg2 */
+        ret      HEX(2 * ARG_SZ)    /* Callee cleared args, ret_imm. */
+        END_FUNC(import_stdcall)
+
+END_FILE
+
 #endif

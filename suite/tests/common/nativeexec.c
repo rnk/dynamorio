@@ -46,6 +46,7 @@ IMPORT void import_me1(int x);
 IMPORT void import_me2(int x);
 IMPORT void import_me3(int x);
 IMPORT void import_me4(int_fn_t fn, int x);
+IMPORT int import_stdcall(int x, int y);
 
 /* Test unwinding across back_from_native retaddrs. */
 IMPORT void unwind_level1(int_fn_t fn, int x);
@@ -57,6 +58,7 @@ static void unwind_longjmp(int x);
 
 void call_plt(int_fn_t fn);
 void call_funky(int_fn_t fn);
+int call_stdcall(int (*fn)(int, int));
 
 void
 print_int(int x)
@@ -92,6 +94,8 @@ unwind_longjmp(int x)
 int
 main(int argc, char **argv)
 {
+    int x;
+
     INIT();
 
     if (argc > 2 && strcmp("-bind_now", argv[1])) {
@@ -140,6 +144,10 @@ main(int argc, char **argv)
     print("calling cross-module unwinder\n");
     unwind_level1(unwind_setjmp, 3);
 
+    print("calling indirect stdcall\n");
+    x = call_stdcall(&import_stdcall);
+    print(" -> %d\n", x);
+
     print("all done\n");
 
     return 0;
@@ -181,6 +189,19 @@ GLOBAL_LABEL(call_funky:)
         leave
         ret
         END_FUNC(call_funky)
+
+        DECLARE_FUNC(call_stdcall)
+GLOBAL_LABEL(call_stdcall:)
+        /* XXX: Not doing SEH prologue for test code. */
+        mov      REG_XDX, ARG1          /* XDX is volatile and not regparm 0. */
+        enter    0, 0                   /* Maintain 16-byte alignment. */
+        /* Do a stdcall-style call, even on Linux. */
+        push     19
+        push     21
+        call     REG_XDX
+        leave
+        ret
+        END_FUNC(call_stdcall)
 
 END_FILE
 

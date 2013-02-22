@@ -1487,14 +1487,49 @@ GLOBAL_LABEL(back_from_native:)
         PUSH_PRIV_MCXT(0 /* for priv_mcontext_t.pc */)
         lea      REG_XAX, [REG_XSP] /* stack grew down, so priv_mcontext_t at tos */
 
-        /* Call return_from_native passing the priv_mcontext_t.  It will 
-         * obtain this thread's dcontext pointer and
-         * begin execution with the passed-in state.
+        /* Call return_from_native passing the priv_mcontext_t.  It will obtain
+         * this thread's dcontext pointer and begin execution with the passed-in
+         * state.
          */
+#ifdef X64
+        and      REG_XSP, -FRAME_ALIGNMENT  /* x64 alignment */
+#endif
         CALLC1(return_from_native, REG_XAX)
         /* should not return */
         jmp      unexpected_return
         END_FUNC(back_from_native)
+
+/* back_from_native_retstubs -- We use a different version of back_from_native for
+ * each nested module transition.  This has to have MAX_NATIVE_RETSTACK
+ * elements, which we check in native_exec_init().  The size of each entry has
+ * to match BACK_FROM_NATIVE_RETSTUB_SIZE in arch_exports.h.
+ */
+        DECLARE_FUNC(back_from_native_retstubs)
+GLOBAL_LABEL(back_from_native_retstubs:)
+        push     0
+        jmp      back_from_native
+        push     1
+        jmp      back_from_native
+        push     2
+        jmp      back_from_native
+        push     3
+        jmp      back_from_native
+        push     4
+        jmp      back_from_native
+        push     5
+        jmp      back_from_native
+        push     6
+        jmp      back_from_native
+        push     7
+        jmp      back_from_native
+        push     8
+        jmp      back_from_native
+        push     9
+        jmp      back_from_native
+DECLARE_GLOBAL(back_from_native_retstubs_end)
+ADDRTAKEN_LABEL(back_from_native_retstubs_end:)
+        END_FUNC(back_from_native_retstubs)
+
 
 #ifdef LINUX
 /* Like back_from_native, except we're calling from a native module into a

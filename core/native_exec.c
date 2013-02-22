@@ -54,6 +54,11 @@
  */
 vm_area_vector_t *native_exec_areas;
 
+static app_pc retstub_start = (app_pc) back_from_native_retstubs;
+#ifdef DEBUG
+static app_pc retstub_end = (app_pc) back_from_native_retstubs_end;
+#endif
+
 void
 native_exec_init(void)
 {
@@ -62,6 +67,8 @@ native_exec_init(void)
         return;
     VMVECTOR_ALLOC_VECTOR(native_exec_areas, GLOBAL_DCONTEXT, VECTOR_SHARED,
                           native_exec_areas);
+    ASSERT(retstub_end == retstub_start +
+           MAX_NATIVE_RETSTACK * BACK_FROM_NATIVE_RETSTUB_SIZE);
 }
 
 void
@@ -187,6 +194,7 @@ void
 call_to_native(app_pc *sp)
 {
     dcontext_t *dcontext;
+    uint i;
     ENTERING_DR();
     dcontext = get_thread_private_dcontext();
     ASSERT(dcontext != NULL);
@@ -195,16 +203,14 @@ call_to_native(app_pc *sp)
      * XXX: it would be nice to abort in a release build, but this can be perf
      * critical.
      */
-    ASSERT(dcontext->native_retstack_cur <
-           &dcontext->native_retstack[MAX_NATIVE_RETSTACK]);
-    ASSERT(dcontext->native_retstack_cur->retaddr == NULL);
-    ASSERT(dcontext->native_retstack_cur->retloc == NULL);
-    dcontext->native_retstack_cur->retaddr = *sp;
-    dcontext->native_retstack_cur->retloc = (app_pc) sp;
-    dcontext->native_retstack_cur++;
+    ASSERT(dcontext->native_retstack_cur < MAX_NATIVE_RETSTACK);
+    i = dcontext->native_retstack_cur;
+    dcontext->native_retstack[i].retaddr = *sp;
+    dcontext->native_retstack[i].retloc = (app_pc) sp;
+    dcontext->native_retstack_cur = i + 1;
     LOG(THREAD, LOG_ASYNCH, 1,
         "!!!! Entering module NATIVELY, retaddr="PFX"\n\n", *sp);
-    *sp = (app_pc) back_from_native;
+    *sp = retstub_start + i * BACK_FROM_NATIVE_RETSTUB_SIZE;
     entering_native(dcontext);
     EXITING_DR();
 }
@@ -257,35 +263,32 @@ void
 return_from_native(priv_mcontext_t *mc)
 {
     dcontext_t *dcontext;
-    app_pc retloc;
+    ptr_int_t i;
     app_pc target;
+    app_pc xsp;
     ENTERING_DR();
     dcontext = get_thread_private_dcontext();
     ASSERT(dcontext != NULL);
     SYSLOG_INTERNAL_WARNING_ONCE("returned from at least one native module");
-    retloc = (app_pc) mc->xsp;
 #ifdef X86
-    /* Adjust the SP to match the SP we saved after the call. */
-    retloc -= sizeof(void *);
+    /* Account for our push of the retstack index. */
+    i = *(ptr_int_t *) mc->xsp;
+    mc->xsp += sizeof(void *);
+    xsp = (app_pc) mc->xsp;
 #endif
-    /* Current pointer points to next free entry so decrement first. */
-    ASSERT(dcontext->native_retstack_cur > &dcontext->native_retstack[0]);
-    dcontext->native_retstack_cur--;
-    while (dcontext->native_retstack_cur > &dcontext->native_retstack[0] &&
-           dcontext->native_retstack_cur->retloc != retloc) {
-        /* The app must have unwound the stack.  Clear entries until we find the
-         * current SP.
+    ASSERT(i >= 0 && i < MAX_NATIVE_RETSTACK &&
+           i < dcontext->native_retstack_cur);
+    target = dcontext->native_retstack[i].retaddr;
+    DOCHECK(CHKLVL_ASSERTS, {
+        /* Because of ret imm8 instrs, we can't assert that the current xsp is
+         * one slot off from the xsp after the call.  We can assert that it's
+         * within 256 bytes, though.
          */
-        ASSERT(dcontext->native_retstack_cur > &dcontext->native_retstack[0]);
-        dcontext->native_retstack_cur->retaddr = NULL;
-        dcontext->native_retstack_cur->retloc = NULL;
-        dcontext->native_retstack_cur--;
-    }
-    ASSERT(dcontext->native_retstack_cur->retloc == retloc &&
-           "failed to find current sp in native_retstack");
-    target = dcontext->native_retstack_cur->retaddr;
-    dcontext->native_retstack_cur->retaddr = NULL;
-    dcontext->native_retstack_cur->retloc = NULL;
+        app_pc retloc = dcontext->native_retstack[i].retloc;
+        ASSERT(xsp >= retloc && xsp <= retloc + 256 + sizeof(void*) &&
+               "failed to find current sp in native_retstack");
+    });
+    dcontext->native_retstack_cur = i;
     LOG(THREAD, LOG_ASYNCH, 1, "\n!!!! Returned from NATIVE module to "PFX"\n",
         target);
     back_from_native_common(dcontext, mc, target); /* noreturn */
@@ -314,12 +317,12 @@ put_back_native_retaddrs(dcontext_t *dcontext)
 {
     retaddr_and_retloc_t *retstack = dcontext->native_retstack;
     int i;
-    for (i = 0; i < MAX_NATIVE_RETSTACK && retstack[i].retloc != NULL; i++) {
+    ASSERT(dcontext->native_retstack_cur < MAX_NATIVE_RETSTACK);
+    for (i = 0; i < dcontext->native_retstack_cur; i++) {
         app_pc *retloc = (app_pc *) retstack[i].retloc;
-        ASSERT(*retloc == (app_pc) back_from_native);
+        ASSERT(*retloc >= retstub_start && *retloc < retstub_end);
         *retloc = retstack[i].retaddr;
-        retstack[i].retaddr = NULL;
-        retstack[i].retloc = NULL;
     }
+    dcontext->native_retstack_cur = 0;
     return i > 0;
 }
