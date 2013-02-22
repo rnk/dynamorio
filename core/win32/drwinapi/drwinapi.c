@@ -140,6 +140,7 @@ ntstatus_to_last_error(NTSTATUS status)
     case STATUS_PROCESS_IS_TERMINATING: return ERROR_ACCESS_DENIED;
     case STATUS_END_OF_FILE:           return ERROR_HANDLE_EOF;
     case STATUS_PENDING:               return ERROR_IO_PENDING;
+    case STATUS_NOT_A_REPARSE_POINT:   return ERROR_NOT_A_REPARSE_POINT;
     /* XXX: add more.  Variations by function are rare and handled in callers. */
     default:                           return ERROR_INVALID_PARAMETER;
     }
@@ -170,8 +171,10 @@ redirect_ignore_arg12(void *arg1, void *arg2, void *arg3)
 }
 
 #ifdef STANDALONE_UNIT_TEST
+void unit_test_drwinapi_kernel32_proc(void);
 void unit_test_drwinapi_kernel32_mem(void);
 void unit_test_drwinapi_kernel32_file(void);
+void unit_test_drwinapi_kernel32_sync(void);
 void unit_test_drwinapi_kernel32_misc(void);
 void unit_test_drwinapi_rpcrt4(void);
 void unit_test_drwinapi_advapi32(void);
@@ -183,8 +186,10 @@ unit_test_drwinapi(void)
 
     loader_init(); /* not called by standalone_init */
 
+    unit_test_drwinapi_kernel32_proc();
     unit_test_drwinapi_kernel32_mem();
     unit_test_drwinapi_kernel32_file();
+    unit_test_drwinapi_kernel32_sync();
     unit_test_drwinapi_kernel32_misc();
     unit_test_drwinapi_rpcrt4();
     unit_test_drwinapi_advapi32();

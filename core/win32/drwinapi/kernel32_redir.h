@@ -127,6 +127,31 @@ kernel32_redir_onload_proc(privmod_t *mod);
 DWORD WINAPI
 redirect_FlsAlloc(PFLS_CALLBACK_FUNCTION cb);
 
+HANDLE
+WINAPI
+redirect_GetCurrentProcess(
+    VOID
+    );
+
+DWORD
+WINAPI
+redirect_GetCurrentProcessId(
+    VOID
+    );
+
+__out
+HANDLE
+WINAPI
+redirect_GetCurrentThread(
+    VOID
+    );
+
+DWORD
+WINAPI
+redirect_GetCurrentThreadId(
+    VOID
+    );
+
 BOOL
 WINAPI
 redirect_CreateProcessA(
@@ -226,32 +251,6 @@ __out
 LPWSTR
 WINAPI
 redirect_GetCommandLineW(
-    VOID
-    );
-
-__out
-HANDLE
-WINAPI
-redirect_GetCurrentProcess(
-    VOID
-    );
-
-DWORD
-WINAPI
-redirect_GetCurrentProcessId(
-    VOID
-    );
-
-__out
-HANDLE
-WINAPI
-redirect_GetCurrentThread(
-    VOID
-    );
-
-DWORD
-WINAPI
-redirect_GetCurrentThreadId(
     VOID
     );
 
@@ -1001,6 +1000,16 @@ redirect_GetDiskFreeSpaceA(
     __out_opt LPDWORD lpTotalNumberOfClusters
     );
 
+BOOL
+WINAPI
+redirect_GetDiskFreeSpaceW(
+    __in_opt  LPCWSTR lpRootPathName,
+    __out_opt LPDWORD lpSectorsPerCluster,
+    __out_opt LPDWORD lpBytesPerSector,
+    __out_opt LPDWORD lpNumberOfFreeClusters,
+    __out_opt LPDWORD lpTotalNumberOfClusters
+    );
+
 UINT
 WINAPI
 redirect_GetDriveTypeA(
@@ -1065,7 +1074,6 @@ redirect_GetFullPathNameW(
     __deref_opt_out LPWSTR *lpFilePart
     );
 
-__out
 HANDLE
 WINAPI
 redirect_GetStdHandle(
@@ -1219,18 +1227,6 @@ redirect_WriteConsoleW(
 
 VOID
 WINAPI
-redirect_DeleteCriticalSection(
-    __inout LPCRITICAL_SECTION lpCriticalSection
-    );
-
-VOID
-WINAPI
-redirect_EnterCriticalSection(
-    __inout LPCRITICAL_SECTION lpCriticalSection
-    );
-
-VOID
-WINAPI
 redirect_InitializeCriticalSection(
     __out LPCRITICAL_SECTION lpCriticalSection
     );
@@ -1250,8 +1246,26 @@ redirect_InitializeCriticalSectionEx(
     __in  DWORD Flags
     );
 
+VOID
+WINAPI
+redirect_DeleteCriticalSection(
+    __inout LPCRITICAL_SECTION lpCriticalSection
+    );
+
+VOID
+WINAPI
+redirect_EnterCriticalSection(
+    __inout LPCRITICAL_SECTION lpCriticalSection
+    );
+
+VOID
+WINAPI
+redirect_LeaveCriticalSection(
+    __inout LPCRITICAL_SECTION lpCriticalSection
+    );
+
 LONG
-__cdecl
+WINAPI
 redirect_InterlockedCompareExchange (
     __inout __drv_interlocked LONG volatile *Destination,
     __in LONG ExChange,
@@ -1259,28 +1273,22 @@ redirect_InterlockedCompareExchange (
     );
 
 LONG
-__cdecl
+WINAPI
 redirect_InterlockedDecrement(
     __inout __drv_interlocked LONG volatile *Addend
     );
 
 LONG
-__cdecl
+WINAPI
 redirect_InterlockedExchange(
     __inout __drv_interlocked LONG volatile *Target,
     __in LONG Value
     );
 
 LONG
-__cdecl
+WINAPI
 redirect_InterlockedIncrement(
     __inout __drv_interlocked LONG volatile *Addend
-    );
-
-VOID
-WINAPI
-redirect_LeaveCriticalSection(
-    __inout LPCRITICAL_SECTION lpCriticalSection
     );
 
 DWORD

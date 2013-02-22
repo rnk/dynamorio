@@ -348,7 +348,9 @@ env_var_exists(const char *name, char *buf, size_t buflen)
     if (len == 0 || len > buflen)
         return false;
 #else
-    char *val = getenv(LOCAL_CONFIG_ENV);
+    char *val = getenv(name);
+    if (val == NULL)
+        return false;
     strncpy(buf, val, buflen);
     buf[buflen - 1] = '\0';
 #endif
@@ -1045,12 +1047,12 @@ dr_register_process(const char *process_name,
 
     /* set the autoinject string (i.e., path to dynamorio.dll */
     if (debug) {
-        if (!platform_is_64bit(get_dr_platform()))
+        if (!platform_is_64bit(dr_platform))
             _sntprintf(wbuf, MAXIMUM_PATH, _TEXT(TSTR_FMT)DEBUG32_DLL, dr_root_dir);
         else
             _sntprintf(wbuf, MAXIMUM_PATH, _TEXT(TSTR_FMT)DEBUG64_DLL, dr_root_dir);
     } else {
-        if (!platform_is_64bit(get_dr_platform()))
+        if (!platform_is_64bit(dr_platform))
             _sntprintf(wbuf, MAXIMUM_PATH, _TEXT(TSTR_FMT)RELEASE32_DLL, dr_root_dir);
         else
             _sntprintf(wbuf, MAXIMUM_PATH, _TEXT(TSTR_FMT)RELEASE64_DLL, dr_root_dir);

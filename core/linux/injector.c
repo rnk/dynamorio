@@ -47,6 +47,7 @@
 #include "decode.h"
 #include "disassemble.h"
 #include "os_private.h"
+#include "module.h"
 
 #include <assert.h>
 #include <ctype.h>
@@ -64,6 +65,10 @@
 
 static bool verbose = false;
 
+/* Set from a signal handler.
+ */
+static volatile int timeout_expired;
+
 typedef enum _inject_method_t {
     INJECT_EARLY,       /* Works with self or child. */
     INJECT_LD_PRELOAD,  /* Works with self or child. */
@@ -80,6 +85,10 @@ typedef struct _dr_inject_info_t {
 
     bool exec_self;             /* this process will exec the app */
     inject_method_t method;
+
+    bool killpg;
+    bool exited;
+    int exitcode;
 } dr_inject_info_t;
 
 bool
@@ -305,13 +314,18 @@ inject_ld_preload(dr_inject_info_t *info, const char *library_path)
     return true;
 }
 
-static void
-set_exe_and_argv(dr_inject_info_t *info, const char *exe, const char **argv)
+static dr_inject_info_t *
+create_inject_info(const char *exe, const char **argv)
 {
+    dr_inject_info_t *info = calloc(sizeof(*info), 1);
     info->exe = exe;
     info->argv = argv;
     info->image_name = strrchr(exe, '/');
     info->image_name = (info->image_name == NULL ? exe : info->image_name + 1);
+    info->exited = false;
+    info->killpg = false;
+    info->exitcode = -1;
+    return info;
 }
 
 /* Returns 0 on success.
@@ -322,8 +336,7 @@ dr_inject_process_create(const char *exe, const char **argv, void **data OUT)
 {
     int r;
     int fds[2];
-    dr_inject_info_t *info = malloc(sizeof(*info));
-    set_exe_and_argv(info, exe, argv);
+    dr_inject_info_t *info = create_inject_info(exe, argv);
 
     /* Create a pipe to a forked child and have it block on the pipe. */
     r = pipe(fds);
@@ -349,8 +362,7 @@ DR_EXPORT
 int
 dr_inject_prepare_to_exec(const char *exe, const char **argv, void **data OUT)
 {
-    dr_inject_info_t *info = malloc(sizeof(*info));
-    set_exe_and_argv(info, exe, argv);
+    dr_inject_info_t *info = create_inject_info(exe, argv);
     info->pid = getpid();
     info->pipe_fd = 0;  /* No pipe. */
     info->exec_self = true;
@@ -372,6 +384,24 @@ dr_inject_prepare_to_ptrace(void *data)
     if (info->exec_self)
         return false;
     info->method = INJECT_PTRACE;
+    return true;
+}
+
+DR_EXPORT
+bool
+dr_inject_prepare_new_process_group(void *data)
+{
+    dr_inject_info_t *info = (dr_inject_info_t *) data;
+    int res;
+    if (data == NULL)
+        return false;
+    if (info->exec_self)
+        return false;
+    /* Put the child in its own process group. */
+    res = setpgid(info->pid, info->pid);
+    if (res < 0)
+        return false;
+    info->killpg = true;
     return true;
 }
 
@@ -404,6 +434,18 @@ option_present(const char *dr_ops, const char *op)
             (cur == dr_ops || isspace(cur[-1])));
 }
 
+static bool
+get_elf_platform_path(const char *exe_path, dr_platform_t *platform)
+{
+    file_t fd = os_open(exe_path, OS_OPEN_READ);
+    bool res = false;
+    if (fd != INVALID_FILE) {
+        res = get_elf_platform(fd, platform);
+        os_close(fd);
+    }
+    return res;
+}
+
 DR_EXPORT
 bool
 dr_inject_process_inject(void *data, bool force_injection,
@@ -412,8 +454,12 @@ dr_inject_process_inject(void *data, bool force_injection,
     dr_inject_info_t *info = (dr_inject_info_t *) data;
     char dr_path_buf[MAXIMUM_PATH];
     char dr_ops[MAX_OPTIONS_STRING];
+    dr_platform_t platform;
 
-    if (!get_config_val_other_app(info->image_name, info->pid,
+    if (!get_elf_platform_path(info->exe, &platform))
+        return false; /* couldn't read header */
+
+    if (!get_config_val_other_app(info->image_name, info->pid, platform,
                                   DYNAMORIO_VAR_OPTIONS, dr_ops,
                                   BUFFER_SIZE_ELEMENTS(dr_ops), NULL,
                                   NULL, NULL)) {
@@ -433,7 +479,7 @@ dr_inject_process_inject(void *data, bool force_injection,
      * override it.
      */
     if (library_path == NULL) {
-        if (!get_config_val_other_app(info->image_name, info->pid,
+        if (!get_config_val_other_app(info->image_name, info->pid, platform,
                                       DYNAMORIO_VAR_AUTOINJECT, dr_path_buf,
                                       BUFFER_SIZE_ELEMENTS(dr_path_buf), NULL,
                                       NULL, NULL)) {
@@ -452,6 +498,15 @@ dr_inject_process_inject(void *data, bool force_injection,
     }
 
     return false;
+}
+
+/* We get the signal, we set the volatile, which is guaranteed to be signal
+ * safe.  waitpid should return EINTR after we receive the signal.
+ */
+static void
+alarm_handler(int sig)
+{
+    timeout_expired = true;
 }
 
 DR_EXPORT
@@ -477,17 +532,76 @@ dr_inject_process_run(void *data)
 }
 
 DR_EXPORT
+bool
+dr_inject_wait_for_child(void *data, uint64 timeout_millis)
+{
+    dr_inject_info_t *info = (dr_inject_info_t *) data;
+    pid_t res;
+
+    timeout_expired = false;
+    if (timeout_millis > 0) {
+        /* Set a timer ala runstats. */
+        struct sigaction act;
+        struct itimerval timer;
+
+        /* Set an alarm handler. */
+        memset(&act, 0, sizeof(act));
+        act.sa_handler = alarm_handler;
+        sigaction(SIGALRM, &act, NULL);
+
+        /* No interval, one shot only. */
+        timer.it_interval.tv_sec = 0;
+        timer.it_interval.tv_usec = 0;
+        timer.it_value.tv_sec = timeout_millis / 1000;
+        timer.it_value.tv_usec = (timeout_millis % 1000) * 1000;
+        setitimer(ITIMER_REAL, &timer, NULL);
+    }
+
+    do {
+        res = waitpid(info->pid, &info->exitcode, 0);
+    } while (res != info->pid && res != -1 &&
+             /* The signal handler sets this and makes waitpid return EINTR. */
+             !timeout_expired);
+    info->exited = (res == info->pid);
+    return info->exited;
+}
+
+DR_EXPORT
 int
 dr_inject_process_exit(void *data, bool terminate)
 {
     dr_inject_info_t *info = (dr_inject_info_t *) data;
     int status;
-    if (terminate) {
-        kill(info->pid, SIGKILL);
+    if (info->exited) {
+        /* If it already exited when we waited on it above, then we *cannot*
+         * wait on it again or try to kill it, or we might target some new
+         * process with the same pid.
+         */
+        status = info->exitcode;
+    } else if (terminate) {
+        /* We use SIGKILL to match Windows, which doesn't provide the app a
+         * chance to clean up.
+         */
+        if (info->killpg) {
+            /* i#501: Kill app subprocesses to prevent hangs. */
+            killpg(info->pid, SIGKILL);
+        } else {
+            kill(info->pid, SIGKILL);
+        }
+        /* Do a blocking wait to get the real status code.  This shouldn't take
+         * long since we just sent an unblockable SIGKILL.
+         */
+        waitpid(info->pid, &status, 0);
+    } else {
+        /* Use WNOHANG to match our Windows semantics, which does not block if
+         * the child hasn't exited.  The status returned is probably not useful,
+         * but the caller shouldn't look at it if they haven't waited for the
+         * app to terminate.
+         */
+        waitpid(info->pid, &status, WNOHANG);
     }
     if (info->pipe_fd != 0)
         close(info->pipe_fd);
-    waitpid(info->pid, &status, 0);
     free(info);
     return status;
 }

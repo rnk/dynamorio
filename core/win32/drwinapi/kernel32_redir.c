@@ -47,6 +47,11 @@ static strhash_table_t *kernel32_table;
 
 static const redirect_import_t redirect_kernel32[] = {
     /* Process and thread-related routines */
+    {"GetCurrentProcess",              (app_pc)redirect_GetCurrentProcess},
+    {"GetCurrentProcessId",            (app_pc)redirect_GetCurrentProcessId},
+    {"GetCurrentThread",               (app_pc)redirect_GetCurrentThread},
+    {"GetCurrentThreadId",             (app_pc)redirect_GetCurrentThreadId},
+    {"ExitProcess",                    (app_pc)redirect_ExitProcess},
     /* To avoid the FlsCallback being interpreted */
     {"FlsAlloc",                       (app_pc)redirect_FlsAlloc},
 
@@ -132,6 +137,30 @@ static const redirect_import_t redirect_kernel32[] = {
     {"FindNextFileA",                  (app_pc)redirect_FindNextFileA},
     {"FindNextFileW",                  (app_pc)redirect_FindNextFileW},
     {"FlushFileBuffers",               (app_pc)redirect_FlushFileBuffers},
+    {"GetDiskFreeSpaceA",              (app_pc)redirect_GetDiskFreeSpaceA},
+    {"GetDiskFreeSpaceW",              (app_pc)redirect_GetDiskFreeSpaceW},
+    {"GetDriveTypeA",                  (app_pc)redirect_GetDriveTypeA},
+    {"GetDriveTypeW",                  (app_pc)redirect_GetDriveTypeW},
+    {"GetFileAttributesA",             (app_pc)redirect_GetFileAttributesA},
+    {"GetFileAttributesW",             (app_pc)redirect_GetFileAttributesW},
+    {"GetFileInformationByHandle",     (app_pc)redirect_GetFileInformationByHandle},
+    {"GetFileSize",                    (app_pc)redirect_GetFileSize},
+    {"GetFileType",                    (app_pc)redirect_GetFileType},
+    /* skipped a few in alpha order, to focus on those invoked by dbghelp */
+    {"GetStdHandle",                   (app_pc)redirect_GetStdHandle},
+
+    /* Synchronization routines */
+    {"InitializeCriticalSectionAndSpinCount",
+                                  (app_pc)redirect_InitializeCriticalSectionAndSpinCount},
+    {"InitializeCriticalSectionEx",    (app_pc)redirect_InitializeCriticalSectionEx},
+    {"DeleteCriticalSection",          (app_pc)redirect_DeleteCriticalSection},
+    {"EnterCriticalSection",           (app_pc)redirect_EnterCriticalSection},
+    {"LeaveCriticalSection",           (app_pc)redirect_LeaveCriticalSection},
+    {"InterlockedCompareExchange ",    (app_pc)redirect_InterlockedCompareExchange },
+    {"InterlockedDecrement",           (app_pc)redirect_InterlockedDecrement},
+    {"InterlockedExchange",            (app_pc)redirect_InterlockedExchange},
+    {"InterlockedIncrement",           (app_pc)redirect_InterlockedIncrement},
+    {"WaitForSingleObject",            (app_pc)redirect_WaitForSingleObject},
 
     /* Miscellaneous routines */
     {"GetLastError",                   (app_pc)redirect_GetLastError},
