@@ -277,7 +277,7 @@ return_from_native(priv_mcontext_t *mc)
     xsp = (app_pc) mc->xsp;
 #endif
     ASSERT(i >= 0 && i < MAX_NATIVE_RETSTACK &&
-           i < dcontext->native_retstack_cur);
+           (uint)i < dcontext->native_retstack_cur);
     target = dcontext->native_retstack[i].retaddr;
     DOCHECK(CHKLVL_ASSERTS, {
         /* Because of ret imm8 instrs, we can't assert that the current xsp is
@@ -316,7 +316,7 @@ bool
 put_back_native_retaddrs(dcontext_t *dcontext)
 {
     retaddr_and_retloc_t *retstack = dcontext->native_retstack;
-    int i;
+    uint i;
     ASSERT(dcontext->native_retstack_cur < MAX_NATIVE_RETSTACK);
     for (i = 0; i < dcontext->native_retstack_cur; i++) {
         app_pc *retloc = (app_pc *) retstack[i].retloc;
