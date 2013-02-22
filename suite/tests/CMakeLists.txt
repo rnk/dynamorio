@@ -968,9 +968,12 @@ function(rundr_cmd outcmd outops native dr_ops_aux is_runall)
     # Since the creation of CTestTestfile.cmake ends up replacing \ with / we
     # can't escape quotes, so we have to use a list variable
     get_target_property(drrun_path drrun LOCATION${location_suffix})
-    set(cmd "${drrun_path}" -s ${TEST_SECONDS} -killpg -quiet)
+    set(cmd "${drrun_path}" -s ${TEST_SECONDS} -quiet)
     if (DEBUG)
       set(cmd ${cmd} -debug)
+    endif ()
+    if (UNIX)
+      set(cmd ${cmd} -killpg)
     endif ()
     if (UNIX AND TEST_SUITE)
       # In the Unix suite, use the DR install dir for cross-arch execve.
