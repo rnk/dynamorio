@@ -1480,6 +1480,7 @@ GLOBAL_LABEL(nt_continue_dynamo_start:)
  */
         DECLARE_FUNC(back_from_native)
 GLOBAL_LABEL(back_from_native:)
+Lback_from_native:
         /* assume valid esp  
          * FIXME: more robust if don't use app's esp -- should use initstack
          */
@@ -1507,25 +1508,25 @@ GLOBAL_LABEL(back_from_native:)
         DECLARE_FUNC(back_from_native_retstubs)
 GLOBAL_LABEL(back_from_native_retstubs:)
         push     0
-        jmp      back_from_native
+        jmp      Lback_from_native
         push     1
-        jmp      back_from_native
+        jmp      Lback_from_native
         push     2
-        jmp      back_from_native
+        jmp      Lback_from_native
         push     3
-        jmp      back_from_native
+        jmp      Lback_from_native
         push     4
-        jmp      back_from_native
+        jmp      Lback_from_native
         push     5
-        jmp      back_from_native
+        jmp      Lback_from_native
         push     6
-        jmp      back_from_native
+        jmp      Lback_from_native
         push     7
-        jmp      back_from_native
+        jmp      Lback_from_native
         push     8
-        jmp      back_from_native
+        jmp      Lback_from_native
         push     9
-        jmp      back_from_native
+        jmp      Lback_from_native
 DECLARE_GLOBAL(back_from_native_retstubs_end)
 ADDRTAKEN_LABEL(back_from_native_retstubs_end:)
         END_FUNC(back_from_native_retstubs)

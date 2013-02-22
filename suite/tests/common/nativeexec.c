@@ -40,13 +40,14 @@
 #include <setjmp.h>
 
 typedef void (*int_fn_t)(int);
+typedef int (*int2_fn_t)(int, int);
 
 /* from nativeexec.dll.dll */
 IMPORT void import_me1(int x);
 IMPORT void import_me2(int x);
 IMPORT void import_me3(int x);
 IMPORT void import_me4(int_fn_t fn, int x);
-IMPORT int import_stdcall(int x, int y);
+IMPORT int2_fn_t get_import_stdcall(void);
 
 /* Test unwinding across back_from_native retaddrs. */
 IMPORT void unwind_level1(int_fn_t fn, int x);
@@ -58,7 +59,7 @@ static void unwind_longjmp(int x);
 
 void call_plt(int_fn_t fn);
 void call_funky(int_fn_t fn);
-int call_stdcall(int (*fn)(int, int));
+int call_stdcall(int2_fn_t fn);
 
 void
 print_int(int x)
@@ -95,6 +96,7 @@ int
 main(int argc, char **argv)
 {
     int x;
+    int2_fn_t import_stdcall;
 
     INIT();
 
@@ -118,6 +120,12 @@ main(int argc, char **argv)
      */
     print("calling via PLT-style call\n");
     call_plt(&import_me2);
+
+    /* Work around for not being able to export syms from asm code.  This
+     * requires doing a cross-native PLT-style call, which most natrually fits
+     * here.
+     */
+    import_stdcall = get_import_stdcall();
 
     /* funky ind call is only caught by us w/ -native_exec_guess_calls
      * FIXME: add a -no_native_exec_guess_calls runregression run
@@ -145,7 +153,7 @@ main(int argc, char **argv)
     unwind_level1(unwind_setjmp, 3);
 
     print("calling indirect stdcall\n");
-    x = call_stdcall(&import_stdcall);
+    x = call_stdcall(import_stdcall);
     print(" -> %d\n", x);
 
     print("all done\n");

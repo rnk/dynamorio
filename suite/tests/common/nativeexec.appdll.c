@@ -38,6 +38,9 @@
 #include "tools.h"
 
 typedef void (*int_fn_t)(int);
+typedef int (*int2_fn_t)(int, int);
+
+int import_stdcall(int x, int y);
 
 void EXPORT
 import_me1(int x)
@@ -81,6 +84,12 @@ unwind_level5(int_fn_t fn, int x)
     fn(x);
 }
 
+int2_fn_t EXPORT
+get_import_stdcall(void)
+{
+    return import_stdcall;
+}
+
 #ifdef WINDOWS
 BOOL APIENTRY 
 DllMain(HANDLE hModule, DWORD reason_for_call, LPVOID Reserved)
@@ -100,7 +109,7 @@ GLOBAL_LABEL(import_stdcall:)
         /* XXX: Not doing SEH prologue for test code. */
         mov      REG_XAX, [REG_XSP + 1 * ARG_SZ] /* arg1 */
         add      REG_XAX, [REG_XSP + 2 * ARG_SZ] /* arg2 */
-        ret      HEX(2 * ARG_SZ)    /* Callee cleared args, ret_imm. */
+        ret      2 * ARG_SZ    /* Callee cleared args, ret_imm. */
         END_FUNC(import_stdcall)
 
 END_FILE
