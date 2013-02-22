@@ -1480,6 +1480,7 @@ GLOBAL_LABEL(nt_continue_dynamo_start:)
  */
         DECLARE_FUNC(back_from_native)
 GLOBAL_LABEL(back_from_native:)
+        /* We use Lback_from_native to force short jumps with gas.  */
 Lback_from_native:
         /* assume valid esp  
          * FIXME: more robust if don't use app's esp -- should use initstack
