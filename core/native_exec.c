@@ -81,6 +81,12 @@ native_exec_exit(void)
     native_exec_areas = NULL;
 }
 
+bool
+is_native_pc(app_pc pc)
+{
+    return vmvector_overlap(native_exec_areas, pc, pc+1);
+}
+
 static bool
 on_native_exec_list(const char *modname)
 {
@@ -237,6 +243,7 @@ back_from_native_common(dcontext_t *dcontext, priv_mcontext_t *mc, app_pc target
      */
     ASSERT(dcontext->whereami == WHERE_APP);
     ASSERT(dcontext->last_exit == get_native_exec_linkstub());
+    ASSERT(!is_native_pc(target));
     dcontext->next_tag = target;
     /* tell dispatch() why we're coming there */
     dcontext->whereami = WHERE_FCACHE;
@@ -284,7 +291,7 @@ pop_retaddr_for_index(dcontext_t *dcontext, int retidx, app_pc xsp)
 /* Re-enters DR after a call to a native module returns.  Called from the asm
  * routine back_from_native() in x86.asm.
  */
-void
+app_pc
 return_from_native(priv_mcontext_t *mc)
 {
     dcontext_t *dcontext;
@@ -300,10 +307,19 @@ return_from_native(priv_mcontext_t *mc)
     mc->xsp += sizeof(void *);
 #endif
     target = pop_retaddr_for_index(dcontext, retidx, (app_pc) mc->xsp);
+    if (is_native_pc(target)) {
+        /* i#1090: Stay native on native-to-native returns.  Returning restores
+         * state and jumps to the target directly.
+         */
+        LOG(THREAD, LOG_ASYNCH, 1,
+            "\n%s: native-to-native return: "PFX"\n", target);
+        return target;
+    }
     LOG(THREAD, LOG_ASYNCH, 1, "\n!!!! Returned from NATIVE module to "PFX"\n",
         target);
     back_from_native_common(dcontext, mc, target); /* noreturn */
     ASSERT_NOT_REACHED();
+    return NULL;
 }
 
 /* Re-enters DR on calls from native modules to non-native modules.  Called from
@@ -323,7 +339,10 @@ native_module_callout(priv_mcontext_t *mc, app_pc target)
     ASSERT_NOT_REACHED();
 }
 
-/* Update next_tag with the real app return address. */
+/* Update next_tag with the real app return address.  If the app return address
+ * is in a native module, just go native.  This implies that this routine
+ * doesn't return sometimes.
+ */
 void
 interpret_back_from_native(dcontext_t *dcontext)
 {
@@ -335,7 +354,8 @@ interpret_back_from_native(dcontext_t *dcontext)
     retidx = (int)offset / BACK_FROM_NATIVE_RETSTUB_SIZE;
     dcontext->next_tag = pop_retaddr_for_index(dcontext, retidx, xsp);
     LOG(THREAD, LOG_ASYNCH, 2, "%s: tried to interpret back_from_native, "
-        "interpreting retaddr "PFX" instead\n", dcontext->next_tag);
+        "interpreting retaddr "PFX" instead\n", __FUNCTION__, dcontext->next_tag);
+    ASSERT(!is_native_pc(dcontext->next_tag));
 }
 
 bool
