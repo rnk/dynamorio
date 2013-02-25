@@ -4241,10 +4241,19 @@ at_native_exec_gateway(dcontext_t *dcontext, app_pc start, bool *is_call
                         native_exec_bb ? "" : "NOT ");
                 } else {
 #endif
+                    if (vmvector_overlap(native_exec_areas, retaddr, retaddr+1)) {
+                        /* i#1090: This was a tail call to a native module from
+                         * a non-native module with a retaddr pointing to a
+                         * native module.  We should go native, but we don't
+                         * need to swap the retaddr.
+                         */
+                        native_exec_bb = true;
+                        *is_call = false;
+                    }
                     /* try to decode backward -- make sure readable for decoding */
-                    if (is_readable_without_exception(retaddr - MAX_CALL_CONSIDER,
-                                                      MAX_CALL_CONSIDER +
-                                                      MAX_INSTR_LENGTH)) {
+                    else if (is_readable_without_exception(retaddr - MAX_CALL_CONSIDER,
+                                                           MAX_CALL_CONSIDER +
+                                                           MAX_INSTR_LENGTH)) {
                         /* ind calls have variable length and form so we decode
                          * each byte rather than searching for ff and guessing length
                          */
@@ -4279,10 +4288,11 @@ at_native_exec_gateway(dcontext_t *dcontext, app_pc start, bool *is_call
                     }
                 });
             }
+        } else if (DYNAMO_OPTION(native_exec_retakeover) &&
+                   vmvector_overlap(native_exec_areas, start, start+1)) {
+            native_exec_bb = true;
+            *is_call = false;
         }
-
-        if (native_exec_bb)
-            print_file(STDERR, "native bb "PFX"\n", start);
 
         DOSTATS({
             /* did we reach a native dll w/o going through an ind call caught above? */
