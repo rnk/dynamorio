@@ -4281,6 +4281,9 @@ at_native_exec_gateway(dcontext_t *dcontext, app_pc start, bool *is_call
             }
         }
 
+        if (native_exec_bb)
+            print_file(STDERR, "native bb "PFX"\n", start);
+
         DOSTATS({
             /* did we reach a native dll w/o going through an ind call caught above? */
             if (!xfer_target /* else we'll re-check at the target itself */ &&

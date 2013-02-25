@@ -49,7 +49,8 @@ IMPORT void import_me2(int x);
 IMPORT void import_me3(int x);
 IMPORT void import_me4(int_fn_t fn, int x);
 IMPORT int2_fn_t get_import_stdcall(void);
-IMPORT tail_caller_t get_tail_caller(void);
+//IMPORT tail_caller_t get_tail_caller(void);
+IMPORT void *tail_caller(int_fn_t, int);
 
 /* Test unwinding across back_from_native retaddrs. */
 IMPORT void unwind_level1(int_fn_t fn, int x);
@@ -100,7 +101,7 @@ main(int argc, char **argv)
 {
     int x;
     int2_fn_t import_stdcall;
-    tail_caller_t tail_caller;
+    //tail_caller_t tail_caller;
 
     INIT();
 
@@ -130,7 +131,7 @@ main(int argc, char **argv)
      * here.
      */
     import_stdcall = get_import_stdcall();
-    tail_caller = get_tail_caller();
+    //tail_caller = get_tail_caller();
 
     /* funky ind call is only caught by us w/ -native_exec_guess_calls
      * FIXME: add a -no_native_exec_guess_calls runregression run

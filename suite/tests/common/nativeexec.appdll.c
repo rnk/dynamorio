@@ -125,6 +125,9 @@ GLOBAL_LABEL(import_stdcall:)
  * i#1077: If fn is in a non-native module and we take over, we used to end up
  * interpreting the back_from_native return address on the stack.
  */
+#ifdef WINDOWS
+    EXPORT tail_caller
+#endif
         DECLARE_EXPORTED_FUNC(tail_caller)
 GLOBAL_LABEL(tail_caller:)
         /* XXX: Not doing SEH prologue for test code. */
