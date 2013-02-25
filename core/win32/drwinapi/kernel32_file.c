@@ -141,6 +141,14 @@ init_object_attr_for_files(OBJECT_ATTRIBUTES *oa, UNICODE_STRING *us,
         oa->SecurityQualityOfService = sqos;
 }
 
+static void
+largeint_to_filetime(const LARGE_INTEGER *li, FILETIME *ft OUT)
+{
+    ft->dwHighDateTime = li->HighPart;
+    ft->dwLowDateTime = li->LowPart;
+}
+
+
 /***************************************************************************
  * DIRECTORIES
  */
@@ -732,6 +740,184 @@ redirect_WriteFile(
     return TRUE;
 }
 
+/***************************************************************************
+ * FILE QUERIES
+ */
+
+DWORD
+WINAPI
+redirect_GetFileAttributesA(
+    __in LPCSTR lpFileName
+    )
+{
+    wchar_t wbuf[MAX_PATH];
+    int len;
+    if (lpFileName == NULL) {
+        set_last_error(ERROR_INVALID_PARAMETER);
+        return INVALID_FILE_ATTRIBUTES;
+    }
+    len = _snwprintf(wbuf, BUFFER_SIZE_ELEMENTS(wbuf), L"%hs", lpFileName);
+    if (len < 0) {
+        set_last_error(ERROR_INVALID_PARAMETER);
+        return INVALID_FILE_ATTRIBUTES;
+    }
+    NULL_TERMINATE_BUFFER(wbuf);
+    return redirect_GetFileAttributesW(wbuf);
+}
+
+DWORD
+WINAPI
+redirect_GetFileAttributesW(
+    __in LPCWSTR lpFileName
+    )
+{
+    NTSTATUS res;
+    wchar_t ntbuf[MAX_PATH];
+    wchar_t *nt_path = NULL;
+    size_t alloc_sz = 0;
+    OBJECT_ATTRIBUTES oa;
+    UNICODE_STRING us;
+    FILE_NETWORK_OPEN_INFORMATION info;
+
+    nt_path = convert_to_NT_file_path_wide(ntbuf, lpFileName,
+                                           BUFFER_SIZE_ELEMENTS(ntbuf), &alloc_sz);
+    if (nt_path == NULL) {
+        set_last_error(ERROR_FILE_NOT_FOUND);
+        return INVALID_FILE_ATTRIBUTES;
+    }
+    res = wchar_to_unicode(&us, nt_path);
+    if (!NT_SUCCESS(res)) {
+        set_last_error(ERROR_PATH_NOT_FOUND);
+        return INVALID_FILE_ATTRIBUTES;
+    }
+
+    init_object_attr_for_files(&oa, &us, NULL, NULL);
+    res = nt_raw_QueryFullAttributesFile(&oa, &info);
+    if (!NT_SUCCESS(res)) {
+        set_last_error(ntstatus_to_last_error(res));
+        return INVALID_FILE_ATTRIBUTES;
+    }
+    return info.FileAttributes;
+}
+
+BOOL
+WINAPI
+redirect_GetFileInformationByHandle(
+    __in  HANDLE hFile,
+    __out LPBY_HANDLE_FILE_INFORMATION lpFileInformation
+    )
+{
+    NTSTATUS res;
+    FILE_BASIC_INFORMATION basic;
+    FILE_STANDARD_INFORMATION standard;
+    FILE_INTERNAL_INFORMATION internal;
+    byte volume_buf[sizeof(FILE_FS_VOLUME_INFORMATION) + sizeof(wchar_t)*MAX_PATH];
+    FILE_FS_VOLUME_INFORMATION *volume = (FILE_FS_VOLUME_INFORMATION *) volume_buf;
+
+    if (lpFileInformation == NULL) {
+        set_last_error(ERROR_INVALID_PARAMETER);
+        return FALSE;
+    }
+
+    res = nt_query_file_info(hFile, &basic, sizeof(basic), FileBasicInformation);
+    if (!NT_SUCCESS(res)) {
+        set_last_error(ntstatus_to_last_error(res));
+        return FALSE;
+    }
+    lpFileInformation->dwFileAttributes = basic.FileAttributes;
+    largeint_to_filetime(&basic.CreationTime, &lpFileInformation->ftCreationTime);
+    largeint_to_filetime(&basic.LastAccessTime, &lpFileInformation->ftLastAccessTime);
+    largeint_to_filetime(&basic.LastWriteTime, &lpFileInformation->ftLastWriteTime);
+
+    res = nt_query_file_info(hFile, &internal, sizeof(internal), FileInternalInformation);
+    if (!NT_SUCCESS(res)) {
+        set_last_error(ntstatus_to_last_error(res));
+        return FALSE;
+    }
+    lpFileInformation->nFileIndexHigh = internal.IndexNumber.HighPart;
+    lpFileInformation->nFileIndexLow = internal.IndexNumber.LowPart;
+
+    res = nt_query_volume_info(hFile, volume, sizeof(volume_buf),
+                               FileFsVolumeInformation);
+    if (!NT_SUCCESS(res)) {
+        set_last_error(ntstatus_to_last_error(res));
+        return FALSE;
+    }
+    lpFileInformation->dwVolumeSerialNumber = volume->VolumeSerialNumber;
+
+    res = nt_query_file_info(hFile, &standard, sizeof(standard), FileStandardInformation);
+    if (!NT_SUCCESS(res)) {
+        set_last_error(ntstatus_to_last_error(res));
+        return FALSE;
+    }
+    lpFileInformation->nNumberOfLinks = standard.NumberOfLinks;
+    lpFileInformation->nFileSizeHigh = standard.EndOfFile.HighPart;
+    lpFileInformation->nFileSizeLow = standard.EndOfFile.LowPart;
+
+    return TRUE;
+}
+
+DWORD
+WINAPI
+redirect_GetFileSize(
+    __in      HANDLE hFile,
+    __out_opt LPDWORD lpFileSizeHigh
+    )
+{
+    NTSTATUS res;
+    FILE_STANDARD_INFORMATION standard;
+    res = nt_query_file_info(hFile, &standard, sizeof(standard), FileStandardInformation);
+    if (!NT_SUCCESS(res)) {
+        set_last_error(ntstatus_to_last_error(res));
+        return INVALID_FILE_SIZE;
+    }
+    if (lpFileSizeHigh != NULL)
+        *lpFileSizeHigh = standard.EndOfFile.HighPart;
+    return standard.EndOfFile.LowPart;
+}
+
+DWORD
+WINAPI
+redirect_GetFileType(
+    __in HANDLE hFile
+    )
+{
+    NTSTATUS res;
+    FILE_FS_DEVICE_INFORMATION info;
+    res = nt_query_volume_info(hFile, &info, sizeof(info), FileFsDeviceInformation);
+    if (!NT_SUCCESS(res)) {
+        set_last_error(ntstatus_to_last_error(res));
+        return FILE_TYPE_UNKNOWN;
+    }
+
+    set_last_error(NO_ERROR);
+    switch (info.DeviceType) {
+    case FILE_DEVICE_CD_ROM:
+    case FILE_DEVICE_CD_ROM_FILE_SYSTEM:
+    case FILE_DEVICE_CONTROLLER:
+    case FILE_DEVICE_DATALINK:
+    case FILE_DEVICE_DFS:
+    case FILE_DEVICE_DISK:
+    case FILE_DEVICE_DISK_FILE_SYSTEM:
+    case FILE_DEVICE_VIRTUAL_DISK:
+        return FILE_TYPE_DISK;
+
+    case FILE_DEVICE_KEYBOARD:
+    case FILE_DEVICE_MOUSE:
+    case FILE_DEVICE_NULL:
+    case FILE_DEVICE_PARALLEL_PORT:
+    case FILE_DEVICE_PRINTER:
+    case FILE_DEVICE_SERIAL_PORT:
+    case FILE_DEVICE_SCREEN:
+    case FILE_DEVICE_SOUND:
+    case FILE_DEVICE_MODEM:
+        return FILE_TYPE_CHAR;
+
+    case FILE_DEVICE_NAMED_PIPE:
+        return FILE_TYPE_PIPE;
+    }
+    return FILE_TYPE_UNKNOWN;
+}
 
 /***************************************************************************
  * FILE MAPPING
@@ -1068,6 +1254,192 @@ redirect_DeviceIoControl(
     return TRUE;
 }
 
+BOOL
+WINAPI
+redirect_GetDiskFreeSpaceA(
+    __in_opt  LPCSTR lpRootPathName,
+    __out_opt LPDWORD lpSectorsPerCluster,
+    __out_opt LPDWORD lpBytesPerSector,
+    __out_opt LPDWORD lpNumberOfFreeClusters,
+    __out_opt LPDWORD lpTotalNumberOfClusters
+    )
+{
+    wchar_t wbuf[MAX_PATH];
+    wchar_t *wpath = NULL;
+    int len;
+    if (lpRootPathName != NULL) {
+        len = _snwprintf(wbuf, BUFFER_SIZE_ELEMENTS(wbuf), L"%hs", lpRootPathName);
+        if (len < 0) {
+            set_last_error(ERROR_PATH_NOT_FOUND);
+            return FALSE;
+        }
+        NULL_TERMINATE_BUFFER(wbuf);
+        wpath = wbuf;
+    }
+    return redirect_GetDiskFreeSpaceW(wpath, lpSectorsPerCluster, lpBytesPerSector,
+                                      lpNumberOfFreeClusters, lpTotalNumberOfClusters);
+}
+
+/* Shared among GetDiskFreeSpace and GetDriveType.
+ * Returns NULL on error.  Up to caller to call set_last_error().
+ * On success, up to user to close the handle returned.
+ */
+HANDLE
+open_dir_from_path(__in_opt  LPCWSTR lpRootPathName)
+{
+    NTSTATUS res;
+    wchar_t wbuf[MAX_PATH];
+    const wchar_t *wpath = NULL;
+    wchar_t ntbuf[MAX_PATH];
+    wchar_t *nt_path = NULL;
+    size_t alloc_sz = 0;
+    HANDLE dir;
+    bool use_cur_dir = false;
+
+    if (lpRootPathName == NULL)
+        use_cur_dir = true;
+    else {
+        /* For GetDiskFreeSpace, despite the man page claiming a
+         * trailing \ is needed, on win7 it works fine without it.
+         * A relative path seems to turn into the cur dir.
+         * A \\server path needs a share (\\server\share).
+         */
+        if ((lpRootPathName[0] == L'\\' && lpRootPathName[1] == L'\\') ||
+            (lpRootPathName[0] != L'\0' && lpRootPathName[1] == L':' &&
+             lpRootPathName[2] == L'\\')) {
+            /* x:\ or \\server => take as is.  Up to the caller to pass
+             * in a directory instead of a file.
+             */
+            wpath = lpRootPathName;
+        } else
+            use_cur_dir = true;
+    }
+    if (use_cur_dir) {
+        redirect_GetCurrentDirectoryW(BUFFER_SIZE_ELEMENTS(wbuf), wbuf);
+        wpath = wbuf;
+    }
+
+    nt_path = convert_to_NT_file_path_wide(ntbuf, wpath, BUFFER_SIZE_ELEMENTS(ntbuf),
+                                           &alloc_sz);
+    if (nt_path == NULL)
+        return NULL;
+
+    res = nt_open_file(&dir, nt_path, GENERIC_READ | FILE_LIST_DIRECTORY,
+                       FILE_SHARE_READ | FILE_SHARE_WRITE, FILE_DIRECTORY_FILE);
+
+    if (nt_path != NULL && nt_path != ntbuf)
+        convert_to_NT_file_path_wide_free(nt_path, alloc_sz);
+
+    if (!NT_SUCCESS(res))
+        return NULL;
+
+    return dir;
+}
+
+BOOL
+WINAPI
+redirect_GetDiskFreeSpaceW(
+    __in_opt  LPCWSTR lpRootPathName,
+    __out_opt LPDWORD lpSectorsPerCluster,
+    __out_opt LPDWORD lpBytesPerSector,
+    __out_opt LPDWORD lpNumberOfFreeClusters,
+    __out_opt LPDWORD lpTotalNumberOfClusters
+    )
+{
+    NTSTATUS res;
+    HANDLE dir;
+    FILE_FS_SIZE_INFORMATION info;
+
+    dir = open_dir_from_path(lpRootPathName);
+    if (dir == NULL) {
+        set_last_error(ERROR_PATH_NOT_FOUND);
+        return FALSE;
+    }
+
+    res = nt_query_volume_info(dir, &info, sizeof(info), FileFsSizeInformation);
+    close_handle(dir);
+    if (!NT_SUCCESS(res)) {
+        set_last_error(ntstatus_to_last_error(res));
+        return FALSE;
+    }
+
+    if (lpSectorsPerCluster != NULL)
+        *lpSectorsPerCluster = info.SectorsPerAllocationUnit;
+    if (lpBytesPerSector != NULL)
+        *lpBytesPerSector = info.BytesPerSector;
+    if (lpNumberOfFreeClusters != NULL)
+        *lpNumberOfFreeClusters = info.AvailableAllocationUnits.u.LowPart;
+    if (lpTotalNumberOfClusters != NULL)
+        *lpTotalNumberOfClusters = info.TotalAllocationUnits.u.LowPart;
+    return TRUE;
+}
+
+UINT
+WINAPI
+redirect_GetDriveTypeA(
+    __in_opt  LPCSTR lpRootPathName
+    )
+{
+    wchar_t wbuf[MAX_PATH];
+    wchar_t *wpath = NULL;
+    int len;
+    if (lpRootPathName != NULL) {
+        len = _snwprintf(wbuf, BUFFER_SIZE_ELEMENTS(wbuf), L"%hs", lpRootPathName);
+        if (len < 0) {
+            set_last_error(ERROR_PATH_NOT_FOUND);
+            return DRIVE_NO_ROOT_DIR;
+        }
+        NULL_TERMINATE_BUFFER(wbuf);
+        wpath = wbuf;
+    }
+    return redirect_GetDriveTypeW(wpath);
+}
+
+UINT
+WINAPI
+redirect_GetDriveTypeW(
+    __in_opt  LPCWSTR lpRootPathName
+    )
+{
+    NTSTATUS res;
+    HANDLE dir;
+    FILE_FS_DEVICE_INFORMATION info;
+
+    dir = open_dir_from_path(lpRootPathName);
+    if (dir == NULL) {
+        set_last_error(ERROR_NOT_A_REPARSE_POINT); /* observed error code */
+        return DRIVE_NO_ROOT_DIR;
+    }
+
+    res = nt_query_volume_info(dir, &info, sizeof(info), FileFsDeviceInformation);
+    close_handle(dir);
+    if (!NT_SUCCESS(res)) {
+        set_last_error(ntstatus_to_last_error(res));
+        return DRIVE_NO_ROOT_DIR;
+    }
+
+    switch (info.DeviceType) {
+    case FILE_DEVICE_DISK:
+    case FILE_DEVICE_DISK_FILE_SYSTEM: {
+        if (TEST(FILE_REMOVABLE_MEDIA, info.Characteristics))
+            return DRIVE_REMOVABLE;
+        else if (TEST(FILE_REMOTE_DEVICE, info.Characteristics))
+            return DRIVE_REMOTE;
+        else
+            return DRIVE_FIXED;
+    }
+    case FILE_DEVICE_CD_ROM:
+    case FILE_DEVICE_CD_ROM_FILE_SYSTEM:
+        return DRIVE_CDROM;
+    case FILE_DEVICE_VIRTUAL_DISK:
+        return DRIVE_RAMDISK;
+    case FILE_DEVICE_NETWORK_FILE_SYSTEM:
+        return DRIVE_REMOTE;
+    }
+    return DRIVE_UNKNOWN;
+}
+
+
 /***************************************************************************
  * HANDLES
  */
@@ -1100,6 +1472,21 @@ redirect_DuplicateHandle(
                                     bInheritHandle ? HANDLE_FLAG_INHERIT : 0,
                                     dwOptions);
     return NT_SUCCESS(res);
+}
+
+HANDLE
+WINAPI
+redirect_GetStdHandle(
+    __in DWORD nStdHandle
+    )
+{
+    switch (nStdHandle) {
+    case STD_INPUT_HANDLE: return get_stdin_handle();
+    case STD_OUTPUT_HANDLE: return get_stdout_handle();
+    case STD_ERROR_HANDLE: return get_stderr_handle();
+    }
+    set_last_error(ERROR_INVALID_PARAMETER);
+    return INVALID_HANDLE_VALUE;
 }
 
 /***************************************************************************
@@ -1191,13 +1578,6 @@ redirect_GetSystemTimeAsFileTime(
     SYSTEMTIME st;
     query_system_time(&st);
     redirect_SystemTimeToFileTime(&st, lpSystemTimeAsFileTime);
-}
-
-static void
-largeint_to_filetime(const LARGE_INTEGER *li, FILETIME *ft OUT)
-{
-    ft->dwHighDateTime = li->HighPart;
-    ft->dwLowDateTime = li->LowPart;
 }
 
 BOOL
@@ -1628,12 +2008,13 @@ test_files(void)
     HANDLE h, h2;
     PVOID p;
     BOOL ok;
-    DWORD dw;
+    DWORD dw, dw2;
     char env[MAX_PATH];
     char buf[MAX_PATH];
     int res;
     OVERLAPPED overlap = {0,};
     HANDLE e;
+    BY_HANDLE_FILE_INFORMATION byh_info;
 
     res = GetEnvironmentVariableA("TMP", env, BUFFER_SIZE_ELEMENTS(env));
     EXPECT(res > 0, true);
@@ -1682,6 +2063,22 @@ test_files(void)
     EXPECT(ok, true);
     EXPECT(dw == sizeof(h2), true);
     EXPECT((HANDLE)p == h2, true);
+
+    /* test queries */
+    memset(&byh_info, 0, sizeof(byh_info));
+    ok = redirect_GetFileInformationByHandle(h, &byh_info);
+    EXPECT(ok, TRUE);
+    EXPECT(byh_info.nFileSizeLow != 0, true);
+
+    dw = redirect_GetFileAttributesA(buf);
+    EXPECT(dw != INVALID_FILE_ATTRIBUTES, true);
+
+    dw = redirect_GetFileSize(h, &dw2);
+    EXPECT(dw != INVALID_FILE_SIZE, true);
+    EXPECT(dw > 0 && dw2 == 0, true);
+
+    dw = redirect_GetFileType(h);
+    EXPECT(dw == FILE_TYPE_DISK, true);
 
     ok = redirect_CloseHandle(h);
     EXPECT(ok, true);
@@ -1799,6 +2196,8 @@ test_pipe(void)
     ok = redirect_ReadFile(h, &p, sizeof(p), (LPDWORD) &res, NULL);
     EXPECT(ok, true);
     EXPECT((HANDLE)p == h2, true);
+    res = redirect_GetFileType(h);
+    EXPECT(res == FILE_TYPE_PIPE, true);
     ok = redirect_DuplicateHandle(GetCurrentProcess(), h, GetCurrentProcess(), &h3,
                                   0, FALSE, 0);
     EXPECT(ok, true);
@@ -2083,6 +2482,69 @@ test_file_paths(void)
     EXPECT(ok, TRUE);
 }
 
+static void
+test_drive(void)
+{
+    BOOL ok;
+    DWORD secs_per_cluster, bytes_per_sector, free_clusters, num_clusters;
+    UINT type;
+
+    ok = redirect_GetDiskFreeSpaceA("c:\\", &secs_per_cluster, &bytes_per_sector,
+                                    &free_clusters, &num_clusters);
+    EXPECT(ok, TRUE);
+    /* on win7 at least, trailing \ not required, despite man page */
+    ok = redirect_GetDiskFreeSpaceA("c:", &secs_per_cluster, &bytes_per_sector,
+                                    &free_clusters, &num_clusters);
+    EXPECT(ok, TRUE);
+    ok = redirect_GetDiskFreeSpaceA("bogus\\relative\\path",
+                                    &secs_per_cluster, &bytes_per_sector,
+                                    &free_clusters, &num_clusters);
+    EXPECT(ok, TRUE);
+    /* test passing in a file instead of a dir */
+    ok = redirect_GetDiskFreeSpaceA("c:\\windows\\system.ini",
+                                    &secs_per_cluster, &bytes_per_sector,
+                                    &free_clusters, &num_clusters);
+    EXPECT(ok, FALSE);
+    EXPECT(get_last_error(), ERROR_PATH_NOT_FOUND);
+    ok = redirect_GetDiskFreeSpaceW(L"c:\\", &secs_per_cluster, &bytes_per_sector,
+                                    &free_clusters, &num_clusters);
+    EXPECT(ok, TRUE);
+    ok = redirect_GetDiskFreeSpaceW(NULL, &secs_per_cluster, &bytes_per_sector,
+                                    &free_clusters, &num_clusters);
+    EXPECT(ok, TRUE);
+    /* I manually tested \\server => ERROR_PATH_NOT_FOUND and \\server\share => ok */
+
+    EXPECT(redirect_GetDriveTypeA("c:\\"), DRIVE_FIXED);
+    type = redirect_GetDriveTypeA("bogus\\relative\\path");
+    EXPECT(type == DRIVE_FIXED ||
+           /* handle tester's cur dir being elsewhere */
+           type == DRIVE_RAMDISK || type == DRIVE_REMOTE, true);
+    type = redirect_GetDriveTypeA(NULL);
+    EXPECT(type == DRIVE_FIXED ||
+           /* handle tester's cur dir being elsewhere */
+           type == DRIVE_RAMDISK || type == DRIVE_REMOTE, true);
+    /* test passing in a file instead of a dir */
+    EXPECT(redirect_GetDriveTypeA("c:\\windows\\system.ini"), DRIVE_NO_ROOT_DIR);
+    EXPECT(redirect_GetDriveTypeW(L"c:\\"), DRIVE_FIXED);
+    EXPECT(redirect_GetDriveTypeW(NULL), DRIVE_FIXED);
+    EXPECT(redirect_GetDriveTypeW(L"\\\\bogusserver\\bogusshare"), DRIVE_NO_ROOT_DIR);
+    EXPECT(get_last_error() == ERROR_NOT_A_REPARSE_POINT, true);
+    /* manually tested \\server => DRIVE_NO_ROOT_DIR. \\server\share\ => DRIVE_REMOTE */
+}
+
+static void
+test_handles(void)
+{
+    HANDLE h;
+    BOOL ok;
+    DWORD written;
+    const char *msg = "GetStdHandle test\n";
+
+    h = redirect_GetStdHandle(STD_ERROR_HANDLE);
+    ok = redirect_WriteFile(h, msg, (DWORD) strlen(msg), &written, NULL);
+    EXPECT(ok && written == strlen(msg), true);
+}
+
 void
 unit_test_drwinapi_kernel32_file(void)
 {
@@ -2103,5 +2565,9 @@ unit_test_drwinapi_kernel32_file(void)
     test_find_file();
 
     test_file_paths();
+
+    test_drive();
+
+    test_handles();
 }
 #endif

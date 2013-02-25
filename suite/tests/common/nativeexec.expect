@@ -9,4 +9,8 @@ nativeexec.exe:print_int(42)
 calling cross-module unwinder
 before longjmp, 1
 after longjmp
+calling indirect stdcall
+ -> 40
+calling tail caller
+nativeexec.exe:print_int(35)
 all done

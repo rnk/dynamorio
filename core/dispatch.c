@@ -156,7 +156,7 @@ dispatch(dcontext_t *dcontext)
             ASSERT_NOT_REACHED();
         }
 
-        if (dcontext->next_tag == (app_pc) back_from_native) {
+        if (native_exec_is_back_from_native(dcontext->next_tag)) {
             /* This can happen if we start interpreting a native module. */
             ASSERT(DYNAMO_OPTION(native_exec));
             interpret_back_from_native(dcontext);

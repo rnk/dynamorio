@@ -86,4 +86,14 @@ interpret_back_from_native(dcontext_t *dcontext);
 bool
 put_back_native_retaddrs(dcontext_t *dcontext);
 
+/* Return if this pc is one of the back_from_native return stubs.  Try to make
+ * this a single predictable branch.
+ */
+static inline bool
+native_exec_is_back_from_native(app_pc pc)
+{
+    ptr_uint_t diff = (ptr_uint_t)pc - (ptr_uint_t)back_from_native_retstubs;
+    return (diff < MAX_NATIVE_RETSTACK * BACK_FROM_NATIVE_RETSTUB_SIZE);
+}
+
 #endif /* _NATIVE_EXEC_H_ */

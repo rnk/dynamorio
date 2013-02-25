@@ -40,12 +40,16 @@
 #include <setjmp.h>
 
 typedef void (*int_fn_t)(int);
+typedef int (*int2_fn_t)(int, int);
+typedef void (*tail_caller_t)(int_fn_t, int);
 
 /* from nativeexec.dll.dll */
 IMPORT void import_me1(int x);
 IMPORT void import_me2(int x);
 IMPORT void import_me3(int x);
 IMPORT void import_me4(int_fn_t fn, int x);
+IMPORT int2_fn_t get_import_stdcall(void);
+IMPORT tail_caller_t get_tail_caller(void);
 
 /* Test unwinding across back_from_native retaddrs. */
 IMPORT void unwind_level1(int_fn_t fn, int x);
@@ -57,6 +61,8 @@ static void unwind_longjmp(int x);
 
 void call_plt(int_fn_t fn);
 void call_funky(int_fn_t fn);
+int call_stdcall(int2_fn_t fn);
+int call_tail(int2_fn_t fn);
 
 void
 print_int(int x)
@@ -92,11 +98,15 @@ unwind_longjmp(int x)
 int
 main(int argc, char **argv)
 {
+    int x;
+    int2_fn_t import_stdcall;
+    tail_caller_t tail_caller;
+
     INIT();
 
-    if (argc > 2 && strcmp("LD_BIND_NOW", argv[1])) {
+    if (argc > 2 && strcmp("-bind_now", argv[1])) {
 #ifdef WINDOWS
-        print("bind_now is Linux-only\n");
+        print("-bind_now is Linux-only\n");
 #else
         /* Re-exec the test with LD_BIND_NOW in the environment to force eager
          * binding.
@@ -114,6 +124,13 @@ main(int argc, char **argv)
      */
     print("calling via PLT-style call\n");
     call_plt(&import_me2);
+
+    /* Work around for not being able to export syms from asm code.  This
+     * requires doing a cross-native PLT-style call, which most natrually fits
+     * here.
+     */
+    import_stdcall = get_import_stdcall();
+    tail_caller = get_tail_caller();
 
     /* funky ind call is only caught by us w/ -native_exec_guess_calls
      * FIXME: add a -no_native_exec_guess_calls runregression run
@@ -139,6 +156,16 @@ main(int argc, char **argv)
 
     print("calling cross-module unwinder\n");
     unwind_level1(unwind_setjmp, 3);
+
+    print("calling indirect stdcall\n");
+    x = call_stdcall(import_stdcall);
+    print(" -> %d\n", x);
+
+    /* i#1077: If the appdll is native, then DR inserts a back_from_native
+     * retaddr.  The appdll then does a tail call
+     */
+    print("calling tail caller\n");
+    tail_caller(print_int, 35);
 
     print("all done\n");
 
@@ -181,6 +208,19 @@ GLOBAL_LABEL(call_funky:)
         leave
         ret
         END_FUNC(call_funky)
+
+        DECLARE_FUNC(call_stdcall)
+GLOBAL_LABEL(call_stdcall:)
+        /* XXX: Not doing SEH prologue for test code. */
+        mov      REG_XDX, ARG1          /* XDX is volatile and not regparm 0. */
+        enter    0, 0                   /* Maintain 16-byte alignment. */
+        /* Do a stdcall-style call, even on Linux. */
+        push     19
+        push     21
+        call     REG_XDX
+        leave
+        ret
+        END_FUNC(call_stdcall)
 
 END_FILE
 

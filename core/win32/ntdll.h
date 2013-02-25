@@ -1565,6 +1565,9 @@ query_full_attributes_file(PCWSTR filename,
 /* An attempt was made to access an exiting process. */
 #define STATUS_PROCESS_IS_TERMINATING    ((NTSTATUS)0xC000010AL)
 
+/* The NTFS file or directory is not a reparse point. */
+#define STATUS_NOT_A_REPARSE_POINT       ((NTSTATUS)0xC0000275L)
+
 /* This is in VS2005 winnt.h but not in SDK winnt.h */
 #ifndef IMAGE_SIZEOF_BASE_RELOCATION
 # define IMAGE_SIZEOF_BASE_RELOCATION         8
@@ -1615,7 +1618,11 @@ typedef struct _FILE_STANDARD_INFORMATION {
     BOOLEAN DeletePending;                                  
     BOOLEAN Directory;                                      
 } FILE_STANDARD_INFORMATION, *PFILE_STANDARD_INFORMATION;   
-                                                            
+
+typedef struct _FILE_INTERNAL_INFORMATION {
+    LARGE_INTEGER IndexNumber;
+} FILE_INTERNAL_INFORMATION, *PFILE_INTERNAL_INFORMATION;
+                                                  
 typedef struct _FILE_POSITION_INFORMATION {                 
     LARGE_INTEGER CurrentByteOffset;                        
 } FILE_POSITION_INFORMATION, *PFILE_POSITION_INFORMATION;   
@@ -2018,6 +2025,9 @@ nt_query_security_object(IN HANDLE Handle,
  * an nt_() routine of our own, but we want to share (typically between
  * ntdll.c and drwinapi/).
  */
+
+GET_NTDLL(RtlEnterCriticalSection, (IN OUT RTL_CRITICAL_SECTION *crit));
+GET_NTDLL(RtlLeaveCriticalSection, (IN OUT RTL_CRITICAL_SECTION *crit));
 
 GET_NTDLL(NtWaitForSingleObject, (IN HANDLE ObjectHandle, 
                                   IN BOOLEAN Alertable, 

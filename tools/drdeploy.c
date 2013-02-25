@@ -53,6 +53,7 @@
 #endif
 
 #include <string.h>
+#include <stdarg.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <time.h>
@@ -228,6 +229,12 @@ const char *usage_str =
     "                          specified number of minutes.\n"
     "       -h <hours>         Kill the application if it runs longer than the\n"
     "                          specified number of hours.\n"
+#ifdef LINUX
+    "       -killpg            Create a new process group for the app.  If the app\n"
+    "                          times out, kill the entire process group.  This forces\n"
+    "                          the child to be a new process with a new pid, rather\n"
+    "                          than reusing the parent's pid.\n"
+#endif
     "       -stats             Print /usr/bin/time-style elapsed time and memory used.\n"
     "       -mem               Print memory usage statistics.\n"
     "       -pidfile <file>    Print the pid of the child process to the given file.\n"
@@ -236,6 +243,7 @@ const char *usage_str =
     "       -early             Whether to use early injection.\n"
     "       -attach <pid>      Attach to the process with the given pid.  Pass 0\n"
     "                          for pid to launch and inject into a new process.\n"
+    "       -logdir <dir>      Logfiles will be stored in this directory.\n"
 # endif
     "       -use_dll <dll>     Inject given dll instead of configured DR dll.\n"
     "       -force             Inject regardless of configuration.\n"
@@ -331,29 +339,6 @@ GetFullPathName(const char *rel, size_t abs_len, char *abs, char **ext)
         strncpy(abs, tmp_buf, abs_len);
     }
 }
-
-# ifdef DRRUN
-/* PID of child to kill when alarm goes off. */
-static process_id_t alarm_child_pid;
-
-/* Handles SIGALRM for -s timeouts set for drrun.
- */
-static void
-alarm_handler(int sig)
-{
-    if (sig == SIGALRM) {
-        /* XXX: Could check if the timeout has been reached yet.  For now we
-         * rely on alarm().
-         */
-        process_id_t pid = alarm_child_pid;
-        alarm_child_pid = 0;
-        /* Go straight for SIGKILL to match Windows.  If DR is hung, its signal
-         * handler may be confused.
-         */
-        kill(pid, SIGKILL);
-    }
-}
-# endif /* DRRUN */
 
 #endif /* LINUX */
 
@@ -627,6 +612,7 @@ write_pid_to_file(const char *pidfile, process_id_t pid)
 }
 #endif /* DRCONFIG */
 
+#if defined(DRCONFIG) || defined(DRRUN)
 static void
 append_client(const char *client, int id, const char *client_ops,
               char client_paths[MAX_CLIENT_LIBS][MAXIMUM_PATH],
@@ -642,30 +628,60 @@ append_client(const char *client, int id, const char *client_ops,
     client_options[*num_clients] = client_ops;
     (*num_clients)++;
 }
+#endif
+
+/* Appends a space-separated option string to buf.  A space is appended only if
+ * the buffer is non-empty.  Aborts on buffer overflow.  Always null terminates
+ * the string.
+ * XXX: Use print_to_buffer.
+ */
+static void
+add_extra_option(char *buf, size_t bufsz, size_t *sofar, const char *fmt, ...)
+{
+    ssize_t len;
+    va_list ap;
+    if (*sofar > 0 && *sofar < bufsz)
+        buf[(*sofar)++] = ' ';  /* Add a space. */
+
+    va_start(ap, fmt);
+    len = vsnprintf(buf + *sofar, bufsz - *sofar, fmt, ap);
+    va_end(ap);
+
+    if (len < 0 || (size_t)len >= bufsz) {
+        error("option string too long, buffer overflow");
+        die();
+    }
+    *sofar += len;
+    /* be paranoid: though usually many calls in a row and could delay until end */
+    buf[bufsz-1] = '\0';
+}
 
 int main(int argc, char *argv[])
 {
-    char *process = NULL;
     char *dr_root = NULL;
     char client_paths[MAX_CLIENT_LIBS][MAXIMUM_PATH];
+#if defined(DRCONFIG) || defined(DRRUN)
+    char *process = NULL;
     const char *client_options[MAX_CLIENT_LIBS] = {NULL,};
     client_id_t client_ids[MAX_CLIENT_LIBS] = {0,};
     size_t num_clients = 0;
-#if defined(DRCONFIG) || defined(DRRUN)
     char single_client_ops[DR_MAX_OPTIONS_LENGTH];
 #endif
-#if defined(MF_API) || defined(PROBE_API)
+#ifndef DRINJECT
+# if defined(MF_API) || defined(PROBE_API)
     /* must set -mode */
     dr_operation_mode_t dr_mode = DR_MODE_NONE;
-#else
-    /* only one choice so no -mode */
-# ifdef CLIENT_INTERFACE
-    dr_operation_mode_t dr_mode = DR_MODE_CODE_MANIPULATION;
 # else
+    /* only one choice so no -mode */
+#  ifdef CLIENT_INTERFACE
+    dr_operation_mode_t dr_mode = DR_MODE_CODE_MANIPULATION;
+#  else
     dr_operation_mode_t dr_mode = DR_MODE_NONE;
+#  endif
 # endif
-#endif
+#endif /* !DRINJECT */
     char extra_ops[MAX_OPTIONS_STRING];
+    size_t extra_ops_sofar = 0;
 #ifdef DRCONFIG
     action_t action = action_none;
 #endif
@@ -696,6 +712,7 @@ int main(int argc, char *argv[])
     time_t start_time, end_time;
 # else
     bool use_ptrace = false;
+    bool kill_group = false;
 # endif
     char *app_name;
     char full_app_name[MAXIMUM_PATH];
@@ -832,14 +849,11 @@ int main(int argc, char *argv[])
             continue;
         }
         else if (strcmp(argv[i], "-early") == 0) {
-            /* Appending -early_inject to extra_ops communicates our intentions to
-             * drinjectlib.
-             * XXX: reuse print_to_buffer from x86/decodelib.c and utils.c.
+            /* Appending -early_inject to extra_ops communicates our intentions
+             * to drinjectlib.
              */
-            _snprintf(extra_ops + strlen(extra_ops),
-                      BUFFER_SIZE_ELEMENTS(extra_ops) - strlen(extra_ops),
-                      "%s-early_inject", (extra_ops[0] == '\0') ? "" : " ");
-            NULL_TERMINATE_BUFFER(extra_ops);
+            add_extra_option(extra_ops, BUFFER_SIZE_ELEMENTS(extra_ops),
+                             &extra_ops_sofar, "-early_inject");
             continue;
         }
 # endif /* LINUX */
@@ -854,8 +868,19 @@ int main(int argc, char *argv[])
         }
 
         /* params with an arg */
-        if (strcmp(argv[i], "-root") == 0) {
+        if (strcmp(argv[i], "-root") == 0 ||
+            /* support -dr_home alias used by script */
+            strcmp(argv[i], "-dr_home") == 0) {
             dr_root = argv[++i];
+        }
+        else if (strcmp(argv[i], "-logdir") == 0) {
+            /* Accept this for compatibility with the old drrun shell script. */
+            const char *dir = argv[++i];
+            if (_access(dir, 0) == -1)
+                usage("-logdir %s does not exist", dir);
+            add_extra_option(extra_ops, BUFFER_SIZE_ELEMENTS(extra_ops),
+                             &extra_ops_sofar, "-logdir `%s`", dir);
+            continue;
         }
 #ifdef DRCONFIG
         else if (strcmp(argv[i], "-reg") == 0) {
@@ -953,10 +978,8 @@ int main(int argc, char *argv[])
         }
         else if (strcmp(argv[i], "-ops") == 0) {
             /* support repeating the option (i#477) */
-            _snprintf(extra_ops + strlen(extra_ops),
-                      BUFFER_SIZE_ELEMENTS(extra_ops) - strlen(extra_ops),
-                      "%s%s", (extra_ops[0] == '\0') ? "" : " ", argv[++i]);
-            NULL_TERMINATE_BUFFER(extra_ops);
+            add_extra_option(extra_ops, BUFFER_SIZE_ELEMENTS(extra_ops),
+                             &extra_ops_sofar, "%s", argv[++i]);
 	}
 #endif
 #if defined(DRRUN) || defined(DRINJECT)
@@ -986,6 +1009,11 @@ int main(int argc, char *argv[])
             if (limit <= 0)
                 usage("invalid time");
 	}
+# ifdef LINUX
+        else if (strcmp(argv[i], "-killpg") == 0) {
+            kill_group = true;
+        }
+# endif
 #endif
 #if defined(DRCONFIG) || defined(DRRUN)
         /* if there are still options, assume user is using -- to separate and pass
@@ -999,14 +1027,13 @@ int main(int argc, char *argv[])
                     strcmp(argv[i], "--") == 0) {
                     break;
                 }
-                _snprintf(extra_ops + strlen(extra_ops),
-                          BUFFER_SIZE_ELEMENTS(extra_ops) - strlen(extra_ops),
-                          "%s%s", (extra_ops[0] == '\0') ? "" : " ", argv[i]);
-                NULL_TERMINATE_BUFFER(extra_ops);
+                add_extra_option(extra_ops, BUFFER_SIZE_ELEMENTS(extra_ops),
+                                 &extra_ops_sofar, "%s", argv[i]);
                 i++;
             }
-            if (strcmp(argv[i], "-c") == 0) {
+            if (i < argc && strcmp(argv[i], "-c") == 0) {
                 const char *client;
+                size_t client_sofar = 0;
                 if (i + 1 >= argc)
                     usage("too few arguments to -c");
                 if (num_clients != 0)
@@ -1017,12 +1044,9 @@ int main(int argc, char *argv[])
                 i++;
                 single_client_ops[0] = '\0';
                 while (i < argc && strcmp(argv[i], "--") != 0) {
-                    _snprintf(single_client_ops + strlen(single_client_ops),
-                              BUFFER_SIZE_ELEMENTS(single_client_ops) -
-                              strlen(single_client_ops),
-                              "%s%s", (single_client_ops[0] == '\0') ? "" : " ",
-                              argv[i]);
-                    NULL_TERMINATE_BUFFER(single_client_ops);
+                    add_extra_option(single_client_ops,
+                                     BUFFER_SIZE_ELEMENTS(single_client_ops),
+                                     &client_sofar, "%s", argv[i]);
                     i++;
                 }
                 append_client(client, 0, single_client_ops, client_paths,
@@ -1204,7 +1228,7 @@ int main(int argc, char *argv[])
     /* On Linux, we use exec by default to create the app process.  This matches
      * our drrun shell script and makes scripting easier for the user.
      */
-    if (limit == 0 && !use_ptrace) {
+    if (limit == 0 && !use_ptrace && !kill_group) {
         info("will exec %s", app_name);
         errcode = dr_inject_prepare_to_exec(app_name, app_argv, &inject_data);
     } else
@@ -1214,6 +1238,17 @@ int main(int argc, char *argv[])
         info("created child with pid %d for %s",
              dr_inject_get_process_id(inject_data), app_name);
     }
+# ifdef LINUX
+    if (limit != 0 && kill_group) {
+        /* Move the child to its own process group. */
+        process_id_t child_pid = dr_inject_get_process_id(inject_data);
+        int res = setpgid(child_pid, child_pid);
+        if (res < 0) {
+            perror("ERROR in setpgid");
+            goto error;
+        }
+    }
+# endif
 # ifdef WINDOWS
     if (errcode == ERROR_IMAGE_MACHINE_TYPE_MISMATCH_EXE) {
         /* Better error message than the FormatMessage */
@@ -1258,7 +1293,7 @@ int main(int argc, char *argv[])
     }
 # endif
 
-#ifdef LINUX
+# ifdef LINUX
     if (use_ptrace) {
         if (!dr_inject_prepare_to_ptrace(inject_data)) {
             error("unable to use ptrace");
@@ -1267,14 +1302,21 @@ int main(int argc, char *argv[])
             info("using ptrace to inject");
         }
     }
-#endif
+    if (kill_group) {
+        /* Move the child to its own process group. */
+        bool res = dr_inject_prepare_new_process_group(inject_data);
+        if (!res) {
+            error("error moving child to new process group");
+            goto error;
+        }
+    }
+# endif
 
     if (inject && !dr_inject_process_inject(inject_data, force_injection, drlib_path)) {
         error("unable to inject: did you forget to run drconfig first?");
         goto error;
     }
 
-    success = false;
     IF_WINDOWS(start_time = time(NULL);)
 
     if (!dr_inject_process_run(inject_data)) {
@@ -1287,71 +1329,42 @@ int main(int argc, char *argv[])
         info("%s", "Using debugger key injection");
         limit = -1; /* no wait */
     }
+# endif
 
     if (limit >= 0) {
+# ifdef WINDOWS
         double wallclock;
-        int wait_result;
+# endif
+        uint64 limit_millis = limit * 1000;
         info("waiting %sfor app to exit...", (limit <= 0) ? "forever " : "");
-        wait_result = WaitForSingleObject(dr_inject_get_process_handle(inject_data),
-                                          (limit==0) ? INFINITE : (limit*1000));
+        success = dr_inject_wait_for_child(inject_data, limit_millis);
+# ifdef WINDOWS
         end_time = time(NULL);
         wallclock = difftime(end_time, start_time);
-        if (wait_result == WAIT_OBJECT_0)
-            success = true;
-        else
-            info("timeout after %d seconds\n", limit);
-
         if (showstats || showmem)
             dr_inject_print_stats(inject_data, (int) wallclock, showstats, showmem);
-        exitcode = dr_inject_process_exit(inject_data, !success/*kill process*/);
-        if (exit0)
-            exitcode = 0;
-        return exitcode;
+# endif
+        if (!success)
+            info("timeout after %d seconds\n", limit);
     } else {
-        /* if we are using env -> registry our changes won't get undone!
-         * we can't unset now, the app may still reference them */
-        success = true;
-        return 0;
-    }
-# else /* LINUX */
-    if (limit > 0) {
-        /* Set a timer ala runstats. */
-        struct sigaction act;
-
-        /* Set an alarm handler. */
-        alarm_child_pid = dr_inject_get_process_id(inject_data);
-        memset(&act, 0, sizeof(act));
-        act.sa_handler = alarm_handler;
-        sigaction(SIGALRM, &act, NULL);
-
-        /* No interval, one shot only. */
-        alarm(limit);
+        success = true;  /* Don't kill the child if we're not waiting. */
     }
 
-    if (limit >= 0) {
-        info("waiting %sfor app to exit...", (limit <= 0) ? "forever " : "");
-        pid_t r;
-        do {
-            r = waitpid(dr_inject_get_process_id(inject_data), &exitcode, 0);
-        } while (r != dr_inject_get_process_id(inject_data) && r != -1);
-        /* FIXME i#840: We can't actually match exit status on Linux perfectly
-         * since the kernel reserves most of the bits for signal codes.  At the
-         * very least, we should ensure if the app exits with a signal we exit
-         * non-zero.
-         */
-    } else {
-        /* Don't wait, just return success. */
-        exitcode = 0; 
-    }
+    exitcode = dr_inject_process_exit(inject_data, !success/*kill process*/);
 
-    /* No need to kill the child process.  If the timeout expired, our signal
-     * handler does the kill.
-     */
-    dr_inject_process_exit(inject_data, false);
+    if (limit < 0)
+        exitcode = 0;  /* Return success if we didn't wait. */
+
     if (exit0)
         exitcode = 0;
+
+    /* FIXME i#840: We can't actually match exit status on Linux perfectly
+     * since the kernel reserves most of the bits for signal codes.  At the
+     * very least, we should ensure if the app exits with a signal we exit
+     * non-zero.
+     */
     return exitcode;
-# endif
+
  error:
     /* we created the process suspended so if we later had an error be sure
      * to kill it instead of leaving it hanging
