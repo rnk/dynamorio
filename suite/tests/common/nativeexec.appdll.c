@@ -86,18 +86,6 @@ unwind_level5(int_fn_t fn, int x)
     fn(x);
 }
 
-int2_fn_t EXPORT
-get_import_stdcall(void)
-{
-    return import_stdcall;
-}
-
-tail_caller_t EXPORT
-get_tail_caller(void)
-{
-    return tail_caller;
-}
-
 #ifdef WINDOWS
 BOOL APIENTRY 
 DllMain(HANDLE hModule, DWORD reason_for_call, LPVOID Reserved)
@@ -125,9 +113,6 @@ GLOBAL_LABEL(import_stdcall:)
  * i#1077: If fn is in a non-native module and we take over, we used to end up
  * interpreting the back_from_native return address on the stack.
  */
-#ifdef WINDOWS
-    EXPORT tail_caller
-#endif
         DECLARE_EXPORTED_FUNC(tail_caller)
 GLOBAL_LABEL(tail_caller:)
         /* XXX: Not doing SEH prologue for test code. */
