@@ -630,8 +630,9 @@ append_client(const char *client, int id, const char *client_ops,
 }
 #endif
 
-/* Appends an option format string to buf.  Appends a space if the string is
- * non-empty.  Aborts on buffer overflow.  Always null terminates the string.
+/* Appends a space-separated option string to buf.  A space is appended only if
+ * the buffer is non-empty.  Aborts on buffer overflow.  Always null terminates
+ * the string.
  * XXX: Use print_to_buffer.
  */
 static void
