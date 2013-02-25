@@ -289,14 +289,14 @@ return_from_native(priv_mcontext_t *mc)
 {
     dcontext_t *dcontext;
     app_pc target;
-    ptr_int_t retidx;
+    int retidx;
     ENTERING_DR();
     dcontext = get_thread_private_dcontext();
     ASSERT(dcontext != NULL);
     SYSLOG_INTERNAL_WARNING_ONCE("returned from at least one native module");
 #ifdef X86
     /* Account for our push of the retstack index. */
-    retidx = *(ptr_int_t *) mc->xsp;
+    retidx = (int) *(ptr_int_t *) mc->xsp;
     mc->xsp += sizeof(void *);
 #endif
     target = pop_retaddr_for_index(dcontext, retidx, (app_pc) mc->xsp);
@@ -330,11 +330,9 @@ interpret_back_from_native(dcontext_t *dcontext)
     app_pc xsp = (app_pc) get_mcontext(dcontext)->xsp;
     ptr_int_t offset = dcontext->next_tag - retstub_start;
     int retidx;
-    //print_file(STDERR, "interpret_back_from_native\n");
-    //return; [> NOCHECKIN <]
     ASSERT(native_exec_is_back_from_native(dcontext->next_tag));
     ASSERT(offset % BACK_FROM_NATIVE_RETSTUB_SIZE == 0);
-    retidx = offset / BACK_FROM_NATIVE_RETSTUB_SIZE;
+    retidx = (int)offset / BACK_FROM_NATIVE_RETSTUB_SIZE;
     dcontext->next_tag = pop_retaddr_for_index(dcontext, retidx, xsp);
     LOG(THREAD, LOG_ASYNCH, 2, "%s: tried to interpret back_from_native, "
         "interpreting retaddr "PFX" instead\n", dcontext->next_tag);
