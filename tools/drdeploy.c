@@ -647,7 +647,7 @@ add_extra_option(char *buf, size_t bufsz, size_t *sofar, const char *fmt, ...)
     len = vsnprintf(buf + *sofar, bufsz - *sofar, fmt, ap);
     va_end(ap);
 
-    if (len < 0 || len >= bufsz) {
+    if (len < 0 || (size_t)len >= bufsz) {
         error("option string too long, buffer overflow");
         die();
     }
