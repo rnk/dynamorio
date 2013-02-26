@@ -54,9 +54,9 @@
  */
 vm_area_vector_t *native_exec_areas;
 
-static app_pc retstub_start = (app_pc) back_from_native_retstubs;
+static const app_pc retstub_start = (app_pc) back_from_native_retstubs;
 #ifdef DEBUG
-static app_pc retstub_end = (app_pc) back_from_native_retstubs_end;
+static const app_pc retstub_end = (app_pc) back_from_native_retstubs_end;
 #endif
 
 void
@@ -299,13 +299,7 @@ return_from_native(priv_mcontext_t *mc)
     dcontext = get_thread_private_dcontext();
     ASSERT(dcontext != NULL);
     SYSLOG_INTERNAL_WARNING_ONCE("returned from at least one native module");
-#ifdef X86
-    /* Account for our push of the retstack index. */
-    retidx = (int) *(ptr_int_t *) mc->xsp;
-    mc->xsp += sizeof(void *);
-#else
-# error "x86.asm retstubs push an index; for other ISAs we'd do something else"
-#endif
+    retidx = native_get_retstack_idx(mc);
     target = pop_retaddr_for_index(dcontext, retidx, (app_pc) mc->xsp);
     LOG(THREAD, LOG_ASYNCH, 1, "\n!!!! Returned from NATIVE module to "PFX"\n",
         target);
@@ -330,7 +324,10 @@ native_module_callout(priv_mcontext_t *mc, app_pc target)
     ASSERT_NOT_REACHED();
 }
 
-/* Update next_tag with the real app return address. */
+/* Update next_tag with the real app return address.  next_tag should currently
+ * be equal to a return stub PC.  We compute the offset of the stub, and then
+ * divide by the length of each stub to get the index into the return stub.
+ */
 void
 interpret_back_from_native(dcontext_t *dcontext)
 {
