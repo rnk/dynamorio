@@ -598,7 +598,9 @@ enum {
     WRITABLE=true
 };
 
-/* Number of nested calls into native modules that we support.
+/* Number of nested calls into native modules that we support.  This number
+ * needs to equal the number of stubs in x86.asm:back_from_native_retstubs,
+ * which is checked at startup in native_exec.c.
  * FIXME: Remove this limitation if we ever need to support true mutual
  * recursion between native and non-native modules.
  */

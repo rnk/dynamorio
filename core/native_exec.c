@@ -54,9 +54,9 @@
  */
 vm_area_vector_t *native_exec_areas;
 
-static app_pc retstub_start = (app_pc) back_from_native_retstubs;
+static const app_pc retstub_start = (app_pc) back_from_native_retstubs;
 #ifdef DEBUG
-static app_pc retstub_end = (app_pc) back_from_native_retstubs_end;
+static const app_pc retstub_end = (app_pc) back_from_native_retstubs_end;
 #endif
 
 void
@@ -209,13 +209,18 @@ call_to_native(app_pc *sp)
      * XXX: it would be nice to abort in a release build, but this can be perf
      * critical.
      */
-    ASSERT(dcontext->native_retstack_cur < MAX_NATIVE_RETSTACK);
     i = dcontext->native_retstack_cur;
+    ASSERT(i < MAX_NATIVE_RETSTACK);
     dcontext->native_retstack[i].retaddr = *sp;
     dcontext->native_retstack[i].retloc = (app_pc) sp;
     dcontext->native_retstack_cur = i + 1;
     LOG(THREAD, LOG_ASYNCH, 1,
         "!!!! Entering module NATIVELY, retaddr="PFX"\n\n", *sp);
+    /* i#978: We use a different return stub for every nested call to native
+     * code.  Each stub pushes a different index into the retstack.  We could
+     * use the SP at return time to try to find the app's return address, but
+     * because of ret imm8 instructions, that's not robust.
+     */
     *sp = retstub_start + i * BACK_FROM_NATIVE_RETSTUB_SIZE;
     entering_native(dcontext);
     EXITING_DR();
@@ -301,11 +306,7 @@ return_from_native(priv_mcontext_t *mc)
     dcontext = get_thread_private_dcontext();
     ASSERT(dcontext != NULL);
     SYSLOG_INTERNAL_WARNING_ONCE("returned from at least one native module");
-#ifdef X86
-    /* Account for our push of the retstack index. */
-    retidx = (int) *(ptr_int_t *) mc->xsp;
-    mc->xsp += sizeof(void *);
-#endif
+    retidx = native_get_retstack_idx(mc);
     target = pop_retaddr_for_index(dcontext, retidx, (app_pc) mc->xsp);
     if (is_native_pc(target)) {
         /* i#1090: Stay native on native-to-native returns.  Returning restores
@@ -339,9 +340,11 @@ native_module_callout(priv_mcontext_t *mc, app_pc target)
     ASSERT_NOT_REACHED();
 }
 
-/* Update next_tag with the real app return address.  If the app return address
- * is in a native module, just go native.  This implies that this routine
- * doesn't return sometimes.
+/* Update next_tag with the real app return address.  next_tag should currently
+ * be equal to a return stub PC.  We compute the offset of the stub, and then
+ * divide by the length of each stub to get the index into the return stub.
+ * NOCHECKIN: If the app return address is in a native module, just go native.
+ * This implies that this routine doesn't return sometimes.
  */
 void
 interpret_back_from_native(dcontext_t *dcontext)

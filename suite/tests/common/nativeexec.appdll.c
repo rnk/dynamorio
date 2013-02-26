@@ -30,6 +30,7 @@
  * DAMAGE.
  */
 
+/* Split C/asm source file. */
 #ifndef ASM_CODE_ONLY
 
 /* nativexec.dll.dll
@@ -41,7 +42,7 @@ typedef void (*int_fn_t)(int);
 typedef int (*int2_fn_t)(int, int);
 typedef void (*tail_caller_t)(int_fn_t, int);
 
-int import_stdcall(int x, int y);
+int import_ret_imm(int x, int y);
 void tail_caller(int_fn_t fn, int x);
 
 void EXPORT
@@ -100,13 +101,13 @@ DllMain(HANDLE hModule, DWORD reason_for_call, LPVOID Reserved)
 
 START_FILE
 
-        DECLARE_EXPORTED_FUNC(import_stdcall)
-GLOBAL_LABEL(import_stdcall:)
+        DECLARE_EXPORTED_FUNC(import_ret_imm)
+GLOBAL_LABEL(import_ret_imm:)
         /* XXX: Not doing SEH prologue for test code. */
         mov      REG_XAX, [REG_XSP + 1 * ARG_SZ] /* arg1 */
         add      REG_XAX, [REG_XSP + 2 * ARG_SZ] /* arg2 */
         ret      2 * ARG_SZ    /* Callee cleared args, ret_imm. */
-        END_FUNC(import_stdcall)
+        END_FUNC(import_ret_imm)
 
 /* void tail_caller(int_fn_t fn, int x) -- Tail call fn(x).
  *
@@ -124,4 +125,4 @@ GLOBAL_LABEL(tail_caller:)
 
 END_FILE
 
-#endif
+#endif /* ASM_CODE_ONLY */

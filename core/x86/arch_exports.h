@@ -861,8 +861,7 @@ void back_from_native(void);
 /* These two are labels, not functions. */
 void back_from_native_retstubs(void);
 void back_from_native_retstubs_end(void);
-/* Each stub should be 4 bytes: push imm8 + jmp rel8
- */
+/* Each stub should be 4 bytes: push imm8 + jmp rel8 */
 enum { BACK_FROM_NATIVE_RETSTUB_SIZE = 4 };
 #ifdef LINUX
 void native_plt_call(void);
@@ -878,6 +877,12 @@ void hashlookup_null_handler(void);
 
 /* x86_code.c */
 void dynamo_start(priv_mcontext_t *mc);
+
+/* Gets the retstack index saved in x86.asm and restores the mcontext to the
+ * original app state.
+ */
+int
+native_get_retstack_idx(priv_mcontext_t *mc);
 
 /* in proc.c -- everything in proc.h is exported so just include it here */
 #include "proc.h"
