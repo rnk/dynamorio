@@ -70,6 +70,7 @@ static bool verbose = false;
 static volatile int timeout_expired;
 
 typedef enum _inject_method_t {
+    INJECT_NONE,        /* Fatal uninitialized value. */
     INJECT_EARLY,       /* Works with self or child. */
     INJECT_LD_PRELOAD,  /* Works with self or child. */
     INJECT_PTRACE       /* Doesn't work with exec_self. */
@@ -88,8 +89,12 @@ typedef struct _dr_inject_info_t {
 
     bool killpg;
     bool exited;
+    bool allocated_exe;
     int exitcode;
 } dr_inject_info_t;
+
+int
+ptrace_attach(process_id_t pid);
 
 bool
 inject_ptrace(dr_inject_info_t *info, const char *library_path);
@@ -322,8 +327,10 @@ create_inject_info(const char *exe, const char **argv)
     info->argv = argv;
     info->image_name = strrchr(exe, '/');
     info->image_name = (info->image_name == NULL ? exe : info->image_name + 1);
+    info->pipe_fd = INVALID_FILE;  /* No pipe. */
     info->exited = false;
     info->killpg = false;
+    info->allocated_exe = false;
     info->exitcode = -1;
     return info;
 }
@@ -343,13 +350,13 @@ dr_inject_process_create(const char *exe, const char **argv, void **data OUT)
     if (r != 0)
         goto error;
     info->pid = fork_suspended_child(exe, argv, fds);
+    if (info->pid == -1)
+        goto error;
     close(fds[0]);  /* Close reader, keep writer. */
     info->pipe_fd = fds[1];
     info->exec_self = false;
     info->method = INJECT_LD_PRELOAD;
 
-    if (info->pid == -1)
-        goto error;
     *data = info;
     return 0;
 
@@ -364,7 +371,6 @@ dr_inject_prepare_to_exec(const char *exe, const char **argv, void **data OUT)
 {
     dr_inject_info_t *info = create_inject_info(exe, argv);
     info->pid = getpid();
-    info->pipe_fd = 0;  /* No pipe. */
     info->exec_self = true;
     info->method = INJECT_LD_PRELOAD;
     *data = info;
@@ -379,12 +385,38 @@ bool
 dr_inject_prepare_to_ptrace(void *data)
 {
     dr_inject_info_t *info = (dr_inject_info_t *) data;
+    int r;
     if (data == NULL)
         return false;
     if (info->exec_self)
         return false;
     info->method = INJECT_PTRACE;
-    return true;
+    r = ptrace_attach(info->pid);
+    return r == 0;
+}
+
+/* XXX: Can we combine this with dr_inject_prepare_to_ptrace()?
+ */
+DR_EXPORT
+int
+dr_inject_attach_to_pid(process_id_t pid, void **data OUT)
+{
+    dr_inject_info_t *info;
+    char *proc_path = malloc(MAXIMUM_PATH);
+    int r;
+    *data = NULL;
+    r = ptrace_attach(pid);
+    if (r != 0)
+        return r;
+    r = read_proc_pid_exe(pid, proc_path, MAXIMUM_PATH);
+    if (r != 0)
+        return r;
+    info = create_inject_info(proc_path, NULL/*no argv*/);
+    info->allocated_exe = true;
+    info->method = INJECT_PTRACE;
+    info->pid = pid;
+    *data = info;
+    return 0;
 }
 
 DR_EXPORT
@@ -495,6 +527,8 @@ dr_inject_process_inject(void *data, bool force_injection,
         return inject_ld_preload(info, library_path);
     case INJECT_PTRACE:
         return inject_ptrace(info, library_path);
+    default:
+        ASSERT(false);
     }
 
     return false;
@@ -572,6 +606,13 @@ dr_inject_process_exit(void *data, bool terminate)
 {
     dr_inject_info_t *info = (dr_inject_info_t *) data;
     int status;
+    if (info == NULL) {
+        return -1;  /* In case we failed before allocating. */
+    }
+    if (info->allocated_exe) {
+        free((char *) info->exe);
+        info->exe = NULL;
+    }
     if (info->exited) {
         /* If it already exited when we waited on it above, then we *cannot*
          * wait on it again or try to kill it, or we might target some new
@@ -600,7 +641,7 @@ dr_inject_process_exit(void *data, bool terminate)
          */
         waitpid(info->pid, &status, WNOHANG);
     }
-    if (info->pipe_fd != 0)
+    if (info->pipe_fd != INVALID_FILE)
         close(info->pipe_fd);
     free(info);
     return status;
@@ -1108,6 +1149,26 @@ detach_and_exec_gdb(process_id_t pid, const char *library_path)
     ASSERT(false && "failed to exec gdb?");
 }
 
+/* Returns zero on success and an errno on failure.  On successful attach, the
+ * process is alive and stopped, so we can examine it without races.
+ */
+int
+ptrace_attach(process_id_t pid)
+{
+    /* Attach to the process in question. */
+    long r = our_ptrace(PTRACE_ATTACH, pid, NULL, NULL);
+    if (r < 0) {
+        if (verbose) {
+            fprintf(stderr, "PTRACE_ATTACH failed with error: %s\n",
+                    strerror(-r));
+        }
+        return -r;
+    }
+    if (!wait_until_signal(pid, SIGSTOP))
+        return EINVAL;  /* Made up failure. */
+    return 0;
+}
+
 bool
 inject_ptrace(dr_inject_info_t *info, const char *library_path)
 {
@@ -1121,19 +1182,7 @@ inject_ptrace(dr_inject_info_t *info, const char *library_path)
     int status;
     int signal;
 
-    /* Attach to the process in question. */
-    r = our_ptrace(PTRACE_ATTACH, info->pid, NULL, NULL);
-    if (r < 0) {
-        if (verbose) {
-            fprintf(stderr, "PTRACE_ATTACH failed with error: %s\n",
-                    strerror(-r));
-        }
-        return false;
-    }
-    if (!wait_until_signal(info->pid, SIGSTOP))
-        return false;
-
-    if (info->pipe_fd != 0) {
+    if (info->pipe_fd != INVALID_FILE) {
         /* For children we created, walk it across the execve call. */
         write_pipe_cmd(info->pipe_fd, "ptrace");
         close(info->pipe_fd);

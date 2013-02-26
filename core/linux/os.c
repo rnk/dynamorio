@@ -7734,26 +7734,46 @@ read_proc_self_exe(bool ignore_cache)
     static bool tried = false;
     if (!tried || ignore_cache) {
         tried = true;
-        /* assume we have /proc/self/exe symlink: could add HAVE_PROC_EXE
-         * but we have no alternative solution except assuming the first
-         * /proc/self/maps entry is the executable
-         */
-        ssize_t res;
-        DEBUG_DECLARE(int len = )
-            snprintf(exepath, BUFFER_SIZE_ELEMENTS(exepath),
-                     "/proc/%d/exe", get_process_id());
-        ASSERT(len > 0);
-        NULL_TERMINATE_BUFFER(exepath);
-        /* i#960: readlink does not null terminate, so we do it. */
-        res = dynamorio_syscall(SYS_readlink, 3, exepath, exepath,
-                                BUFFER_SIZE_ELEMENTS(exepath)-1);
-        ASSERT(res < BUFFER_SIZE_ELEMENTS(exepath));
-        exepath[MAX(res, 0)] = '\0';
-        NULL_TERMINATE_BUFFER(exepath);
+        read_proc_pid_exe(get_process_id(), exepath,
+                          BUFFER_SIZE_ELEMENTS(exepath));
     }
     return exepath;
 }
 #endif /* HAVE_PROC_MAPS */
+
+#endif /* !NOT_DYNAMORIO_CORE_PROPER: around most of file, to exclude preload */
+
+#ifdef HAVE_PROC_MAPS
+
+/* Returns zero on success or an error code on failure. */
+int
+read_proc_pid_exe(process_id_t pid, char *path, size_t path_sz)
+{
+    /* assume we have /proc/self/exe symlink: could add HAVE_PROC_EXE
+     * but we have no alternative solution except assuming the first
+     * /proc/self/maps entry is the executable
+     */
+    ssize_t res;
+    res = snprintf(path, path_sz, "/proc/%d/exe", pid);
+    ASSERT(res > 0 && res < path_sz);
+    path[path_sz-1] = '\0';
+    /* i#960: readlink does not null terminate, so we do it. */
+    res = dynamorio_syscall(SYS_readlink, 3, path, path, path_sz-1);
+    if (res < 0) {
+        path[0] = '\0';
+        return -res;  /* return the errno code */
+    } else if (res >= path_sz) {
+        path[0] = '\0';
+        return ENAMETOOLONG;
+    }
+    ASSERT(res >= 0 && res < path_sz);
+    path[res] = '\0';
+    return 0;
+}
+
+#endif /* HAVE_PROC_MAPS */
+
+#ifndef NOT_DYNAMORIO_CORE_PROPER
 
 app_pc
 get_image_entry()

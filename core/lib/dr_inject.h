@@ -138,6 +138,36 @@ DR_EXPORT
 bool
 dr_inject_prepare_to_ptrace(void *data);
 
+DR_EXPORT
+/**
+ * Use the ptrace system call to inject into the targetted process.  Must be
+ * called before dr_inject_process_inject().  Does not work with
+ * dr_inject_prepare_to_exec().
+ *
+ * Newer Linux distributions restrict which processes can be ptraced.  If DR
+ * fails to attach, make sure that gdb can attach to the process in question.
+ *
+ * Once in the injectee, DynamoRIO searches the $HOME directory of the user of
+ * the injector, not the user of the injectee.  Normal usage of drconfig and
+ * drinjectlib will ensure that DynamoRIO finds the right config files, however
+ * users that wish to examine config files need to check the home directory of
+ * the injector's user.
+ *
+ * \warning ptrace injection is still experimental and subject to change.
+ *
+ * \param[in]   pid           Id of the process to target.
+ *
+ * \param[out]  data           An opaque pointer that should be passed to
+ *                             subsequent dr_inject_* routines to refer to
+ *                             this process.
+ *
+ * \return  Returns 0 on success.  On failure, returns a system error code.
+ *          Regardless of success, caller must call dr_inject_process_exit()
+ *          when finished to clean up internally-allocated resources.
+ */
+int
+dr_inject_attach_to_pid(process_id_t pid, void **data);
+
 /**
  * Put the child in a new process group.  If termination is requested with
  * dr_inject_process_exit(), the entire child process group is killed.  Using
@@ -158,10 +188,11 @@ dr_inject_prepare_new_process_group(void *data);
 
 DR_EXPORT
 /**
- * Injects DynamoRIO into a process created by dr_inject_process_create(), or
- * the current process if using dr_inject_prepare_to_exec() on Linux.
+ * Injects DynamoRIO into the targetted process.
  *
- * \param[in]   data           The pointer returned by dr_inject_process_create()
+ * \param[in]   data           Pointer returned by dr_inject_process_create(),
+ *                             dr_inject_prepare_to_exec(), or
+ *                             dr_inject_attach_to_pid().
  *
  * \param[in]   force_injection  Requests injection even if the process is
  *                               configured to not be run under DynamoRIO.
@@ -222,7 +253,9 @@ DR_EXPORT
 /**
  * Returns the process name of a process created by dr_inject_process_create().
  *
- * \param[in]   data           The pointer returned by dr_inject_process_create()
+ * \param[in]   data           Pointer returned by dr_inject_process_create(),
+ *                             dr_inject_prepare_to_exec(), or
+ *                             dr_inject_attach_to_pid().
  *
  * \return  Returns the process name of the process.  This is the file name
  *          without the path, suitable for passing to dr_register_process().
@@ -250,7 +283,9 @@ DR_EXPORT
 /**
  * Returns the pid of a process created by dr_inject_process_create().
  *
- * \param[in]   data           The pointer returned by dr_inject_process_create()
+ * \param[in]   data           Pointer returned by dr_inject_process_create(),
+ *                             dr_inject_prepare_to_exec(), or
+ *                             dr_inject_attach_to_pid().
  *
  * \return  Returns the pid of the process.
  */

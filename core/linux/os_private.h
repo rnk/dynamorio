@@ -146,6 +146,9 @@ void os_thread_take_over(priv_mcontext_t *mc);
 void
 set_executable_path(const char *);
 
+int
+read_proc_pid_exe(process_id_t pid, char *path, size_t path_sz);
+
 uint
 memprot_to_osprot(uint prot);
 
