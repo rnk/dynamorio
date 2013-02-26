@@ -280,6 +280,8 @@ return_from_native(priv_mcontext_t *mc)
     i = *(ptr_int_t *) mc->xsp;
     mc->xsp += sizeof(void *);
     xsp = (app_pc) mc->xsp;
+#else
+# error "x86.asm retstubs push an index; for other ISAs we'd do something else"
 #endif
     ASSERT(i >= 0 && i < MAX_NATIVE_RETSTACK &&
            (uint)i < dcontext->native_retstack_cur);
