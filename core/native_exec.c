@@ -319,7 +319,7 @@ native_module_callout(priv_mcontext_t *mc, app_pc target)
     ASSERT_NOT_REACHED();
 }
 
-bool
+void
 put_back_native_retaddrs(dcontext_t *dcontext)
 {
     retaddr_and_retloc_t *retstack = dcontext->native_retstack;
