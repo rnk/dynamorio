@@ -295,7 +295,7 @@ return_from_native(priv_mcontext_t *mc)
         ASSERT(xsp >= retloc && xsp <= retloc + 256 + sizeof(void*) &&
                "failed to find current sp in native_retstack");
     });
-    dcontext->native_retstack_cur = i;
+    dcontext->native_retstack_cur = (uint)i;
     LOG(THREAD, LOG_ASYNCH, 1, "\n!!!! Returned from NATIVE module to "PFX"\n",
         target);
     back_from_native_common(dcontext, mc, target); /* noreturn */
