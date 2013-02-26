@@ -203,13 +203,18 @@ call_to_native(app_pc *sp)
      * XXX: it would be nice to abort in a release build, but this can be perf
      * critical.
      */
-    ASSERT(dcontext->native_retstack_cur < MAX_NATIVE_RETSTACK);
     i = dcontext->native_retstack_cur;
+    ASSERT(i < MAX_NATIVE_RETSTACK);
     dcontext->native_retstack[i].retaddr = *sp;
     dcontext->native_retstack[i].retloc = (app_pc) sp;
     dcontext->native_retstack_cur = i + 1;
     LOG(THREAD, LOG_ASYNCH, 1,
         "!!!! Entering module NATIVELY, retaddr="PFX"\n\n", *sp);
+    /* i#978: We use a different return stub for every nested call to native
+     * code.  Each stub pushes a different index into the retstack.  We could
+     * use the SP at return time to try to find the app's return address, but
+     * because of ret imm8 instructions, that's not robust.
+     */
     *sp = retstub_start + i * BACK_FROM_NATIVE_RETSTUB_SIZE;
     entering_native(dcontext);
     EXITING_DR();
