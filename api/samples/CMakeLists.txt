@@ -122,6 +122,11 @@ if (WIN32)
   add_definitions(-D_CRT_SECURE_NO_WARNINGS)
 endif (WIN32)
 
+if (UNIX)
+  # gcc < 3.4 is unsupported because we don't have an export list.
+  add_definitions(-DUSE_VISIBILITY_ATTRIBUTES)
+endif ()
+
 if (OPTIMIZE_SAMPLES)
   set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} ${OPT_CFLAGS}")
   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${OPT_CFLAGS}")
