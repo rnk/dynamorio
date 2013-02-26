@@ -168,6 +168,7 @@ START_FILE
 # define dstack_OFFSET     (PRIV_MCXT_SIZE+UPCXT_EXTRA+3*ARG_SZ)
 # define MCONTEXT_PC_OFFS  (9*ARG_SZ)
 #endif
+/* offsetof(dcontext_t, is_exiting) */
 #define is_exiting_OFFSET (dstack_OFFSET+1*ARG_SZ)
 #define PUSHGPR_XSP_OFFS  (3*ARG_SZ)
 #define MCONTEXT_XSP_OFFS (PUSHGPR_XSP_OFFS)
@@ -1476,7 +1477,9 @@ GLOBAL_LABEL(nt_continue_dynamo_start:)
  * each nested module transition.  This has to have MAX_NATIVE_RETSTACK
  * elements, which we check in native_exec_init().  The size of each entry has
  * to match BACK_FROM_NATIVE_RETSTUB_SIZE in arch_exports.h.  Currently we
- * assume that the assembler uses push imm8 and jmp rel8.
+ * assume that the assembler uses push imm8 and jmp rel8.  As in
+ * back_from_native, this code is executed natively by the app, so we assume the
+ * app stack is valid and can be clobbered.
  */
         DECLARE_FUNC(back_from_native_retstubs)
 GLOBAL_LABEL(back_from_native_retstubs:)

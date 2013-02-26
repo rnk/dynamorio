@@ -32,7 +32,7 @@
 
 #ifndef ASM_CODE_ONLY
 
-/* nativeexec.exe that calls routines in nativeexec.dll.dll via 
+/* nativeexec.exe that calls routines in nativeexec.appdll.dll via 
  * different call* constructions
  */
 #include "tools.h"
@@ -48,7 +48,7 @@ IMPORT void import_me1(int x);
 IMPORT void import_me2(int x);
 IMPORT void import_me3(int x);
 IMPORT void import_me4(int_fn_t fn, int x);
-IMPORT int2_fn_t get_import_stdcall(void);
+IMPORT int2_fn_t get_import_ret_imm(void);
 IMPORT tail_caller_t get_tail_caller(void);
 
 /* Test unwinding across back_from_native retaddrs. */
@@ -61,8 +61,7 @@ static void unwind_longjmp(int x);
 
 void call_plt(int_fn_t fn);
 void call_funky(int_fn_t fn);
-int call_stdcall(int2_fn_t fn);
-int call_tail(int2_fn_t fn);
+int call_ret_imm(int2_fn_t fn);
 
 void
 print_int(int x)
@@ -99,7 +98,7 @@ int
 main(int argc, char **argv)
 {
     int x;
-    int2_fn_t import_stdcall;
+    int2_fn_t import_ret_imm;
     tail_caller_t tail_caller;
 
     INIT();
@@ -129,7 +128,7 @@ main(int argc, char **argv)
      * requires doing a cross-native PLT-style call, which most natrually fits
      * here.
      */
-    import_stdcall = get_import_stdcall();
+    import_ret_imm = get_import_ret_imm();
     tail_caller = get_tail_caller();
 
     /* funky ind call is only caught by us w/ -native_exec_guess_calls
@@ -157,8 +156,8 @@ main(int argc, char **argv)
     print("calling cross-module unwinder\n");
     unwind_level1(unwind_setjmp, 3);
 
-    print("calling indirect stdcall\n");
-    x = call_stdcall(import_stdcall);
+    print("calling indirect ret_imm\n");
+    x = call_ret_imm(import_ret_imm);
     print(" -> %d\n", x);
 
     /* i#1077: If the appdll is native, then DR inserts a back_from_native
@@ -209,18 +208,20 @@ GLOBAL_LABEL(call_funky:)
         ret
         END_FUNC(call_funky)
 
-        DECLARE_FUNC(call_stdcall)
-GLOBAL_LABEL(call_stdcall:)
+        DECLARE_FUNC(call_ret_imm)
+GLOBAL_LABEL(call_ret_imm:)
         /* XXX: Not doing SEH prologue for test code. */
         mov      REG_XDX, ARG1          /* XDX is volatile and not regparm 0. */
         enter    0, 0                   /* Maintain 16-byte alignment. */
-        /* Do a stdcall-style call, even on Linux. */
+        /* Do a callee cleanup style call that uses ret imm similar to stdcall
+         * from win32.
+         */
         push     19
         push     21
         call     REG_XDX
         leave
         ret
-        END_FUNC(call_stdcall)
+        END_FUNC(call_ret_imm)
 
 END_FILE
 
