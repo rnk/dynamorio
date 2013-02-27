@@ -84,8 +84,8 @@ function (add_rel_rpaths target)
 endfunction (add_rel_rpaths)
 
 # Check if we're using GNU gold.  We use CMAKE_C_COMPILER in
-# CMAKE_C_LINK_EXECUTABLE, so call the compiler instead of CMAKE_LINKER to get
-# the one it will actually use.
+# CMAKE_C_LINK_EXECUTABLE, so call the compiler instead of CMAKE_LINKER.  That
+# way we query the linker that the compiler actually uses.
 function (check_if_linker_is_gnu_gold var_out)
   if (WIN32)
     # We don't support gold on Windows.  We only support the MSVC toolchain.
