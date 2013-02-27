@@ -86,7 +86,7 @@ interpret_back_from_native(dcontext_t *dcontext);
  * this before the app takes a stack trace.  Returns whether or not there were
  * any native retaddrs.
  */
-bool
+void
 put_back_native_retaddrs(dcontext_t *dcontext);
 
 /* Return if this pc is one of the back_from_native return stubs.  Try to make
