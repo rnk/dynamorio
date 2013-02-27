@@ -284,7 +284,7 @@ if (UNIX)
 
   function (set_preferred_base_start_and_end target)
     if (NOT LINKER_IS_GNU_GOLD)
-        set(ldflags "-Wl,${ld_script_option},\"${ld_script}\"")
+      set(ldflags "-Wl,${ld_script_option},\"${ld_script}\"")
       add_custom_command(TARGET ${target}
         PRE_LINK
         COMMAND ${CMAKE_COMMAND}
@@ -373,16 +373,17 @@ if (UNIX)
     LINK_FLAGS "-nostartfiles")
 
   # -z now = do non-lazy runtime binding
-  set(dr_ldflags "-Wl,-z,now -Wl,-Bsymbolic")
+  set(dynamorio_link_flags
+    "-Xlinker -z -Xlinker now -Xlinker -Bsymbolic")
 
-  set(dr_ldflags "${dr_ldflags} -nostdlib")
+  set(dynamorio_link_flags "${dynamorio_link_flags} -nostdlib")
 
   if (STATIC_LIBRARY)
     # We build static DR as PIC in case we're linked into a .so or a PIE.
     append_property_string(TARGET dynamorio COMPILE_FLAGS "-fPIC")
   else ()
     # i#47: set the ELF header entry point to _start for early injection.
-    set(dr_ldflags "${dr_ldflags} -Wl,--entry,_start")
+    set(dynamorio_link_flags "${dynamorio_link_flags} -Wl,--entry,_start")
   endif ()
 
   if (NOT HAVE_FVISIBILITY)
@@ -396,11 +397,12 @@ if (UNIX)
       WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
       VERBATIM # recommended: p260
       )
-    set(dr_ldflags "${dr_ldflags} -Wl,--version-script,${export_list}")
+    set(dynamorio_link_flags 
+      "${dynamorio_link_flags} -Xlinker --version-script -Xlinker ${export_list}")
   endif (NOT HAVE_FVISIBILITY)
 
   set_target_properties(dynamorio PROPERTIES
-    LINK_FLAGS "${dr_ldflags}")
+    LINK_FLAGS "${dynamorio_link_flags}")
 
   # This appends to LINK_FLAGS, so do it after we set them above.
   set_preferred_base_start_and_end(dynamorio)
