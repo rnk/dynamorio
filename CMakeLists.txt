@@ -262,7 +262,7 @@ endif()
 
 option(CALLPROF "internal caller profiling support")
 option(LINKCOUNT "internal linkcount profiling")
-option(KEEP_FRAME_POINTERS "preserve frame pointers for fast callstacks (useful for profiling)" OFF)
+option(PROFILE "profiling build: disables FPO and tweaks other flags" OFF)
 if (WIN32)
   # xref PR 192750 - runregression uses this to avoid over-ssh pdb issues
   option(GENERATE_PDBS "generate Windows debug information" ON)
@@ -311,6 +311,7 @@ mark_as_advanced(
   KSTATS
   CALLPROF
   LINKCOUNT
+  PROFILE
   SET_PREFERRED_BASE
   preferred_base
   GENERATE_PDBS
@@ -618,7 +619,7 @@ if (UNIX)
   set(DBG "-g3")
   # gcc doesn't change its optimizations based on -g
   set(OPT "-O3 ${DBG}")
-  if (KEEP_FRAME_POINTERS)
+  if (PROFILE)
     set(OPT "${OPT} -fno-omit-frame-pointer")
   endif ()
 
@@ -745,14 +746,11 @@ if (UNIX)
     endif (NOT flag_present)
   endif (NOT LINKER_IS_GNU_GOLD)
 
-  option(SPLIT_SYMBOLS "separate debugging symbols from code on Linux" ON)
-  option(KEEP_LOCAL_SYMBOLS "if separating symbols, keep all of .symtab (useful for profiling)" OFF)
-
   # We want separate .debug files for all shared libraries
   if (NOT DEFINED CMAKE_OBJCOPY)
     find_package(BinUtils)
   endif (NOT DEFINED CMAKE_OBJCOPY)
-  if (SPLIT_SYMBOLS AND EXISTS ${CMAKE_OBJCOPY} AND EXISTS ${CMAKE_STRIP})
+  if (EXISTS ${CMAKE_OBJCOPY} AND EXISTS ${CMAKE_STRIP})
     # Check for --only-keep-debug support: added ~2.15
     execute_process(COMMAND
       ${CMAKE_OBJCOPY} --help
@@ -763,7 +761,9 @@ if (UNIX)
       message(FATAL_ERROR "*** ${CMAKE_OBJCOPY} failed to run ***\n")
     endif (objcopy_result)
     set(strip_local "-x")  # Strip local (non-exported) symbols from .symtab.
-    if (KEEP_LOCAL_SYMBOLS)
+    if (PROFILE)
+      # Keep .symtab for tools (objdump) that don't always handle split debug
+      # info gracefully.
       set(strip_local "")
     endif ()
     string(REGEX MATCH "only-keep-debug" flag_present "${objcopy_out}")
