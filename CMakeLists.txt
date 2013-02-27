@@ -809,7 +809,7 @@ if (UNIX)
         "${CMAKE_STRIP} -g ${strip_local} <TARGET>"
         )
     endif (NOT flag_present)
-  endif (SPLIT_SYMBOLS AND EXISTS ${CMAKE_OBJCOPY} AND EXISTS ${CMAKE_STRIP})
+  endif (EXISTS ${CMAKE_OBJCOPY} AND EXISTS ${CMAKE_STRIP})
 
 endif (UNIX)
 
