@@ -513,7 +513,7 @@ enter_fcache(dcontext_t *dcontext, fcache_enter_func_t entry, cache_pc pc)
 
 /* Handles special tags in DR or elsewhere that do interesting things.
  * All PCs checked in here must be in DR or be BACK_TO_NATIVE_AFTER_SYSCALL.
- * Does not return if we've hit a stopping point, otherwise returns with an
+ * Does not return if we've hit a stopping point; otherwise returns with an
  * updated next_tag for continued dispatch.
  */
 static void
