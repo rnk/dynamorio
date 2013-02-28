@@ -746,11 +746,18 @@ if (UNIX)
     endif (NOT flag_present)
   endif (NOT LINKER_IS_GNU_GOLD)
 
+  # In the past, there have been tools on Linux that don't know how to follow
+  # .gnu_debuglink.  While we aren't aware of any major tools with this bug
+  # today, it's useful to be able to turn this off while experimenting with new
+  # tools.
+  option(SPLIT_SYMBOLS "whether to split debug symbols from binaries" ON)
+  mark_as_advanced(SPLIT_SYMBOLS)
+
   # We want separate .debug files for all shared libraries
-  if (NOT DEFINED CMAKE_OBJCOPY)
+  if (SPLIT_SYMBOLS AND NOT DEFINED CMAKE_OBJCOPY)
     find_package(BinUtils)
-  endif (NOT DEFINED CMAKE_OBJCOPY)
-  if (EXISTS ${CMAKE_OBJCOPY} AND EXISTS ${CMAKE_STRIP})
+  endif ()
+  if (SPLIT_SYMBOLS AND EXISTS ${CMAKE_OBJCOPY} AND EXISTS ${CMAKE_STRIP})
     # Check for --only-keep-debug support: added ~2.15
     execute_process(COMMAND
       ${CMAKE_OBJCOPY} --help
@@ -809,7 +816,7 @@ if (UNIX)
         "${CMAKE_STRIP} -g ${strip_local} <TARGET>"
         )
     endif (NOT flag_present)
-  endif (EXISTS ${CMAKE_OBJCOPY} AND EXISTS ${CMAKE_STRIP})
+  endif (SPLIT_SYMBOLS AND EXISTS ${CMAKE_OBJCOPY} AND EXISTS ${CMAKE_STRIP})
 
 endif (UNIX)
 
