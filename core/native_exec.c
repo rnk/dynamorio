@@ -261,10 +261,10 @@ back_from_native_common(dcontext_t *dcontext, priv_mcontext_t *mc, app_pc target
     ASSERT_NOT_REACHED();
 }
 
-/* Finds the return address that corresponds with the given SP.  Clears all
- * non-matching entries from the top of the stack until a match is found.  This
- * assumes that the app is only doing unwinding, and not re-entering frames
- * after returning past them.
+/* Pops all return address pairs off the native return stack up to and including
+ * retidx.  Returns the return address corresponding to retidx.  This assumes
+ * that the app is only doing unwinding, and not re-entering frames after
+ * returning past them.
  */
 static app_pc
 pop_retaddr_for_index(dcontext_t *dcontext, int retidx, app_pc xsp)
