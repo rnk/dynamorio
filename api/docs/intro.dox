@@ -1186,8 +1186,8 @@ target application process.  These include:
 \section sec_options Fine-Tuning DynamoRIO: Runtime Parameters
 
 DynamoRIO's behavior can be fine-tuned using runtime parameters.  Options
-are specified via \c drconfig.exe, \c drrun.exe, or
-dr_register_process().  See \ref page_deploy.
+are specified via \c drconfig, \c drrun, or dr_register_process().  See
+\ref page_deploy.
 
  - \b -no_follow_children: \anchor op_children
    By default, DynamoRIO follows all child processes.  When this option
@@ -1451,7 +1451,7 @@ Options available only in the debug build of DynamoRIO:
     that is incremented with each directory created.  \if Linux On
     Windows the \else The \endif directories are located by default in
     a subdirectory \e logs of the DynamoRIO home directory as
-    specified in the dr_register_process() or \c drconfig.exe
+    specified in the dr_register_process(), \c drconfig, or \c drrun
     configuration for the target application.
     The runtime option \ref op_logdir "-logdir" can be used to override the
     default directory.
