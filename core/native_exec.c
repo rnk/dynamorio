@@ -343,8 +343,6 @@ native_module_callout(priv_mcontext_t *mc, app_pc target)
 /* Update next_tag with the real app return address.  next_tag should currently
  * be equal to a return stub PC.  We compute the offset of the stub, and then
  * divide by the length of each stub to get the index into the return stub.
- * NOCHECKIN: If the app return address is in a native module, just go native.
- * This implies that this routine doesn't return sometimes.
  */
 void
 interpret_back_from_native(dcontext_t *dcontext)
