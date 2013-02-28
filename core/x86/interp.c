@@ -4279,10 +4279,6 @@ at_native_exec_gateway(dcontext_t *dcontext, app_pc start, bool *is_call
                     }
                 });
             }
-        } else if (DYNAMO_OPTION(native_exec_retakeover) &&
-                   is_native_pc(start)) {
-            native_exec_bb = true;
-            *is_call = false;
         }
 
         DOSTATS({

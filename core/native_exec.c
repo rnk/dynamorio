@@ -211,17 +211,27 @@ call_to_native(app_pc *sp)
      */
     i = dcontext->native_retstack_cur;
     ASSERT(i < MAX_NATIVE_RETSTACK);
-    dcontext->native_retstack[i].retaddr = *sp;
-    dcontext->native_retstack[i].retloc = (app_pc) sp;
-    dcontext->native_retstack_cur = i + 1;
+    /* i#1090: If the return address is also in a native module, then leave it
+     * alone.  This happens on:
+     * - native call
+     * - native call tail_caller@plt
+     * - non-native jmp native@plt      # TOS is native PC: don't swap
+     * - native ret                     # should stay native
+     * XXX: Doing a vmvector binary search on every call to native is expensive.
+     */
+    if (!is_native_pc(*sp)) {
+        dcontext->native_retstack[i].retaddr = *sp;
+        dcontext->native_retstack[i].retloc = (app_pc) sp;
+        dcontext->native_retstack_cur = i + 1;
+        /* i#978: We use a different return stub for every nested call to native
+         * code.  Each stub pushes a different index into the retstack.  We could
+         * use the SP at return time to try to find the app's return address, but
+         * because of ret imm8 instructions, that's not robust.
+         */
+        *sp = retstub_start + i * BACK_FROM_NATIVE_RETSTUB_SIZE;
+    }
     LOG(THREAD, LOG_ASYNCH, 1,
         "!!!! Entering module NATIVELY, retaddr="PFX"\n\n", *sp);
-    /* i#978: We use a different return stub for every nested call to native
-     * code.  Each stub pushes a different index into the retstack.  We could
-     * use the SP at return time to try to find the app's return address, but
-     * because of ret imm8 instructions, that's not robust.
-     */
-    *sp = retstub_start + i * BACK_FROM_NATIVE_RETSTUB_SIZE;
     entering_native(dcontext);
     EXITING_DR();
 }
@@ -296,7 +306,7 @@ pop_retaddr_for_index(dcontext_t *dcontext, int retidx, app_pc xsp)
 /* Re-enters DR after a call to a native module returns.  Called from the asm
  * routine back_from_native() in x86.asm.
  */
-app_pc
+void
 return_from_native(priv_mcontext_t *mc)
 {
     dcontext_t *dcontext;
@@ -308,19 +318,12 @@ return_from_native(priv_mcontext_t *mc)
     SYSLOG_INTERNAL_WARNING_ONCE("returned from at least one native module");
     retidx = native_get_retstack_idx(mc);
     target = pop_retaddr_for_index(dcontext, retidx, (app_pc) mc->xsp);
-    if (is_native_pc(target)) {
-        /* i#1090: Stay native on native-to-native returns.  Returning restores
-         * state and jumps to the target directly.
-         */
-        LOG(THREAD, LOG_ASYNCH, 1,
-            "\n%s: native-to-native return: "PFX"\n", target);
-        return target;
-    }
+    ASSERT(!is_native_pc(target) &&
+           "shouldn't return from native to native PC (i#1090?)");
     LOG(THREAD, LOG_ASYNCH, 1, "\n!!!! Returned from NATIVE module to "PFX"\n",
         target);
     back_from_native_common(dcontext, mc, target); /* noreturn */
     ASSERT_NOT_REACHED();
-    return NULL;
 }
 
 /* Re-enters DR on calls from native modules to non-native modules.  Called from

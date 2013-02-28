@@ -1537,19 +1537,11 @@ Lback_from_native:
          * state.
          */
 #ifdef X64
-        mov      REG_XBP, REG_XSP           /* save pre-align xsp */
         and      REG_XSP, -FRAME_ALIGNMENT  /* x64 alignment */
 #endif
         CALLC1(return_from_native, REG_XAX)
-
-        /* On return (unlikely) restore regs and jump to xax. */
-#ifdef X64
-        mov      REG_XSP, REG_XBP           /* un-align the stack */
-#endif
-        mov      [REG_XSP + PRIV_MCXT_SIZE], REG_XAX  /* put retaddr on stack */
-        /* FIXME: Restore xmm regs.  At least any xmm return registers. */
-        POP_PRIV_MCXT_GPRS()
-        ret      /* pop index slot and return to back_from_native() retval */
+        /* should not return */
+        jmp      unexpected_return
         END_FUNC(back_from_native)
 
 #ifdef LINUX
