@@ -373,8 +373,8 @@ unit_test_drwinapi_advapi32(void)
     LSTATUS res;
     HKEY key;
     DWORD type, size, handle_count = 0;
-    /* NetworkService gets bigger then 512 so we go for 1024 */
-#   define REG_KEY_DATA_SZ 1024
+    /* NetworkService gets bigger then 1024 so we go for 2048 */
+#   define REG_KEY_DATA_SZ 2048
     char buf[REG_KEY_DATA_SZ];
     BOOL ok;
 
@@ -440,7 +440,7 @@ unit_test_drwinapi_advapi32(void)
      */
     res = redirect_RegQueryValueExW(key, L"TEMP", 0, &type, (LPBYTE) buf, &size);
     EXPECT(res == ERROR_SUCCESS, true);
-    EXPECT(type == REG_EXPAND_SZ, true);
+    EXPECT(type == REG_EXPAND_SZ || type == REG_SZ, true);
     res = redirect_RegCloseKey(key);
     EXPECT(res == ERROR_SUCCESS, true);
 
