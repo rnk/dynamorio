@@ -1243,7 +1243,14 @@ int main(int argc, char *argv[])
         info("will exec %s", app_name);
         errcode = dr_inject_prepare_to_exec(app_name, app_argv, &inject_data);
     } else if (attach_pid != 0) {
-        /* This is really a drinject usage. */
+        if (kill_group || limit != 0) {
+            usage("can't have timeouts with attach");
+            die();
+        }
+        /* FIXME: Should -attach be drinject only?  If so, can we do a one-time
+         * config with it?  -attach doesn't really fit into the current set of
+         * tools.
+         */
         errcode = dr_inject_attach_to_pid(attach_pid, &inject_data);
         if (errcode != 0) {
             const char *errmsg = "<unknown>";
@@ -1284,18 +1291,6 @@ int main(int argc, char *argv[])
         error("%s", buf);
         goto error;
     }
-
-# ifdef LINUX
-    if (limit != 0 && kill_group) {
-        /* Move the child to its own process group. */
-        process_id_t child_pid = dr_inject_get_process_id(inject_data);
-        int res = setpgid(child_pid, child_pid);
-        if (res < 0) {
-            perror("ERROR in setpgid");
-            goto error;
-        }
-    }
-# endif
 
     /* i#200/PR 459481: communicate child pid via file */
     if (pidfile != NULL)

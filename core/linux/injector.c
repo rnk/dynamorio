@@ -435,6 +435,8 @@ dr_inject_prepare_new_process_group(void *data)
         return false;
     if (info->exec_self)
         return false;
+    if (info->method == INJECT_PTRACE)
+        return false;
     /* Put the child in its own process group. */
     res = setpgid(info->pid, info->pid);
     if (res < 0)

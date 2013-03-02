@@ -46,18 +46,6 @@ string(REGEX REPLACE "@@" " " cmd "${cmd}")
 string(REGEX REPLACE "@" ";" cmd "${cmd}")
 string(REGEX REPLACE "!" "\\\;" cmd "${cmd}")
 
-if ("${nudge}" MATCHES "<attach>")
-  # Cut out drrun and all of its args up until the app, which we assume is the
-  # second to last arg.
-  string(REGEX MATCH ";[^;]*;[^;]*$" app_cmd "${cmd}")
-  string(REGEX MATCH ";[^;]*drrun;.*$" drrun_cmd "${cmd}")
-  string(REPLACE "${drrun_cmd}" "${app_cmd}" cmd "${cmd}")
-  # Remove app cmd so we can insert -attach <pid>.
-  string(REPLACE "${app_cmd}" "" drrun_cmd "${drrun_cmd}")
-  # Remove leading separators.
-  string(REGEX REPLACE "^;" "" drrun_cmd "${drrun_cmd}")
-endif ()
-
 # we must remove so we know when the background process has re-created it
 file(REMOVE "${out}")
 
@@ -106,19 +94,11 @@ if ("${nudge}" MATCHES "<use-persisted>")
     set(fail_msg "no .dpc files found in ${maps}: not using pcaches!")
   endif ()
 else ()
-  if ("${nudge}" MATCHES "<attach>")
-    execute_process(COMMAND ${drrun_cmd} -attach ${pid} ${app_cmd}
-      RESULT_VARIABLE nudge_result
-      ERROR_VARIABLE nudge_err
-      OUTPUT_VARIABLE nudge_out
-      )
-  else ()
-    execute_process(COMMAND "${toolbindir}/nudgeunix" -pid ${pid} ${nudge}
-      RESULT_VARIABLE nudge_result
-      ERROR_VARIABLE nudge_err
-      OUTPUT_VARIABLE nudge_out
-      )
-  endif ()
+  execute_process(COMMAND "${toolbindir}/nudgeunix" -pid ${pid} ${nudge}
+    RESULT_VARIABLE nudge_result
+    ERROR_VARIABLE nudge_err
+    OUTPUT_VARIABLE nudge_out
+    )
   # combine out and err
   set(nudge_err "${nudge_out}${nudge_err}")
   if (nudge_result)

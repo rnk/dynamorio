@@ -1085,8 +1085,6 @@ function(torun test key source native dr_ops exe_ops)
         set(clear_arg "${PCACHE_SHARED_DIR}")
       elseif ("${runall}" MATCHES "<use-persisted>")
         set(nudge_arg "<use-persisted>")
-      elseif ("${runall}" MATCHES "<attach>")
-        set(nudge_arg "<attach>")
       elseif ("${runall}" MATCHES "<client")
         string(REGEX MATCHALL "<client_nudge[^>]+" nudge_arg "${runall}")
         string(REGEX REPLACE "<client_nudge" "-client" nudge_arg "${nudge_arg}")
@@ -1120,7 +1118,15 @@ function(torun test key source native dr_ops exe_ops)
     # No support for regex here (ctest can't handle large regex)
     set(ALREADY_REGEX ON)
   else (is_runcmp)
-    add_test(${test} ${rundr} ${exepath} ${exe_ops})
+    if ("${test}" MATCHES "attach")
+      # Remove timeout args to drrun since they don't work with -attach.
+      string(REGEX REPLACE ";-s;[0-9]+" "" rundr "${rundr}")
+      string(REGEX REPLACE ";-killpg" "" rundr "${rundr}")
+      add_test(${test} ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/ptrace_tester
+        -- ${rundr} -- ${exepath} ${exe_ops})
+    else()
+      add_test(${test} ${rundr} ${exepath} ${exe_ops})
+    endif ()
   endif (is_runall)
 
   if (DEFINED ${key}_expectbase)
@@ -1342,7 +1348,9 @@ if (CLIENT_INTERFACE)
     tobuild_ci(client.nudge_test client-interface/nudge_test.runall "" "" "")
     tobuild_ci(client.timer client-interface/timer.c "" "" "")
     tobuild_ci(client.cbr-retarget client-interface/cbr-retarget.c "" "" "")
-    tobuild_ci(client.attach client-interface/attach.runall "" "" "-v")
+    if (NOT STATIC_LIBRARY) # -attach is incompatible with STATIC_LIBRARY.
+      tobuild_ci(client.attach client-interface/attach.c "" "" "-v")
+    endif ()
   else (UNIX)
     tobuild_ci(client.events client-interface/events.c
       "" "" "${events_appdll_path}")
@@ -1544,6 +1552,9 @@ if (UNIX)
   add_exe(linux.execve-sub linux/execve-sub.c)
   tobuild_ops(linux.execve-null linux/execve-null.c ""
     "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/linux.execve-sub")
+
+  # helper for attach tests
+  add_exe(ptrace_tester linux/ptrace_tester.c)
 
   tobuild(linux.execve-rec linux/execve-rec.c)
   tobuild(linux.exit linux/exit.c)
