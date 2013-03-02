@@ -63,6 +63,12 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+/* from <linux/errno.h>, but behind __KERNEL__ */
+#define ERESTARTSYS     512
+#define ERESTARTNOINTR  513
+#define ERESTARTNOHAND  514     /* restart if no handler.. */
+#define ERESTART_RESTARTBLOCK 516 /* restart by calling sys_restart_syscall */
+
 static bool verbose = false;
 
 /* Set from a signal handler.
@@ -659,6 +665,7 @@ enum { MAX_SHELL_CODE = 4096 };
 # define REG_PC_FIELD IF_X64_ELSE(rip, eip)
 # define REG_SP_FIELD IF_X64_ELSE(rsp, esp)
 # define REG_RETVAL_FIELD IF_X64_ELSE(rax, eax)
+# define REG_ORIG_RETVAL_FIELD IF_X64_ELSE(orig_rax, orig_eax)
 #else
 # error "define PC, SP, and return fields of user_regs_struct"
 #endif
@@ -721,7 +728,9 @@ our_ptrace(enum __ptrace_request request, pid_t pid, void *addr, void *data)
     if (verbose &&
         /* Don't log reads and writes. */
         request != PTRACE_POKEDATA &&
-        request != PTRACE_PEEKDATA) {
+        request != PTRACE_PEEKDATA &&
+        /* Don't log steps. */
+        request != PTRACE_SINGLESTEP) {
         const enum_name_pair_t *pair = NULL;
         int i;
         for (i = 0; pt_req_map[i].enum_name != NULL; i++) {
@@ -874,6 +883,41 @@ continue_until_break(process_id_t pid)
     return wait_until_signal(pid, SIGTRAP);
 }
 
+#if 0
+/* Single steps the app until the next breakpoint instr and disassembles each
+ * instruction.  Useful for debugging since we can't gdb an already traced
+ * process.
+ */
+static bool
+single_step_until_break(process_id_t pid)
+{
+    long r;
+    byte int3_opcode = 0xCC;
+    bool hit_int3 = false;
+    while (!hit_int3) {
+        app_pc pc;
+        byte buf[ALIGN_FORWARD(MAX_INSTR_LENGTH, sizeof(void*))];
+        bool trapped;
+        r = our_ptrace(PTRACE_SINGLESTEP, pid, NULL, NULL);
+        if (r < 0)
+            return false;
+        trapped = wait_until_signal(pid, SIGTRAP);
+        if (!trapped)
+            return false;
+        /* We trapped.  Disassemble the next instr and continue. */
+        r = our_ptrace(PTRACE_PEEKUSER, pid, (void*)REG_PC_OFFSET, &pc);
+        if (r < 0)
+            return false;
+        if (!ptrace_read_memory(pid, buf, pc, BUFFER_SIZE_BYTES(buf)))
+            return false;
+        disassemble_from_copy(GLOBAL_DCONTEXT, buf, pc, STDERR,
+                              true/*show_pc*/, true/*show_bytes*/);
+        hit_int3 = (buf[0] == int3_opcode);
+    }
+    return true;
+}
+#endif
+
 /* Injects the code in ilist into the injectee and runs it, returning the value
  * left in the return value register at the end of ilist execution.  Frees
  * ilist.  Returns -EUNATCH if anything fails before executing the syscall.
@@ -881,7 +925,8 @@ continue_until_break(process_id_t pid)
 static ptr_int_t
 injectee_run_get_retval(dr_inject_info_t *info, void *dc, instrlist_t *ilist)
 {
-    struct user_regs_struct regs;
+    struct user_regs_struct orig_regs;
+    struct user_regs_struct new_regs;
     byte shellcode[MAX_SHELL_CODE];
     byte orig_code[MAX_SHELL_CODE];
     app_pc end_pc;
@@ -892,26 +937,17 @@ injectee_run_get_retval(dr_inject_info_t *info, void *dc, instrlist_t *ilist)
     ptr_int_t failure = -EUNATCH;  /* Unlikely to be used by most syscalls. */
 
     /* Get register state before executing the shellcode. */
-    r = our_ptrace(PTRACE_GETREGS, info->pid, NULL, &regs);
+    r = our_ptrace(PTRACE_GETREGS, info->pid, NULL, &orig_regs);
     if (r < 0)
         return r;
 
     /* Use the current PC's page, since it's executable.  Our shell code is
      * always less than one page, so we won't overflow.
      */
-    pc = (app_pc)ALIGN_BACKWARD(regs.REG_PC_FIELD, PAGE_SIZE);
+    pc = (app_pc)ALIGN_BACKWARD(orig_regs.REG_PC_FIELD, PAGE_SIZE);
 
     /* Append an int3 so we can catch the break. */
     APP(ilist, INSTR_CREATE_int3(dc));
-    if (verbose) {
-        fprintf(stderr, "injecting code:\n");
-#if defined(INTERNAL) || defined(DEBUG) || defined(CLIENT_INTERFACE)
-        /* XXX: This disas call aborts on our raw bytes instructions.  Can we
-         * teach DR's disassembler to avoid those instrs?
-         */
-        instrlist_disassemble(dc, pc, ilist, STDERR);
-#endif
-    }
 
     /* Encode ilist into shellcode. */
     end_pc = instrlist_encode_to_copy(dc, ilist, shellcode, pc,
@@ -921,13 +957,47 @@ injectee_run_get_retval(dr_inject_info_t *info, void *dc, instrlist_t *ilist)
     ASSERT(code_size <= MAX_SHELL_CODE);
     instrlist_clear_and_destroy(dc, ilist);
 
+#if defined(INTERNAL) || defined(DEBUG) || defined(CLIENT_INTERFACE)
+    if (verbose) {
+        app_pc copy_pc = shellcode;
+        app_pc injectee_pc = pc;
+        instr_t instr;
+        fprintf(stderr, "original pc: %p\n", (void*)orig_regs.REG_PC_FIELD);
+        fprintf(stderr, "injecting code:\n");
+        instr_init(dc, &instr);
+        while (copy_pc != NULL && copy_pc < end_pc) {
+            app_pc next_copy_pc;
+            disassemble_from_copy(dc, copy_pc, injectee_pc, STDERR,
+                                  true/*show_pc*/, true/*show_bytes*/);
+            next_copy_pc = decode(dc, copy_pc, &instr);
+            if (instr_is_call_direct(&instr) &&
+                opnd_is_pc(instr_get_target(&instr))) {
+                print_file(STDERR, " <raw string: %s>\n", (char *)next_copy_pc);
+                next_copy_pc = opnd_get_pc(instr_get_target(&instr));
+            }
+            injectee_pc += next_copy_pc - copy_pc;
+            copy_pc = next_copy_pc;
+            instr_reset(dc, &instr);
+        }
+    }
+#endif
+
     /* Copy shell code into injectee at the current PC. */
     if (!ptrace_read_memory(info->pid, orig_code, pc, code_size) ||
         !ptrace_write_memory(info->pid, pc, shellcode, code_size))
         return failure;
 
+    /* Set up a new context for the syscall.  Currently we push things on the
+     * stack, so we decrement the stack a bit to avoid clobbering the x64
+     * redzone.  For x86, we need to set xax == orig_xax to prevent the kernel
+     * from attempting to restart any interrupted syscall.
+     */
+    memset(&new_regs, 0, sizeof(new_regs));
+    new_regs.REG_PC_FIELD = (long) pc;
+    new_regs.REG_SP_FIELD = (long) orig_regs.REG_SP_FIELD - REDZONE_SIZE;
+    our_ptrace(PTRACE_SETREGS, info->pid, NULL, &new_regs);
+
     /* Run it! */
-    our_ptrace(PTRACE_POKEUSER, info->pid, (void *)REG_PC_OFFSET, pc);
     if (!continue_until_break(info->pid))
         return failure;
 
@@ -942,7 +1012,7 @@ injectee_run_get_retval(dr_inject_info_t *info, void *dc, instrlist_t *ilist)
     /* Put back original code and registers. */
     if (!ptrace_write_memory(info->pid, pc, orig_code, code_size))
         return failure;
-    r = our_ptrace(PTRACE_SETREGS, info->pid, NULL, &regs);
+    r = our_ptrace(PTRACE_SETREGS, info->pid, NULL, &orig_regs);
     if (r < 0)
         return r;
 
@@ -1102,6 +1172,27 @@ user_regs_to_mc(priv_mcontext_t *mc, struct user_regs_struct *regs)
     mc->esi = regs->esi;
     mc->edi = regs->edi;
 # endif
+
+    /* If we interrupted a syscall, the kernel may return one of these special
+     * restart codes, in which case we need to restart it.  See do_signal()
+     * from linux/arch/x86/kernel/signal.c.
+     */
+    if (regs->REG_RETVAL_FIELD != regs->REG_ORIG_RETVAL_FIELD) {
+        switch (regs->REG_RETVAL_FIELD) {
+        case -ERESTARTNOHAND:
+        case -ERESTARTSYS:
+        case -ERESTARTNOINTR:
+            mc->xax = regs->REG_ORIG_RETVAL_FIELD;
+            mc->pc -= 2;  /* 2 is the length of syscall and int $0x80. */
+            break;
+
+        case -ERESTART_RESTARTBLOCK:
+            /* FIXME: Untested. */
+            mc->xax = SYS_restart_syscall;
+            mc->pc -= 2;
+            break;
+        }
+    }
 #else
 # error "translate mc for non-x86 arch"
 #endif
