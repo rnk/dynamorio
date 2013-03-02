@@ -1116,11 +1116,19 @@ os_terminate_wow64_stack(HANDLE thread_handle)
             teb = get_teb(thread_handle);
         if (teb == NULL) /* app may have passed bogus handle */
             return (byte *) wow64_syscall_stack;
-        /* Use the TLS slots.  Leave room for syscall call*'s retaddr plus 1
-         * extra.  There's still plenty of room at higher addresses for 2 args
-         * for os_terminate_wow64_write_args().
+        /* We use our scratch slots in the TEB.  We need room for syscall
+         * call*'s retaddr below and 2 args for os_terminate_wow64_write_args()
+         * above, so we take our own xbx slot, which has xax below and xcx+xdx
+         * above.  We do not have the extra safety slot that wow64_syscall_stack
+         * has, but that's not necessary, and if the wow64 wrapper wrote to it
+         * it would just be writing to an app slot that's likely unused (b/c DR
+         * takes TLS slots from the end).
+         *
+         * XXX: it would be cleaner to not write to this until we're done
+         * cleaning up private libraries, which examine the TEB.
+         * Then we could use any part of the TEB.
          */
-        return (byte *)teb + offsetof(TEB, TlsSlots) + 2*XSP_SZ;        
+        return (byte *)teb + os_tls_offset(TLS_XBX_SLOT);
     }
 #endif
 }
@@ -6661,37 +6669,7 @@ detach_helper(int detach_type)
                 /* we do need to restore the app ret addr, for native_exec */
                 if (!DYNAMO_OPTION(thin_client) && DYNAMO_OPTION(native_exec) &&
                     !vmvector_empty(native_exec_areas)) {
-                    /* We store the retaddr location that we clobbered in
-                     * native_exec_retloc.  We don't currently follow callbacks
-                     * so we don't have to do this while walking the callback
-                     * stack below, just for this dcontext.  We also only have a
-                     * single location since we don't re-takeover while native on
-                     * an APC or an exception.
-                     */
-                    app_pc *esp = (app_pc *) threads[i]->dcontext->native_exec_retloc;
-                    app_pc real_retaddr = threads[i]->dcontext->native_exec_retval;
-
-                    /* In hotp_only mode, a thread can be !under_dynamo_control 
-                     * and have no native_exec_retloc.  For hotp_only, there 
-                     * should be no need to restore a return value on the stack 
-                     * as the thread has been native from the start and not 
-                     * half-way through as it would in the regular hot patching 
-                     * mode, i.e., with the code cache.  See case 7681. 
-                     */
-#ifdef HOT_PATCHING_INTERFACE
-                    if (esp == NULL) {
-                        ASSERT(DYNAMO_OPTION(hotp_only));
-                        ASSERT(real_retaddr == NULL);
-                    } else {
-                        ASSERT(!DYNAMO_OPTION(hotp_only));
-#endif
-                        ASSERT(esp != NULL && 
-                               *esp == (app_pc)back_from_native);
-                        ASSERT(real_retaddr != NULL);
-                        *esp = real_retaddr;
-#ifdef HOT_PATCHING_INTERFACE
-                    }
-#endif
+                    put_back_native_retaddrs(dcontext);
                 }
             }
             /* handle special case of vsyscall, need to hack the return address
