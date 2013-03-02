@@ -723,6 +723,7 @@ int main(int argc, char *argv[])
 # ifdef WINDOWS
     time_t start_time, end_time;
 # else
+    process_id_t attach_pid = 0;
     bool use_ptrace = false;
     bool kill_group = false;
 # endif
@@ -852,13 +853,10 @@ int main(int argc, char *argv[])
         }
         else if (strcmp(argv[i], "-attach") == 0) {
             const char *pid_str = argv[++i];
-            process_id_t pid = strtoul(pid_str, NULL, 10);
-            if (pid == ULONG_MAX)
+            attach_pid = strtoul(pid_str, NULL, 10);
+            if (attach_pid == ULONG_MAX)
                 usage("-attach expects an integer pid");
-            if (pid != 0)
-                usage("attaching to running processes is not yet implemented");
             use_ptrace = true;
-            /* FIXME: use pid below to attach. */
             continue;
         }
         else if (strcmp(argv[i], "-early") == 0) {
@@ -1244,6 +1242,18 @@ int main(int argc, char *argv[])
     if (limit == 0 && !use_ptrace && !kill_group) {
         info("will exec %s", app_name);
         errcode = dr_inject_prepare_to_exec(app_name, app_argv, &inject_data);
+    } else if (attach_pid != 0) {
+        /* This is really a drinject usage. */
+        errcode = dr_inject_attach_to_pid(attach_pid, &inject_data);
+        if (errcode != 0) {
+            const char *errmsg = "<unknown>";
+            if (errcode > 0 && errcode < sys_nerr)
+                errmsg = sys_errlist[errcode];
+            error("Error attaching to pid %d: %s\n"
+                  "Make sure gdb --pid %d works.\n",
+                  (int)attach_pid, errmsg, (int)attach_pid);
+            die(); /* no process created */
+        }
     } else
 # endif /* LINUX */
     {
@@ -1251,17 +1261,6 @@ int main(int argc, char *argv[])
         info("created child with pid %d for %s",
              dr_inject_get_process_id(inject_data), app_name);
     }
-# ifdef LINUX
-    if (limit != 0 && kill_group) {
-        /* Move the child to its own process group. */
-        process_id_t child_pid = dr_inject_get_process_id(inject_data);
-        int res = setpgid(child_pid, child_pid);
-        if (res < 0) {
-            perror("ERROR in setpgid");
-            goto error;
-        }
-    }
-# endif
 # ifdef WINDOWS
     if (errcode == ERROR_IMAGE_MACHINE_TYPE_MISMATCH_EXE) {
         /* Better error message than the FormatMessage */
@@ -1286,6 +1285,18 @@ int main(int argc, char *argv[])
         goto error;
     }
 
+# ifdef LINUX
+    if (limit != 0 && kill_group) {
+        /* Move the child to its own process group. */
+        process_id_t child_pid = dr_inject_get_process_id(inject_data);
+        int res = setpgid(child_pid, child_pid);
+        if (res < 0) {
+            perror("ERROR in setpgid");
+            goto error;
+        }
+    }
+# endif
+
     /* i#200/PR 459481: communicate child pid via file */
     if (pidfile != NULL)
         write_pid_to_file(pidfile, dr_inject_get_process_id(inject_data));
@@ -1307,7 +1318,7 @@ int main(int argc, char *argv[])
 # endif
 
 # ifdef LINUX
-    if (use_ptrace) {
+    if (use_ptrace && attach_pid == 0) {
         if (!dr_inject_prepare_to_ptrace(inject_data)) {
             error("unable to use ptrace");
             goto error;
@@ -1337,12 +1348,16 @@ int main(int argc, char *argv[])
         goto error;
     }
 
+    if (limit == 0 &&
 # ifdef WINDOWS
-    if (limit == 0 && dr_inject_using_debug_key(inject_data)) {
+        dr_inject_using_debug_key(inject_data)
+# else
+        use_ptrace
+# endif
+        ) {
         info("%s", "Using debugger key injection");
         limit = -1; /* no wait */
     }
-# endif
 
     if (limit >= 0) {
 # ifdef WINDOWS
