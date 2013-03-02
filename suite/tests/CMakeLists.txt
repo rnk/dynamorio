@@ -1118,7 +1118,7 @@ function(torun test key source native dr_ops exe_ops)
     # No support for regex here (ctest can't handle large regex)
     set(ALREADY_REGEX ON)
   else (is_runcmp)
-    if ("${test}" MATCHES "attach")
+    if ("${test}" MATCHES "attach")  # XXX: a better indicator?
       # Remove timeout args to drrun since they don't work with -attach.
       string(REGEX REPLACE ";-s;[0-9]+" "" rundr "${rundr}")
       string(REGEX REPLACE ";-killpg" "" rundr "${rundr}")
