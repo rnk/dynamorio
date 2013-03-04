@@ -1882,9 +1882,9 @@ private_instr_encode(dcontext_t *dcontext, instr_t *instr, bool always_cache)
     /* We used to allocate buf on the heap so that most pc-relative targets
      * would be reachable on x64, but today we handle that gracefully with
      * instr_encode_ignore_reachability().
-     * XXX: now that we're back on the stack, reachability failure will cause us to
-     * encode twice, which is wasteful.  Ideally we'd get has_instr_opnds and
-     * ignore reachability on the first pass.
+     * XXX: now that we're back on the stack, reachability failure will cause
+     * us to encode twice, which is wasteful.  Ideally we should be able to get
+     * length, is_reachable, and has_instr_opnds all in one pass.
      */
     byte buf[MAX_INSTR_LENGTH];
     uint len;
