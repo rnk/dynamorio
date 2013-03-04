@@ -1029,6 +1029,10 @@ privload_process_one_import(privmod_t *mod, privmod_t *impmod,
     if (forwfunc != NULL) {
         /* XXX i#233: support redirecting when imported by ordinal */
         dst = privload_redirect_imports(forwmod, forwfunc, mod);
+        DOLOG(2, LOG_LOADER, {
+            if (dst != NULL)
+                LOG(GLOBAL, LOG_LOADER, 2, "\tredirect => "PFX"\n", dst);
+        });
     }
     if (dst == NULL)
         dst = (app_pc) func;
@@ -1227,11 +1231,15 @@ map_api_set_dll(const char *name, privmod_t *dependent)
              str_case_prefix(name, "API-MS-Win-Core-Heap-Obsolete-L1-1") ||
              str_case_prefix(name, "API-MS-Win-Core-Timezone-L1-1") ||
              str_case_prefix(name, "API-MS-Win-Core-Threadpool-Legacy-L1-1") ||
-             str_case_prefix(name, "API-MS-Win-Core-BEM-L1-1"))
+             str_case_prefix(name, "API-MS-Win-Core-BEM-L1-1") ||
+             str_case_prefix(name, "API-MS-Win-Security-Base-Private-L1-1"))
         return "kernelbase.dll";
     else if (str_case_prefix(name, "API-MS-Win-Core-CRT-L1-1") ||
              str_case_prefix(name, "API-MS-Win-Core-CRT-L2-1"))
         return "msvcrt.dll";
+    else if (str_case_prefix(name, "API-MS-Win-Service-Private-L1-1") ||
+             str_case_prefix(name, "API-MS-Win-Security-Audit-L1-1"))
+        return "sechost.dll";
     else {
         SYSLOG_INTERNAL_WARNING("unknown API-MS-Win pseudo-dll %s", name);
         /* good guess */
@@ -1548,6 +1556,105 @@ bool
 private_lib_handle_cb(dcontext_t *dcontext, app_pc pc)
 {
     return kernel32_redir_fls_cb(dcontext, pc);
+}
+
+/***************************************************************************
+ * SECURITY COOKIE
+ */
+
+#ifdef X64
+# define SECURITY_COOKIE_INITIAL 0x00002B992DDFA232
+#else
+# define SECURITY_COOKIE_INITIAL 0xBB40E64E
+#endif
+#define SECURITY_COOKIE_16BIT_INITIAL 0xBB40
+
+static bool
+privload_set_security_cookie(privmod_t *mod)
+{
+    IMAGE_DOS_HEADER *dos = (IMAGE_DOS_HEADER *) mod->base;
+    IMAGE_NT_HEADERS *nt = (IMAGE_NT_HEADERS *) (mod->base + dos->e_lfanew);
+    IMAGE_DATA_DIRECTORY *dir;
+    IMAGE_LOAD_CONFIG_DIRECTORY *config;
+    ptr_uint_t *cookie_ptr;
+    ptr_uint_t cookie;
+    uint64 time100ns;
+    LARGE_INTEGER perfctr;
+
+    ASSERT(is_readable_pe_base(mod->base));
+    ASSERT(dos->e_magic == IMAGE_DOS_SIGNATURE);
+    ASSERT(nt != NULL && nt->Signature == IMAGE_NT_SIGNATURE);
+    ASSERT_OWN_RECURSIVE_LOCK(true, &privload_lock);
+
+    dir = OPT_HDR(nt, DataDirectory) + IMAGE_DIRECTORY_ENTRY_LOAD_CONFIG;
+    if (dir == NULL || dir->Size <= 0)
+        return false;
+    config = (IMAGE_LOAD_CONFIG_DIRECTORY *) RVA_TO_VA(mod->base, dir->VirtualAddress);
+    if (dir->Size < offsetof(IMAGE_LOAD_CONFIG_DIRECTORY, SecurityCookie) +
+        sizeof(config->SecurityCookie)) {
+        ASSERT_CURIOSITY(false && "IMAGE_LOAD_CONFIG_DIRECTORY too small");
+        return false;
+    }
+    cookie_ptr = (ptr_uint_t *) config->SecurityCookie;
+    if ((byte *)cookie_ptr < mod->base || (byte *)cookie_ptr >= mod->base + mod->size) {
+        LOG(GLOBAL, LOG_LOADER, 2, "%s: %s has out-of-bounds cookie @"PFX"\n",
+            __FUNCTION__, mod->name, cookie_ptr);
+        return false;
+    }
+    LOG(GLOBAL, LOG_LOADER, 2, "%s: %s dirsz="PIFX" configsz="PIFX" init cookie="PFX"\n",
+        __FUNCTION__, mod->name, dir->Size, config->Size, *cookie_ptr);
+    if (*cookie_ptr != SECURITY_COOKIE_INITIAL &&
+        *cookie_ptr != SECURITY_COOKIE_16BIT_INITIAL) {
+        /* I'm assuming a cookie should either be the magic value, or zero if
+         * no cookie is desired?  Let's have a curiosity to find if there are
+         * any other values:
+         */
+        ASSERT_CURIOSITY(*cookie_ptr == 0);
+        return true;
+    }
+    
+    /* Generate a new cookie using:
+     *   SystemTimeHigh ^ SystemTimeLow ^ ProcessId ^ ThreadId ^ TickCount ^
+     *   PerformanceCounterHigh ^ PerformanceCounterLow
+     */
+    time100ns = query_time_100ns();
+    /* 64-bit seems to sign-extend so we use ptr_int_t */
+    cookie = (ptr_int_t)(time100ns >> 32) ^ (ptr_int_t)time100ns;
+    cookie ^= get_process_id();
+    cookie ^= get_thread_id();
+    cookie ^= NtGetTickCount();
+    nt_query_performance_counter(&perfctr, NULL);
+#ifdef X64
+    cookie ^= perfctr.QuadPart;
+#else
+    cookie ^= perfctr.LowPart;
+    cookie ^= perfctr.HighPart;
+#endif
+
+    if (*cookie_ptr == SECURITY_COOKIE_16BIT_INITIAL)
+        cookie &= 0xffff; /* only want low 16 bits */
+    if (cookie == SECURITY_COOKIE_INITIAL ||
+        cookie == SECURITY_COOKIE_16BIT_INITIAL) {
+        /* If it happens to match, make it not match */
+        cookie--;
+    }
+    LOG(GLOBAL, LOG_LOADER, 2, "  new cookie value: "PFX"\n", cookie);
+
+    *cookie_ptr = cookie;
+    return true;
+}
+    
+void
+privload_os_finalize(privmod_t *mod)
+{
+    /* Libraries built with /GS require us to set
+     * IMAGE_LOAD_CONFIG_DIRECTORY.SecurityCookie (i#1093)
+     */
+    privload_set_security_cookie(mod);
+
+    /* FIXME: not supporting TLS today in Windows: 
+     * covered by i#233, but we don't expect to see it for dlls, only exes
+     */
 }
 
 /***************************************************************************/
