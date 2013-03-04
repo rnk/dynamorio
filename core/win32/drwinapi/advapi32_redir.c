@@ -286,7 +286,7 @@ redirect_RegQueryValueExA(
                                  ((char *)lpData) + sofar*sizeof(wchar_t)))
                 return ERROR_MORE_DATA;
             sofar++; /* include, and skip, the null between strings */
-        } while (type == REG_MULTI_SZ && sofar > prev_sofar && sofar < *lpcbData);
+        } while (type == REG_MULTI_SZ && sofar > prev_sofar + 1 && sofar < *lpcbData);
         memcpy(lpData, buf, *lpcbData);
         redirect_HeapFree(redirect_GetProcessHeap(), 0, buf);
     }
@@ -373,8 +373,8 @@ unit_test_drwinapi_advapi32(void)
     LSTATUS res;
     HKEY key;
     DWORD type, size, handle_count = 0;
-    /* NetworkService gets bigger then 1024 so we go for 2048 */
-#   define REG_KEY_DATA_SZ 2048
+    /* NetworkService gets bigger then 512 so we go for 1024 */
+#   define REG_KEY_DATA_SZ 1024
     char buf[REG_KEY_DATA_SZ];
     BOOL ok;
 
