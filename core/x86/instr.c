@@ -1879,10 +1879,14 @@ instr_build_bits(dcontext_t *dcontext, int opcode, uint num_bytes)
 static int
 private_instr_encode(dcontext_t *dcontext, instr_t *instr, bool always_cache)
 {
-    /* we cannot use a stack buffer for encoding since our stack on x64 linux
-     * can be too far to reach from our heap
+    /* We used to allocate buf on the heap so that most pc-relative targets
+     * would be reachable on x64, but today we handle that gracefully with
+     * instr_encode_ignore_reachability().
+     * XXX: now that we're back on the stack, reachability failure will cause us to
+     * encode twice, which is wasteful.  Ideally we'd get has_instr_opnds and
+     * ignore reachability on the first pass.
      */
-    byte buf[DR_INSTR_ENCODE_MAX_SIZE];
+    byte buf[MAX_INSTR_LENGTH];
     uint len;
     /* Do not cache instr opnds as they are pc-relative to final encoding location.
      * Rather than us walking all of the operands separately here, we have
@@ -1892,7 +1896,6 @@ private_instr_encode(dcontext_t *dcontext, instr_t *instr, bool always_cache)
     bool has_instr_opnds;
     byte *nxt = instr_encode_check_reachability(dcontext, instr, buf, &has_instr_opnds);
     bool valid_to_cache = !has_instr_opnds;
-    /* We only allocate buf on the heap if we can cache the encoding. */
     if (nxt == NULL) {
         nxt = instr_encode_ignore_reachability(dcontext, instr, buf);
         if (nxt == NULL) {
@@ -1905,7 +1908,7 @@ private_instr_encode(dcontext_t *dcontext, instr_t *instr, bool always_cache)
     len = (int) (nxt - buf);    
     CLIENT_ASSERT(len > 0 || instr_is_label(instr),
                   "encode instr for length/eflags error: zero length");
-    CLIENT_ASSERT(len < DR_INSTR_ENCODE_MAX_SIZE,
+    CLIENT_ASSERT(len <= MAX_INSTR_LENGTH,
                   "encode instr for length/eflags error: instr too long");
     ASSERT_CURIOSITY(len >= 0 && len < 18);
 

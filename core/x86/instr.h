@@ -485,16 +485,6 @@ extern const reg_id_t dr_reg_fixer[];
  */
 /* DR_API EXPORT BEGIN */
 
-/**
- * Maximum number of bytes required to encode a single x86 instruction with DR's
- * encoder.  Note that x86 instructions can be arbitrary long with repeated
- * prefixes, but DR's encoder will not produce such instructions.
- *
- * The current known max length is 17, but we use a larger upper bound to avoid
- * ABI issues if x86 adds longer instructions.
- */
-enum { DR_INSTR_ENCODE_MAX_SIZE = 32 };
-
 #ifdef DR_FAST_IR
 
 # define REG_SPECIFIER_BITS 8
