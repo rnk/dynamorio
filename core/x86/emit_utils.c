@@ -3994,7 +3994,8 @@ append_fcache_return_common(dcontext_t *dcontext, generated_code_t *code,
                    OPND_CREATE_INTPTR((ptr_int_t)dcontext) : opnd_create_reg(REG_XDI));
 
     /* dispatch() shouldn't return! */
-    APP(ilist, INSTR_CREATE_jmp(dcontext, opnd_create_pc((app_pc)unexpected_return)));
+    insert_heap_reachable_cti(dcontext, ilist, NULL, OP_jmp,
+                              (app_pc)unexpected_return, REG_XAX);
 
     return instr_targets;
 }
@@ -7842,7 +7843,8 @@ emit_new_thread_dynamo_start(dcontext_t *dcontext, byte *pc)
                    1, opnd_create_reg(REG_XAX));
 
     /* should not return */
-    APP(&ilist, INSTR_CREATE_jmp(dcontext, opnd_create_pc((app_pc)unexpected_return)));
+    insert_heap_reachable_cti(dcontext, &ilist, NULL, OP_jmp,
+                              (app_pc)unexpected_return, REG_XAX);
 
     /* now encode the instructions */
     pc = instrlist_encode(dcontext, &ilist, pc, true /* instr targets */);

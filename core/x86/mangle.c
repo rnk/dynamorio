@@ -1310,6 +1310,38 @@ insert_parameter_preparation(dcontext_t *dcontext, instrlist_t *ilist, instr_t *
     return total_stack;
 }
 
+/* Inserts a direct cti (call or jmp) into ilist if target is reachable from the
+ * heap.  Otherwise it inserts a more general two instruction indirect cti using
+ * the scratch reg.
+ */
+void
+insert_heap_reachable_cti(dcontext_t *dcontext, instrlist_t *ilist,
+                          instr_t *where, int opc, app_pc target,
+                          reg_id_t scratch)
+{
+#ifdef X64
+    if (!rel32_reachable_from_heap(target)) {
+        PRE(ilist, where, INSTR_CREATE_mov_imm
+            (dcontext, opnd_create_reg(scratch), OPND_CREATE_INTPTR(target)));
+        switch (opc) {
+        case OP_call:
+            PRE(ilist, where, INSTR_CREATE_call_ind
+                (dcontext, opnd_create_reg(scratch)));
+            break;
+        case OP_jmp:
+            PRE(ilist, where, INSTR_CREATE_jmp_ind
+                (dcontext, opnd_create_reg(scratch)));
+            break;
+        default:
+            CLIENT_ASSERT(false, "cannot make non-direct ctis reachable");
+        }
+        return;
+    }
+#endif
+    PRE(ilist, where, instr_create_0dst_1src
+        (dcontext, opc, opnd_create_pc(target)));
+}
+
 /* Inserts a complete call to callee with the passed-in arguments.
  * For x64, assumes the stack pointer is currently 16-byte aligned.
  * Clean calls ensure this by using clean base of dstack and having
@@ -1324,7 +1356,9 @@ insert_meta_call_vargs(dcontext_t *dcontext, instrlist_t *ilist, instr_t *instr,
         insert_parameter_preparation(dcontext, ilist, instr, 
                                      clean_call, num_args, args);
     IF_X64(ASSERT(ALIGNED(stack_for_params, 16)));
-    PRE(ilist, instr, INSTR_CREATE_call(dcontext, opnd_create_pc(callee)));
+    /* Use r11 since it's scratch on x64. */
+    insert_heap_reachable_cti(dcontext, ilist, instr, OP_call, callee,
+                              DR_REG_R11);
     if (stack_for_params > 0) {
         /* FIXME PR 245936: let user decide whether to clean up?
          * i.e., support calling a stdcall routine?
@@ -4895,7 +4929,8 @@ set_selfmod_sandbox_offsets(dcontext_t *dcontext)
                 /* sandbox_top_of_bb assumes there's an instr there */
                 instrlist_append(&ilist, INSTR_CREATE_label(dcontext));
                 init_patch_list(&patch, PATCH_TYPE_ABSOLUTE);
-                app_start = IF_X64_ELSE(selfmod_gt4G[k], NULL);
+                /* Use something reachable from buf for x64. */
+                app_start = buf;
                 sandbox_top_of_bb(dcontext, &ilist,
                                   selfmod_s2ro[i], selfmod_eflags[j],
                                   /* we must have a >1-byte region to get

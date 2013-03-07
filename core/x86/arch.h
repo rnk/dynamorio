@@ -398,6 +398,10 @@ int find_syscall_num(dcontext_t *dcontext, instrlist_t *ilist, instr_t *instr);
 bool insert_selfmod_sandbox(dcontext_t *dcontext, instrlist_t *ilist, uint flags,
                             app_pc start_pc, app_pc end_pc, /* end is open */
                             bool record_translation, bool for_cache);
+void
+insert_heap_reachable_cti(dcontext_t *dcontext, instrlist_t *ilist,
+                          instr_t *where, int opc, app_pc target,
+                          reg_id_t scratch);
 
 /* offsets within local_state_t used for specific scratch purposes */
 enum {

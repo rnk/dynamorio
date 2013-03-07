@@ -720,23 +720,8 @@ vmm_heap_unit_init(vm_heap_t *vmh, size_t size)
      * hand changing any of the lower 16 bits will make our bugs
      * non-deterministic. */
     /* Make sure we don't waste the lower bits from our random number */
-    preferred = (
-#if defined(WINDOWS) || !defined(X64) || defined(VMX86_SERVER)
-                 DYNAMO_OPTION(vm_base)
-#else
-                 /* For 64-bit linux we can't use a fixed base since our library
-                  * might be loaded anywhere.  For now we just hope to find
-                  * enough free space at this random offset from it. 
-                  * Probably the best long-term solution is to make our heap
-                  * and library not need to reach each other, which should only
-                  * require indirect jumps in fcache_{enter,return}.  Selfmod
-                  * s2ro isn't perf-critical.  Client library callees and data
-                  * should ideally be close to the heap though.
-                  * Xref PR 253624.
-                  */
-                 (ptr_uint_t) get_dynamorio_dll_start()
-#endif
-                 + get_random_offset(DYNAMO_OPTION(vm_max_offset)/VMM_BLOCK_SIZE)
+    preferred = (DYNAMO_OPTION(vm_base) +
+                 get_random_offset(DYNAMO_OPTION(vm_max_offset)/VMM_BLOCK_SIZE)
                  *VMM_BLOCK_SIZE);
     preferred = ALIGN_FORWARD(preferred, VMM_BLOCK_SIZE);
     /* overflow check: w/ vm_base shouldn't happen so debug-only check */
@@ -1292,12 +1277,11 @@ vmm_heap_init()
                                      get_allocation_size(get_dynamorio_dll_start(), NULL));
     /* i#774, i#901: we do not need to be near ntdll.dll */
 # else /* LINUX */
-    /* FIXME - On Linux we compile core with -fpic and samples Makefile uses it as
-     * well (comments suggest problems if we don't).  But without our own loader
-     * that means we can't control where the libraries are loaded.  For now we count
-     * on a good choice of vm_base.  See PR 253624. */
-    request_region_be_heap_reachable(get_dynamorio_dll_start(),
-                                     get_dynamorio_dll_end() - get_dynamorio_dll_start());
+    /* i#719: On Linux, we don't actually require that DR be reachable from the
+     * heap.  We still set a preferred base in the low 2 GB so that we can use
+     * direct ctis when possible.  When DR is unreachable from the heap, we fall
+     * back to indirecting through memory or a register.
+     */
 # endif
 #endif /* X64 */
     
