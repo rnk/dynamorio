@@ -2699,9 +2699,12 @@ instr_length(dcontext_t *dcontext, instr_t *instr)
         if (instr_operands_valid(instr)) {
             /* Do a full encode for flexible pc operands. */
             opnd_t tgt = instr_get_target(instr);
-            if (opnd_is_near_pc(tgt) && opnd_get_pc_scratch(tgt) != DR_REG_NULL)
+            if (opnd_is_near_pc(tgt) && opnd_get_pc_scratch(tgt) != DR_REG_NULL) {
+                print_file(STDERR, "did instr_length on flex pc\n");
                 break;
+            }
         }
+        print_file(STDERR, "did instr_length on OP_call\n");
         return 5;
     case OP_jb: case OP_jnb: case OP_jbe: case OP_jnbe:
     case OP_jl: case OP_jnl: case OP_jle: case OP_jnle:

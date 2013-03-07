@@ -2125,6 +2125,8 @@ encode_unreachable_cti(instr_t *instr, byte *copy_pc,
     uint rex;
     uint reg;
 
+    print_file(STDERR, "encoding unreachable pc\n");
+
     /* mov imm $target -> %scratch */
     rex = REX_PREFIX_BASE_OPCODE | REX_PREFIX_W_OPFLAG;
     if (scratch_reg >= DR_REG_R8 && scratch_reg <= DR_REG_R15) {
@@ -2174,6 +2176,8 @@ encode_cti(instr_t *instr, byte *copy_pc, byte *final_pc,
     opnd_t opnd;
     ptr_uint_t target;
     reg_id_t scratch_reg = DR_REG_NULL;
+
+    print_file(STDERR, "encoding cti\n");
 
     if (instr->prefixes != 0) {
         if (TEST(PREFIX_JCC_TAKEN, instr->prefixes)) {

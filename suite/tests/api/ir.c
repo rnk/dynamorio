@@ -939,6 +939,55 @@ test_instr_opnds(void *dc)
     instrlist_destroy(dc, ilist);
 }
 
+static void
+test_flexible_pc(void *dc)
+{
+    instrlist_t *ilist;
+    instr_t *tgt, *instr;
+    byte *pc, *end_pc;
+    short disp;
+    int i;
+    /* Try this for a couple of targets. */
+    static const app_pc flex_pcs[] = {
+        NULL,
+        buf,
+        (app_pc)-1LL
+    };
+
+    ilist = instrlist_create(dc);
+
+    for (i = 0; i < BUFFER_SIZE_ELEMENTS(flex_pcs); i++) {
+        /* jcc after_flex
+         * call reachable flex_pc
+         * after_flex:
+         */
+        tgt = INSTR_CREATE_label(dc);
+        instrlist_append(ilist, INSTR_CREATE_jcc
+                         (dc, OP_jz, opnd_create_instr(tgt)));
+        instrlist_append(ilist, INSTR_CREATE_call
+                         (dc, opnd_create_flexible_pc(flex_pcs[i], DR_REG_XAX)));
+        instrlist_append(ilist, tgt);
+        instrlist_append(ilist, INSTR_CREATE_nop(dc));
+        dr_printf("encoding\n");
+        end_pc = instrlist_encode(dc, ilist, buf, true/*instr targets*/);
+        instrlist_clear(dc, ilist);
+
+        pc = buf;
+        pc = disassemble(dc, pc, STDERR);
+        pc = disassemble(dc, pc, STDERR);
+        pc = disassemble(dc, pc, STDERR);
+
+        instr = instr_create(dc);
+        pc = decode(dc, buf, instr);
+        ASSERT(pc != NULL);
+        pc = opnd_get_pc(instr_get_target(instr));
+        ASSERT(pc == end_pc);  /* jcc target should match the end of buf. */
+
+    }
+
+    instrlist_destroy(dc, ilist);
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -989,6 +1038,8 @@ main(int argc, char *argv[])
     test_regs(dcontext);
 
     test_instr_opnds(dcontext);
+
+    test_flexible_pc(dcontext);
 
     print("all done\n");
     return 0;
