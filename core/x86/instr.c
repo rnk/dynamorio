@@ -380,6 +380,18 @@ opnd_get_pc(opnd_t opnd)
     }
 }
 
+reg_id_t
+opnd_get_pc_scratch(opnd_t opnd)
+{
+    if (opnd_is_pc(opnd))
+        return opnd.seg.pc_scratch_reg;
+    else {
+        SYSLOG_INTERNAL_ERROR("opnd type is %d", opnd.kind);
+        CLIENT_ASSERT(false, "opnd_get_pc_scratch called on non-pc");
+        return REG_NULL;
+    }
+}
+
 ushort
 opnd_get_segment_selector(opnd_t opnd)
 {

@@ -2111,18 +2111,68 @@ encode_vex_prefixes(byte *field_ptr, decode_info_t *di, const instr_info_t *info
     return field_ptr;
 }
 
+#ifdef X64
+/* Emit raw opcodes for 'mov $target -> %scratch ; cti %scratch'.  We emit raw
+ * opcodes to avoid weird layering violations caused by creating two new
+ * instructions, possibly using the heap, and mutually recursing back into
+ * instr_encode_common.
+ */
+static byte *
+encode_unreachable_cti(instr_t *instr, byte *copy_pc,
+                       byte *final_pc, ptr_uint_t target, reg_id_t scratch_reg)
+{
+    app_pc pc = copy_pc;
+    uint rex;
+    uint reg;
+
+    /* mov imm $target -> %scratch */
+    rex = REX_PREFIX_BASE_OPCODE | REX_PREFIX_W_OPFLAG;
+    if (scratch_reg >= DR_REG_R8 && scratch_reg <= DR_REG_R15) {
+        rex |= REX_PREFIX_B_OPFLAG;
+        reg = scratch_reg - DR_REG_R8;
+    } else {
+        reg = scratch_reg - DR_REG_RAX;
+    }
+    ASSERT(reg < 8);  /* Should fit in bottom 3 bits of modrm byte. */
+    *pc++ = rex;
+    *pc++ = MOV_IMM2REG_OPCODE | reg;
+    *((ptr_uint_t*)pc) = target;
+    pc += sizeof(ptr_uint_t);
+
+    /* cti %scratch */
+    if (scratch_reg >= DR_REG_R8 && scratch_reg <= DR_REG_R15)
+        *pc++ = REX_PREFIX_BASE_OPCODE | REX_PREFIX_B_OPFLAG;
+    *pc++ = RAW_OPCODE_cti_ind_byte1;
+    switch (instr_get_opcode(instr)) {
+    case OP_jmp:
+        *pc++ = RAW_OPCODE_jmp_indreg_byte2 | reg;
+        break;
+    case OP_call:
+        *pc++ = RAW_OPCODE_call_indreg_byte2 | reg;
+        break;
+    default:
+        CLIENT_ASSERT(false, "encode_unreachable_cti: flexible pcs only "
+                      "supported on near direct calls and jmps");
+        return NULL;
+    }
+
+    return pc;
+}
+#endif
+
 /* special-case (==fast) encoder for cti instructions 
  * this routine cannot handle indirect branches or rets or far jmp/call;
  * it can handle loop/jecxz but it does NOT check for data16!
  */
 static byte *
-encode_cti(instr_t *instr, byte *copy_pc, byte *final_pc, bool check_reachable
-           _IF_DEBUG(bool assert_reachable))
+encode_cti(instr_t *instr, byte *copy_pc, byte *final_pc,
+           bool check_reachable _IF_DEBUG(bool assert_reachable))
 {
     byte *pc = copy_pc;
     const instr_info_t * info = instr_get_instr_info(instr);
     opnd_t opnd;
     ptr_uint_t target;
+    reg_id_t scratch_reg = DR_REG_NULL;
 
     if (instr->prefixes != 0) {
         if (TEST(PREFIX_JCC_TAKEN, instr->prefixes)) {
@@ -2155,6 +2205,7 @@ encode_cti(instr_t *instr, byte *copy_pc, byte *final_pc, bool check_reachable
     opnd = instr_get_target(instr);
     if (opnd_is_near_pc(opnd)) {
         target = (ptr_uint_t) opnd_get_pc(opnd);
+        scratch_reg = opnd_get_pc_scratch(opnd);
     } else if (opnd_is_near_instr(opnd)) {
         instr_t *in = opnd_get_instr(opnd);
         target = (ptr_uint_t)final_pc + ((ptr_uint_t)in->note - (ptr_uint_t)instr->note);
@@ -2183,11 +2234,18 @@ encode_cti(instr_t *instr, byte *copy_pc, byte *final_pc, bool check_reachable
         /* offset is from start of next instr */
         ptr_int_t offset = target - ((ptr_int_t)(pc + 4 - copy_pc + final_pc));
 #ifdef X64
-        if (check_reachable && !REL32_REACHABLE_OFFS(offset)) {
-            CLIENT_ASSERT(!assert_reachable,
-                          "encode_cti error: target beyond 32-bit reach");
-            return NULL;
+        if (!REL32_REACHABLE_OFFS(offset)) {
+            if (scratch_reg != DR_REG_NULL) {
+                return encode_unreachable_cti(instr, copy_pc, final_pc, target,
+                                              scratch_reg);
+            } else if (check_reachable) {
+                CLIENT_ASSERT(!assert_reachable,
+                              "encode_cti error: target beyond 32-bit reach");
+                return NULL;
+            }
         }
+#else
+        /* FIXME: check reachability for ia32 /largeaddressaware programs. */
 #endif
         *((int *)pc) = (int) offset;
         pc += 4;

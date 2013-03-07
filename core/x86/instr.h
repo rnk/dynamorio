@@ -516,6 +516,8 @@ struct _opnd_t {
         reg_id_t segment : REG_SPECIFIER_BITS; /* BASE_DISP_kind, REL_ADDR_kind,
                                                 * and ABS_ADDR_kind */
         ushort disp;           /* MEM_INSTR_kind */
+        /* PC_kind: scratch reg for unreachable pcs. */
+        reg_id_t pc_scratch_reg;
     } seg;
     union {
         /* all are 64 bits or less */
@@ -625,6 +627,17 @@ INSTR_INLINE
 /** Returns a program address operand with value \p pc. */
 opnd_t 
 opnd_create_pc(app_pc pc);
+
+DR_API
+INSTR_INLINE
+/**
+ * Returns a flexible program address operand with value \p pc.  If the final
+ * encoded pc of the instruction containing this operand fails to reach \p pc,
+ * then the encoder will emit an instruction to materialize pc into \p scratch
+ * and indirect through \p scratch.
+ */
+opnd_t 
+opnd_create_flexible_pc(app_pc pc, reg_id_t scratch);
 
 DR_API
 /**
@@ -1067,6 +1080,14 @@ DR_API
 /** Assumes \p opnd is a (near or far) program address, returns its value. */
 app_pc 
 opnd_get_pc(opnd_t opnd);
+
+DR_API
+/**
+ * Gets the scratch reg (if any) that might be used to encode a direct cti to
+ * this pc.  Assumes \p opnd is a near program address.
+ */
+reg_id_t
+opnd_get_pc_scratch(opnd_t opnd);
 
 DR_API
 /** 
@@ -3721,8 +3742,10 @@ enum {
     RAW_OPCODE_nop             = 0x90,
     RAW_OPCODE_jmp_short       = 0xeb,
     RAW_OPCODE_call            = 0xe8,
+    RAW_OPCODE_call_indreg_byte2  = 0xd0, /* + r */
     RAW_OPCODE_ret             = 0xc3,
     RAW_OPCODE_jmp             = 0xe9,
+    RAW_OPCODE_jmp_indreg_byte2   = 0xe0, /* + r */
     RAW_OPCODE_push_imm32      = 0x68,
     RAW_OPCODE_jcc_short_start = 0x70,
     RAW_OPCODE_jcc_short_end   = 0x7f,
@@ -3732,6 +3755,7 @@ enum {
     RAW_OPCODE_loop_start      = 0xe0,
     RAW_OPCODE_loop_end        = 0xe3,
     RAW_OPCODE_lea             = 0x8d,
+    RAW_OPCODE_cti_ind_byte1   = 0xff, /* opcode 1 of ctis */
     RAW_PREFIX_jcc_not_taken   = 0x2e,
     RAW_PREFIX_jcc_taken       = 0x3e,
     RAW_PREFIX_lock            = 0xf0,
@@ -3766,6 +3790,7 @@ enum { /* FIXME: vs RAW_OPCODE_* enum */
     MOV_MEM2REG_OPCODE   = 0x8b,
     MOV_XAX2MEM_OPCODE   = 0xa3, /* no ModRm */
     MOV_MEM2XAX_OPCODE   = 0xa1, /* no ModRm */
+    MOV_IMM2REG_OPCODE   = 0xb8, /* no ModRm */
     MOV_IMM2XAX_OPCODE   = 0xb8, /* no ModRm */
     MOV_IMM2XBX_OPCODE   = 0xbb, /* no ModRm */
     MOV_IMM2MEM_OPCODE   = 0xc7, /* has ModRm */

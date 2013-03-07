@@ -1324,7 +1324,12 @@ insert_meta_call_vargs(dcontext_t *dcontext, instrlist_t *ilist, instr_t *instr,
         insert_parameter_preparation(dcontext, ilist, instr, 
                                      clean_call, num_args, args);
     IF_X64(ASSERT(ALIGNED(stack_for_params, 16)));
-    PRE(ilist, instr, INSTR_CREATE_call(dcontext, opnd_create_pc(callee)));
+    /* We use a flexible PC that indirects through eax or r11 if the encoded cti can't
+     * reach the target.
+     */
+    PRE(ilist, instr, INSTR_CREATE_call
+        (dcontext,
+         opnd_create_flexible_pc(callee, IF_X64_ELSE(REG_R11, REG_EAX))));
     if (stack_for_params > 0) {
         /* FIXME PR 245936: let user decide whether to clean up?
          * i.e., support calling a stdcall routine?

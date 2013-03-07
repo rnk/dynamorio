@@ -1296,8 +1296,8 @@ vmm_heap_init()
      * well (comments suggest problems if we don't).  But without our own loader
      * that means we can't control where the libraries are loaded.  For now we count
      * on a good choice of vm_base.  See PR 253624. */
-    request_region_be_heap_reachable(get_dynamorio_dll_start(),
-                                     get_dynamorio_dll_end() - get_dynamorio_dll_start());
+    //request_region_be_heap_reachable(get_dynamorio_dll_start(),
+                                     //get_dynamorio_dll_end() - get_dynamorio_dll_start());
 # endif
 #endif /* X64 */
     

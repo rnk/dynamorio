@@ -1267,7 +1267,7 @@
         "skip the assert curiosity on out of vm_reserve (for regression tests)")
     OPTION_DEFAULT(bool, vm_reserve, true, "reserve virtual memory") 
     /* FIXME - on 64bit probably will need more space */
-    OPTION_DEFAULT(uint_size, vm_size, 128*1024*1024,
+    OPTION_DEFAULT(uint_size, vm_size, IF_X64_ELSE(128,512) * 1024 * 1024,
         "maximum virtual memory reserved, in KB or MB")
         /* default size is in Kilobytes, Examples: 262144, 1024k, 256m, up to maximum of 512M */
      /* FIXME: default value is currently not good enough for sqlserver, for which we need more than 256MB */

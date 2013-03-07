@@ -182,6 +182,18 @@ opnd_create_pc(app_pc pc)
 {
     opnd_t opnd;
     opnd.kind = PC_kind;
+    opnd.seg.pc_scratch_reg = DR_REG_NULL;
+    opnd.value.pc = pc;
+    return opnd;
+}
+
+INSTR_INLINE
+opnd_t
+opnd_create_flexible_pc(app_pc pc, reg_id_t scratch)
+{
+    opnd_t opnd;
+    opnd.kind = PC_kind;
+    opnd.seg.pc_scratch_reg = scratch;
     opnd.value.pc = pc;
     return opnd;
 }
