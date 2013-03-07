@@ -4900,7 +4900,8 @@ set_selfmod_sandbox_offsets(dcontext_t *dcontext)
                 /* sandbox_top_of_bb assumes there's an instr there */
                 instrlist_append(&ilist, INSTR_CREATE_label(dcontext));
                 init_patch_list(&patch, PATCH_TYPE_ABSOLUTE);
-                app_start = IF_X64_ELSE(selfmod_gt4G[k], NULL);
+                /* Use something reachable from buf for x64. */
+                app_start = buf;
                 sandbox_top_of_bb(dcontext, &ilist,
                                   selfmod_s2ro[i], selfmod_eflags[j],
                                   /* we must have a >1-byte region to get

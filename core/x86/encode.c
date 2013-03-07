@@ -2140,6 +2140,7 @@ encode_unreachable_cti(instr_t *instr, byte *copy_pc,
     pc += sizeof(ptr_uint_t);
 
     /* cti %scratch */
+    CLIENT_ASSERT(instr->prefixes == 0, "flexible pcs don't support prefixes");
     if (scratch_reg >= DR_REG_R8 && scratch_reg <= DR_REG_R15)
         *pc++ = REX_PREFIX_BASE_OPCODE | REX_PREFIX_B_OPFLAG;
     *pc++ = RAW_OPCODE_cti_ind_byte1;
@@ -2234,7 +2235,12 @@ encode_cti(instr_t *instr, byte *copy_pc, byte *final_pc,
         /* offset is from start of next instr */
         ptr_int_t offset = target - ((ptr_int_t)(pc + 4 - copy_pc + final_pc));
 #ifdef X64
-        if (!REL32_REACHABLE_OFFS(offset)) {
+        if (!REL32_REACHABLE_OFFS(offset) ||
+            /* For measuring the length of flexible pcs, we assume we can't
+             * reach the target.
+             * FIXME: this breaks instr operands later in the current ilist.
+             */
+            (!check_reachable && scratch_reg != DR_REG_NULL)) {
             if (scratch_reg != DR_REG_NULL) {
                 return encode_unreachable_cti(instr, copy_pc, final_pc, target,
                                               scratch_reg);
