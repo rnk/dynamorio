@@ -793,6 +793,7 @@ ptrace_write_memory(pid_t pid, void *dst, void *src, size_t len)
  * raw bytes equal to the string we want to put in the injectee.  The call will
  * pass these invalid instruction bytes, and the return address on the stack
  * will point to the string.
+ * FIXME i#1117: don't push anything on the app stack.
  */
 static void
 gen_push_string(void *dc, instrlist_t *ilist, const char *msg)
@@ -1033,6 +1034,7 @@ injectee_open(dr_inject_info_t *info, const char *path, int flags, mode_t mode)
     instrlist_t *ilist = instrlist_create(dc);
     opnd_t args[MAX_SYSCALL_ARGS];
     int num_args = 0;
+    /* FIXME i#1117: don't use the app stack. */
     gen_push_string(dc, ilist, path);
     args[num_args++] = OPND_CREATE_MEMPTR(DR_REG_XSP, 0);
     args[num_args++] = OPND_CREATE_INTPTR(flags);
