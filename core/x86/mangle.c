@@ -4916,9 +4916,6 @@ set_selfmod_sandbox_offsets(dcontext_t *dcontext)
     int buf_sz = 256;
     app_pc buf = heap_alloc(dcontext, buf_sz HEAPACCT(ACCT_OTHER));
     uint len;
-    /* We assume this is called at init, when .data is +w and we need no
-     * synch on accessing buf */
-    ASSERT(!dynamo_initialized);
     for (i = 0; i < SELFMOD_NUM_S2RO; i++) {
         for (j = 0; j < SELFMOD_NUM_EFLAGS; j++) {
 #ifdef X64
