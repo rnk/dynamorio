@@ -857,6 +857,9 @@ int main(int argc, char *argv[])
             if (attach_pid == ULONG_MAX)
                 usage("-attach expects an integer pid");
             use_ptrace = true;
+            /* FIXME: if the user gives -attach, we shouldn't expect an app
+             * command or -- after -c.
+             */
             continue;
         }
         else if (strcmp(argv[i], "-early") == 0) {
@@ -1243,7 +1246,6 @@ int main(int argc, char *argv[])
         info("will exec %s", app_name);
         errcode = dr_inject_prepare_to_exec(app_name, app_argv, &inject_data);
     } else if (attach_pid != 0) {
-        /* This is really a drinject usage. */
         errcode = dr_inject_attach_to_pid(attach_pid, &inject_data);
         if (errcode != 0) {
             const char *errmsg = "<unknown>";
@@ -1284,18 +1286,6 @@ int main(int argc, char *argv[])
         error("%s", buf);
         goto error;
     }
-
-# ifdef LINUX
-    if (limit != 0 && kill_group) {
-        /* Move the child to its own process group. */
-        process_id_t child_pid = dr_inject_get_process_id(inject_data);
-        int res = setpgid(child_pid, child_pid);
-        if (res < 0) {
-            perror("ERROR in setpgid");
-            goto error;
-        }
-    }
-# endif
 
     /* i#200/PR 459481: communicate child pid via file */
     if (pidfile != NULL)
@@ -1348,13 +1338,8 @@ int main(int argc, char *argv[])
         goto error;
     }
 
-    if (limit == 0 &&
-# ifdef WINDOWS
-        dr_inject_using_debug_key(inject_data)
-# else
-        use_ptrace
-# endif
-        ) {
+    if (limit == 0 && IF_WINDOWS_ELSE(dr_inject_using_debug_key(inject_data),
+                                      use_ptrace)) {
         info("%s", "Using debugger key injection");
         limit = -1; /* no wait */
     }

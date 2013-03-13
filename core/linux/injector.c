@@ -99,10 +99,10 @@ typedef struct _dr_inject_info_t {
     int exitcode;
 } dr_inject_info_t;
 
-int
+static int
 ptrace_attach(process_id_t pid);
 
-bool
+static bool
 inject_ptrace(dr_inject_info_t *info, const char *library_path);
 
 static long
@@ -371,6 +371,32 @@ error:
     return errno;
 }
 
+/* Parallel to dr_inject_process_create(), except we're targeting an existing
+ * process.
+ * XXX: Can we combine this with dr_inject_prepare_to_ptrace()?
+ */
+DR_EXPORT
+int
+dr_inject_attach_to_pid(process_id_t pid, void **data OUT)
+{
+    dr_inject_info_t *info;
+    char *proc_path = malloc(MAXIMUM_PATH);
+    int res;
+    *data = NULL;
+    res = ptrace_attach(pid);
+    if (res != 0)
+        return res;
+    res = read_proc_pid_exe(pid, proc_path, MAXIMUM_PATH);
+    if (res != 0)
+        return res;
+    info = create_inject_info(proc_path, NULL/*no argv*/);
+    info->allocated_exe = true;
+    info->method = INJECT_PTRACE;
+    info->pid = pid;
+    *data = info;
+    return 0;
+}
+
 DR_EXPORT
 int
 dr_inject_prepare_to_exec(const char *exe, const char **argv, void **data OUT)
@@ -399,30 +425,6 @@ dr_inject_prepare_to_ptrace(void *data)
     info->method = INJECT_PTRACE;
     r = ptrace_attach(info->pid);
     return r == 0;
-}
-
-/* XXX: Can we combine this with dr_inject_prepare_to_ptrace()?
- */
-DR_EXPORT
-int
-dr_inject_attach_to_pid(process_id_t pid, void **data OUT)
-{
-    dr_inject_info_t *info;
-    char *proc_path = malloc(MAXIMUM_PATH);
-    int r;
-    *data = NULL;
-    r = ptrace_attach(pid);
-    if (r != 0)
-        return r;
-    r = read_proc_pid_exe(pid, proc_path, MAXIMUM_PATH);
-    if (r != 0)
-        return r;
-    info = create_inject_info(proc_path, NULL/*no argv*/);
-    info->allocated_exe = true;
-    info->method = INJECT_PTRACE;
-    info->pid = pid;
-    *data = info;
-    return 0;
 }
 
 DR_EXPORT
@@ -831,7 +833,9 @@ gen_syscall(void *dc, instrlist_t *ilist, int sysnum, uint num_opnds,
 
 #endif /* X86 */
 
-#if 0  /* Useful for debugging gen_syscall and gen_push_string. */
+#ifdef DEBUG
+/* Useful for debugging gen_syscall and gen_push_string. */
+__attribute__((used))  /* Suppress gcc warnings about being unused. */
 static void
 gen_print(void *dc, instrlist_t *ilist, const char *msg)
 {
@@ -883,30 +887,31 @@ continue_until_break(process_id_t pid)
     return wait_until_signal(pid, SIGTRAP);
 }
 
-#if 0
+#ifdef DEBUG
 /* Single steps the app until the next breakpoint instr and disassembles each
  * instruction.  Useful for debugging since we can't gdb an already traced
  * process.
  */
+__attribute__((used))  /* Suppress gcc warnings about being unused. */
 static bool
 single_step_until_break(process_id_t pid)
 {
-    long r;
+    long res;
     byte int3_opcode = 0xCC;
     bool hit_int3 = false;
     while (!hit_int3) {
         app_pc pc;
         byte buf[ALIGN_FORWARD(MAX_INSTR_LENGTH, sizeof(void*))];
         bool trapped;
-        r = our_ptrace(PTRACE_SINGLESTEP, pid, NULL, NULL);
-        if (r < 0)
+        res = our_ptrace(PTRACE_SINGLESTEP, pid, NULL, NULL);
+        if (res < 0)
             return false;
         trapped = wait_until_signal(pid, SIGTRAP);
         if (!trapped)
             return false;
         /* We trapped.  Disassemble the next instr and continue. */
-        r = our_ptrace(PTRACE_PEEKUSER, pid, (void*)REG_PC_OFFSET, &pc);
-        if (r < 0)
+        res = our_ptrace(PTRACE_PEEKUSER, pid, (void*)REG_PC_OFFSET, &pc);
+        if (res < 0)
             return false;
         if (!ptrace_read_memory(pid, buf, pc, BUFFER_SIZE_BYTES(buf)))
             return false;
@@ -972,6 +977,7 @@ injectee_run_get_retval(dr_inject_info_t *info, void *dc, instrlist_t *ilist)
             next_copy_pc = decode(dc, copy_pc, &instr);
             if (instr_is_call_direct(&instr) &&
                 opnd_is_pc(instr_get_target(&instr))) {
+                /* We assume all calls are from gen_push_string(). */
                 print_file(STDERR, " <raw string: %s>\n", (char *)next_copy_pc);
                 next_copy_pc = opnd_get_pc(instr_get_target(&instr));
             }
@@ -1175,21 +1181,23 @@ user_regs_to_mc(priv_mcontext_t *mc, struct user_regs_struct *regs)
 
     /* If we interrupted a syscall, the kernel may return one of these special
      * restart codes, in which case we need to restart it.  See do_signal()
-     * from linux/arch/x86/kernel/signal.c.
+     * from linux/arch/x86/kernel/signal.c.  The kernel just subtracts 2 from
+     * pc, which is the length of syscall, sysenter, and int $0x80.
      */
+    ASSERT(SYSCALL_LENGTH == 2 && INT_LENGTH == 2 && SYSENTER_LENGTH == 2);
     if (regs->REG_RETVAL_FIELD != regs->REG_ORIG_RETVAL_FIELD) {
         switch (regs->REG_RETVAL_FIELD) {
         case -ERESTARTNOHAND:
         case -ERESTARTSYS:
         case -ERESTARTNOINTR:
             mc->xax = regs->REG_ORIG_RETVAL_FIELD;
-            mc->pc -= 2;  /* 2 is the length of syscall and int $0x80. */
+            mc->pc -= SYSCALL_LENGTH;
             break;
 
         case -ERESTART_RESTARTBLOCK:
             /* FIXME: Untested. */
             mc->xax = SYS_restart_syscall;
-            mc->pc -= 2;
+            mc->pc -= SYSCALL_LENGTH;
             break;
         }
     }
@@ -1245,24 +1253,24 @@ detach_and_exec_gdb(process_id_t pid, const char *library_path)
 /* Returns zero on success and an errno on failure.  On successful attach, the
  * process is alive and stopped, so we can examine it without races.
  */
-int
+static int
 ptrace_attach(process_id_t pid)
 {
     /* Attach to the process in question. */
-    long r = our_ptrace(PTRACE_ATTACH, pid, NULL, NULL);
-    if (r < 0) {
+    long res = our_ptrace(PTRACE_ATTACH, pid, NULL, NULL);
+    if (res < 0) {
         if (verbose) {
             fprintf(stderr, "PTRACE_ATTACH failed with error: %s\n",
-                    strerror(-r));
+                    strerror(-res));
         }
-        return -r;
+        return -res;
     }
     if (!wait_until_signal(pid, SIGSTOP))
         return EINVAL;  /* Made up failure. */
     return 0;
 }
 
-bool
+static bool
 inject_ptrace(dr_inject_info_t *info, const char *library_path)
 {
     long r;

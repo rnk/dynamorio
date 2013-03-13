@@ -116,7 +116,7 @@ dr_inject_prepare_to_exec(const char *app_name, const char **app_cmdline,
 
 DR_EXPORT
 /**
- * Use the ptrace system call to inject into the targetted process.  Must be
+ * Use the ptrace system call to inject into the targeted process.  Must be
  * called before dr_inject_process_inject().  Does not work with
  * dr_inject_prepare_to_exec().
  *
@@ -125,9 +125,9 @@ DR_EXPORT
  *
  * Once in the injectee, DynamoRIO searches the $HOME directory of the user of
  * the injector, not the user of the injectee.  Normal usage of drconfig and
- * drinjectlib will ensure that DynamoRIO finds the right config files, however
- * users that wish to examine config files need to check the home directory of
- * the injector's user.
+ * drinjectlib will ensure that DynamoRIO finds the right config files.
+ * However, users that wish to examine config files need to check the home
+ * directory of the injector's user.
  *
  * \warning ptrace injection is still experimental and subject to change.
  *
@@ -140,7 +140,7 @@ dr_inject_prepare_to_ptrace(void *data);
 
 DR_EXPORT
 /**
- * Use the ptrace system call to inject into the targetted process.  Must be
+ * Use the ptrace system call to inject into the targeted process.  Must be
  * called before dr_inject_process_inject().  Does not work with
  * dr_inject_prepare_to_exec().
  *
@@ -157,9 +157,9 @@ DR_EXPORT
  *
  * \param[in]   pid           Id of the process to target.
  *
- * \param[out]  data           An opaque pointer that should be passed to
- *                             subsequent dr_inject_* routines to refer to
- *                             this process.
+ * \param[out]  data          An opaque pointer that should be passed to
+ *                            subsequent dr_inject_* routines to refer to
+ *                            this process.
  *
  * \return  Returns 0 on success.  On failure, returns a system error code.
  *          Regardless of success, caller must call dr_inject_process_exit()
@@ -188,18 +188,18 @@ dr_inject_prepare_new_process_group(void *data);
 
 DR_EXPORT
 /**
- * Injects DynamoRIO into the targetted process.
+ * Injects DynamoRIO into the targeted process.
  *
- * \param[in]   data           Pointer returned by dr_inject_process_create(),
- *                             dr_inject_prepare_to_exec(), or
- *                             dr_inject_attach_to_pid().
+ * \param[in]   data             Pointer returned by dr_inject_process_create(),
+ *                               dr_inject_prepare_to_exec(), or
+ *                               dr_inject_attach_to_pid().
  *
  * \param[in]   force_injection  Requests injection even if the process is
  *                               configured to not be run under DynamoRIO.
  *
- * \param[in]   library_path    The path to the DynamoRIO library to use.  If
- *                              NULL, the library that the target process is
- *                              configured for will be used.
+ * \param[in]   library_path     The path to the DynamoRIO library to use.  If
+ *                               NULL, the library that the target process is
+ *                               configured for will be used.
  *
  * \return  Whether successful.
  */
