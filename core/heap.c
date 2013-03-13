@@ -1277,11 +1277,12 @@ vmm_heap_init()
                                      get_allocation_size(get_dynamorio_dll_start(), NULL));
     /* i#774, i#901: we do not need to be near ntdll.dll */
 # else /* LINUX */
-    /* i#719: On Linux, we don't actually require that DR be reachable from the
-     * heap.  We still set a preferred base in the low 2 GB so that we can use
-     * direct ctis when possible.  When DR is unreachable from the heap, we fall
-     * back to indirecting through memory or a register.
-     */
+    /* FIXME - On Linux we compile core with -fpic and samples Makefile uses it as
+     * well (comments suggest problems if we don't).  But without our own loader
+     * that means we can't control where the libraries are loaded.  For now we count
+     * on a good choice of vm_base.  See PR 253624. */
+    //request_region_be_heap_reachable(get_dynamorio_dll_start(),
+                                     //get_dynamorio_dll_end() - get_dynamorio_dll_start());
 # endif
 #endif /* X64 */
     

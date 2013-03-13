@@ -4913,7 +4913,8 @@ set_selfmod_sandbox_offsets(dcontext_t *dcontext)
 #endif
     instrlist_t ilist;
     patch_list_t patch;
-    static byte buf[256];
+    int buf_sz = 256;
+    app_pc buf = heap_alloc(dcontext, buf_sz HEAPACCT(ACCT_OTHER));
     uint len;
     /* We assume this is called at init, when .data is +w and we need no
      * synch on accessing buf */
@@ -4929,8 +4930,7 @@ set_selfmod_sandbox_offsets(dcontext_t *dcontext)
                 /* sandbox_top_of_bb assumes there's an instr there */
                 instrlist_append(&ilist, INSTR_CREATE_label(dcontext));
                 init_patch_list(&patch, PATCH_TYPE_ABSOLUTE);
-                /* Use something reachable from buf for x64. */
-                app_start = buf;
+                app_start = IF_X64_ELSE(selfmod_gt4G[k], NULL);
                 sandbox_top_of_bb(dcontext, &ilist,
                                   selfmod_s2ro[i], selfmod_eflags[j],
                                   /* we must have a >1-byte region to get
@@ -4938,7 +4938,7 @@ set_selfmod_sandbox_offsets(dcontext_t *dcontext)
                                   app_start, app_start + 2, false,
                                   &patch, &start_pc, &end_pc);
                 len = encode_with_patch_list(dcontext, &patch, &ilist, buf);
-                ASSERT(len < BUFFER_SIZE_BYTES(buf));
+                ASSERT(len < buf_sz);
                 IF_X64(ASSERT(CHECK_TRUNCATE_TYPE_uint(start_pc - buf)));
                 selfmod_copy_start_offs[i][j]IF_X64([k]) = (uint) (start_pc - buf);
                 IF_X64(ASSERT(CHECK_TRUNCATE_TYPE_uint(end_pc - buf)));
@@ -4954,6 +4954,7 @@ set_selfmod_sandbox_offsets(dcontext_t *dcontext)
 #endif
         }
     }
+    heap_free(dcontext, buf, buf_sz HEAPACCT(ACCT_OTHER));
 }
 
 void
