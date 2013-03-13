@@ -1,5 +1,5 @@
 /* **********************************************************
- * Copyright (c) 2011-2012 Google, Inc.  All rights reserved.
+ * Copyright (c) 2011-2013 Google, Inc.  All rights reserved.
  * Copyright (c) 2000-2010 VMware, Inc.  All rights reserved.
  * **********************************************************/
 
@@ -623,6 +623,18 @@ typedef struct try_except_context_t {
     struct try_except_context_t *prev_context;
 } try_except_context_t;
 
+/* We do support TRY pre-dynamo_initialized via this global struct.
+ * This, along with safe_read pc ranges, satisfies most TRY uses that
+ * don't have a dcontext (i#350).
+ */
+typedef struct _try_except_t {
+    try_except_context_t *try_except_state; /* for TRY/EXCEPT/FINALLY */
+    bool unwinding_exception;   /* NYI support for TRY/FINALLY - 
+                                 * marks exception until an EXCEPT handles */
+} try_except_t;
+
+extern try_except_t global_try_except;
+
 typedef struct {
     /* WARNING: if you change the offsets of any of these fields, 
      * you must also change the offsets in <arch>/<arch.s> 
@@ -706,6 +718,9 @@ struct _dcontext_t {
     void *         priv_nt_rpc;
     void *         app_nls_cache;
     void *         priv_nls_cache;
+#  ifdef X64
+    void *         app_stack_limit;
+#  endif
     /* we need this to restore ptrs for other threads on detach */
     byte *         teb_base;
 # endif
@@ -897,9 +912,7 @@ struct _dcontext_t {
     bool           nudge_thread;    /* True only if this is a nudge thread. */
     dr_jmp_buf_t   hotp_excpt_state;    /* To handle hot patch exceptions. */
 #endif
-    try_except_context_t *try_except_state; /* for TRY/EXCEPT/FINALLY */
-    bool unwinding_exception;   /* NYI support for TRY/FINALLY - 
-                                 * marks exception until an EXCEPT handles */
+    try_except_t   try_except; /* for TRY/EXCEPT/FINALLY */
     
 #ifdef WINDOWS                    
     /* for ASLR_SHARED_CONTENT, note per callback, not per thread to

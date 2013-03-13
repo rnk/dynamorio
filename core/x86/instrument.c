@@ -1103,18 +1103,8 @@ dr_nudge_client(client_id_t client_id, uint64 argument)
 }
 
 void
-instrument_thread_init(dcontext_t *dcontext, bool client_thread, bool valid_mc)
+instrument_client_thread_init(dcontext_t *dcontext, bool client_thread)
 {
-#if defined(CLIENT_INTERFACE) && defined(WINDOWS)
-    bool swap_peb = false;
-#endif
-
-    /* Note that we're called twice for the initial thread: once prior
-     * to instrument_init() (PR 216936) to set up the dcontext client
-     * field (at which point there should be no callbacks since client
-     * has not had a chance to register any), and once after
-     * instrument_init() to call the client event.
-     */
     if (dcontext->client_data == NULL) {
         dcontext->client_data = HEAP_TYPE_ALLOC(dcontext, client_data_t,
                                                 ACCT_OTHER, UNPROTECTED);
@@ -1134,10 +1124,28 @@ instrument_thread_init(dcontext_t *dcontext, bool client_thread, bool valid_mc)
         /* We don't call dynamo_thread_not_under_dynamo() b/c we want itimers. */
         dcontext->thread_record->under_dynamo_control = false;
         dcontext->client_data->is_client_thread = true;
+    }
+#endif /* CLIENT_SIDELINE */
+}
+
+void
+instrument_thread_init(dcontext_t *dcontext, bool client_thread, bool valid_mc)
+{
+    /* Note that we're called twice for the initial thread: once prior
+     * to instrument_init() (PR 216936) to set up the dcontext client
+     * field (at which point there should be no callbacks since client
+     * has not had a chance to register any) (now split out, but both
+     * routines are called prior to instrument_init()), and once after
+     * instrument_init() to call the client event.
+     */
+#if defined(CLIENT_INTERFACE) && defined(WINDOWS)
+    bool swap_peb = false;
+#endif
+
+    if (client_thread) {
         /* no init event */
         return;
     }
-#endif /* CLIENT_SIDELINE */
 
 #if defined(CLIENT_INTERFACE) && defined(WINDOWS)
     /* i#996: we might be in app's state.
@@ -2644,8 +2652,8 @@ dr_try_setup(void *drcontext, void **try_cxt)
     try_state = (try_except_context_t *)
         HEAP_TYPE_ALLOC(dcontext, try_except_context_t, ACCT_CLIENT, PROTECTED);
     *try_cxt = try_state;
-    try_state->prev_context = dcontext->try_except_state;
-    dcontext->try_except_state = try_state;
+    try_state->prev_context = dcontext->try_except.try_except_state;
+    dcontext->try_except.try_except_state = try_state;
 }
 
 /* dr_try_start() is in x86.asm since we can't have an extra frame that's
@@ -2661,7 +2669,7 @@ dr_try_stop(void *drcontext, void *try_cxt)
     CLIENT_ASSERT(!standalone_library, "API not supported in standalone mode");
     ASSERT(dcontext != NULL && dcontext == get_thread_private_dcontext());
     ASSERT(try_state != NULL);
-    POP_TRY_BLOCK(dcontext, *try_state); 
+    POP_TRY_BLOCK(&dcontext->try_except, *try_state);
     HEAP_TYPE_FREE(dcontext, try_state, try_except_context_t, ACCT_CLIENT, PROTECTED);
 }
 
@@ -6434,4 +6442,32 @@ dr_unregister_persist_patch(bool (*func_patch)(void *drcontext, void *perscxt,
     return remove_callback(&persist_patch_callbacks, (void (*)(void))func_patch, true);
 }
 
+DR_API
+/* Create instructions for storing pointer-size integer val to dst,
+ * and then insert them into ilist prior to where. 
+ * The created instructions are returned in first and second.
+ */
+void
+instrlist_insert_mov_immed_ptrsz(void *drcontext, ptr_int_t val, opnd_t dst,
+                                 instrlist_t *ilist, instr_t *where,
+                                 instr_t **first OUT, instr_t **second OUT)
+{
+    CLIENT_ASSERT(opnd_get_size(dst) == OPSZ_PTR, "wrong dst size");
+    insert_mov_immed_ptrsz((dcontext_t *)drcontext, val, dst,
+                           ilist, where, first, second);
+}
+
+DR_API
+/* Create instructions for pushing pointer-size integer val on the stack,
+ * and then insert them into ilist prior to where. 
+ * The created instructions are returned in first and second.
+ */
+void
+instrlist_insert_push_immed_ptrsz(void *drcontext, ptr_int_t val,
+                                  instrlist_t *ilist, instr_t *where,
+                                  instr_t **first OUT, instr_t **second OUT)
+{
+    insert_push_immed_ptrsz((dcontext_t *)drcontext, ilist, where,
+                            val, first, second);
+}
 #endif /* CLIENT_INTERFACE */

@@ -1443,6 +1443,7 @@ bool get_client_bounds(client_id_t client_id,
                        app_pc *start/*OUT*/, app_pc *end/*OUT*/);
 const char *get_client_path_from_addr(app_pc addr);
 bool is_valid_client_id(client_id_t id);
+void instrument_client_thread_init(dcontext_t *dcontext, bool client_thread);
 void instrument_thread_init(dcontext_t *dcontext, bool client_thread, bool valid_mc);
 void instrument_thread_exit_event(dcontext_t *dcontext);
 void instrument_thread_exit(dcontext_t *dcontext);
@@ -5227,5 +5228,29 @@ bool
 dr_unregister_persist_patch(bool (*func_patch)(void *drcontext, void *perscxt,
                                                byte *bb_start, size_t bb_size,
                                                void *user_data));
+
+DR_API
+/**
+ * Create instructions for storing pointer-size integer \p val to \p dst,
+ * and then insert them into \p ilist prior to \p where. 
+ * The created instructions are returned in \p first and \p second.
+ * Note that \p second may return NULL if only one instruction is created.
+ */
+void
+instrlist_insert_mov_immed_ptrsz(void *drcontext, ptr_int_t val, opnd_t dst,
+                                 instrlist_t *ilist, instr_t *where,
+                                 instr_t **first OUT, instr_t **second OUT);
+
+DR_API
+/**
+ * Create instructions for pushing pointer-size integer \p val on the stack,
+ * and then insert them into \p ilist prior to \p where. 
+ * The created instructions are returned in \p first and \p second.
+ * Note that \p second may return NULL if only one instruction is created.
+ */
+void
+instrlist_insert_push_immed_ptrsz(void *drcontext, ptr_int_t val,
+                                  instrlist_t *ilist, instr_t *where,
+                                  instr_t **first OUT, instr_t **second OUT);
 
 #endif /* _INSTRUMENT_H_ */

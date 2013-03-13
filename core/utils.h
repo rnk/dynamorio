@@ -382,6 +382,18 @@ enum {
     LOCK_RANK(coarse_info_lock), /* < special_heap_lock, < global_alloc_lock,
                                   * > change_linking_lock */
 
+    LOCK_RANK(executable_areas), /* < dynamo_areas < global_alloc_lock
+                                  * < process_module_vector_lock (diagnostics)
+                                  */
+    LOCK_RANK(module_data_lock),  /* < loaded_module_areas, < special_heap_lock,
+                                   * > executable_areas */
+    LOCK_RANK(special_units_list_lock), /* < special_heap_lock */
+    LOCK_RANK(special_heap_lock), /* > bb_building_lock, > hotp_vul_table_lock
+                                   * < dynamo_areas, < heap_unit_lock */
+    LOCK_RANK(coarse_info_incoming_lock), /* < coarse_table_rwlock
+                                           * > special_heap_lock, > coarse_info_lock,
+                                           * > change_linking_lock */
+
     /* (We don't technically need a coarse_table_rwlock separate from table_rwlock
      * anymore but having it gives us flexibility so I'm leaving it)
      */
@@ -392,16 +404,6 @@ enum {
     /* We make the th table separate (we look in it while holding master table lock) */
     LOCK_RANK(coarse_th_table_rwlock), /* < global_alloc_lock */
 
-    LOCK_RANK(executable_areas), /* < dynamo_areas < global_alloc_lock
-                                  * < process_module_vector_lock (diagnostics)
-                                  */
-    LOCK_RANK(module_data_lock),  /* < loaded_module_areas, < special_heap_lock,
-                                   * > executable_areas */
-    LOCK_RANK(special_units_list_lock), /* < special_heap_lock */
-    LOCK_RANK(special_heap_lock), /* > bb_building_lock, > hotp_vul_table_lock
-                                   * < dynamo_areas, < heap_unit_lock */
-    LOCK_RANK(coarse_info_incoming_lock), /* > special_heap_lock, > coarse_info_lock,
-                                           * > change_linking_lock */
 #ifdef RCT_IND_BRANCH
     LOCK_RANK(rct_module_lock), /* > coarse_info_lock, > executable_areas,
                                  * < heap allocation */
@@ -1234,40 +1236,67 @@ extern mutex_t do_threshold_mutex;
  * Note no locks should be grabbed within a TRY/EXCEPT block (FIXME:
  * until we have FINALLY support to release them).
  *
- * FIXME PR 529066: allow safe_read to work w/o a dcontext
- *
  * (tip: compile your TRY blocks first outside of this macro for
  * easier line matching and debugging)
  */
-
-#define TRY_EXCEPT_ALLOW_NO_DCONTEXT(dcontext, try_statement, except_statement) do { \
-    if ((dcontext) != NULL && (dcontext) != GLOBAL_DCONTEXT) {                       \
-        TRY(dcontext, try_statement, EXCEPT(dcontext, except_statement));            \
-    } else {                                                                         \
-        try_statement;                                                               \
-    }                                                                                \
+/* This form allows GLOBAL_DCONTEXT or NULL dcontext if !dynamo_initialized.
+ * In release build we'll run w/o crashing if dcontext is NULL and we're
+ * post-dynamo_initialized and so can't use global_try_except w/o a race,
+ * but we don't want to do this and we assert on it.  It should only
+ * happen during late thread exit and currently there are no instances of it.
+ */
+#define TRY_EXCEPT_ALLOW_NO_DCONTEXT(dcontext, try_statement, except_statement) do {  \
+    try_except_t *try__except = NULL;                                                 \
+    dcontext_t *dc__local = dcontext;                                                 \
+    if ((dc__local == NULL || dc__local == GLOBAL_DCONTEXT) && !dynamo_initialized) { \
+        try__except = &global_try_except;                                             \
+    } else {                                                                          \
+        if (dc__local == GLOBAL_DCONTEXT)                                             \
+            dc__local = get_thread_private_dcontext();                                \
+        if (dc__local != NULL)                                                        \
+            try__except = &dc__local->try_except;                                     \
+    }                                                                                 \
+    ASSERT(try__except != NULL);                                                      \
+    TRY(try__except, try_statement,                                                   \
+        EXCEPT(try__except, except_statement));                                       \
 } while (0)
 
-#define TRY_EXCEPT(dcontext, try_statement, except_statement)           \
-    TRY(dcontext, try_statement, EXCEPT(dcontext, except_statement))
+/* these use do..while w/ a local to avoid double-eval of dcontext */
+#define TRY_EXCEPT(dcontext, try_statement, except_statement) do {          \
+    try_except_t *try__except = &(dcontext)->try_except;                    \
+    ASSERT((dcontext) != NULL && (dcontext) != GLOBAL_DCONTEXT);             \
+    TRY(try__except, try_statement, EXCEPT(try__except, except_statement)); \
+} while (0)
 
-#define TRY_FINALLY(dcontext, try_statement, finally_statement)         \
-    TRY(dcontext, try_statement, FINALLY(dcontext, except_statement))
+#define TRY_FINALLY(dcontext, try_statement, finally_statement) do {         \
+    try_except_t *try__except = &(dcontext)->try_except;                     \
+    ASSERT((dcontext) != NULL && (dcontext) != GLOBAL_DCONTEXT);             \
+    TRY(try__except, try_statement, FINALLY(try__except, except_statement)); \
+} while (0)
 
 /* internal versions */
-#define TRY(cur_dcontext, try_statement, except_or_finally) do {        \
-    try_except_context_t try__state;                                    \
-    /* must be current thread -> where we'll fault */                   \
-    ASSERT(cur_dcontext == get_thread_private_dcontext());              \
-    try__state.prev_context = cur_dcontext->try_except_state;           \
-    cur_dcontext->try_except_state = &try__state;                       \
-    if (DR_SETJMP(&try__state.context) == 0) {  /* TRY block */         \
-        try_statement                                                   \
-        /* make sure there is no return in try_statement */             \
-        POP_TRY_BLOCK(cur_dcontext, try__state);                        \
-    }                                                                   \
-    except_or_finally                                                   \
-    /* EXCEPT or FINALLY will POP_TRY_BLOCK on exception */             \
+#define TRY(try_pointer, try_statement, except_or_finally) do {          \
+    try_except_context_t try__state;                                     \
+    /* must be current thread -> where we'll fault */                    \
+    /* We allow NULL solely to avoid duplicating try_statement in        \
+     * TRY_EXCEPT_ALLOW_NO_DCONTEXT.                                     \
+     */                                                                  \
+    ASSERT((try_pointer) == &global_try_except ||                        \
+           (try_pointer) == NULL ||                                      \
+           (try_pointer) == &get_thread_private_dcontext()->try_except); \
+    if ((try_pointer) != NULL) {                                         \
+        try__state.prev_context = (try_pointer)->try_except_state;       \
+        (try_pointer)->try_except_state = &try__state;                   \
+    }                                                                    \
+    if ((try_pointer) == NULL || DR_SETJMP(&try__state.context) == 0) {  \
+        try_statement    /* TRY block */                                 \
+        /* make sure there is no return in try_statement */              \
+        if ((try_pointer) != NULL) {                                     \
+            POP_TRY_BLOCK(try_pointer, try__state);                      \
+        }                                                                \
+    }                                                                    \
+    except_or_finally                                                    \
+    /* EXCEPT or FINALLY will POP_TRY_BLOCK on exception */              \
 } while (0)
 
 /* implementation notes: */
@@ -1296,10 +1325,10 @@ extern mutex_t do_threshold_mutex;
  */
 
 /* Only called within a TRY block that contains the proper try__state */
-#define EXCEPT(cur_dcontext, statement) else { /* EXCEPT */             \
+#define EXCEPT(try_pointer, statement) else { /* EXCEPT */              \
         /* a failure in the EXCEPT should be thrown higher up */        \
         /* rollback first */                                            \
-        POP_TRY_BLOCK(cur_dcontext, try__state);                        \
+        POP_TRY_BLOCK(try_pointer, try__state);                         \
         statement;                                                      \
         /* FIXME: stop unwinding */                                     \
     }
@@ -1312,9 +1341,10 @@ extern mutex_t do_threshold_mutex;
  */
 /* Only called within a TRY block */
 /* NYI */
-#define FINALLY(cur_dcontext, statement) /* ALWAYS */ {                 \
+#define FINALLY(try_pointer, statement) /* ALWAYS */ {                  \
         ASSERT_NOT_IMPLEMENTED(false);                                  \
-        if (cur_dcontext->unwinding_exception) {                        \
+        ASSERT((try_pointer) != NULL);                                  \
+        if ((try_pointer)->unwinding_exception) {                       \
             /* only on exception we have to POP here */                 \
             /* normal execution would have already POPped */            \
                                                                         \
@@ -1322,13 +1352,13 @@ extern mutex_t do_threshold_mutex;
             /* so an exception in it is delivered to the */             \
             /* previous handler */                                      \
             /* only parent TRY block has proper try__state */           \
-            POP_TRY_BLOCK(cur_dcontext, try__state);                    \
+            POP_TRY_BLOCK(try_pointer, try__state);                     \
         }                                                               \
-        ASSERT(cur_dcontext->try_except_state != NULL                   \
+        ASSERT((try_pointer)->try_except_state != NULL                  \
                && "try/finally should be nested in try/except");        \
         /* executed for both normal execution, or exception */          \
         statement;                                                      \
-        if (cur_dcontext->unwinding_exception) {                        \
+        if ((try_pointer)->unwinding_exception) {                       \
            /* FIXME: on nested exception must keep UNWINDing */         \
            /* and give control to the previous nested handler */        \
            /* until an EXCEPT handler resumes to normal execution */    \
@@ -1338,10 +1368,11 @@ extern mutex_t do_threshold_mutex;
     }
 
 /* internal helper */
-#define POP_TRY_BLOCK(cur_dcontext, state)                          \
-        ASSERT(cur_dcontext->try_except_state == &(state));         \
-        cur_dcontext->try_except_state =                            \
-                  cur_dcontext->try_except_state->prev_context;
+#define POP_TRY_BLOCK(try_pointer, state)                          \
+        ASSERT((try_pointer) != NULL);                             \
+        ASSERT((try_pointer)->try_except_state == &(state));       \
+        (try_pointer)->try_except_state =                          \
+            (try_pointer)->try_except_state->prev_context;
 
 enum {LONGJMP_EXCEPTION = 1};
 /* the return value of setjmp() returned on exception (or unwinding) */
