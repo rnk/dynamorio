@@ -65,8 +65,8 @@
 #define HEAP_LEAKSTACKS
 
 #ifdef HEAP_LEAKSTACKS
-# if !defined(LINUX) || !defined(DEBUG_MEMORY)
-#  error "HEAP_LEAKSTACKS is Linux only and requires DEBUG_MEMORY"
+# if !defined(DEBUG_MEMORY)
+#  error "HEAP_LEAKSTACKS requires DEBUG_MEMORY"
 # endif
 /* Max frames to unwind.  We don't need many for our use case. */
 # define MAX_LEAKSTACK 12

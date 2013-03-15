@@ -4491,9 +4491,11 @@ our_backtrace(void **buf, size_t max_frames)
     /* Can't use TRY_EXCEPT directly, dcontext could be NULL. */
     dcontext_t *dcontext = get_thread_private_dcontext();
     frame_base_t frame;
-    ssize_t frames_read = 0;
+    size_t frames_read = 0;
+    app_pc our_ebp;
     frame.ret_addr = NULL;
-    GET_FRAME_PTR(frame.parent);
+    GET_FRAME_PTR(our_ebp);
+    frame.parent = (frame_base_t *)our_ebp;
     while (dcontext != NULL && frame.parent != NULL &&
            frames_read < max_frames &&
            is_on_dstack(dcontext, (byte*)frame.parent) &&
