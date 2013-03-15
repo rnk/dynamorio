@@ -1,4 +1,5 @@
 /* **********************************************************
+ * Copyright (c) 2012 Google, Inc.  All rights reserved.
  * Copyright (c) 2007-2010 VMware, Inc.  All rights reserved.
  * **********************************************************/
 
@@ -54,14 +55,13 @@ void test_sse3(char *buf);
 void test_3dnow(char *buf);
 void test_far_cti(void);
 void test_data16_mbr(void);
+void test_rip_rel_ind(void);
 
-jmp_buf mark;
+SIGJMP_BUF mark;
 static int count = 0;
 static bool print_access_vio = true;
 
-/* just use single-arg handlers */
-typedef void (*handler_t)(int);
-typedef void (*handler_3_t)(int, struct siginfo *, void *);
+void (*func_ptr)(void);
 
 #ifdef USE_DYNAMO
 #include "dynamorio.h"
@@ -76,52 +76,27 @@ static int a[ITERS];
 #ifdef LINUX
 # define ALT_STACK_SIZE  (SIGSTKSZ*3)
 
+int
+my_setjmp(sigjmp_buf env)
+{
+    return SIGSETJMP(env);
+}
+
 static void
 signal_handler(int sig)
 {
     if (sig == SIGILL) {
         count++;
         print("Bad instruction, instance %d\n", count);
-        longjmp(mark, count);
+        SIGLONGJMP(mark, count);
     } else if (sig == SIGSEGV) {
         count++;
         if (print_access_vio)
             print("Access violation, instance %d\n", count);
-        longjmp(mark, count);
+        SIGLONGJMP(mark, count);
     }
     exit(-1);
 }
-
-#define ASSERT_NOERR(rc) do {                                   \
-  if (rc) {                                                     \
-     fprintf(stderr, "%s:%d rc=%d errno=%d %s\n",               \
-             __FILE__, __LINE__,                                \
-             rc, errno, strerror(errno));                       \
-  }                                                             \
-} while (0);
-
-/* set up signal_handler as the handler for signal "sig" */
-static void
-intercept_signal(int sig, handler_t handler)
-{
-    int rc;
-    struct sigaction act;
-
-    act.sa_sigaction = (handler_3_t) handler;
-    /* FIXME: due to DR bug 840 we cannot block ourself in the handler
-     * since the handler does not end in a sigreturn, so we have an empty mask
-     * and we use SA_NOMASK
-     */
-    rc = sigemptyset(&act.sa_mask); /* block no signals within handler */
-    ASSERT_NOERR(rc);
-    /* FIXME: due to DR bug #654 we use SA_SIGINFO -- change it once DR works */
-    act.sa_flags = SA_NOMASK | SA_SIGINFO | SA_ONSTACK;
-    
-    /* arm the signal */
-    rc = sigaction(sig, &act, NULL);
-    ASSERT_NOERR(rc);
-}
-
 #else
 /* sort of a hack to avoid the MessageBox of the unhandled exception spoiling
  * our batch runs
@@ -156,6 +131,12 @@ our_top_handler(struct _EXCEPTION_POINTERS * pExceptionInfo)
 }
 #endif
 
+static void
+actual_call_target(void)
+{
+    print("Made it to actual_call_target\n");
+}
+
 int main(int argc, char *argv[])
 {
     double res = 0.;
@@ -180,8 +161,8 @@ int main(int argc, char *argv[])
     sigstack.ss_flags = SS_ONSTACK;
     i = sigaltstack(&sigstack, NULL);
     assert(i == 0);
-    intercept_signal(SIGILL, signal_handler);
-    intercept_signal(SIGSEGV, signal_handler);
+    intercept_signal(SIGILL, (handler_3_t) signal_handler, true);
+    intercept_signal(SIGSEGV, (handler_3_t) signal_handler, true);
 #else
     SetUnhandledExceptionFilter((LPTOP_LEVEL_EXCEPTION_FILTER) our_top_handler);
 #endif
@@ -226,7 +207,7 @@ int main(int argc, char *argv[])
     buf[256*7] = 0xcc;
     print_access_vio = false;
     for (j=0; j<256; j++) {
-        i = setjmp(mark);
+        i = SIGSETJMP(mark);
         if (i == 0)
             test_modrm16(&buf[j*7]);
         else
@@ -238,7 +219,7 @@ int main(int argc, char *argv[])
 #endif /* !X64 */
 
     /* multi-byte nop tests (case 9862) */
-    i = setjmp(mark);
+    i = SIGSETJMP(mark);
     if (i == 0) {
         print("Testing nops\n");
         test_nops();
@@ -252,7 +233,7 @@ int main(int argc, char *argv[])
      */
 
     /* SSE3 tests: mostly w/ modrm of (%edx) */
-    i = setjmp(mark);
+    i = SIGSETJMP(mark);
     if (i == 0) {
         print("Testing SSE3\n");
         test_sse3(buf);
@@ -260,7 +241,7 @@ int main(int argc, char *argv[])
     }
 
     /* 3D-Now tests: mostly w/ modrm of (%ebx) */
-    i = setjmp(mark);
+    i = SIGSETJMP(mark);
     if (i == 0) {
         print("Testing 3D-Now\n");
         test_3dnow(buf);
@@ -275,9 +256,16 @@ int main(int argc, char *argv[])
     print("Testing far call/jmp\n");
     test_far_cti();
 
+#ifdef WINDOWS /* FIXME i#105: crashing on Linux so disabling for now */
     /* PR 242815: data16 mbr */
     print("Testing data16 mbr\n");
     test_data16_mbr();
+#endif
+
+    /* i#1024: rip-rel ind branch */
+    print("Testing rip-rel ind branch\n");
+    func_ptr = actual_call_target;
+    test_rip_rel_ind();
 
 #ifdef LINUX
     free(sigstack.ss_sp);
@@ -425,10 +413,10 @@ DECL_EXTERN(_setjmp3)
         CALLC2(_setjmp3, REG_XAX, 0)
 # endif
 #else
-DECL_EXTERN(setjmp)
+DECL_EXTERN(my_setjmp)
 # define CALL_SETJMP \
         lea   REG_XAX, mark @N@\
-        CALLC1(setjmp, REG_XAX)
+        CALLC1(my_setjmp, REG_XAX)
 #endif
 
 /* FIXME PR 271834: we need some far ctis that actually succeed, to fully test
@@ -618,6 +606,18 @@ GLOBAL_LABEL(FUNCNAME:)
         RAW(00) RAW(00) RAW(00) RAW(00)
     test_data16_mbr_10:
         add      REG_XSP, ARG_SZ /* make a legal SEH64 epilog, and clean up push */
+        ret
+        END_FUNC(FUNCNAME)
+
+DECL_EXTERN(func_ptr)
+
+#undef FUNCNAME
+#define FUNCNAME test_rip_rel_ind
+        DECLARE_FUNC_SEH(FUNCNAME)
+GLOBAL_LABEL(FUNCNAME:)
+        END_PROLOG
+        CALL_SETJMP
+        call     PTRSZ SYMREF(func_ptr)
         ret
         END_FUNC(FUNCNAME)
 

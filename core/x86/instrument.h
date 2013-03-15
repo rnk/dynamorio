@@ -1,5 +1,5 @@
 /* **********************************************************
- * Copyright (c) 2010-2012 Google, Inc.  All rights reserved.
+ * Copyright (c) 2010-2013 Google, Inc.  All rights reserved.
  * Copyright (c) 2002-2010 VMware, Inc.  All rights reserved.
  * **********************************************************/
 
@@ -129,6 +129,16 @@ typedef enum {
      * easily persisting it.
      */
     DR_EMIT_PERSISTABLE          = 0x02,
+    /** 
+     * Only valid when applied to a basic block.  Indicates that the
+     * block must terminate a trace.  Normally this should be set when
+     * an abnormal exit is used from the block that is incompatible with
+     * trace building's attempt to inline the continuation from the block
+     * to its successor.  Note that invoking dr_redirect_execution() from a
+     * clean call called from a block aborts trace building and thus this
+     * flag need not be set for that scenario.
+     */
+    DR_EMIT_MUST_END_TRACE       = 0x04,
 } dr_emit_flags_t;
 /* DR_API EXPORT END */
 
@@ -177,9 +187,15 @@ DR_API
  * executes, but must adhere to the following restrictions:
  * - If there is more than one non-meta branch, only the last can be
  * conditional.
- * - A non-meta conditional branch or direct call must be the final
+ * - A non-meta conditional branch must be the final
  * instruction in the block.
+ * - A non-meta direct call must be the final
+ * instruction in the block unless it is inserted by DR for elision and the
+ * subsequent instructions are the callee.
  * - There can only be one indirect branch (call, jump, or return) in
+ * a basic block, and it must be the final instruction in the
+ * block.
+ * - There can only be one far branch (call, jump, or return) in
  * a basic block, and it must be the final instruction in the
  * block.
  * - The exit control-flow of a block ending in a system call or
@@ -284,7 +300,9 @@ DR_API
  * some applications may see a performance degradation.  Applications making
  * heavy use of system calls are the most likely to be affected.
  * Future releases may allow clients some control over performance versus
- * visibility.
+ * visibility.  The \ref op_speed "-opt_speed" option can regain some
+ * of this performance at the cost of more complex basic blocks that
+ * cross control transfers.
  *
  * \note If multiple clients are present, the instruction list for a
  * basic block passed to earlier-registered clients will contain the
@@ -371,13 +389,18 @@ DR_API
  *
  * \return a #dr_emit_flags_t flag.
  *
- * The user is free to inspect and modify the trace before it
- * executes, with certain restrictions on introducing control-flow
+ * The user is free to inspect and modify the non-control-flow
+ * instructions in the trace before it
+ * executes, with certain restrictions
  * that include those for basic blocks (see dr_register_bb_event()).
  * Additional restrictions unique to traces also apply:
- * - Only one non-meta direct branch that targets the subsequent block
- *   in the trace can be present in each block.
- * - Each block must end with a non-meta control transfer.
+ * - The sequence of blocks composing the trace cannot be changed once
+ *   the trace is created.  Instead, modify the component blocks by
+ *   changing the block continuation addresses in the basic block callbacks
+ *   (called with \p for_trace set to true) as the trace is being built.
+ * - The (non-meta) control flow instruction (if any) terminating each
+ *   component block cannot be changed.
+ * - Non-meta control flow instructions cannot be added.
  * - The parameter to a system call, normally kept in the eax register, 
  *   cannot be changed.
  * - A system call or interrupt instruction cannot be added.
@@ -1420,6 +1443,7 @@ bool get_client_bounds(client_id_t client_id,
                        app_pc *start/*OUT*/, app_pc *end/*OUT*/);
 const char *get_client_path_from_addr(app_pc addr);
 bool is_valid_client_id(client_id_t id);
+void instrument_client_thread_init(dcontext_t *dcontext, bool client_thread);
 void instrument_thread_init(dcontext_t *dcontext, bool client_thread, bool valid_mc);
 void instrument_thread_exit_event(dcontext_t *dcontext);
 void instrument_thread_exit(dcontext_t *dcontext);
@@ -1468,6 +1492,9 @@ void instrument_security_violation(dcontext_t *dcontext, app_pc target_pc,
 #endif /* CLIENT_INTERFACE */
 bool dr_get_mcontext_priv(dcontext_t *dcontext, dr_mcontext_t *dmc, priv_mcontext_t *mc);
 #ifdef CLIENT_INTERFACE
+
+void instrument_client_lib_loaded(byte *start, byte *end);
+void instrument_client_lib_unloaded(byte *start, byte *end);
 
 bool dr_bb_hook_exists(void);
 bool dr_trace_hook_exists(void);
@@ -1552,7 +1579,7 @@ dr_standalone_init(void);
 /* DR_API EXPORT END */
 
 DR_API
-/** Returns true if all \DynamoRIO caches are thread private. */
+/** Returns true if all DynamoRIO caches are thread private. */
 bool
 dr_using_all_private_caches(void);
 
@@ -1568,6 +1595,31 @@ DR_API
  */
 const char *
 dr_get_options(client_id_t client_id);
+
+DR_API
+/**
+ * Read the value of a string DynamoRIO runtime option named \p option_name into
+ * \p buf.  Options are listed in \ref sec_options.  DynamoRIO has many other
+ * undocumented options which may be queried through this API, but they are not
+ * officially supported.  The option value is truncated to \p len bytes and
+ * null-terminated.
+ * \return false if no option named \p option_name exists, and true otherwise.
+ */
+bool
+dr_get_string_option(const char *option_name, char *buf OUT, size_t len);
+
+DR_API
+/**
+ * Read the value of an integer DynamoRIO runtime option named \p option_name
+ * into \p val.  This includes boolean options.  Options are listed in \ref
+ * sec_options.  DynamoRIO has many other undocumented options which may be
+ * queried through this API, but they are not officially supported.
+ * \warning Always pass a full uint64 for \p val even if the option is a smaller
+ * integer to avoid overwriting nearby data.
+ * \return false if no option named \p option_name exists, and true otherwise.
+ */
+bool
+dr_get_integer_option(const char *option_name, uint64 *val OUT);
 
 DR_API 
 /**
@@ -1612,6 +1664,7 @@ dr_get_parent_id(void);
 
 /** Windows versions */
 typedef enum {
+    DR_WINDOWS_VERSION_8     = 62,
     DR_WINDOWS_VERSION_7     = 61,
     DR_WINDOWS_VERSION_VISTA = 60,
     DR_WINDOWS_VERSION_2003  = 52, /**< 64-bit XP is this version as well */
@@ -1681,9 +1734,12 @@ dr_get_time(dr_time_t *time);
 
 DR_API
 /**
- * On Linux, returns the number of milliseconds since the Epoch (Jan 1, 1970).
- * On Windows, returns the number of milliseconds since Jan 1, 1600 (this is
+ * Returns the number of milliseconds since Jan 1, 1601 (this is
  * the current UTC time).
+ *
+ * \note This is the Windows standard.  UNIX time functions typically
+ * count from the Epoch (Jan 1, 1970).  The Epoch is 11644473600*1000
+ * milliseconds after Jan 1, 1601.
  */
 uint64
 dr_get_milliseconds(void);
@@ -1784,6 +1840,38 @@ DR_API
 void
 dr_nonheap_free(void *mem, size_t size);
 
+DR_API
+/**
+ * \warning This raw memory allocation interface is in flux and is subject to
+ * change in the next release.  Consider it experimental in this release.
+ *
+ * Allocates \p size bytes (page size aligned) of memory as a separate
+ * allocation at preferred base \p addr that must be page size aligned,
+ * allowing for separate protection.
+ * If \p addr is NULL, an arbitrary address is picked.
+ *
+ * The \p prot protection should use the DR_MEMPROT_READ,
+ * DR_MEMPROT_WRITE, and DR_MEMPROT_EXEC bits.
+ * The allocated memory is not considered to be DynamoRIO or tool memory and
+ * thus is not kept separate from the application. Use of this memory is at the
+ * client's own risk.
+ *
+ * Returns the actual address allocated or NULL if memory allocation at 
+ * preferred base fails.
+ */
+void *
+dr_raw_mem_alloc(size_t size, uint prot, void *addr);
+
+DR_API
+/**
+ * Frees memory allocated by dr_raw_mem_alloc().
+ * \p addr and \p size must be the same as that passed to dr_raw_mem_alloc()
+ * on Windows.
+ */
+void
+dr_raw_mem_free(void *addr, size_t size);
+
+
 #ifdef LINUX
 DR_API
 /** 
@@ -1870,6 +1958,10 @@ DR_API
  *
  * \note To examine only application memory, skip memory for which
  * dr_memory_is_dr_internal() or dr_memory_is_in_client() returns true.
+ *
+ * \note DR may mark writable code pages as read-only but pretend they're
+ * writable.  When this happens, it will include both #DR_MEMPROT_WRITE
+ * and #DR_MEMPROT_PRETEND_WRITE in \p prot.
  */
 bool
 dr_query_memory(const byte *pc, byte **base_pc, size_t *size, uint *prot);
@@ -1884,6 +1976,10 @@ DR_API
  *
  * \note To examine only application memory, skip memory for which
  * dr_memory_is_dr_internal() returns true.
+ *
+ * \note DR may mark writable code pages as read-only but pretend they're
+ * writable.  When this happens, it will include both #DR_MEMPROT_WRITE
+ * and #DR_MEMPROT_PRETEND_WRITE in \p info->prot.
  */
 bool
 dr_query_memory_ex(const byte *pc, OUT dr_mem_info_t *info);
@@ -1891,13 +1987,18 @@ dr_query_memory_ex(const byte *pc, OUT dr_mem_info_t *info);
 /* DR_API EXPORT BEGIN */
 #ifdef WINDOWS 
 /* DR_API EXPORT END */
-/* NOTE - see fixme for dr_query_memory - PR 198873. */
 DR_API
 /**
  * Equivalent to the win32 API function VirtualQuery().
  * See that routine for a description of
  * arguments and return values.  \note Windows-only.
- */
+  *
+ * \note DR may mark writable code pages as read-only but pretend they're
+ * writable.  When this happens, this routine will indicate that the
+ * memory is writable.  Call dr_query_memory() or dr_query_memory_ex()
+ * before attempting to write to application memory to ensure it's
+ * not read-only underneath.
+*/
 size_t
 dr_virtual_query(const byte *pc, MEMORY_BASIC_INFORMATION *mbi, size_t mbi_size);
 /* DR_API EXPORT BEGIN */
@@ -1955,9 +2056,12 @@ dr_try_stop(void *drcontext, void *try_cxt);
  * - nesting is supported, but finally statements are not
  *   supported
  *
- * For fault-free reads or writes in isolation, use dr_safe_read() or
- * dr_safe_write() instead, although on Windows those operations
- * invoke a system call and this construct can be more performant.
+ * For fault-free reads in isolation, use dr_safe_read() instead.
+ * dr_safe_read() out-performs DR_TRY_EXCEPT.
+ *
+ * For fault-free writes in isolation, dr_safe_write() can be used,
+ * although on Windows it invokes a system call and can be less
+ * performant than DR_TRY_EXCEPT.
  */
 #define DR_TRY_EXCEPT(drcontext, try_statement, except_statement) do {\
     void *try_cxt;                                                    \
@@ -1996,7 +2100,9 @@ dr_memory_is_dr_internal(const byte *pc);
 
 DR_API
 /**
- * Returns true iff pc is located inside a client library.
+ * Returns true iff pc is located inside a client library, an Extension
+ * library used by a client, or an auxiliary client library (see
+ * dr_load_aux_library()).
  */
 bool
 dr_memory_is_in_client(const byte *pc);
@@ -2016,6 +2122,10 @@ DR_API
  * dr_memory_is_in_client() and any faults in the library will be
  * considered client faults.  The bounds of the loaded library are
  * returned in the optional out variables.  On failure, returns NULL.
+ *
+ * If only a filename and not a full path is given, this routine will
+ * search for the library in the standard search locations for DR's
+ * private loader.
  */
 dr_auxlib_handle_t
 dr_load_aux_library(const char *name,
@@ -2041,8 +2151,93 @@ dr_unload_aux_library(dr_auxlib_handle_t lib);
 
 /* DR_API EXPORT BEGIN */
 
+#if defined(WINDOWS) && !defined(X64)
+/* DR_API EXPORT END */
+DR_API
+/**
+ * Similar to dr_load_aux_library(), but loads a 64-bit library for
+ * access from a 32-bit process running on a 64-bit Windows kernel.
+ * Fails if called from a 32-bit kernel or from a 64-bit process.
+ * The library will be located in the low part of the address space
+ * with 32-bit addresses.
+ * Functions in the library can be called with dr_invoke_x64_routine().
+ *
+ * \warning Invoking 64-bit code is fragile.  Currently, this routine
+ * uses the system loader, under the assumption that little isolation
+ * is needed versus application 64-bit state.  Consider use of this routine
+ * experimental: use at your own risk!
+ *
+ * \note Windows-only.
+ *
+ * \note Currently this routine does not support loading kernel32.dll
+ * or any library that depends on it.
+ * It also does not invoke the entry point for any dependent libraries
+ * loaded as part of loading \p name.
+ *
+ * \note Currently this routine does not support Windows 8.
+ */
+dr_auxlib64_handle_t
+dr_load_aux_x64_library(const char *name);
+
+DR_API
+/**
+ * Looks up the exported routine with the given name in the given
+ * 64-bit client auxiliary library loaded by dr_load_aux_x64_library().  Returns
+ * NULL on failure.
+ * The returned function can be called with dr_invoke_x64_routine().
+ *
+ * \note Windows-only.
+ *
+ * \note Currently this routine does not support Windows 8.
+ */
+dr_auxlib64_routine_ptr_t
+dr_lookup_aux_x64_library_routine(dr_auxlib64_handle_t lib, const char *name);
+
+DR_API
+/**
+ * Unloads the given library, which must have been loaded by
+ * dr_load_aux_x64_library().  Returns whether successful.
+ *
+ * \note Windows-only.
+ */
+bool
+dr_unload_aux_x64_library(dr_auxlib64_handle_t lib);
+
+DR_API
+/**
+ * Must be called from 32-bit mode.  Switches to 64-bit mode, calls \p
+ * func64 with the given parameters, switches back to 32-bit mode, and
+ * then returns to the caller.  Requires that \p func64 be located in
+ * the low 4GB of the address space.  All parameters must be 32-bit
+ * sized, and all are widened via sign-extension when passed to \p
+ * func64.
+ *
+ * \return -1 on failure; else returns the return value of \p func64.
+ *
+ * \warning Invoking 64-bit code is fragile.  The WOW64 layer assumes
+ * there is no other 64-bit code that will be executed.
+ * dr_invoke_x64_routine() attempts to save the WOW64 state, but it
+ * has not been tested in all versions of WOW64.  Also, invoking
+ * 64-bit code that makes callbacks is not supported, as not only a
+ * custom wrapper to call the 32-bit code in the right mode would be
+ * needed, but also a way to restore the WOW64 state in case the
+ * 32-bit callback makes a system call.  Consider use of this routine
+ * experimental: use at your own risk!
+ *
+ * \note Windows-only.
+ */
+int64
+dr_invoke_x64_routine(dr_auxlib64_routine_ptr_t func64, uint num_params, ...);
+
+/* DR_API EXPORT BEGIN */
+
+#endif /* WINDOWS && !X64 */
+/* DR_API EXPORT END */
+
+/* DR_API EXPORT BEGIN */
+
 /**************************************************
- * SIMPLE MUTEX SUPPORT
+ * LOCK SUPPORT
  */
 /* DR_API EXPORT END */
 
@@ -2091,6 +2286,21 @@ dr_mutex_self_owns(void *mutex);
 
 DR_API
 /**
+ * Instructs DR to treat this lock as an application lock.  Primarily
+ * this avoids debug-build checks that no DR locks are held in situations
+ * where locks are disallowed.
+ *
+ * \warning Any one lock should either be a DR lock or an application lock.
+ * Use this routine with caution and do not call it on a DR lock that is
+ * used in DR contexts, as it disables debug checks.
+ *
+ * \return whether successful.
+ */
+bool
+dr_mutex_mark_as_app(void *mutex);
+
+DR_API
+/**
  * Creates and initializes a read-write lock.  A read-write lock allows
  * multiple readers or alternatively a single writer.  The lock
  * restrictions for mutexes apply (see dr_mutex_create()).
@@ -2135,6 +2345,21 @@ dr_rwlock_self_owns_write_lock(void *rwlock);
 
 DR_API
 /**
+ * Instructs DR to treat this lock as an application lock.  Primarily
+ * this avoids debug-build checks that no DR locks are held in situations
+ * where locks are disallowed.
+ *
+ * \warning Any one lock should either be a DR lock or an application lock.
+ * Use this routine with caution and do not call it on a DR lock that is
+ * used in DR contexts, as it disables debug checks.
+ *
+ * \return whether successful.
+ */
+bool
+dr_rwlock_mark_as_app(void *rwlock);
+
+DR_API
+/**
  * Creates and initializes a recursive lock.  A recursive lock allows
  * the same thread to acquire it multiple times.  The lock
  * restrictions for mutexes apply (see dr_mutex_create()).
@@ -2166,6 +2391,48 @@ DR_API
 /** Returns whether the calling thread owns \p reclock. */
 bool
 dr_recurlock_self_owns(void *reclock);
+
+DR_API
+/**
+ * Instructs DR to treat this lock as an application lock.  Primarily
+ * this avoids debug-build checks that no DR locks are held in situations
+ * where locks are disallowed.
+ *
+ * \warning Any one lock should either be a DR lock or an application lock.
+ * Use this routine with caution and do not call it on a DR lock that is
+ * used in DR contexts, as it disables debug checks.
+ *
+ * \return whether successful.
+ */
+bool
+dr_recurlock_mark_as_app(void *reclock);
+
+DR_API
+/**
+ * Use this function to mark a region of code as safe for DR to suspend
+ * the client while inside the region.  DR will not relocate the client
+ * from the region and will resume it at precisely the suspend point.
+ *
+ * This function must be used in client code that acquires application locks.
+ * Use this feature with care!  Do not mark code as safe to suspend that has
+ * a code cache return point.  I.e., do not call this routine from a clean
+ * call.
+ *
+ * No DR locks can be held while in a safe region.  Consequently, do
+ * not call this routine from any DR event callback.  It may only be used
+ * from natively executing code.
+ *
+ * Always invoke this routine in pairs, with the first passing true
+ * for \p enter and the second passing false, thus delimiting the
+ * region.
+ */
+bool
+dr_mark_safe_to_suspend(void *drcontext, bool enter);
+
+DR_API
+/** Atomically adds \p *x and \p val and returns the sum. */
+int
+dr_atomic_add32_return_sum(volatile int *x, int val);
 
 /* DR_API EXPORT BEGIN */
 /**************************************************
@@ -2271,6 +2538,14 @@ dr_lookup_module_by_name(const char *name);
 
 DR_API
 /**
+ * Looks up module data for the main executable.  
+ * \note Returned module_data_t must be freed with dr_free_module_data().
+ */
+module_data_t *
+dr_get_main_module(void);
+
+DR_API
+/**
  * Initialize a new module iterator.  The returned module iterator contains a snapshot
  * of the modules loaded at the time it was created.  Use dr_module_iterator_hasnext()
  * and dr_module_iterator_next() to walk the loaded modules.  Call
@@ -2331,6 +2606,160 @@ const char *
 dr_module_preferred_name(const module_data_t *data);
 
 /* DR_API EXPORT BEGIN */
+/**
+ * Iterator over the list of modules that a given module imports from.  Created
+ * by calling dr_module_import_iterator_start() and must be freed by calling
+ * dr_module_import_iterator_stop().
+ *
+ * \note On Windows, delay-loaded DLLs are not included yet.
+ *
+ * \note ELF does not import directly from other modules.
+ */
+struct _dr_module_import_iterator_t;
+typedef struct _dr_module_import_iterator_t dr_module_import_iterator_t;
+
+/**
+ * Descriptor used to iterate the symbols imported from a specific module.
+ */
+struct _dr_module_import_desc_t;
+typedef struct _dr_module_import_desc_t dr_module_import_desc_t;
+
+/**
+ * Module import data returned from dr_module_import_iterator_next().
+ *
+ * String fields point into the importing module image.  Robust clients should
+ * use DR_TRY_EXCEPT while inspecting the strings in case the module is
+ * partially mapped or the app racily unmaps it.  The iterator routines
+ * themselves handle faults by stopping the iteration.
+ *
+ * \note ELF does not import directly from other modules.
+ */
+typedef struct _dr_module_import_t {
+    /**
+     * Specified name of the imported module or API set.
+     */
+    const char *modname;
+
+    /**
+     * Opaque handle that can be passed to dr_symbol_import_iterator_start().
+     * Valid until the original module is unmapped.
+     */
+    dr_module_import_desc_t *module_import_desc;
+} dr_module_import_t;
+/* DR_API EXPORT END */
+
+DR_API
+/**
+ * Creates a module import iterator.  Iterates over the list of modules that a
+ * given module imports from.
+ *
+ * \note ELF does not import directly from other modules.
+ */
+dr_module_import_iterator_t *
+dr_module_import_iterator_start(module_handle_t handle);
+
+DR_API
+/**
+ * Returns true if there is another module import in the iterator.
+ *
+ * \note ELF does not import directly from other modules.
+ */
+bool
+dr_module_import_iterator_hasnext(dr_module_import_iterator_t *iter);
+
+DR_API
+/**
+ * Advances the passed-in iterator and returns the current module import in the
+ * iterator.  The pointer returned is only valid until the next call to
+ * dr_module_import_iterator_next() or dr_module_import_iterator_stop().
+ *
+ * \note ELF does not import directly from other modules.
+ */
+dr_module_import_t *
+dr_module_import_iterator_next(dr_module_import_iterator_t *iter);
+
+DR_API
+/**
+ * Stops import iteration and frees a module import iterator.
+ *
+ * \note ELF does not import directly from other modules.
+ */
+void
+dr_module_import_iterator_stop(dr_module_import_iterator_t *iter);
+
+/* DR_API EXPORT BEGIN */
+/**
+ * Symbol import iterator data type.  Can be created by calling
+ * dr_symbol_import_iterator_start() and must be freed by calling
+ * dr_symbol_import_iterator_stop().
+ */
+struct _dr_symbol_import_iterator_t;
+typedef struct _dr_symbol_import_iterator_t dr_symbol_import_iterator_t;
+
+/**
+ * Symbol import data returned from dr_symbol_import_iterator_next().
+ *
+ * String fields point into the importing module image.  Robust clients should
+ * use DR_TRY_EXCEPT while inspecting the strings in case the module is
+ * partially mapped or the app racily unmaps it.
+ */
+typedef struct _dr_symbol_import_t {
+    const char *name;       /**< Name of imported symbol, if available. */
+    const char *modname;    /**< Preferred name of module (Windows only). */
+    bool delay_load;        /**< This import is delay-loaded (Windows only). */
+    bool by_ordinal;        /**< Import is by ordinal, not name (Windows only). */
+    ptr_uint_t ordinal;     /**< Ordinal value (Windows only). */
+/* DR_API EXPORT END */
+    /* We never ask the client to allocate this struct, so we can go ahead and
+     * add fields here without breaking ABI compat.
+     */
+/* DR_API EXPORT BEGIN */
+} dr_symbol_import_t;
+/* DR_API EXPORT END */
+
+DR_API
+/**
+ * Creates an iterator over symbols imported by a module.  If \p from_module is
+ * NULL, all imported symbols are yielded, regardless of which module they were
+ * imported from.
+ *
+ * On Windows, from_module is obtained from a \p dr_module_import_t and used to
+ * iterate over all of the imports from a specific module.
+ *
+ * The iterator returned is invalid until after the first call to
+ * dr_symbol_import_iterator_next().
+ *
+ * \note On Windows, symbols imported from delay-loaded DLLs are not included
+ * yet.
+ */
+dr_symbol_import_iterator_t *
+dr_symbol_import_iterator_start(module_handle_t handle,
+                                dr_module_import_desc_t *from_module);
+
+DR_API
+/**
+ * Returns true if there is another imported symbol in the iterator.
+ */
+bool
+dr_symbol_import_iterator_hasnext(dr_symbol_import_iterator_t *iter);
+
+DR_API
+/**
+ * Returns the next imported symbol.  The returned pointer is valid until the
+ * next call to dr_symbol_import_iterator_next() or
+ * dr_symbol_import_iterator_stop().
+ */
+dr_symbol_import_t *
+dr_symbol_import_iterator_next(dr_symbol_import_iterator_t *iter);
+
+DR_API
+/**
+ * Stops symbol import iteration and frees the iterator.
+ */
+void
+dr_symbol_import_iterator_stop(dr_symbol_import_iterator_t *iter);
+
+/* DR_API EXPORT BEGIN */
 #ifdef WINDOWS
 /* DR_API EXPORT END */
 DR_API
@@ -2348,8 +2777,41 @@ dr_lookup_module_section(module_handle_t lib,
 
 DR_API
 /**
+ * Set whether or not the module referred to by \p handle should be
+ * instrumented.  If \p should_instrument is false, code from the module will
+ * not be passed to the basic block event.  If traces are enabled, code from the
+ * module will still reach the trace event.  Must be called from the module load
+ * event for the module referred to by \p handle.
+ * \return whether successful.
+ *
+ * \warning Turning off instrumentation for modules breaks clients and
+ * extensions, such as drwrap, that expect to see every instruction.
+ */
+bool
+dr_module_set_should_instrument(module_handle_t handle, bool should_instrument);
+
+DR_API
+/**
+ * Return whether code from the module should be instrumented, meaning passed
+ * to the basic block event.
+ */
+bool
+dr_module_should_instrument(module_handle_t handle);
+
+DR_API
+/**
  * Returns the entry point of the exported function with the given
  * name in the module with the given base.  Returns NULL on failure.
+ *
+ * On Linux, when we say "exported" we mean present in the dynamic
+ * symbol table (.dynsym).  Global functions and variables in an
+ * executable (as opposed to a library) are not exported by default.
+ * If an executable is built with the \p -rdynamic flag to \p gcc, its
+ * global symbols will be present in .dynsym and dr_get_proc_address()
+ * will locate them.  Otherwise, the drsyms Extension (see \ref
+ * page_drsyms) must be used to locate the symbols.  drsyms searches
+ * the debug symbol table (.symtab) in addition to .dynsym.
+ *
  * \note On Linux this ignores symbol preemption by other modules and only
  * examines the specified module.
  * \note On Linux, in order to handle indirect code objects, use
@@ -2386,6 +2848,9 @@ DR_API
 /**
  * Returns information in \p info about the symbol \p name exported
  * by the module \p lib.  Returns false if the symbol is not found.
+ * See the information in dr_get_proc_address() about what an
+ * "exported" function is on Linux.
+ *
  * \note On Linux this ignores symbol preemption by other modules and only
  * examines the specified module.
  */
@@ -2699,6 +3164,13 @@ DR_API
 /**
  * Unmaps a portion of a file mapping previously created by dr_map_file().
  * \return whether successful.
+ *
+ * @param[in]  map   The base address to be unmapped. Must be page size aligned.
+ * @param[in]  size  The size to be unmapped.
+ *                   All pages overlapping with the range are unmapped.
+ *
+ * \note On Windows, the whole file will be unmapped instead.
+ * 
  */
 bool
 dr_unmap_file(void *map, size_t size);
@@ -2830,7 +3302,8 @@ DR_API
 /**
  * Stdout printing that won't interfere with the
  * application's own printing.  Currently non-buffered.
- * \note On Windows, this routine is not able to print to the \p cmd window
+ * \note On Windows 7 and earlier, this routine is not able to print
+ * to the \p cmd window
  * unless dr_enable_console_printing() is called ahead of time, and
  * even then there are limitations: see dr_enable_console_printing().
  * \note On Windows, this routine does not support printing floating
@@ -2846,7 +3319,7 @@ DR_API
 /**
  * Printing to a file that won't interfere with the
  * application's own printing.  Currently non-buffered.
- * \note On Windows, this routine is not able to print to STDOUT or
+ * \note On Windows 7 and earlier, this routine is not able to print to STDOUT or
  * STDERR in the \p cmd window unless dr_enable_console_printing() is
  * called ahead of time, and even then there are limitations: see
  * dr_enable_console_printing().
@@ -2867,8 +3340,9 @@ dr_fprintf(file_t f, const char *fmt, ...);
 #ifdef WINDOWS
 DR_API
 /**
- * Enables dr_printf() and dr_fprintf() to work with a console window
- * (viz., \p cmd).  Loads a private copy of kernel32.dll (if not
+ * Enables dr_printf() and dr_fprintf() to work with a legacy console
+ * window (viz., \p cmd on Windows 7 or earlier).  Loads a private
+ * copy of kernel32.dll (if not
  * already loaded) in order to accomplish this.  To keep the default
  * DR lean and mean, loading kernel32.dll is not performed by default.
  *
@@ -2876,25 +3350,28 @@ DR_API
  * If called later, it will fail.
  *
  * Without calling this routine, dr_printf() and dr_fprintf() will not
- * print anything in a console window.
+ * print anything in a console window on Windows 7 or earlier.
  *
  * Even after calling this routine, there are significant limitations
  * to console printing support in DR:
  * 
- *  - On Windows versions from Vista onward, it does not work for
+ *  - On Windows Vista and Windows 7, it does not work for
  *    64-bit applications.
  *  - On Windows versions prior to Vista, it does not work from
  *    the exit event.  Once the application terminates its state with
  *    csrss (toward the very end of ExitProcess), no output will show
  *    up on the console.  We have no good solution here yet as exiting
- *    early is not ideal.
+ *    early is not ideal.  Printing from the exit event works fine
+ *    on Windows 8+.
  *  - It does not work at all from graphical applications, even when they are
- *    launched from a console.
+ *    launched from a console.  This is true on Windows 8+ as well.
  *  - In the future, with earliest injection (Issue 234), writing to the
- *    console may not work from the client init event.
+ *    console may not work from the client init event on Windows 7 and
+ *    earlier (it will work on Windows 8).
  *
  * These limitations stem from the complex arrangement of the console
- * window in Windows, where printing to it involves sending a message
+ * window in Windows (prior to Windows 8), where printing to it
+ * involves sending a message
  * in an undocumented format to the \p csrss process, rather than a
  * simple write to a file handle.  We recommend using a terminal
  * window such as cygwin's \p rxvt rather than the \p cmd window, or
@@ -2909,7 +3386,8 @@ dr_enable_console_printing(void);
 DR_API
 /**
  * Returns true if the current standard error handle belongs to a
- * console window (viz., \p cmd).  DR's dr_printf() and dr_fprintf()
+ * legacy console window (viz., \p cmd on Windows 7 or earlier).  DR's
+ * dr_printf() and dr_fprintf()
  * do not work with such console windows unless
  * dr_enable_console_printing() is called ahead of time, and even then
  * there are limitations detailed in dr_enable_console_printing().
@@ -2930,11 +3408,14 @@ DR_API
  * max characters are written and -1 is returned.  If an error
  * occurs, a negative value is returned.
  * \note This routine supports printing wide characters via the ls
- * or S format specifiers via simply dropping the high-order byte.
+ * or S format specifiers.  On Windows, they are assumed to be UTF-16,
+ * and are converted to UTF-8.  On Linux, they are converted by simply
+ * dropping the high-order bytes.
  * \note If the data to be printed is large it will be truncated to
  * an internal buffer size.
  * \note On Windows, you can use _snprintf() instead (though _snprintf() does
- * not support printing floating point values).
+ * not support printing floating point values and does not convert
+ * between UTF-16 and UTF-8).
  * \note When printing floating-point values, the caller's code should
  * use proc_save_fpstate() or be inside a clean call that
  * has requested to preserve the floating-point state.
@@ -2945,9 +3426,11 @@ dr_snprintf(char *buf, size_t max, const char *fmt, ...);
 DR_API
 /**
  * Wide character version of dr_snprintf().  All of the comments for
- * dr_snprintf() apply, except that the hs or S format specifiers will
- * widen a single-byte character string into a two-byte character
- * string with zero as the high-order byte.
+ * dr_snprintf() apply, except for the hs or S format specifiers.
+ * On Windows, these will assume that the input is UTF-8, and will
+ * convert to UTF-16.  On Linux, they will widen a single-byte
+ * character string into a wchar_t character string with zero as the
+ * high-order bytes.
  */
 int
 dr_snwprintf(wchar_t *buf, size_t max, const wchar_t *fmt, ...);
@@ -2965,6 +3448,53 @@ DR_API
  */
 int
 dr_vsnwprintf(wchar_t *buf, size_t max, const wchar_t *fmt, va_list ap);
+
+DR_API
+/**
+ * Utility routine to parse strings that match a pre-defined format string,
+ * similar to the sscanf() C routine.
+ *
+ * @param[in] str   String to parse.
+ * @param[in] fmt   Format string controlling parsing. 
+ * @param[out] ...  All remaining parameters interpreted as output parameter
+ *                  pointers.  The type of each parameter must match the type
+ *                  implied by the corresponding format specifier in \p fmt.
+ * \return The number of specifiers matched.
+ *
+ * The benefit of using dr_sscanf() over native sscanf() is that DR's
+ * implementation is standalone, signal-safe, and cross-platform.  On Linux,
+ * sscanf() has been observed to call malloc().  On Windows, sscanf() will call
+ * strlen(), which can break when using mapped files.
+ *
+ * The behavior of dr_sscanf() is mostly identical to that of the sscanf() C
+ * routine.
+ *
+ * Supported format specifiers:
+ * - \%s: Matches a sequence of non-whitespace characters.  The string is copied
+ *   into the provided output buffer.  To avoid buffer overflow, the caller
+ *   should use a width specifier.
+ * - \%c: Matches any single character.
+ * - \%d: Matches a signed decimal integer.
+ * - \%u: Matches an unsigned decimal integer.
+ * - \%x: Matches an unsigned hexadecimal integer, with or without a leading 0x.
+ * - \%p: Matches a pointer-sized hexadecimal integer as %x does.
+ * - \%%: Matches a literal % character.  Does not store output.
+ *
+ * Supported format modifiers:
+ * - *: The * modifier causes the scan to match the specifier, but not store any
+ *   output.  No output parameter is consumed for this specifier, and one should
+ *   not be passed.
+ * - 0-9: A decimal integer preceding the specifier gives the width to match.
+ *   For strings, this indicates the maximum number of characters to copy.  For
+ *   integers, this indicates the maximum number of digits to parse.
+ * - h: Marks an integer specifier as short.
+ * - l: Marks an integer specifier as long.
+ * - ll: Marks an integer specifier as long long.  Use this for 64-bit integers.
+ *
+ * \warning dr_sscanf() does \em not support parsing floating point numbers yet.
+ */
+int
+dr_sscanf(const char *str, const char *fmt, ...);
 
 DR_API 
 /** Prints \p msg followed by the instruction \p instr to file \p f. */
@@ -3158,7 +3688,7 @@ DR_API
 /**
  * Suspends all other threads in the process and returns an array of
  * contexts in \p drcontexts with one context per successfully suspended
- * threads.  The contexts can be passed to routines like dr_get_thread_id()
+ * thread.  The contexts can be passed to routines like dr_get_thread_id()
  * or dr_get_mcontext().  However, the contexts may not be modified:
  * dr_set_mcontext() is not supported.  dr_get_mcontext() can be called on
  * the caller of this routine, unless in a Windows nudge callback.
@@ -3379,6 +3909,10 @@ DR_API
 opnd_t
 dr_reg_spill_slot_opnd(void *drcontext, dr_spill_slot_t slot);
 
+/* internal version */
+opnd_t
+reg_spill_slot_opnd(dcontext_t *dcontext, dr_spill_slot_t slot);
+
 DR_API
 /**
  * Can be used from a clean call or a restore_state_event (see
@@ -3395,7 +3929,7 @@ DR_API
  * new value.
  * 
  * \note This routine should only be used during a clean call out of the
- * cache.  Use at any other time could corrupt application or \DynamoRIO
+ * cache.  Use at any other time could corrupt application or DynamoRIO
  * state.
  */
 void
@@ -3436,7 +3970,7 @@ dr_restore_arith_flags(void *drcontext, instrlist_t *ilist, instr_t *where,
 DR_API
 /**
  * Inserts into \p ilist prior to \p where meta-instruction(s) to save the 6
- * arithmetic flags into xax.  This currently uses \DynamoRIO's "lahf ; seto al"
+ * arithmetic flags into xax.  This currently uses DynamoRIO's "lahf ; seto al"
  * code sequence, which is faster and easier than pushf.  If the caller wishes
  * to use xax between saving and restoring these flags, they must save and
  * restore xax, potentially using dr_save_reg()/dr_restore_reg().  If the caller
@@ -3453,7 +3987,7 @@ dr_save_arith_flags_to_xax(void *drcontext, instrlist_t *ilist, instr_t *where);
 DR_API
 /**
  * Inserts into \p ilist prior to \p where meta-instruction(s) to restore the 6
- * arithmetic flags from xax.  This currently uses \DynamoRIO's "add $0x7f %al ;
+ * arithmetic flags from xax.  This currently uses DynamoRIO's "add $0x7f %al ;
  * sahf" code sequence, which is faster and easier than popf.  The caller must
  * ensure that xax contains the arithmetic flags, most likely from
  * dr_save_arith_flags_to_xax().
@@ -3809,6 +4343,25 @@ dr_insert_ubr_instrumentation(void *drcontext, instrlist_t *ilist,
 
 DR_API
 /**
+ * Causes DynamoRIO to insert code that stores \p value into the
+ * return address slot on the stack immediately after the original
+ * value is read by the return instruction \p instr.
+ * \p instr must be a return instruction or this routine will fail.
+ *
+ * \note This is meant to make it easier to obtain efficient
+ * callstacks by eliminating stale return addresses from prior stack
+ * frames.  However, it is possible that writing to the application
+ * stack could result in incorrect application behavior, so use this
+ * at your own risk.
+ *
+ * \return whether successful.
+ */
+bool 
+dr_clobber_retaddr_after_read(void *drcontext, instrlist_t *ilist, instr_t *instr,
+                              ptr_uint_t value);
+
+DR_API
+/**
  * Returns true if the xmm0 through xmm5 for Windows, or xmm0 through
  * xmm15 for 64-bit Linux, or xmm0 through xmm7 for 32-bit Linux, 
  * fields in dr_mcontext_t are valid for this process
@@ -3954,6 +4507,40 @@ DR_API
 bool
 dr_redirect_execution(dr_mcontext_t *context);
 
+/* DR_API EXPORT BEGIN */
+/** Flags to request non-default preservation of state in a clean call */
+#define SPILL_SLOT_REDIRECT_NATIVE_TGT SPILL_SLOT_1
+/* DR_API EXPORT END */
+
+DR_API
+/**
+ * Returns the target to use for a native context transfer to a target
+ * application address.
+ *
+ * Normally, redirection is performed from a client context in a clean
+ * call or event callback by invoking dr_redirect_execution().  In
+ * some circumstances, redirection from an application (or "native")
+ * context is desirable without creating an application control
+ * transfer in a basic block.
+ *
+ * To accomplish such a redirection, store the target application
+ * address in #SPILL_SLOT_REDIRECT_NATIVE_TGT by calling
+ * dr_write_saved_reg().  Set up any other application state as
+ * desired directly in the current machine context.  Then jump to the
+ * target returned by this routine.  By default, the target is global
+ * and can be cached globally.  However, if traces are thread-private,
+ * or if traces are disabled and basic blocks are thread-private,
+ * there will be a separate target per \p drcontext.
+ *
+ * If a basic block is exited via such a redirection, the block should
+ * be emitted with the flag DR_EMIT_MUST_END_TRACE in order to avoid
+ * trace building errors.
+ *
+ * Returns null on error.
+ */
+byte *
+dr_redirect_native_target(void *drcontext);
+
 /* DR_API EXPORT TOFILE dr_tools.h */
 /* DR_API EXPORT BEGIN */
 
@@ -3999,7 +4586,7 @@ DR_API
  * current thread only.  After deletion, the existing fragment is
  * allowed to complete execution.  For example, a clean call deleting
  * the currently executing fragment will safely return to the existing
- * code.  Subsequent executions will cause \DynamoRIO to reconstruct
+ * code.  Subsequent executions will cause DynamoRIO to reconstruct
  * the fragment, and therefore call the appropriate fragment-creation
  * event hook, if registered.
  *
@@ -4176,7 +4763,14 @@ DR_API
 /**
  * Returns whether the given thread indicated by \p drcontext
  * is currently using the application version of its system state.
- * \sa dr_switch_to_dr_state(), dr_switch_to_app_state()
+ * \sa dr_switch_to_dr_state(), dr_switch_to_app_state().
+ *
+ * This function does not indicate whether the machine context
+ * (registers) contains application state or not.
+ *
+ * On Linux, DR very rarely switches the system state, while on
+ * Windows DR switches the system state to the DR and client version
+ * on every event callback or clean call.
  */
 bool
 dr_using_app_state(void *drcontext);
@@ -4189,15 +4783,35 @@ DR_API
  * versions of system state.  Invoking non-DR library routines while
  * the application state is in place can lead to unpredictable
  * results: call dr_switch_to_dr_state() before doing so.
+ *
+ * This function does not affect whether the current machine context
+ * (registers) contains application state or not.
  */
 void
 dr_switch_to_app_state(void *drcontext);
 
 DR_API
 /**
- * Should only be called after calling dr_switch_to_app_state().
- * Swaps from the application version of system state for the given
- * thread back to the DR and client version.
+ * Should only be called after calling dr_switch_to_app_state(), or in
+ * certain cases where a client is running its own code in an
+ * application state.  Swaps from the application version of system
+ * state for the given thread back to the DR and client version.
+ *
+ * This function does not affect whether the current machine context
+ * (registers) contains application state or not.
+ *
+ * A client must call dr_switch_to_dr_state() in order to safely call
+ * private library routines if it is running in an application context
+ * where dr_using_app_state() returns true.  On Windows, this is the
+ * case for any application context, as the system state is always
+ * swapped.  On Linux, however, execution of application code in the
+ * code cache only swaps the machine context and not the system state.
+ * Thus, on Linux, while in the code cache, dr_using_app_state() will
+ * return false, and it is safe to invoke private library routines
+ * without calling dr_switch_to_dr_state().  Only if client or
+ * client-invoked code will examine a segment selector or descriptor
+ * does the state need to be swapped.  A state swap is much more
+ * expensive on Linux (it requires a system call) than on Windows.
  */
 void
 dr_switch_to_dr_state(void *drcontext);
@@ -4614,5 +5228,29 @@ bool
 dr_unregister_persist_patch(bool (*func_patch)(void *drcontext, void *perscxt,
                                                byte *bb_start, size_t bb_size,
                                                void *user_data));
+
+DR_API
+/**
+ * Create instructions for storing pointer-size integer \p val to \p dst,
+ * and then insert them into \p ilist prior to \p where. 
+ * The created instructions are returned in \p first and \p second.
+ * Note that \p second may return NULL if only one instruction is created.
+ */
+void
+instrlist_insert_mov_immed_ptrsz(void *drcontext, ptr_int_t val, opnd_t dst,
+                                 instrlist_t *ilist, instr_t *where,
+                                 instr_t **first OUT, instr_t **second OUT);
+
+DR_API
+/**
+ * Create instructions for pushing pointer-size integer \p val on the stack,
+ * and then insert them into \p ilist prior to \p where. 
+ * The created instructions are returned in \p first and \p second.
+ * Note that \p second may return NULL if only one instruction is created.
+ */
+void
+instrlist_insert_push_immed_ptrsz(void *drcontext, ptr_int_t val,
+                                  instrlist_t *ilist, instr_t *where,
+                                  instr_t **first OUT, instr_t **second OUT);
 
 #endif /* _INSTRUMENT_H_ */

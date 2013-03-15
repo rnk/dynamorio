@@ -1,4 +1,5 @@
 /* **********************************************************
+ * Copyright (c) 2012 Google, Inc.  All rights reserved.
  * Copyright (c) 2001-2010 VMware, Inc.  All rights reserved.
  * **********************************************************/
 
@@ -96,12 +97,7 @@ dynamo_start(priv_mcontext_t *mc)
     /* clear pc */
     mcontext->pc = 0;
 
-    /* Swap stacks so dispatch is invoked outside the application.
-     * We begin interpretation at the application return point,
-     * and thus we need to look like DR returned -- adjust the app
-     * stack to account for the return address.
-     */
-    mcontext->xsp += XSP_SZ;
+    /* Swap stacks so dispatch is invoked outside the application. */
     call_switch_stack(dcontext, dcontext->dstack, dispatch,
                       false/*not on initstack*/, true/*return on error*/);
     /* In release builds, this will simply return and continue native
@@ -199,6 +195,22 @@ auto_setup(ptr_uint_t appstack)
     call_switch_stack(dcontext, dcontext->dstack, dispatch,
                       false/*not on initstack*/, false/*shouldn't return*/);
     ASSERT_NOT_REACHED();
+}
+
+/* Get the retstack index from the app stack and reset the mcontext to the
+ * original app state.  The retstub saved it like this in x86.asm:
+ *   push $retidx
+ *   jmp back_from_native
+ * back_from_native:
+ *   push mcontext
+ *   call return_from_native(mc)
+ */
+int
+native_get_retstack_idx(priv_mcontext_t *mc)
+{
+    int retidx = (int) *(ptr_int_t *) mc->xsp;
+    mc->xsp += sizeof(void *);  /* Undo the push. */
+    return retidx;
 }
 
 /****************************************************************************/
@@ -311,93 +323,37 @@ nt_continue_setup(priv_mcontext_t *mc)
 }
 
 #endif /* WINDOWS */
-/****************************************************************************/
-
-/***************************************************************************
- * NATIVE EXECUTION EXPERIMENTAL FEATURE
- */
-
-/* WARNING: this feature breaks all kinds of rules, like ret addr transparency and
- * assuming app stack and not doing calls out of the cache and no self-protection
- * and not catching hand-rolled syscalls, etc. -- use at own risk!
- */
-
-void
-entering_native()
-{
-    dcontext_t *dcontext;
-    ENTERING_DR();
-    dcontext = get_thread_private_dcontext();
-    ASSERT(dcontext != NULL);
-#ifdef WINDOWS
-    /* turn off asynch interception for this thread while native
-     * FIXME: what if callbacks and apcs are destined for other modules?
-     * should instead run dispatcher under DR every time, if going to native dll
-     * will go native then?  have issues w/ missing the cb ret, though...
-     * N.B.: if allow some asynch, have to find another place to store the real
-     * return addr (currently in next_tag)
-     *
-     * We can't revert memory prots, since other threads are under DR
-     * control, but we do handle our-fault write faults in native threads.
-     */
-    set_asynch_interception(dcontext->owning_thread, false);
-#endif
-    /* FIXME: setting same var that set_asynch_interception is! */
-    dcontext->thread_record->under_dynamo_control = false;
-
-    /* if we were building a trace, kill it */
-    if (is_building_trace(dcontext)) {
-        LOG(THREAD, LOG_ASYNCH, 2, "entering_native: squashing old trace\n");
-        trace_abort(dcontext);
-    }
-    set_last_exit(dcontext, (linkstub_t *) get_native_exec_linkstub());
-    /* now we're in app! */
-    dcontext->whereami = WHERE_APP;
-    SYSLOG_INTERNAL_WARNING_ONCE("entered at least one module natively");
-    LOG(THREAD, LOG_ASYNCH, 1, "!!!! Entering module NATIVELY, retaddr="PFX"\n\n",
-        dcontext->native_exec_retval);
-    STATS_INC(num_native_module_enter);
-    EXITING_DR();
-}
-
-/* work that's easier to do in C code than in the asm routine back_from_native()
- */
-void
-back_from_native_C(priv_mcontext_t *mc)
-{
-    dcontext_t *dcontext;
-    ENTERING_DR();
-    dcontext = get_thread_private_dcontext();
-    ASSERT(dcontext != NULL);
-    LOG(THREAD, LOG_ASYNCH, 1, "\n!!!! Returned from NATIVE module to "PFX"\n",
-        dcontext->native_exec_retval);
-    SYSLOG_INTERNAL_WARNING_ONCE("returned from at least one native module");
-    STATS_INC(num_native_module_exit);
-    /* ASSUMPTION: was native entire time, don't need to initialize dcontext
-     * or anything, and next_tag is still there!
-     */
-    ASSERT(dcontext->whereami == WHERE_APP);
-    ASSERT(dcontext->native_exec_retval != NULL);
-    ASSERT(dcontext->last_exit == get_native_exec_linkstub());
-    dcontext->next_tag = dcontext->native_exec_retval;
-    dcontext->native_exec_retval = NULL;
-    dcontext->native_exec_retloc = NULL;
-    /* tell dispatch() why we're coming there */
-    dcontext->whereami = WHERE_FCACHE;
-#ifdef WINDOWS
-    /* asynch back on */
-    set_asynch_interception(dcontext->owning_thread, true);
-#endif
-    /* FIXME: setting same var that set_asynch_interception is! */
-    dcontext->thread_record->under_dynamo_control = true;
-
-    *get_mcontext(dcontext) = *mc;
-    /* clear pc */
-    get_mcontext(dcontext)->pc = 0;
-
-    call_switch_stack(dcontext, dcontext->dstack, dispatch,
-                      false/*not on initstack*/, false/*shouldn't return*/);
-    ASSERT_NOT_REACHED();
-}
 
 /****************************************************************************/
+
+/* C-level wrapper around the asm implementation.  Shuffles arguments and
+ * increments stats.
+ * We used to use try/except on Linux and NtReadVirtualMemory on Windows, but
+ * this is faster than both.
+ */
+bool
+safe_read_fast(const void *base, size_t size, void *out_buf, size_t *bytes_read)
+{
+    byte *stop_pc;
+    size_t nbytes;
+    stop_pc = safe_read_asm(out_buf, base, size);
+    nbytes = stop_pc - (byte*)base;
+    if (bytes_read != NULL)
+        *bytes_read = nbytes;
+    return (nbytes == size);
+}
+
+bool
+is_safe_read_pc(app_pc pc)
+{
+    return (pc == (app_pc)safe_read_asm_pre ||
+            pc == (app_pc)safe_read_asm_mid ||
+            pc == (app_pc)safe_read_asm_post);
+}
+
+app_pc
+safe_read_resume_pc(void)
+{
+    return (app_pc) &safe_read_asm_recover;
+}
+

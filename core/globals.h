@@ -1,5 +1,5 @@
 /* **********************************************************
- * Copyright (c) 2011-2012 Google, Inc.  All rights reserved.
+ * Copyright (c) 2011-2013 Google, Inc.  All rights reserved.
  * Copyright (c) 2000-2010 VMware, Inc.  All rights reserved.
  * **********************************************************/
 
@@ -128,6 +128,12 @@
 #  define DR_UNS_API DR_API
 #else
 #  define DR_UNS_API /* nothing */
+#endif
+
+#ifdef WINDOWS
+# define NOINLINE __declspec(noinline)
+#else
+# define NOINLINE __attribute__((noinline))
 #endif
 
 #define INLINE_ONCE inline
@@ -439,6 +445,8 @@ extern bool standalone_library;  /* used as standalone library */
 #endif
 #ifdef LINUX
 extern bool post_execve;         /* have we performed an execve? */
+/* i#237/PR 498284: vfork threads that execve need to be separately delay-freed */
+extern int num_execve_threads;
 #endif
 
 /* global instance of statistics struct */
@@ -590,6 +598,19 @@ enum {
     WRITABLE=true
 };
 
+/* Number of nested calls into native modules that we support.  This number
+ * needs to equal the number of stubs in x86.asm:back_from_native_retstubs,
+ * which is checked at startup in native_exec.c.
+ * FIXME: Remove this limitation if we ever need to support true mutual
+ * recursion between native and non-native modules.
+ */
+enum { MAX_NATIVE_RETSTACK = 10 };
+
+typedef struct _retaddr_and_retloc_t {
+    app_pc retaddr;
+    app_pc retloc;
+} retaddr_and_retloc_t;
+
 /* To handle TRY/EXCEPT/FINALLY setjmp */
 typedef struct try_except_context_t {
     /* FIXME: we are using a local dr_jmp_buf which is relatively
@@ -601,6 +622,18 @@ typedef struct try_except_context_t {
 
     struct try_except_context_t *prev_context;
 } try_except_context_t;
+
+/* We do support TRY pre-dynamo_initialized via this global struct.
+ * This, along with safe_read pc ranges, satisfies most TRY uses that
+ * don't have a dcontext (i#350).
+ */
+typedef struct _try_except_t {
+    try_except_context_t *try_except_state; /* for TRY/EXCEPT/FINALLY */
+    bool unwinding_exception;   /* NYI support for TRY/FINALLY - 
+                                 * marks exception until an EXCEPT handles */
+} try_except_t;
+
+extern try_except_t global_try_except;
 
 typedef struct {
     /* WARNING: if you change the offsets of any of these fields, 
@@ -670,13 +703,6 @@ struct _dcontext_t {
     linkstub_t *     last_exit;       /* last exit from cache */
     byte *         dstack;          /* thread-private dynamo stack */
 
-    /* These are expected to retain their values across an entire native execution.
-     * We assume that callbacks and native_exec executions are properly nested, and
-     * we don't share these across callbacks, using the original value on returning.
-     */
-    app_pc         native_exec_retval; /* native_exec return address */
-    app_pc         native_exec_retloc; /* native_exec return address app stack location */
-
 #ifdef RETURN_STACK
     byte *         rstack;          /* bottom of return stack */
     byte *         top_of_rstack;   /* top of return stack */
@@ -690,6 +716,11 @@ struct _dcontext_t {
     void *         priv_fls_data;
     void *         app_nt_rpc;
     void *         priv_nt_rpc;
+    void *         app_nls_cache;
+    void *         priv_nls_cache;
+#  ifdef X64
+    void *         app_stack_limit;
+#  endif
     /* we need this to restore ptrs for other threads on detach */
     byte *         teb_base;
 # endif
@@ -804,6 +835,12 @@ struct _dcontext_t {
      */
     app_pc         native_exec_postsyscall;
 
+    /* Stack of app return addresses and stack locations of callsites where we
+     * called into a native module.
+     */
+    retaddr_and_retloc_t native_retstack[MAX_NATIVE_RETSTACK];
+    uint native_retstack_cur;
+
 #ifdef PROGRAM_SHEPHERDING
     bool           alloc_no_reserve; /* to implement executable_if_alloc policy */
 #endif
@@ -875,9 +912,7 @@ struct _dcontext_t {
     bool           nudge_thread;    /* True only if this is a nudge thread. */
     dr_jmp_buf_t   hotp_excpt_state;    /* To handle hot patch exceptions. */
 #endif
-    try_except_context_t *try_except_state; /* for TRY/EXCEPT/FINALLY */
-    bool unwinding_exception;   /* NYI support for TRY/FINALLY - 
-                                 * marks exception until an EXCEPT handles */
+    try_except_t   try_except; /* for TRY/EXCEPT/FINALLY */
     
 #ifdef WINDOWS                    
     /* for ASLR_SHARED_CONTENT, note per callback, not per thread to
@@ -933,6 +968,10 @@ struct _dcontext_t {
     /* i#238/PR 499179: check that libc errno hasn't changed */
     int libc_errno;
 # endif
+#else
+# ifdef DEBUG
+    bool post_syscall;
+# endif
 #endif
 };
 
@@ -959,7 +998,8 @@ enum {
     DUMP_NOT_XML=false
 };
 
-/* to avoid transparency problems we must have our own vnsprintf */
+/* io.c */
+/* to avoid transparency problems we must have our own vnsprintf and sscanf */
 #include <stdarg.h> /* for va_list */
 int our_snprintf(char *s, size_t max, const char *fmt, ...);
 int our_vsnprintf(char *s, size_t max, const char *fmt, va_list ap);
@@ -970,10 +1010,16 @@ int our_vsnprintf_wide(wchar_t *s, size_t max, const wchar_t *fmt, va_list ap);
 #define vsnprintf our_vsnprintf
 #define snwprintf  our_snprintf_wide
 #define _snwprintf our_snprintf_wide
-#ifdef LINUX
 int our_sscanf(const char *str, const char *format, ...);
-# define sscanf our_sscanf
-#endif
+int our_vsscanf(const char *str, const char *fmt, va_list ap);
+const char * parse_int(const char *sp, uint64 *res_out, uint base, uint width,
+                       bool is_signed);
+ssize_t
+utf16_to_utf8_size(const wchar_t *src, size_t max_chars, size_t *written/*unicode chars*/);
+#define sscanf our_sscanf
+
+/* string.c */
+int tolower(int c);
 
 /* Code cleanliness rules */
 #ifdef WINDOWS

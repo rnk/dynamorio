@@ -1,5 +1,5 @@
 /* **********************************************************
- * Copyright (c) 2010-2012 Google, Inc.  All rights reserved.
+ * Copyright (c) 2010-2013 Google, Inc.  All rights reserved.
  * Copyright (c) 2000-2010 VMware, Inc.  All rights reserved.
  * **********************************************************/
 
@@ -60,6 +60,7 @@
 #include "aslr.h"
 #include "../synch.h"
 #include "../perscache.h"
+#include "../native_exec.h"
 
 #ifdef NOT_DYNAMORIO_CORE_PROPER
 # undef ASSERT
@@ -87,11 +88,19 @@ DECLARE_CXTSWPROT_VAR(static mutex_t debugbox_lock, INIT_LOCK_FREE(debugbox_lock
  * hang or worse.  we do not expect the syscall to return, so we can
  * use a global single-entry stack (the wow64 layer swaps to a
  * different stack: presumably for alignment and other reasons).
- */
-#define WOW64_SYSCALL_STACK_SIZE 16 /* presumably only needs to be 4, but just in case */
+ * We also use this for non-wow64, except on win8 wow64 where we need
+ * a per-thread stack and we use the TEB.
+ * We do leave room to store the 2 args to NtTerminateProcess for win8 wow64
+ * in case we can't get the target thread's TEB.
+  */
+#define WOW64_SYSCALL_SETUP_SIZE 3*XSP_SZ /* 2 args + retaddr of call to win8 wrapper */
+/* 1 for call + 1 extra + setup */
+#define WOW64_SYSCALL_STACK_SIZE 2*XSP_SZ + (WOW64_SYSCALL_SETUP_SIZE)
 DECLARE_NEVERPROT_VAR(static byte wow64_syscall_stack_array[WOW64_SYSCALL_STACK_SIZE],
                       {0});
-const byte *wow64_syscall_stack = &wow64_syscall_stack_array[WOW64_SYSCALL_STACK_SIZE];
+/* We point it several stack slots in for win8 setup */
+const byte *wow64_syscall_stack =
+    &wow64_syscall_stack_array[WOW64_SYSCALL_STACK_SIZE - WOW64_SYSCALL_SETUP_SIZE];
 
 /* globals */
 bool intercept_asynch = false;
@@ -154,6 +163,9 @@ static const PSID
 get_Everyone_SID(void);
 static const PSID
 get_process_owner_SID(void);
+
+static size_t
+get_allocation_size_ex(HANDLE process, byte *pc, byte **base_pc);
 
 bool
 os_user_directory_supports_ownership(void);
@@ -503,8 +515,10 @@ exit_global_profiles()
 bool
 os_supports_avx()
 {
+    /* XXX: why not just test proc FEATURE_OSXSAVE? */
     /* XXX: what about the WINDOWS Server 2008 R2? */
-    if (os_version == WINDOWS_VERSION_7 && os_service_pack_major >= 1)
+    if (os_version >= WINDOWS_VERSION_8 ||
+        (os_version == WINDOWS_VERSION_7 && os_service_pack_major >= 1))
         return true;
     return false;
 }
@@ -551,7 +565,19 @@ windows_version_init()
 
     if (peb->OSPlatformId == VER_PLATFORM_WIN32_NT) {
         /* WinNT or descendents */
-        if (peb->OSMajorVersion == 6 && peb->OSMinorVersion == 1) {
+        if (peb->OSMajorVersion == 6 && peb->OSMinorVersion == 2) {
+            if (module_is_64bit(get_ntdll_base())) {
+                syscalls = (int *) windows_8_x64_syscalls;
+                os_name = "Microsoft Windows 8 x64";
+            } else if (is_wow64_process(NT_CURRENT_PROCESS)) {
+                syscalls = (int *) windows_8_wow64_syscalls;
+                os_name = "Microsoft Windows 8 x64";
+            } else {
+                syscalls = (int *) windows_8_x86_syscalls;
+                os_name = "Microsoft Windows 8";
+            }
+            os_version = WINDOWS_VERSION_8;
+        } else if (peb->OSMajorVersion == 6 && peb->OSMinorVersion == 1) {
             module_handle_t ntdllh = get_ntdll_base();
             /* i#437: ymm/avx is supported after Win-7 SP1 */
             if (os_service_pack_major >= 1) {
@@ -759,6 +785,17 @@ os_init(void)
     peb_ptr = (void *) get_own_peb();
     LOG(GLOBAL, LOG_TOP, 1, "PEB: "PFX"\n", peb_ptr);
     ASSERT((PEB *)peb_ptr == get_own_teb()->ProcessEnvironmentBlock);
+#ifndef X64
+    /* We no longer rely on peb64 being adjacent to peb for i#816 but
+     * let's print it nonetheless
+     */
+    DOLOG(1, LOG_TOP, {
+        if (is_wow64_process(NT_CURRENT_PROCESS)) {
+            ptr_uint_t peb64 = (ptr_uint_t) get_own_x64_peb();
+            LOG(GLOBAL, LOG_TOP, 1, "x64 PEB: "PFX"\n", peb64);
+        }
+    });
+#endif
 
     /* match enums in os_exports.h with TEB definition from ntdll.h */
     ASSERT(EXCEPTION_LIST_TIB_OFFSET == offsetof(TEB, ExceptionList));
@@ -893,7 +930,7 @@ os_init(void)
     }
 #endif
 
-    if (!dr_early_injected)
+    if (!dr_early_injected && !dr_earliest_injected)
         inject_init();
 
     get_dynamorio_library_path(); 
@@ -1055,6 +1092,64 @@ os_slow_exit(void)
     eventlog_slow_exit();
 }
 
+
+/* Win8 WOW64 does not point edx at the param base so we must
+ * put the args on the actual stack.  We could have multiple threads
+ * writing to these same slots so we use the TEB which should be dead
+ * (unless the syscall fails and the app continues: which we do not handle).
+ * Xref i#565.
+ */
+/* Pass INVALID_HANDLE_VALUE for process exit */
+byte *
+os_terminate_wow64_stack(HANDLE thread_handle)
+{
+#ifdef X64
+    return (byte *) wow64_syscall_stack;
+#else
+    if (syscall_uses_edx_param_base())
+        return (byte *) wow64_syscall_stack;
+    else {
+        TEB *teb;
+        if (thread_handle == INVALID_HANDLE_VALUE)
+            teb = get_own_teb();
+        else
+            teb = get_teb(thread_handle);
+        if (teb == NULL) /* app may have passed bogus handle */
+            return (byte *) wow64_syscall_stack;
+        /* We use our scratch slots in the TEB.  We need room for syscall
+         * call*'s retaddr below and 2 args for os_terminate_wow64_write_args()
+         * above, so we take our own xbx slot, which has xax below and xcx+xdx
+         * above.  We do not have the extra safety slot that wow64_syscall_stack
+         * has, but that's not necessary, and if the wow64 wrapper wrote to it
+         * it would just be writing to an app slot that's likely unused (b/c DR
+         * takes TLS slots from the end).
+         *
+         * XXX: it would be cleaner to not write to this until we're done
+         * cleaning up private libraries, which examine the TEB.
+         * Then we could use any part of the TEB.
+         */
+        return (byte *)teb + os_tls_offset(TLS_XBX_SLOT);
+    }
+#endif
+}
+
+/* Only takes action when edx is not the param base */
+void
+os_terminate_wow64_write_args(bool exit_process, HANDLE proc_or_thread_handle,
+                              int exit_status)
+{
+#ifndef X64
+    if (!syscall_uses_edx_param_base()) {
+        byte *xsp = os_terminate_wow64_stack(exit_process ? INVALID_HANDLE_VALUE :
+                                             proc_or_thread_handle);
+        ASSERT(ALIGNED(xsp, sizeof(reg_t))); /* => atomic writes */
+        /* skip a slot (natively it's the retaddr from the call to the wrapper) */
+        *(((reg_t*)xsp)+1) = (reg_t) proc_or_thread_handle;
+        *(((reg_t*)xsp)+2) = (reg_t) exit_status;
+    }
+#endif
+}
+
 /* FIXME: what are good values here? */
 #define KILL_PROC_EXIT_STATUS -1
 #define KILL_THREAD_EXIT_STATUS -1
@@ -1151,7 +1246,12 @@ os_terminate_static_arguments(bool exit_process, bool custom_code, int exit_code
     LOG(THREAD_GET, LOG_SYSCALLS, 2,
         "Placing terminate arguments tombstone at "PFX" offset=0x%x\n", 
         arguments, SYSCALL_PARAM_OFFSET());
-    
+
+    os_terminate_wow64_write_args
+        (exit_process,
+         ((terminate_args_t*)arguments)->args.ProcessOrThreadHandle,
+         ((terminate_args_t*)arguments)->args.ExitStatus);
+
     arguments += offsetof(terminate_args_t, args) - SYSCALL_PARAM_OFFSET();
     return arguments;
 }
@@ -1355,7 +1455,7 @@ os_thread_init(dcontext_t *dcontext)
 }
 
 void
-os_thread_exit(dcontext_t *dcontext)
+os_thread_exit(dcontext_t *dcontext, bool other_thread)
 {
     os_thread_data_t *ostd = (os_thread_data_t *) dcontext->os_field;
     aslr_thread_exit(dcontext);
@@ -1400,7 +1500,8 @@ os_thread_stack_exit(dcontext_t *dcontext)
              * (no current uses) or a race with detach resuming a translated thread
              * before cleaning it up.  The detach race is harmless so we allow it. */
             ASSERT(doing_detach ||
-                   ((size == (size_t)(ostd->stack_top - ostd->stack_base) ||
+                   ((size == (size_t) ALIGN_FORWARD
+                     (ostd->stack_top - (ptr_int_t)ostd->stack_base, PAGE_SIZE) ||
                      /* PR 252008: for WOW64 nudges we allocate an extra page. */
                      (size == PAGE_SIZE + (size_t)(ostd->stack_top - ostd->stack_base) &&
                       is_wow64_process(NT_CURRENT_PROCESS) &&
@@ -1443,6 +1544,8 @@ void
 os_thread_under_dynamo(dcontext_t *dcontext)
 {
     /* add cur thread to callback list */
+    ASSERT_MESSAGE(CHKLVL_ASSERTS+1/*expensive*/, "can only act on executing thread",
+                   dcontext == get_thread_private_dcontext());
     set_asynch_interception(get_thread_id(), true);
 }
 
@@ -1450,6 +1553,8 @@ void
 os_thread_not_under_dynamo(dcontext_t *dcontext)
 {
     /* remove cur thread from callback list */
+    ASSERT_MESSAGE(CHKLVL_ASSERTS+1/*expensive*/, "can only act on executing thread",
+                   dcontext == get_thread_private_dcontext());
     set_asynch_interception(get_thread_id(), false);
 }
 
@@ -1652,6 +1757,13 @@ prot_is_copyonwrite(uint prot)
     return TESTANY(PAGE_WRITECOPY|PAGE_EXECUTE_WRITECOPY, prot);
 }
 
+/* true when page is a guard page and hasn't been touched */
+bool
+prot_is_guard(uint prot)
+{
+    return TEST(PAGE_GUARD, prot);
+}
+
 /* translate platform independent protection bits to native flags */
 int
 memprot_to_osprot(uint prot)
@@ -1672,6 +1784,8 @@ memprot_to_osprot(uint prot)
             os_prot = PAGE_READONLY;
     } else
         os_prot = PAGE_NOACCESS;
+    if (TEST(MEMPROT_GUARD, prot))
+        os_prot |= PAGE_GUARD;
     return os_prot;
 }
 
@@ -1686,10 +1800,12 @@ osprot_to_memprot(uint prot)
         mem_prot |= MEMPROT_WRITE;
     if (prot_is_executable(prot))
         mem_prot |= MEMPROT_EXEC;
+    if (prot_is_guard(prot))
+        mem_prot |= MEMPROT_GUARD;
     return mem_prot;
 }
 
-static int
+int
 osprot_add_writecopy(uint prot)
 {
     int pr = prot & ~PAGE_PROTECTION_QUALIFIERS;
@@ -1697,6 +1813,18 @@ osprot_add_writecopy(uint prot)
     case PAGE_READWRITE: return (prot & (~pr)) | PAGE_WRITECOPY;
     case PAGE_EXECUTE_READWRITE: return (prot & (~pr)) | PAGE_EXECUTE_WRITECOPY;
     default: ASSERT_NOT_REACHED();
+    }
+    return prot;
+}
+
+/* does not change prot if it doesn't already have read access */
+static uint
+osprot_add_write(uint prot)
+{
+    int pr = prot & ~PAGE_PROTECTION_QUALIFIERS;
+    switch (pr) {
+    case PAGE_READONLY: return (prot & (~pr)) | PAGE_READWRITE;
+    case PAGE_EXECUTE_READ: return (prot & (~pr)) | PAGE_EXECUTE_READWRITE;
     }
     return prot;
 }
@@ -1948,8 +2076,12 @@ inject_into_process(dcontext_t *dcontext, HANDLE process_handle, CONTEXT *cxt,
 
     /* Can't early inject 32-bit DR into a wow64 process as there is no
      * ntdll32.dll at early inject point, so thread injection only.  PR 215423.
+     * This is only true for xp64/2003. It happens to work on vista+ because
+     * it turns out ntdll32 is mapped in by the kernel. (xref i#381)
      */
-    if (DYNAMO_OPTION(early_inject) && !is_wow64_process(process_handle)) {
+    if (DYNAMO_OPTION(early_inject) &&
+        (get_os_version() >= WINDOWS_VERSION_VISTA ||
+         !is_wow64_process(process_handle))) {
         ASSERT(early_inject_address != NULL ||
                !INJECT_LOCATION_IS_LDR(early_inject_location));
         /* FIXME if early_inject_address == NULL then early_inject_init failed
@@ -1993,12 +2125,47 @@ is_first_thread_in_new_process(HANDLE process_handle, CONTEXT *cxt)
      * but no easy way to do either here.  FIXME 
      */
     process_id_t pid = process_id_from_handle(process_handle);
-    LOG(THREAD_GET, LOG_SYSCALLS|LOG_THREADS, 2,
-        "%s: pid="PIFX" vs me="PIFX", xbx="PFX" vs peb="PFX"\n",
-        __FUNCTION__, pid, get_process_id(), cxt->THREAD_START_ARG,
-        get_peb(process_handle));
-    return (pid == 0 || (!is_pid_me(pid) &&
-                         cxt->THREAD_START_ARG == (ptr_uint_t)get_peb(process_handle)));
+    if (pid == 0)
+        return true;
+    if (!is_pid_me(pid)) {
+        ptr_uint_t peb = (ptr_uint_t) get_peb(process_handle);
+        if (cxt->THREAD_START_ARG == peb)
+            return true;
+        else if (is_wow64_process(process_handle) &&
+                 get_os_version() >= WINDOWS_VERSION_VISTA) {
+            /* i#816: for wow64 process PEB query will be x64 while thread addr
+             * will be the x86 PEB.  On Vista and Win7 the x86 PEB seems to
+             * always be one page below but we don't want to rely on that, and
+             * it doesn't hold on Win8.  Instead we ensure the start addr is
+             * a one-page alloc whose first 3 fields match the x64 PEB:
+             * boolean flags, Mutant, and ImageBaseAddress.
+             */
+            int64 peb64[3];
+            int peb32[3];
+            byte *base = NULL;
+            size_t sz = get_allocation_size_ex
+                (process_handle, (byte *)cxt->THREAD_START_ARG, &base);
+            LOG(THREAD_GET, LOG_SYSCALLS|LOG_THREADS, 2,
+                "%s: pid="PIFX" vs me="PIFX", arg="PFX" vs peb="PFX"\n",
+                __FUNCTION__, pid, get_process_id(), cxt->THREAD_START_ARG, peb);
+            if (sz != PAGE_SIZE || base != (byte *)cxt->THREAD_START_ARG)
+                return false;
+            if (!nt_read_virtual_memory(process_handle, (const void *) peb,
+                                        peb64, sizeof(peb64), &sz) ||
+                sz != sizeof(peb64) ||
+                !nt_read_virtual_memory(process_handle,
+                                        (const void *) cxt->THREAD_START_ARG,
+                                        peb32, sizeof(peb32), &sz) ||
+                sz != sizeof(peb32))
+                return false;
+            LOG(THREAD_GET, LOG_SYSCALLS|LOG_THREADS, 2,
+                "%s: peb64 "PIFX","PIFX","PIFX" vs peb32 "PIFX","PIFX","PIFX"\n",
+                __FUNCTION__, peb64[0], peb64[1], peb64[2], peb32[0], peb32[1], peb32[2]);
+            if (peb64[0] == peb32[0] && peb64[1] == peb32[1] && peb64[2] == peb32[2])
+                return true;
+        }
+    }
+    return false;
 }
 
 /* Depending on registry and options maybe inject into child process with
@@ -2015,12 +2182,15 @@ maybe_inject_into_process(dcontext_t *dcontext, HANDLE process_handle,
      * value in peb field except in Vista.  Could pass it in. */
     /* Can't early inject 32-bit DR into a wow64 process as there is no
      * ntdll32.dll at early inject point, so thread injection only.  PR 215423.
+     * This is only true for xp64/2003. It happens to work on vista+ because
+     * it turns out ntdll32 is mapped in by the kernel. (xref i#381)
      */
     bool injected = false;
     if ((cxt == NULL && (DYNAMO_OPTION(inject_at_create_process) ||
                          (get_os_version() >= WINDOWS_VERSION_VISTA &&
                           DYNAMO_OPTION(vista_inject_at_create_process)))
-         && !is_wow64_process(process_handle)) ||
+         && (!is_wow64_process(process_handle) ||
+             get_os_version() >= WINDOWS_VERSION_VISTA)) ||
         (cxt != NULL && is_first_thread_in_new_process(process_handle, cxt))) {
         int rununder_mask;
         inject_setting_mask_t should_inject;
@@ -2510,6 +2680,7 @@ process_image(app_pc base, size_t size, uint prot, bool add, bool rewalking,
 {
     const char *name = NULL;
     bool module_is_native_exec = false;
+    bool already_added_native_exec = false;
     /* ensure header is readable */
     ASSERT(prot_is_readable(prot));
     ASSERT(!rewalking || add);  /* when rewalking can only add */
@@ -2544,7 +2715,12 @@ process_image(app_pc base, size_t size, uint prot, bool add, bool rewalking,
             LOG(GLOBAL, LOG_VMAREAS, 1,
                 "image "PFX"-"PFX" is 32-bit dll (wow64 process?)\n",
                 base, base+size);
-            ASSERT(is_wow64_process(NT_CURRENT_PROCESS));
+            /* This happens in a 64-bit process when creating a 32-bit
+             * child: CreateProcess maps in the child executable in
+             * this process first (i#817)
+             */
+            ASSERT_CURIOSITY(is_wow64_process(NT_CURRENT_PROCESS) ||
+                             !TEST(IMAGE_FILE_DLL, get_module_characteristics(base)));
         }
     });
 #else
@@ -2572,11 +2748,15 @@ process_image(app_pc base, size_t size, uint prot, bool add, bool rewalking,
     LOG(GLOBAL, LOG_VMAREAS, 1, "image %-15s %smapped @ "PFX"-"PFX"\n",
         name == NULL ? "<no name>" : name, add ? "" : "un", base, base+size);
 
-    if (DYNAMO_OPTION(native_exec) && name != NULL &&
-        on_native_exec_list(base, name)) {
+    /* Check if module_list_add added the module to native_exec_areas.  If we're
+     * removing the module, it will also be there from the load earlier.
+     */
+    if (DYNAMO_OPTION(native_exec) &&
+        vmvector_overlap(native_exec_areas, base, base+size)) {
         LOG(GLOBAL, LOG_INTERP|LOG_VMAREAS, 1,
             "module %s is on native_exec list\n", name);
         module_is_native_exec = true;
+        already_added_native_exec = true;
 
 #ifdef GBOP
         /* FIXME: if some one just loads a vm, our gbop would become useless;
@@ -2632,10 +2812,10 @@ process_image(app_pc base, size_t size, uint prot, bool add, bool rewalking,
         });
         module_is_native_exec = true;
     }
-    if (module_is_native_exec && add) {
+    if (module_is_native_exec && add && !already_added_native_exec) {
         RSTATS_INC(num_native_module_loads);
         vmvector_add(native_exec_areas, base, base+size, NULL);
-    } else {
+    } else if (!already_added_native_exec) {
         /* For safety we'll just always remove the region (even if add==true) to avoid
          * any possibility of having stale entries in the vector overlap into new 
          * non-native regions. Also see case 7628. */
@@ -2797,6 +2977,16 @@ process_image(app_pc base, size_t size, uint prot, bool add, bool rewalking,
 static void
 process_image_post_vmarea(app_pc base, size_t size, uint prot, bool add, bool rewalking)
 {
+    /* Our WOW64 design for 32-bit DR involves ignoring all 64-bit dlls
+     * (several are visible: wow64cpu.dll, wow64win.dll, wow64.dll, and ntdll.dll)
+     * This includes a 64-bit child process (i#838).
+     * For 64-bit DR both should be handled.
+     */
+#ifndef X64
+    if (module_is_64bit(base))
+        return;
+#endif
+
 #ifdef CLIENT_INTERFACE
     if (dynamo_initialized && add)
         instrument_module_load_trigger(base);
@@ -2814,15 +3004,6 @@ process_image_post_vmarea(app_pc base, size_t size, uint prot, bool add, bool re
         /* see comments in process_image() where we SYSLOG */
         return;
     }
-    /* Our WOW64 design for 32-bit DR involves ignoring all 64-bit dlls
-     * (several are visible: wow64cpu.dll, wow64win.dll, wow64.dll, and ntdll.dll)
-     * For 64-bit DR both should be handled.
-     */
-#ifndef X64
-    if (module_is_64bit(base))
-        return;
-#endif
-
 #ifdef RCT_IND_BRANCH
     if (TEST(OPTION_ENABLED, DYNAMO_OPTION(rct_ind_call)) ||
         TEST(OPTION_ENABLED, DYNAMO_OPTION(rct_ind_jump))) {
@@ -3218,6 +3399,43 @@ reset_profile(profile_t *profile)
 }
 #endif
 
+/* free memory allocated from os_raw_mem_alloc */
+void
+os_raw_mem_free(void *p, size_t size, heap_error_code_t *error_code)
+{
+    ASSERT(error_code != NULL);
+    ASSERT(size > 0 && ALIGNED(size, PAGE_SIZE));
+
+    *error_code = nt_decommit_virtual_memory(p, size);
+    ASSERT(NT_SUCCESS(*error_code));
+    *error_code = nt_free_virtual_memory(p);
+    LOG(GLOBAL, LOG_HEAP, 2, "os_raw_mem_free: "SZFMT" bytes @ "PFX"\n",
+        size, p);
+    ASSERT(NT_SUCCESS(*error_code));
+}
+
+void *
+os_raw_mem_alloc(void *preferred, size_t size, uint prot,
+                 heap_error_code_t *error_code)
+{
+    void *p = preferred;
+    uint os_prot = memprot_to_osprot(prot);
+
+    ASSERT(error_code != NULL);
+    /* should only be used on aligned pieces */
+    ASSERT(size > 0 && ALIGNED(size, PAGE_SIZE));
+
+    *error_code = nt_allocate_virtual_memory(&p, size, os_prot, MEMORY_COMMIT);
+    if (!NT_SUCCESS(*error_code)) {
+        LOG(GLOBAL, LOG_HEAP, 3,
+            "os_raw_mem_alloc %d bytes failed"PFX"\n", size, p);
+        return NULL;
+    }
+    LOG(GLOBAL, LOG_HEAP, 2, "os_raw_mem_alloc: "SZFMT" bytes @ "PFX"\n",
+        size, p);
+    return p;
+}
+
 /* caller is required to handle thread synchronization */
 /* see inject.c, this must be able to free an nt_allocate_virtual_memory
  * pointer */
@@ -3378,6 +3596,40 @@ os_heap_get_commit_limit(size_t *commit_used, size_t *commit_limit)
     }
 }
 
+/* i#939: for win8 wow64, x64 ntdll is up high but the kernel won't let us
+ * allocate new memory within rel32 distance.  Thus we clobber the padding at
+ * the end of x64 ntdll.dll's +rx section.  For typical x64 landing pads w/
+ * returned memory that need 5 bytes for displaced code, we need 19+5=24 bytes
+ * each.  We use 35 landing pads in a normal run.  That's 0x348 bytes, so we
+ * will fail if a new version of x64 ntdll uses more than 0xcb8 of its final +rx
+ * page (FTR, only the win2003 versions of x64 ntdll have ever done this).
+ *
+ * Currently looks for one contiguous piece of executable memory and returns it.
+ * Does not mark it as used so will return the same piece to subsequent callers!
+ *
+ * XXX: If this isn't enough space, we should support multiple regions
+ * (end of .text has its own padding, separate from end of "RT" which
+ * this returns), look for padding inside .text (have to be careful
+ * there), and/or split the landing pads up to do 6-byte hooks with
+ * only an 8-byte target and give up on hook chaining robustness.
+ */
+bool
+os_find_free_code_space_in_libs(void **start OUT, void **end OUT)
+{
+    app_pc rx_end_nopad, rx_end_padded;
+    ASSERT_CURIOSITY(get_os_version() >= WINDOWS_VERSION_8 &&
+                     is_wow64_process(NT_CURRENT_PROCESS) &&
+                     IF_X64_ELSE(true, false));
+    if (!get_executable_segment(get_ntdll_base(),
+                                NULL, &rx_end_padded, &rx_end_nopad))
+        return false;
+    if (start != NULL)
+        *start = rx_end_nopad;
+    if (end != NULL)
+        *end = rx_end_padded;
+    return true;
+}
+
 /* yield the current thread */
 void
 thread_yield()
@@ -3445,7 +3697,11 @@ thread_set_mcontext(thread_record_t *tr, priv_mcontext_t *mc)
 {
     char buf[MAX_CONTEXT_SIZE];
     CONTEXT *cxt = nt_initialize_context(buf, CONTEXT_DR_STATE);
-    mcontext_to_context(cxt, mc);
+    /* i#1033: get the context from the dst thread to make sure
+     * segments are correctly set.
+     */
+    thread_get_context(tr, cxt);
+    mcontext_to_context(cxt, mc, false /* !set_cur_seg */);
     return thread_set_context(tr, cxt);
 }
 
@@ -3476,7 +3732,8 @@ thread_set_self_mcontext(priv_mcontext_t *mc)
 {
     char buf[MAX_CONTEXT_SIZE];
     CONTEXT *cxt = nt_initialize_context(buf, CONTEXT_DR_STATE);
-    mcontext_to_context(cxt, mc);
+    /* need ss and cs for setting my own context */
+    mcontext_to_context(cxt, mc, true /* set_cur_seg */);
     thread_set_self_context(cxt);
     ASSERT_NOT_REACHED();
 }
@@ -3655,7 +3912,10 @@ shlib_handle_t
 load_shared_library(const char *name)
 {
     if (IF_CLIENT_INTERFACE_ELSE(INTERNAL_OPTION(private_loader), false)) {
-        return (shlib_handle_t) load_private_library(name);
+        /* We call locate_and_load_private_library() to support searching for
+         * a pathless name.
+         */
+        return (shlib_handle_t) locate_and_load_private_library(name);
     } else {
         wchar_t buf[MAX_PATH];
         snwprintf(buf, BUFFER_SIZE_ELEMENTS(buf), L"%hs", name);
@@ -3746,26 +4006,29 @@ enum { MAX_QUERY_VM_BLOCKS = 512*1024 };
  * size - note that we can't efficiently go backwards to find the
  * maximum possible allocation size in a free hole.
  */
-size_t
-get_allocation_size(byte *pc, byte **base_pc)
+static size_t
+get_allocation_size_ex(HANDLE process, byte *pc, byte **base_pc)
 {
     PBYTE pb = (PBYTE) pc;
     MEMORY_BASIC_INFORMATION mbi;
     PVOID region_base;
     PVOID pb_base;
     size_t pb_size;
-    size_t res;
+    NTSTATUS res;
     int num_blocks = 0;
-    size_t size;
+    size_t size, got;
 
-    res = query_virtual_memory(pb, &mbi, sizeof(mbi));
-    if (res != sizeof(mbi) /* invalid address given, e.g. POINTER_MAX */) {
+    res = nt_remote_query_virtual_memory(process, pb, &mbi, sizeof(mbi), &got);
+    if (!NT_SUCCESS(res) || got != sizeof(mbi)) {
+        /* invalid address given, e.g. POINTER_MAX */
+        LOG(THREAD_GET, LOG_VMAREAS, 3, "%s failed to query "PFX"\n", pb);
         if (base_pc != NULL)
             *base_pc = NULL;
         return 0;
     }
 
     if (mbi.State == MEM_FREE /* free memory doesn't have AllocationBase */) {
+        LOG(THREAD_GET, LOG_VMAREAS, 3, "%s memory is free "PFX"\n", pb);
         if (base_pc != NULL)
             *base_pc = NULL;
         /* note free region from requested ALIGN_BACKWARD(pc base */
@@ -3782,12 +4045,17 @@ get_allocation_size(byte *pc, byte **base_pc)
     /* must keep querying contiguous blocks until reach next region
      * to find this region's size
      */
-    LOG(GLOBAL, LOG_VMAREAS, 3,
-        "get_allocation_size pc="PFX" base="PFX" region="PFX" size="PIFX"\n",
-        pc, pb_base, region_base, mbi.RegionSize);
+    LOG(THREAD_GET, LOG_VMAREAS, 3,
+        "%s pc="PFX" base="PFX" region="PFX" size="PIFX"\n",
+        __FUNCTION__, pc, pb_base, region_base, mbi.RegionSize);
     do {
-        res = query_virtual_memory(pb, &mbi, sizeof(mbi));
-        if (res != sizeof(mbi) || mbi.State == MEM_FREE || mbi.AllocationBase != region_base)
+        res = nt_remote_query_virtual_memory(process, pb, &mbi, sizeof(mbi), &got);
+        LOG(THREAD_GET, LOG_VMAREAS, 4,
+            "%s pc="PFX" base="PFX" type="PIFX" region="PFX" size="PIFX"\n",
+            __FUNCTION__, pb, mbi.BaseAddress, mbi.State, mbi.AllocationBase,
+            mbi.RegionSize);
+        if (!NT_SUCCESS(res) || got != sizeof(mbi) || mbi.State == MEM_FREE ||
+            mbi.AllocationBase != region_base)
             break;
         ASSERT(mbi.RegionSize > 0); /* if > 0, we will NOT infinite loop */
         size += mbi.RegionSize;
@@ -3809,6 +4077,12 @@ get_allocation_size(byte *pc, byte **base_pc)
     if (base_pc != NULL)
         *base_pc = (byte *) region_base;
     return size;
+}
+
+size_t
+get_allocation_size(byte *pc, byte **base_pc)
+{
+    return get_allocation_size_ex(NT_CURRENT_PROCESS, pc, base_pc);
 }
 
 /* Returns information about the memory area (not allocation region)
@@ -3908,6 +4182,26 @@ get_memory_info(const byte *pc, byte **base_pc, size_t *size, uint *prot)
             *prot = osprot_to_memprot(mbi.Protect);
     }
     return true;
+}
+
+DR_API
+/* Calls NtQueryVirtualMemory. */
+size_t
+dr_virtual_query(const byte *pc, MEMORY_BASIC_INFORMATION *mbi, size_t mbi_size)
+{
+    size_t res = query_virtual_memory(pc, mbi, mbi_size);
+    if (is_pretend_or_executable_writable((app_pc)pc)) {
+        /* We can't assert !prot_is_writable(mbi->Protect) b/c we mark selfmod
+         * as executable-but-writable and we'll come here.
+         */
+        /* We can't easily add an analogue of DR_MEMPROT_PRETEND_WRITE b/c
+         * users won't expect it due to the bulk of the flags not being
+         * bitmasks.  Should we not pretend these regions are writable, then?
+         * User can always call dr_query_memory().
+         */
+        mbi->Protect = osprot_add_write(mbi->Protect);
+    }
+    return res;
 }
 
 /* It is ok to pass NULL for dcontext */
@@ -4034,13 +4328,28 @@ is_readable_without_exception_query_os(byte *pc, size_t size)
  * however this is still much slower then a structured exception handling 
  * solution since we expect this to succeed most of the time.  Ref PR 206278 
  * and 208562 on using the faster TRY/EXCEPT. */
-bool
-safe_read_ex(const void *base, size_t size, void *out_buf, size_t *bytes_read)
+static bool
+safe_read_syscall(const void *base, size_t size, void *out_buf, size_t *bytes_read)
 {
     if (bytes_read != NULL)
         *bytes_read = 0;
-    STATS_INC(num_safe_reads);
     return nt_read_virtual_memory(NT_CURRENT_PROCESS, base, out_buf, size, bytes_read);
+}
+
+bool
+safe_read_ex(const void *base, size_t size, void *out_buf, size_t *bytes_read)
+{
+    STATS_INC(num_safe_reads);
+    /* XXX i#350: we'd like to always use safe_read_fast() and remove this extra
+     * call layer, but safe_read_fast() requires fault handling to be set up.
+     * There are complications with moving windows fault handling earlier in
+     * the init process, so we just fall back to the syscall during init.
+     */
+    if (!dynamo_initialized) {
+        return safe_read_syscall(base, size, out_buf, bytes_read);
+    } else {
+        return safe_read_fast(base, size, out_buf, bytes_read);
+    }
 }
 
 /* FIXME - fold this together with safe_read_ex() (is a lot of places to update) */
@@ -4158,6 +4467,14 @@ internal_change_protection(byte *start, size_t requested_size, bool set,
     size_t remaining_size = requested_size;
     bool changed_permissions = false;
     bool subregions_failed = false;
+    /* i#936: prevent cl v16 (VS2010) from combining the two
+     * stats incs into one prior to the actual protection change.
+     * Though note that code movement was not sufficient for i#936.
+     * Fortunately here it's only debug-build stats and our debug build
+     * shouldn't hit that high-optimization: but if we make these RSTATS
+     * we should be careful.
+     */
+    volatile bool writable_volatile = writable;
 
     /* while this routine may allow crossing allocation bases 
      * it is supposed to be in error, a MEM_FREE block would terminate it */
@@ -4300,7 +4617,7 @@ internal_change_protection(byte *start, size_t requested_size, bool set,
 
         DOSTATS({
             /* once on each side of prot, to get on right side of writability */
-            if (!writable) {
+            if (!writable_volatile) {
                 STATS_INC(protection_change_calls);
                 STATS_ADD(protection_change_pages, subregion_size / PAGE_SIZE);
             }
@@ -4321,7 +4638,7 @@ internal_change_protection(byte *start, size_t requested_size, bool set,
         ASSERT_CURIOSITY(res && "protect_virtual_memory failed");
         DOSTATS({
             /* once on each side of prot, to get on right side of writability */
-            if (writable) {
+            if (writable_volatile) {
                 STATS_INC(protection_change_calls);
                 STATS_ADD(protection_change_pages, subregion_size / PAGE_SIZE);
             }
@@ -4381,7 +4698,6 @@ make_hookable(byte *pc, size_t size, bool *changed_prot)
 {
     byte *start_pc = (byte *)ALIGN_BACKWARD(pc, PAGE_SIZE);
     size_t num_bytes = ALIGN_FORWARD(size + (pc - start_pc), PAGE_SIZE);
-    ASSERT(changed_prot != NULL);
     return internal_change_protection(start_pc, num_bytes,
                                       false/*relative*/, true, false/*not cow*/, 0, 
                                       changed_prot);
@@ -4489,6 +4805,9 @@ convert_NT_to_Dos_path(OUT wchar_t *buf, IN const wchar_t *fname,
             drive[0] = L'A' + (wchar_t)i;
             res = nt_get_symlink_target(objdir, drive, &ustr, &len);
             if (NT_SUCCESS(res)) {
+                /* i#845: ustr.Buffer might not be null-terminated */
+                ustr.Buffer[MIN(ustr.Length / sizeof(ustr.Buffer[0]),
+                                ustr.MaximumLength / sizeof(ustr.Buffer[0]) - 1)] = L'\0';
                 LOG(THREAD_GET, LOG_NT, 3, "%s: drive %d=%c: type=%d => %S\n",
                     __FUNCTION__, i, 'A'+(wchar_t)i, map.Query.DriveType[i], ustr.Buffer);
             } else {
@@ -4509,6 +4828,106 @@ convert_NT_to_Dos_path(OUT wchar_t *buf, IN const wchar_t *fname,
     return ans;
 }
 
+#ifndef NOT_DYNAMORIO_CORE_PROPER /* b/c of global_heap_* */
+/* If the conversion succeeds and fits in fixedbuf, returns fixedbuf.
+ * If the conversion won't fit in fixedbuf, allocates memory and
+ * returns that memory, along with its size in allocbuf_sz.
+ * In that case, the memory should be freed by calling
+ * convert_to_NT_file_path_wide_free();
+ * Always null-terminates when it returns non-NULL.
+ *
+ * FIXME i#298: we need to support relative paths for drwinapi
+ */
+wchar_t *
+convert_to_NT_file_path_wide(OUT wchar_t *fixedbuf, IN const wchar_t *fname,
+                             IN size_t fixedbuf_len/*# elements*/,
+                             OUT size_t *allocbuf_sz/*#bytes*/)
+{
+    /* XXX: we could templatize this to share code w/ convert_to_NT_file_path(),
+     * but a lot of the extra stuff there is curiosities for use within DR,
+     * while this routine is mainly used by drwinapi.
+     * If you change the logic here, change convert_to_NT_file_path().
+     */
+    bool is_UNC = false;
+    bool is_device = false;
+    const wchar_t *name = fname;
+    wchar_t *buf;
+    int i, size;
+    size_t size_needed, buf_len;
+    ASSERT(fixedbuf != NULL && fixedbuf_len != 0);
+    if (name[0] == L'\\') {
+        name += 1; /* eat the first \ */
+        if (name[0] == L'\\') {
+            if (name[1] == L'.' && name[2] == L'\\') {
+                /* convert \\.\foo to \??\foo (i#499) */
+                is_UNC = false;
+                is_device = true;
+                name += 3;
+            } else if (name[1] == L'?' && name[2] == L'\\') {
+                /* convert \\?\foo to \??\foo */
+                name += 3;
+            } else {
+                /* is \\server type */
+                is_UNC = true;
+            }
+        } else {
+            /* \??\UNC\server or \??\c:\ */
+            if (name[0] != L'\0' && name[1] != L'\0' && name[2] != L'\0') {
+                name += 3;
+            } else {
+                return NULL;
+            } 
+        }
+        if (!is_UNC && !is_device) {
+            /* we've eaten the initial \\?\ or \??\ check for UNC */
+            if ((name[0] == L'U' || name[0] == L'u') &&
+                (name[1] == L'N' || name[1] == L'n') &&
+                (name[2] == L'C' || name[2] == L'c')) {
+                is_UNC = true;
+                name += 3;
+            }
+        }
+    }
+    /* should now have either ("c:\" and !is_UNC) or ("\server" and is_UNC) */ 
+    size_needed = (wcslen(name) + wcslen(L"\\??\\") +
+                   (is_UNC ? wcslen(L"UNC") : 0) + 1/*null*/) * sizeof(wchar_t);
+    if (fixedbuf_len >= size_needed) {
+        buf = fixedbuf;
+        buf_len = fixedbuf_len;
+    } else {
+        /* We allocate regardless of the path contents to handle
+         * larger-than-MAX_PATH paths (technically drwinapi only has to do
+         * that for "\\?\" paths).
+         */
+        buf = (wchar_t *) global_heap_alloc(size_needed HEAPACCT(ACCT_OTHER));
+        buf_len = size_needed;
+        *allocbuf_sz = buf_len;
+    }
+    size = snwprintf(buf, buf_len, L"\\??\\%s%s", is_UNC ? L"UNC" : L"", name);
+    buf[buf_len-1] = L'\0';
+    if (size < 0 || size == (int)buf_len) {
+        if (buf != fixedbuf)
+            global_heap_free(buf, buf_len HEAPACCT(ACCT_OTHER));
+        return false;
+    }
+    /* change / to \ */
+    for (i = 0; i < size; i++) {
+        if (buf[i] == L'/') 
+            buf[i] = L'\\';
+    }
+    return buf;
+}
+
+void
+convert_to_NT_file_path_wide_free(wchar_t *buf, size_t alloc_sz)
+{
+    global_heap_free(buf, alloc_sz HEAPACCT(ACCT_OTHER));
+}
+#endif /* NOT_DYNAMORIO_CORE_PROPER, b/c of global_heap_* */
+
+/* Always null-terminates when it returns true.
+ * FIXME i#298: we need to support relative paths for drwinapi.
+ */
 bool
 convert_to_NT_file_path(OUT wchar_t *buf, IN const char *fname,
                         IN size_t buf_len/*# elements*/)
@@ -4526,7 +4945,7 @@ convert_to_NT_file_path(OUT wchar_t *buf, IN const char *fname,
      * c:\ \??\c:\ \\?\c:\ \\server \??\UNC\server \\?\UNC\server */
     /* FIXME - could we ever get any other path formats here (xref case 9146 and the
      * reactos src.  See DEVICE_PATH \\.\foo, UNC_DOT_PATH \\., etc. 
-     * For i#499 we now convert \\.\foo to \\??\foo.
+     * For i#499 we now convert \\.\foo to \??\foo.
      */ 
     /* CHECK - at the api level, paths longer then MAX_PATH require \\?\ prefix, unclear
      * if we would need to use that at this level instead of \??\ for long paths (not
@@ -4537,18 +4956,20 @@ convert_to_NT_file_path(OUT wchar_t *buf, IN const char *fname,
      * at the dissasembly it grabs the loader lock! why does it need
      * to do that? is it to translate . or ..?, better just to do the 
      * translation here where we know what's going on */
+    /* XXX: if you change the logic here, change convert_to_NT_file_path_wide() */
     if (name[0] == '\\') {
         name += 1; /* eat the first \ */
         if (name[0] == '\\') {
             if (name[1] == '.' && name[2] == '\\') {
-                /* convert \\.\foo to \\??\foo (i#499) */
+                /* convert \\.\foo to \??\foo (i#499) */
                 is_UNC = false;
                 is_device = true;
-                name += 2;
+                name += 3;
             } else if (name[1] == '?') {
                 /* is \\?\UNC\server or \\?\c:\ type,
                  * chop off the \\?\ and we'll check for the UNC later */
-                ASSERT_CURIOSITY(name[2] == '\\' && "create file invalid name");
+                ASSERT_CURIOSITY(CLIENT_OR_STANDALONE() ||
+                                 (name[2] == '\\' && "create file invalid name"));
                 /* safety check, don't go beyond end of string */
                 if (name[2] != '\0') {
                     name += 3;
@@ -4562,8 +4983,9 @@ convert_to_NT_file_path(OUT wchar_t *buf, IN const char *fname,
         } else {
             /* is \??\UNC\server for \??\c:\ type
              * chop off the \??\ and we'll check for the UNC later */
-            ASSERT_CURIOSITY(name[0] == '?' && name[1] == '?' && name[2] == '\\' &&
-                             "create file invalid name");
+            ASSERT_CURIOSITY(CLIENT_OR_STANDALONE() ||
+                             (name[0] == '?' && name[1] == '?' &&
+                              name[2] == '\\' && "create file invalid name"));
             /* safety check, don't go beyond end of string */
             if (name[0] != '\0' && name[1] != '\0' && name[2] != '\0') {
                 name += 3;
@@ -4579,20 +5001,23 @@ convert_to_NT_file_path(OUT wchar_t *buf, IN const char *fname,
                 /* is \??\UNC\server or \\?\UNC\server type, chop of the UNC 
                  * (we'll re-add below)
                  * NOTE '/' is not a legal separator for a \??\ or \\?\ path */
-                ASSERT_CURIOSITY(name[3] == '\\' && "create file invalid name");
+                ASSERT_CURIOSITY(CLIENT_OR_STANDALONE() ||
+                                 (name[3] == '\\' && "create file invalid name"));
                 is_UNC = true;
                 name += 3;
             } else {
                 /* is \??\c:\ or \\?\c:\ type,
                  * NOTE '/' is not a legal separator for a \??\ or \\?\ path */
-                ASSERT_CURIOSITY(name[1] == ':' && name[2] == '\\' &&
-                                 "create file invalid name");
+                ASSERT_CURIOSITY(CLIENT_OR_STANDALONE() ||
+                                 (name[1] == ':' && name[2] == '\\' &&
+                                  "create file invalid name"));
             }
         }
     } else {
         /* is c:\ type, NOTE case 9329 c:/ is also legal */
-        ASSERT_CURIOSITY(name[1] == ':' && (name[2] == '/' || name[2] == '\\') &&
-                         "create file invalid name");
+        ASSERT_CURIOSITY(CLIENT_OR_STANDALONE() ||
+                         (name[1] == ':' && (name[2] == '/' || name[2] == '\\') &&
+                          "create file invalid name"));
     }
 
     /* should now have either ("c:\" and !is_UNC) or ("\server" and is_UNC) */ 
@@ -4637,7 +5062,13 @@ os_internal_create_file_test(const char *fname, bool is_dir, ACCESS_MASK rights,
 bool
 os_file_exists(const char *fname, bool is_dir)
 {
-    return os_internal_create_file_test(fname, is_dir, 0, FILE_SHARE_READ, FILE_OPEN);
+    /* Perhaps we should use the simpler NtQueryAttributesFile? */
+    return os_internal_create_file_test(fname, is_dir, 0,
+                                        /* We can get sharing violations if we don't
+                                         * include write (drmem i#1025)
+                                         */
+                                        FILE_SHARE_READ|FILE_SHARE_WRITE,
+                                        FILE_OPEN);
 }
 
 /* Returns true and sets 'size' of file on success; returns false on failure.
@@ -4871,7 +5302,7 @@ os_open(const char *fname, int os_open_flags)
 
     /* clients are allowed to open the file however they want, xref PR 227737 */
     ASSERT_CURIOSITY_ONCE((TEST(OS_OPEN_REQUIRE_NEW, os_open_flags)
-                           IF_CLIENT_INTERFACE( ||
+                           IF_CLIENT_INTERFACE( || standalone_library ||
                              !IS_INTERNAL_STRING_OPTION_EMPTY(client_lib))) &&
                           "symlink risk PR 213492");
     
@@ -4964,7 +5395,7 @@ os_read(file_t f, void *buf, size_t count)
 void
 os_flush(file_t f)
 {
-    bool ok = flush_file_buffers(f);
+    nt_flush_file_buffers(f);
 }
 
 /* seek the current file position to offset bytes from origin, return true if successful */
@@ -5100,6 +5531,7 @@ os_delete_mapped_file(const char *filename)
     return deleted;
 }
 
+/* file_name must already be in NT format */
 bool
 os_delete_file_w(const wchar_t *file_name,
                  HANDLE directory_handle)
@@ -5107,6 +5539,10 @@ os_delete_file_w(const wchar_t *file_name,
     NTSTATUS res;
     HANDLE hf;
     FILE_DISPOSITION_INFORMATION file_dispose_info;
+
+    /* XXX: we should be able to use nt_delete_file() but it doesn't take
+     * in a base dir: need to examine all callers.
+     */
 
     res = nt_create_module_file(&hf, file_name, 
                                 directory_handle,
@@ -5300,16 +5736,16 @@ os_map_file(file_t f, size_t *size INOUT, uint64 offs, app_pc addr, uint prot,
     /* FIXME case 9642: support requesting a particular base address so
      * we can randomize, make adjacent to vmheap, etc.
      */
-    res = nt_map_view_of_section(section, /* 0 */
-                                 NT_CURRENT_PROCESS, /* 1 */
-                                 &map, /* 2 */
-                                 0, /* 3 */
-                                 0 /* not page-file-backed */, /* 4 */
-                                 &li_offs, /* 5 */
-                                 (PSIZE_T) size, /* 6 */
-                                 ViewUnmap /* FIXME: expose? */, /* 7 */
-                                 0 /* no special top-down or anything */, /* 8 */
-                                 osprot); /* 9 */
+    res = nt_raw_MapViewOfSection(section, /* 0 */
+                                  NT_CURRENT_PROCESS, /* 1 */
+                                  &map, /* 2 */
+                                  0, /* 3 */
+                                  0 /* not page-file-backed */, /* 4 */
+                                  &li_offs, /* 5 */
+                                  (PSIZE_T) size, /* 6 */
+                                  ViewUnmap /* FIXME: expose? */, /* 7 */
+                                  0 /* no special top-down or anything */, /* 8 */
+                                  osprot); /* 9 */
     /* We do not need to keep the section handle open */
     close_handle(section);
     if (!NT_SUCCESS(res)) {
@@ -5322,7 +5758,7 @@ os_map_file(file_t f, size_t *size INOUT, uint64 offs, app_pc addr, uint prot,
 bool
 os_unmap_file(byte *map, size_t size/*unused*/)
 {
-    int res = nt_unmap_view_of_section(NT_CURRENT_PROCESS, map);
+    int res = nt_raw_UnmapViewOfSection(NT_CURRENT_PROCESS, map);
     return NT_SUCCESS(res);
 }
 
@@ -5332,6 +5768,7 @@ os_unmap_file(byte *map, size_t size/*unused*/)
  * owner, the caller must hold the thread_initexit_lock to ensure that it
  * remains valid.
  * Requires thread trec is at_safe_spot().
+ * We assume that the segments CS and SS have been set in the cxt properly.
  */
 bool
 translate_context(thread_record_t *trec, CONTEXT *cxt, bool restore_memory)
@@ -5344,20 +5781,26 @@ translate_context(thread_record_t *trec, CONTEXT *cxt, bool restore_memory)
     ASSERT(TESTALL(CONTEXT_DR_STATE, cxt->ContextFlags));
     context_to_mcontext(&mc, cxt);
     res = translate_mcontext(trec, &mc, restore_memory, NULL);
-    if (res)
-        mcontext_to_context(cxt, &mc);
+    if (res) {
+        /* assuming cs/ss has been set properly */
+        mcontext_to_context(cxt, &mc, false /* set_cur_seg */);
+    }
     return res;
 }
 
 /* be careful about args: for windows different versions have different offsets
- * see SYSCALL_PARAM_OFFSET in win32/os.c
+ * see SYSCALL_PARAM_OFFSET in win32/os.c.
+ *
+ * This routine is assumed to only be used for NtRaiseException, where changes
+ * to regs or even the stack will be unrolled or else the app will exit:
+ * i.e., there is no need to restore the changes ourselves.
  */
 static void
 set_mcontext_for_syscall(dcontext_t *dcontext, int sys_enum,
 #ifdef X64
                          reg_t arg1, reg_t arg2, reg_t arg3
 #else
-                         reg_t sys_arg
+                         reg_t sys_arg, size_t args_size
 #endif
                          )
 {
@@ -5372,7 +5815,7 @@ set_mcontext_for_syscall(dcontext_t *dcontext, int sys_enum,
 #endif
 
     mc->xax = syscalls[sys_enum];
-    if (get_syscall_method() == SYSCALL_METHOD_WOW64) {
+    if (get_syscall_method() == SYSCALL_METHOD_WOW64 && syscall_uses_wow64_index()) {
         mc->xcx = wow64_index[sys_enum];
     }
 #ifdef X64
@@ -5380,7 +5823,19 @@ set_mcontext_for_syscall(dcontext_t *dcontext, int sys_enum,
     mc->xdx = arg2;
     mc->r8 = arg3;
 #else
-    mc->xdx = sys_arg;
+    if (syscall_uses_edx_param_base())
+        mc->xdx = sys_arg;
+    else {
+        /* The syscall itself is going to write to the stack for its call
+         * so go ahead and push the args.  See comment up top about not
+         * needing to restore the stack.
+         */
+        mc->xsp -= args_size;
+        if (!safe_write((byte *)mc->xsp, args_size, (const void *)sys_arg)) {
+            SYSLOG_INTERNAL_WARNING("failed to store args for NtRaiseException");
+            /* just keep going I suppose: going to crash though w/ uninit args */
+        }
+    }
 #endif
 }
 
@@ -5408,7 +5863,8 @@ os_raise_exception(dcontext_t *dcontext,
     reg_t arg_pointer = (reg_t)
         ((ptr_uint_t)&raise_exception_arguments) - SYSCALL_PARAM_OFFSET();
 
-    set_mcontext_for_syscall(dcontext, SYS_RaiseException, arg_pointer),
+    set_mcontext_for_syscall(dcontext, SYS_RaiseException, arg_pointer,
+                             sizeof(raise_exception_arguments) + SYSCALL_PARAM_OFFSET()),
 #endif
     issue_last_system_call_from_app(dcontext);
     ASSERT_NOT_REACHED();
@@ -6213,37 +6669,7 @@ detach_helper(int detach_type)
                 /* we do need to restore the app ret addr, for native_exec */
                 if (!DYNAMO_OPTION(thin_client) && DYNAMO_OPTION(native_exec) &&
                     !vmvector_empty(native_exec_areas)) {
-                    /* We store the retaddr location that we clobbered in
-                     * native_exec_retloc.  We don't currently follow callbacks
-                     * so we don't have to do this while walking the callback
-                     * stack below, just for this dcontext.  We also only have a
-                     * single location since we don't re-takeover while native on
-                     * an APC or an exception.
-                     */
-                    app_pc *esp = (app_pc *) threads[i]->dcontext->native_exec_retloc;
-                    app_pc real_retaddr = threads[i]->dcontext->native_exec_retval;
-
-                    /* In hotp_only mode, a thread can be !under_dynamo_control 
-                     * and have no native_exec_retloc.  For hotp_only, there 
-                     * should be no need to restore a return value on the stack 
-                     * as the thread has been native from the start and not 
-                     * half-way through as it would in the regular hot patching 
-                     * mode, i.e., with the code cache.  See case 7681. 
-                     */
-#ifdef HOT_PATCHING_INTERFACE
-                    if (esp == NULL) {
-                        ASSERT(DYNAMO_OPTION(hotp_only));
-                        ASSERT(real_retaddr == NULL);
-                    } else {
-                        ASSERT(!DYNAMO_OPTION(hotp_only));
-#endif
-                        ASSERT(esp != NULL && 
-                               *esp == (app_pc)back_from_native);
-                        ASSERT(real_retaddr != NULL);
-                        *esp = real_retaddr;
-#ifdef HOT_PATCHING_INTERFACE
-                    }
-#endif
+                    put_back_native_retaddrs(dcontext);
                 }
             }
             /* handle special case of vsyscall, need to hack the return address
@@ -6552,8 +6978,10 @@ os_wait_event(event_t e _IF_CLIENT_INTERFACE(bool set_safe_for_synch)
     KSTOP(wait_event);
 }
 
+#endif /* !NOT_DYNAMORIO_CORE_PROPER */
+
 wait_status_t
-os_wait_handle(HANDLE h, uint timeout_ms)
+os_wait_handle(HANDLE h, uint64 timeout_ms)
 {
     LARGE_INTEGER li;
     LARGE_INTEGER *timeout;
@@ -6565,6 +6993,8 @@ os_wait_handle(HANDLE h, uint timeout_ms)
     }
     return nt_wait_event_with_timeout(h, timeout);
 }
+
+#ifndef NOT_DYNAMORIO_CORE_PROPER
 
 void
 mutex_wait_contended_lock(mutex_t *lock)
@@ -6798,6 +7228,7 @@ early_inject_init()
         case WINDOWS_VERSION_2003:
         case WINDOWS_VERSION_VISTA:
         case WINDOWS_VERSION_7:
+        case WINDOWS_VERSION_8:
             /* LdrLoadDll is best but LdrpLoadDll seems to work just as well
              * (FIXME would it be better just to use that so matches XP?),
              * LdrpLoadImportModule also works but it misses the load of
@@ -7020,7 +7451,12 @@ earliest_inject_cleanup(byte *arg_ptr)
     byte *tofree = args->tofree_base;
     NTSTATUS res;
 
-    /* Free tofree (which contains args) */
+    /* Free tofree (which contains args).
+     * We could free this in earliest_inject_init() via adding
+     * bootstrap_free_virtual_memory() but in case we need to add
+     * more cleanup later, going this route.
+     */
+    LOG(GLOBAL, LOG_ALL, 1, "freeing early inject args @"PFX"\n", tofree);
     res = nt_remote_free_virtual_memory(NT_CURRENT_PROCESS, tofree);
     ASSERT(NT_SUCCESS(res));
 }

@@ -48,6 +48,14 @@
 # include <wchar.h>
 #endif
 
+#ifdef NOT_DYNAMORIO_CORE_PROPER
+/* drpreinject doesn't link utils.c.  We fail gracefully without the assertion,
+ * so just define it away.
+ */
+# undef CLIENT_ASSERT
+# define CLIENT_ASSERT(cond, msg)
+#endif /* NOT_DYNAMORIO_CORE_PROPER */
+
 #define VA_ARG_CHAR2INT
 #define BUF_SIZE 64
 
@@ -92,6 +100,212 @@ double2int(double d)
         return i;
 }
 
+#ifdef WINDOWS
+/*****************************************************************************
+ * UTF-8 <-> UTF-16
+ *
+ * Windows-only b/c it assumes wide chars are 2 bytes (primarily just when
+ * examining input values).
+ */
+
+/* Returns the number of elements written if all of the characters of src,
+ * or if max_chars from src, were successfully encoded into dst.
+ * Passing max_chars==0 means no limit.
+ * If there is room, appends a null terminator (which is not included in the
+ * return value).  (This is to match our snprintf semantics.)
+ * Returns -1 on an error, such as src not being valid UTF-8, or on encountering
+ * a character that cannot be encoded with UTF-16.
+ * In *written, returns the number of unicode characters written to dst including
+ * the terminating null.
+ * Will not write a partial multi-byte character.
+ * Does not use a byte-order mark.
+ *
+ * XXX: instead of bailing and returning -1, should we use a particular encoding
+ * for each invalid sequence?  MultiByteToWideChar uses U+FFFD.
+ */
+static ssize_t
+utf8_to_utf16(wchar_t *dst, size_t dst_sz/*elements*/, const char *src,
+              size_t max_chars, size_t *written/*unicode chars*/)
+{
+    /* Be sure to use unsigned for proper comparisons below */
+    const unsigned char *s = (const unsigned char *) src;
+    wchar_t *d = dst;
+    size_t chars = 0;
+    while (dst_sz > 0 && *s != '\0' && (max_chars == 0 || chars < max_chars)) {
+        if (*s <= 0x7f) {
+            /* through U+007F: 7 bits: bottom 7 of 1st byte */
+            *d = (wchar_t) *s;
+            chars++;
+        } else if (*s >> 5 == 0x6) {
+            /* through U+07FF: 11 bits: bottom 5 of 1st and bottom 6 of 2nd */
+            wchar_t first = (((wchar_t)*s) & 0x1f) << 6;
+            s++;
+            if (*s >> 6 != 0x2)
+                return -1; /* malformed UTF-8 */
+            *d = first | (*s & 0x3f);
+            chars++;
+        } else if (*s >> 4 == 0xe) {
+            /* through U+FFFF: 16 bits: bottom 4 of 1st, bottom 6 of 2nd + 3rd */
+            wchar_t first = (((wchar_t)*s) & 0xf) << 12;
+            s++;
+            if (*s >> 6 != 0x2)
+                return -1; /* malformed UTF-8 */
+            first |= ((((wchar_t)*s) & 0x3f) << 6);
+            s++;
+            if (*s >> 6 != 0x2)
+                return -1; /* malformed UTF-8 */
+            *d = first | (*s & 0x3f);
+            chars++;
+        } else if (*s >> 3 == 0x1e) {
+            /* through U+1FFFFF: 21 bits: bottom 3 of 1st, bottom 6 of 2nd-4th */
+            uint cp = (((wchar_t)*s) & 0x7) << 18;
+            s++;
+            if (*s >> 6 != 0x2)
+                return -1; /* malformed UTF-8 */
+            cp |= ((((wchar_t)*s) & 0x3f) << 12);
+            s++;
+            if (*s >> 6 != 0x2)
+                return -1; /* malformed UTF-8 */
+            cp |= ((((wchar_t)*s) & 0x3f) << 6);
+            s++;
+            if (*s >> 6 != 0x2)
+                return -1; /* malformed UTF-8 */
+            cp |= (((wchar_t)*s) & 0x3f);
+            /* check limit */
+            if (cp > 0x10ffff)
+                return -1; /* not encodable with UTF-16 */
+            /* encode using surrogate pairs */
+            if ((size_t)(d + 1 - dst) >= dst_sz) /* no partial chars */
+                break;
+            *d = (wchar_t) (((cp - 0x10000) >> 10) + 0xd800);
+            d++;
+            *d = (wchar_t) (((cp - 0x10000) & 0x3ff) + 0xdc00);
+            chars++;
+       } else if (*s >> 2 == 0x3e) {
+            /* through U+3FFFFFF: 26 bits: bottom 2 of 1st, bottom 6 of 2nd-5th */
+            return -1; /* not encodable with UTF-16 */
+        } else if (*s >> 1 == 0x7e) {
+            /* through U+7FFFFFFF: 31 bits: bottom 1 of 1st, bottom 6 of 2nd-6th */
+            return -1; /* not encodable with UTF-16 */
+        }
+        d++;
+        if ((size_t)(d - dst) >= dst_sz)
+            break;
+        s++;
+    }
+    if ((size_t)(d - dst) < dst_sz)
+        *d = L'\0';
+    if (written != NULL)
+        *written = chars;
+    return d - dst;
+}
+
+/* Returns the number of elements written if all of the characters of src,
+ * or if max_chars from src, were successfully encoded into dst.
+ * Passing max_chars==0 means no limit.
+ * If there is room, appends a null terminator (which is not included in the
+ * return value).  (This is to match our snprintf semantics.)
+ * Returns -1 on an error, such as src not being valid UTF-16.
+ * In *written, returns the number of unicode characters written to dst including
+ * the terminating null.
+ * Will not write a partial multi-byte character.
+ * Does not handle a byte-order mark.
+ * If dst==NULL, returns the number of elements required to encode max_chars
+ * (or all if max_chars==0) from src.
+ */
+static ssize_t
+utf16_to_utf8(char *dst, size_t dst_sz/*elements*/, const wchar_t *src,
+              size_t max_chars, size_t *written/*unicode chars*/)
+{
+    const wchar_t *s = src;
+    char *d = dst;
+    ssize_t bytes = 0;
+    size_t chars = 0;
+    while ((dst == NULL || dst_sz > 0) && *s != L'\0' &&
+           (max_chars == 0 || chars < max_chars)) {
+        if (*s <= 0x7f) {
+            if (dst != NULL)
+                *d = (char) *s;
+            else
+                bytes++;
+            chars++;
+        } else if (*s <= 0x7ff) {
+            /* 2-byte encoding: 0b110xxxxx 0b10xxxxxx */
+            if (dst != NULL) {
+                if ((size_t)(d + 1 - dst) >= dst_sz) /* no partial chars */
+                    break;
+                *d = (char) (0xc0 | (*s >> 6));
+                d++;
+                *d = (char) (0x80 | (*s & 0x3f));
+            } else
+                bytes += 2;
+            chars++;
+        } else if (*s >= 0xd800 && *s <= 0xdfff) {
+            /* surrogate pairs */
+            uint cp = (*s - 0xd800) << 10;
+            s++;
+            if (dst != NULL) {
+                if (*s == L'\0' || *s < 0xdc00 || *s > 0xdfff)
+                    return -1; /* malformed UTF-16 */
+                cp |= (*s - 0xdc00);
+                cp += 0x10000;
+                /* 4-byte encoding: 0b1110xxxx 0b10xxxxxx 0b10xxxxxx 0b10xxxxxx */
+                if ((size_t)(d + 3 - dst) >= dst_sz) /* no partial chars */
+                    break;
+                *d = (char) (0xf0 | (cp >> 18));
+                d++;
+                *d = (char) (0x80 | ((cp >> 12) & 0x3f));
+                d++;
+                *d = (char) (0x80 | ((cp >> 6) & 0x3f));
+                d++;
+                *d = (char) (0x80 | (cp & 0x3f));
+            } else
+                bytes += 4;
+            chars++;
+        } else {
+            /* 3-byte encoding: 0b1110xxxx 0b10xxxxxx 0b10xxxxxx */
+            if (dst != NULL) {
+                if ((size_t)(d + 2 - dst) >= dst_sz) /* no partial chars */
+                    break;
+                *d = (char) (0xe0 | (*s >> 12));
+                d++;
+                *d = (char) (0x80 | ((*s >> 6) & 0x3f));
+                d++;
+                *d = (char) (0x80 | (*s & 0x3f));
+            } else
+                bytes += 3;
+            chars++;
+        }
+        if (dst != NULL) {
+            d++;
+            if ((size_t)(d - dst) >= dst_sz)
+                break;
+        }
+        s++;
+    }
+    if (dst != NULL) {
+        if ((size_t)(d - dst) < dst_sz)
+            *d = L'\0';
+    }
+    if (written != NULL)
+        *written = chars;
+    if (dst != NULL)
+        return d - dst;
+    else
+        return bytes;
+}
+
+ssize_t
+utf16_to_utf8_size(const wchar_t *src, size_t max_chars, size_t *written/*unicode chars*/)
+{
+    return utf16_to_utf8(NULL, 0, src, max_chars, NULL);
+}
+#endif
+
+/*****************************************************************************
+ * snprintf
+ */
+
 /* we generate from a template to get wide and narrow versions */
 #undef IOX_WIDE_CHAR
 #include "iox.h"
@@ -99,7 +313,6 @@ double2int(double d)
 #define IOX_WIDE_CHAR
 #include "iox.h"
 
-#ifdef LINUX
 /*****************************************************************************
  * Stand alone sscanf implementation.
  */
@@ -131,6 +344,84 @@ our_isspace(int c)
 {
     return (c == ' ' || c == '\f' || c == '\n' || c == '\r' || c == '\t' ||
             c == '\v');
+}
+
+const char *
+parse_int(const char *sp, uint64 *res_out, uint base, uint width, bool is_signed)
+{
+    bool negative = false;
+    uint64 res = 0;
+    uint i;  /* Use an index rather than pointer to compare with width. */
+
+    /* Check for invalid base. */
+    if (base > 36 || base == 1) {
+        *res_out = (uint64) -1LL;
+        return NULL;
+    }
+
+    /* Check for negative sign if signed. */
+    if (is_signed) {
+        if (*sp == '-') {
+            negative = true;
+            sp++;
+        }
+    }
+
+    /* Ignore leading +. */
+    if (!negative && *sp == '+')
+        sp++;
+
+    /* 0x prefix for hex is optional. */
+    if ((base == 0 || base == 16) && sp[0] == '0' && sp[1] == 'x') {
+        sp += 2;
+        if (base == 0)
+            base = 16;
+    }
+
+    /* Leading '0' with 0 base means octal. */
+    if (base == 0 && *sp == '0') {
+        base = 8;
+        sp++;
+    }
+
+    /* If we didn't find leading '0' or "0x", base is 10. */
+    if (base == 0)
+        base = 10;
+
+    /* XXX: For efficiency we could do a couple things:
+     * - Specialize the loop on base
+     * - Use a lookup table
+     */
+    for (i = 0; width == 0 || i < width; i++) {
+        uint d = sp[i];
+        if (d >= '0' && d <= '9') {
+            d -= '0';
+        } else if (d >= 'a' && d <= 'z') {
+            d = d - 'a' + 10;
+        } else if (d >= 'A' && d <= 'Z') {
+            d = d - 'A' + 10;
+        } else {
+            break;  /* Non-digit character.  Could be \0. */
+        }
+        /* Stop the parse here if this digit was not valid for the current base,
+         * (e.g. 9 for octal of g for hex).
+         */
+        if (d >= base)
+            break;
+        /* FIXME: Check for overflow. */
+        /* XXX: int64 multiply is inefficient on 32-bit. */
+        res = res * base + d;
+    }
+
+    /* No digits found, return failure. */
+    if (i == 0)
+        return NULL;
+
+    if (negative)
+        res = -(int64)res;
+
+    *res_out = res;
+    return sp + i;
 }
 
 /* Stand alone implementation of sscanf.  We used to call libc's vsscanf while
@@ -176,13 +467,21 @@ our_vsscanf(const char *str, const char *fmt, va_list ap)
             switch (c) {
             /* Modifiers, should all continue the loop. */
             case 'l':
-                ASSERT(int_size != SZ_LONGLONG && "too many longs");
-                if (int_size == SZ_LONG)
-                    int_size = SZ_LONGLONG;
-                else
+                if (int_size == SZ_INT) {
                     int_size = SZ_LONG;
-                continue;
+                } else if (int_size == SZ_LONG) {
+                    int_size = SZ_LONGLONG;
+                } else {
+                    CLIENT_ASSERT(int_size != SZ_SHORT,
+                                  "dr_sscanf: can't use %hl modifier");
+                    CLIENT_ASSERT(int_size != SZ_LONGLONG,
+                                  "dr_sscanf: too many longs (%lll)");
+                    return num_parsed;  /* error */
+                }
+                break;
             case 'h':
+                CLIENT_ASSERT(int_size == SZ_INT,
+                              "dr_sscanf: can't use %lh modifier");
                 int_size = SZ_SHORT;
                 continue;
             case '*':
@@ -196,6 +495,26 @@ our_vsscanf(const char *str, const char *fmt, va_list ap)
                  */
                 width = width * 10 + c - '0';
                 continue;
+            case 'I':
+                /* We support I32 and I64 from Windows sscanf because DR exports
+                 * macros that use them.
+                 */
+                if (strncmp("32", fp, 2) == 0) {
+                    int_size = SZ_INT;
+                } else if (strncmp("64", fp, 2) == 0) {
+                    int_size = SZ_LONGLONG;
+                } else {
+                    CLIENT_ASSERT(false,
+                                  "dr_sscanf: unsupported I<width> modifier");
+                    return num_parsed;
+                }
+                break;
+            /* XXX: Modifiers we could add support for:
+             * - j, z, t: C99 modifiers for intmax_t, size_t, and ptrdiff_t.
+             * - [] scan sets: These are complicated and better to avoid.
+             * - .*: For dynamically sized strings.  Not part of C scanf.
+             * - n$: Store the result into the nth pointer arg after fmt.
+             */
 
             /* Specifiers, should all break the loop. */
             case 'u':
@@ -223,9 +542,14 @@ our_vsscanf(const char *str, const char *fmt, va_list ap)
             case 's':
                 spec = SPEC_STRING;
                 goto spec_done;
+            /* XXX: Specifiers we could add support for:
+             * - o: octal integer
+             * - g, e, f: floating point
+             * - n: characters consumed so far
+             */
             default:
-                ASSERT(false && "unknown specifier");
-                return num_parsed;
+                CLIENT_ASSERT(false, "dr_sscanf: unknown specifier");
+                return num_parsed;  /* error */
             }
         }
 spec_done:
@@ -233,6 +557,7 @@ spec_done:
         /* Parse the string. */
         switch (spec) {
         case SPEC_CHAR:
+            /* XXX: We don't support width with %c. */
             if (!is_ignored) {
                 *va_arg(ap, char*) = *sp;
             }
@@ -246,7 +571,7 @@ spec_done:
             } else {
                 char *str_out = va_arg(ap, char*);
                 if (width > 0) {
-                    int i = 0;
+                    uint i = 0;
                     while (i < width && *sp != '\0' && !our_isspace(*sp)) {
                         *str_out++ = *sp++;
                         i++;
@@ -263,46 +588,34 @@ spec_done:
             }
             break;
         case SPEC_INT: {
-            unsigned long long parsed_int;
-            char *end_ptr;  /* Don't take &sp.  We want it in a register. */
-            int strtoull_errno;
-
-            /* Don't accept negative numbers for unsigned format strings.  The
-             * strtou* conversion routines will accept it.
-             */
-            if (!is_signed && *sp == '-')
+            uint64 res;
+            /* C sscanf skips leading whitespace before parsing integers. */
+            while (*sp != '\0' && our_isspace(*sp))
+                sp++;
+            sp = parse_int(sp, &res, base, width, is_signed);
+            if (sp == NULL)
                 return num_parsed;
-
-            /* Just use strtoull for everything and truncate the result.
-             * FIXME i#46: Use a private integer parsing implementation, so we
-             * can provide better error checking and avoid modifying libc's
-             * errno.
-             */
-            set_libc_errno(0);
-            parsed_int = strtoull(sp, &end_ptr, base);
-            sp = end_ptr;
-            strtoull_errno = get_libc_errno();
-            if (strtoull_errno != 0) {
-                return num_parsed;  /* Most likely errno was ERANGE. */
-            }
 
             if (!is_ignored) {
                 if (int_size == SZ_SHORT)
-                    *va_arg(ap, short *) = (short)parsed_int;
+                    *va_arg(ap, short *) = (short)res;
                 else if (int_size == SZ_INT)
-                    *va_arg(ap, int *) = (int)parsed_int;
+                    *va_arg(ap, int *) = (int)res;
                 else if (int_size == SZ_LONG)
-                    *va_arg(ap, long *) = (long)parsed_int;
+                    *va_arg(ap, long *) = (long)res;
                 else if (int_size == SZ_LONGLONG)
-                    *va_arg(ap, long long *) = (long long)parsed_int;
-                else
+                    *va_arg(ap, long long *) = (long long)res;
+                else {
                     ASSERT_NOT_REACHED();
+                    return num_parsed;
+                }
             }
             break;
         }
         default:
             /* Format parsing code above should return an error earlier. */
             ASSERT_NOT_REACHED();
+            return num_parsed;
         }
 
         if (!is_ignored)
@@ -311,36 +624,29 @@ spec_done:
     return num_parsed;
 }
 
-/* Wrapper around vsscanf mostly for saving libc errno, which strtoull
- * unfortunately still uses.
- */
 int
 our_sscanf(const char *str, const char *fmt, ...)
 {
-    int res, saved_errno;
+    /* No need to save errno, we don't call libc anymore. */
+    int res;
     va_list ap;
     va_start(ap, fmt);
-    saved_errno = get_libc_errno();
     res = our_vsscanf(str, fmt, ap);
-    set_libc_errno(saved_errno);
     va_end(ap);
     return res;
 }
 
-#endif /* LINUX */
-
-#ifdef IO_UNIT_TEST
-# ifdef LINUX
-#  include <errno.h>
+#ifdef STANDALONE_UNIT_TEST
+/*****************************************************************************
+ * sscanf() tests
+ */
 
 /* Copied from core/linux/os.c and modified so that they work when run
  * cross-arch.  We need %ll to parse 64-bit ints on 32-bit and drop the %l to
  * parse 32-bit ints on x64.
  */
-#  define UI64 UINT64_FORMAT_CODE
-#  define HEX64 INT64_FORMAT"x"
-#  define MAPS_LINE_FORMAT4 "%08x-%08x %s %08x %*s %"UI64" %4096s"
-#  define MAPS_LINE_FORMAT8 "%016"HEX64"-%016"HEX64" %s %016"HEX64" %*s %"UI64" %4096s"
+# define MAPS_LINE_FORMAT4 "%08x-%08x %s %08x %*s %llu %4096s"
+# define MAPS_LINE_FORMAT8 "%016llx-%016llx %s %016llx %*s %llu %4096s"
 
 static void
 test_sscanf_maps_x86(void)
@@ -445,38 +751,186 @@ test_sscanf_all_specs(void)
     EXPECT(memcmp(str, "abcdefghijklm", 13), 0);
     EXPECT(str[13], '*');  /* Asterisk should still be there. */
 
-    /* FIXME NYI: Implement width specifications for integers.  Someone might
-     * want to parse an integer like this:
-     * sscanf("123456", "%03d%03d", &a, &b);
-     * DR doesn't need this currently so we skip it.
-     */
+    /* Test width specifications for integers. */
+    res = our_sscanf("123456 0x9abc", "%03d%03d %03xc",
+                     &signed_int, &signed_int_2, &unsigned_int);
+    EXPECT(res, 3);
+    EXPECT(signed_int, 123);
+    EXPECT(signed_int_2, 456);
+    EXPECT(unsigned_int, 0x9ab);
 
-    /* FIXME: I wrote tests for testing out-of-range errors, but we don't pass
-     * them because the strto* conversion routines are very liberal about what
-     * they accept.  If we implement issue 46 and pull the string conversion
-     * into DR, then we can share the code that does the parse and get better
-     * error handling.
+    /* Test skipping leading whitespace for integer conversions. */
+    res = our_sscanf(" \t123456\t\n 0x9abc", "%d%x",
+                     &signed_int, &unsigned_int);
+    EXPECT(res, 2);
+    EXPECT(signed_int, 123456);
+    EXPECT(unsigned_int, 0x9abc);
+
+    /* Test Windows-style integer width specifiers using decimal ULLONG_MAX. */
+    res = our_sscanf("1234 18446744073709551615", "%I32d %I64d",
+                     &signed_int, &ull_num);
+    EXPECT(res, 2);
+    EXPECT(signed_int, 1234);
+    EXPECT((ull_num == ULLONG_MAX), true);
+
+    /* FIXME: When parse_int has range checking, we should add tests for parsing
+     * integers that overflow their requested integer sizes.
+     */
+}
+
+/*****************************************************************************
+ * memcpy() and memset() tests
+ */
+
+# ifdef LINUX
+#  include <errno.h>
+#  include <dlfcn.h>  /* for dlsym for libc routines */
+
+/* From dlfcn.h, but we'd have to define _GNU_SOURCE 1 before globals.h. */
+#  define RTLD_NEXT     ((void *) -1l)
+
+typedef void (*memcpy_t)(void *dst, const void *src, size_t n);
+
+static void
+test_memcpy_offset_size(size_t src_offset, size_t dst_offset, size_t size)
+{
+    /* These can be aligned to whatever, we'll try a few different offsets. */
+    byte src[1024];
+    byte dst[1024];
+    int i;
+    for (i = 0; i < sizeof(src); i++) {
+        src[i] = 0xcc;
+        dst[i] = 0;
+    }
+    EXPECT(src_offset + size <= sizeof(src), 1);
+    EXPECT(dst_offset + size <= sizeof(dst), 1);
+    memcpy(dst + dst_offset, src + src_offset, size);
+    EXPECT(memcmp(dst + dst_offset, src + src_offset, size), 0);
+    /* Check the bytes just out of bounds, which should still be zero. */
+    if (dst_offset > 0)
+        EXPECT(dst[dst_offset-1], 0);
+    if (dst_offset+size < sizeof(dst))
+        EXPECT(dst[dst_offset+size], 0);
+}
+
+static void
+test_our_memcpy(void)
+{
+    int i, j;
+    void *ret;
+    /* Basic, copy the whole buffer. */
+    test_memcpy_offset_size(0, 0, 1024);
+    /* Test misalignment less than copy size. */
+    test_memcpy_offset_size(1, 1, 2);
+    test_memcpy_offset_size(2, 2, 2);
+    test_memcpy_offset_size(1, 1, 3);
+    test_memcpy_offset_size(2, 2, 3);
+    /* Test a variety of offsets. */
+    for (i = 0; i < 16; i++) {
+        for (j = 0; j < 16; j++) {
+            test_memcpy_offset_size(i, j, 512);
+        }
+    }
+    /* Check that memcpy returns dst. */
+    ret = memcpy(&i, &j, sizeof(i));
+    EXPECT(ret == &i, 1);
+}
+
+static void
+test_memset_offset_size(int val, int start_offs, int end_offs)
+{
+    byte buf[512];
+    int i;
+    int end = sizeof(buf) - start_offs - end_offs;
+    /* Zero without memset. */
+    for (i = 0; i < sizeof(buf); i++)
+        buf[i] = 0;
+    memset(buf + start_offs, val, end);
+    EXPECT(is_region_memset_to_char(buf + start_offs, end, val), 1);
+    if (start_offs > 0)
+        EXPECT(buf[start_offs-1], 0);
+    if (end_offs > 0)
+        EXPECT(buf[sizeof(buf)-end_offs], 0);
+}
+
+static void
+test_our_memset(void)
+{
+    int val;
+    int i, j;
+    void *ret;
+    /* Test a variety of values. */
+    for (val = 0; val < 0xff; val++) {
+        for (i = 0; i < 16; i++) {
+            for (j = 0; j < 16; j++) {
+                test_memset_offset_size(val, i, j);
+            }
+        }
+    }
+    /* Check that memset returns dst. */
+    ret = memset(&i, -1, sizeof(i));
+    EXPECT(ret == &i, 1);
+}
+
+static void
+our_memcpy_vs_libc(void)
+{
+    /* Compare our memcpy with libc memcpy.
+     * XXX: Should compare on more sizes, especially small ones.
+     */
+    size_t alloc_size = 20 * 1024;
+    int loop_count = 100 * 1000;
+    void *src = global_heap_alloc(alloc_size HEAPACCT(ACCT_OTHER));
+    void *dst = global_heap_alloc(alloc_size HEAPACCT(ACCT_OTHER));
+    int i;
+    memcpy_t glibc_memcpy = (memcpy_t) dlsym(RTLD_NEXT, "memcpy");
+    uint64 our_memcpy_start, our_memcpy_end, our_memcpy_time;
+    uint64 libc_memcpy_start, libc_memcpy_end, libc_memcpy_time;
+    memset(src, -1, alloc_size);
+    memset(dst, 0, alloc_size);
+
+    our_memcpy_start = query_time_millis();
+    for (i = 0; i < loop_count; i++) {
+        memcpy(src, dst, alloc_size);
+    }
+    our_memcpy_end = query_time_millis();
+
+    libc_memcpy_start = query_time_millis();
+    for (i = 0; i < loop_count; i++) {
+        glibc_memcpy(src, dst, alloc_size);
+    }
+    libc_memcpy_end = query_time_millis();
+
+    global_heap_free(src, alloc_size HEAPACCT(ACCT_OTHER));
+    global_heap_free(dst, alloc_size HEAPACCT(ACCT_OTHER));
+    our_memcpy_time = our_memcpy_end - our_memcpy_start;
+    libc_memcpy_time = libc_memcpy_end - libc_memcpy_start;
+    print_file(STDERR, "our_memcpy_time: "UINT64_FORMAT_STRING"\n",
+               our_memcpy_time);
+    print_file(STDERR, "libc_memcpy_time: "UINT64_FORMAT_STRING"\n",
+               libc_memcpy_time);
+    /* We could assert that we're not too much slower, but that's a recipe for
+     * flaky failures when the suite is run on shared VMs or in parallel.
      */
 }
 # endif /* LINUX */
 
-int
-main(void)
+void
+unit_test_io(void)
 {
     char buf[512];
     wchar_t wbuf[512];
-    int res;
-    standalone_init();
+    ssize_t res;
 
     /* test wide char conversion */
     res = our_snprintf(buf, BUFFER_SIZE_ELEMENTS(buf), "%S", L"wide string");
-    EXPECT(res == strlen("wide string"), true);
+    EXPECT(res == (ssize_t) strlen("wide string"), true);
     EXPECT(strcmp(buf, "wide string"), 0);
     res = our_snprintf(buf, BUFFER_SIZE_ELEMENTS(buf), "%ls", L"wide string");
-    EXPECT(res == strlen("wide string"), true);
+    EXPECT(res == (ssize_t) strlen("wide string"), true);
     EXPECT(strcmp(buf, "wide string"), 0);
     res = our_snprintf(buf, BUFFER_SIZE_ELEMENTS(buf), "%.3S", L"wide string");
-    EXPECT(res == strlen("wid"), true);
+    EXPECT(res == (ssize_t) strlen("wid"), true);
     EXPECT(strcmp(buf, "wid"), 0);
     res = our_snprintf(buf, 4, "%S", L"wide string");
     EXPECT(res == -1, true);
@@ -486,25 +940,25 @@ main(void)
 
     /* test float */
     res = our_snprintf(buf, BUFFER_SIZE_ELEMENTS(buf), "%3.1f", 42.9f);
-    EXPECT(res == strlen("42.9"), true);
+    EXPECT(res == (ssize_t) strlen("42.9"), true);
     EXPECT(strcmp(buf, "42.9"), 0);
     /* XXX: add more */
 
     /* test all-wide */
     res = our_snprintf_wide(wbuf, BUFFER_SIZE_ELEMENTS(wbuf), L"%d%s%3.1f",
                             -42, L"wide string", 42.9f);
-    EXPECT(res == wcslen(L"-42wide string42.9"), true);
+    EXPECT(res == (ssize_t) wcslen(L"-42wide string42.9"), true);
     EXPECT(wcscmp(wbuf, L"-42wide string42.9"), 0);
 
     /* test all-wide conversion */
     res = our_snprintf_wide(wbuf, BUFFER_SIZE_ELEMENTS(wbuf), L"%S", "narrow string");
-    EXPECT(res == wcslen(L"narrow string"), true);
+    EXPECT(res == (ssize_t) wcslen(L"narrow string"), true);
     EXPECT(wcscmp(wbuf, L"narrow string"), 0);
     res = our_snprintf_wide(wbuf, BUFFER_SIZE_ELEMENTS(wbuf), L"%hs", "narrow string");
-    EXPECT(res == wcslen(L"narrow string"), true);
+    EXPECT(res == (ssize_t) wcslen(L"narrow string"), true);
     EXPECT(wcscmp(wbuf, L"narrow string"), 0);
     res = our_snprintf_wide(wbuf, BUFFER_SIZE_ELEMENTS(wbuf), L"%.3S", "narrow string");
-    EXPECT(res == wcslen(L"nar"), true);
+    EXPECT(res == (ssize_t) wcslen(L"nar"), true);
     EXPECT(wcscmp(wbuf, L"nar"), 0);
     res = our_snprintf_wide(wbuf, 6, L"%S", "narrow string");
     EXPECT(res == -1, true);
@@ -512,16 +966,68 @@ main(void)
     wbuf[6] = L'\0';
     EXPECT(wcscmp(wbuf, L"narrow"), 0);
 
-#ifdef LINUX
+#ifdef WINDOWS
+    /* test UTF-16 to UTF-8 */
+    res = our_snprintf(buf, BUFFER_SIZE_ELEMENTS(buf), "%S",
+                       L"\x0391\x03A9\x20Ac"); /* alpha, omega, euro sign */
+    EXPECT(res == 7, true); /* 2x 2-char + 1 3-char encodings */
+    EXPECT((byte)buf[0] == 0xce && (byte)buf[1] == 0x91, true); /* UTF-8 U-0391 */
+    EXPECT((byte)buf[2] == 0xce && (byte)buf[3] == 0xa9, true); /* UTF-8 U-03A9 */
+    EXPECT((byte)buf[4] == 0xe2 && (byte)buf[5] == 0x82 && (byte)buf[6] == 0xac,
+           true); /* UTF-8 U-20Ac */
+    EXPECT((byte)buf[7] == '\0', true);
+    res = our_snprintf(buf, BUFFER_SIZE_ELEMENTS(buf), "%S",
+                       L"\xd800"); /* no low surrogate */
+    EXPECT(res == -1, true);
+    res = our_snprintf(buf, BUFFER_SIZE_ELEMENTS(buf), "%S",
+                       L"\xd800\xdc00"); /* surrogate pair */
+    EXPECT(res == 4, true); /* 4-char encoding */
+    EXPECT((byte)buf[0] == 0xf0 && (byte)buf[1] == 0x90 &&
+           (byte)buf[2] == 0x80 && (byte)buf[3] == 0x80, true); /* UTF-8 U-10000 */
+    EXPECT((byte)buf[4] == '\0', true);
+    res = our_snprintf(buf, BUFFER_SIZE_ELEMENTS(buf), "%.6S",
+                       L"\x0391\x03A9\x20Ac"); /* alpha, omega, euro sign */
+    EXPECT(res == 4, true); /* 2x 2-char + aborted the 3-char encoding */
+    EXPECT((byte)buf[0] == 0xce && (byte)buf[1] == 0x91, true); /* UTF-8 U-0391 */
+    EXPECT((byte)buf[2] == 0xce && (byte)buf[3] == 0xa9, true); /* UTF-8 U-03A9 */
+    EXPECT((byte)buf[4] == '\0', true);
+
+    /* test UTF-8 to UTF-16 */
+    res = our_snprintf_wide(wbuf, BUFFER_SIZE_ELEMENTS(wbuf), L"%S",
+                            "\xce\x91\xce\xa9\xe2\x82\xac"); /* alpha, omega, euro sign */
+    EXPECT(res == 3, true);
+    EXPECT(wbuf[0] == 0x0391 && wbuf[1] == 0x03a9 && wbuf[2] == 0x20ac, true);
+    EXPECT(wbuf[3] == L'\0', true);
+    res = our_snprintf_wide(wbuf, BUFFER_SIZE_ELEMENTS(wbuf), L"%S",
+                            "\xff\x91\xce\xa9\xe2\x82");
+    EXPECT(res == -1, true); /* not encodable in UTF-16 */
+    res = our_snprintf_wide(wbuf, BUFFER_SIZE_ELEMENTS(wbuf), L"%S",
+                            "\xf0\x90\x80\x80"); /* U-1000 */
+    EXPECT(res == 2, true);
+    EXPECT(wbuf[0] == 0xd800 && wbuf[1] == 0xdc00 && wbuf[2] == L'\0', true);
+    res = our_snprintf_wide(wbuf, BUFFER_SIZE_ELEMENTS(wbuf), L"%.2S",
+                            "\xce\x91\xce\xa9\xe2\x82\xac"); /* alpha, omega, euro sign */
+    EXPECT(res == 2, true);
+    EXPECT(wbuf[0] == 0x0391 && wbuf[1] == 0x03a9 && wbuf[2] == L'\0', true);
+#endif
+
     /* sscanf tests */
     test_sscanf_maps_x86();
     test_sscanf_maps_x64();
     test_sscanf_all_specs();
+
+#ifdef LINUX
+    /* memcpy tests */
+    test_our_memcpy();
+    our_memcpy_vs_libc();
+
+    /* memset tests */
+    test_our_memset();
 #endif /* LINUX */
 
     /* XXX: add more tests */
 
-    print_file(STDERR, "all done\n");
-    return 0;
+    print_file(STDERR, "io all done\n");
 }
-#endif /* IO_UNIT_TEST */
+
+#endif /* STANDALONE_UNIT_TEST */

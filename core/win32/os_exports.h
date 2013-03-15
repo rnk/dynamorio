@@ -1,5 +1,5 @@
 /* **********************************************************
- * Copyright (c) 2011-2012 Google, Inc.  All rights reserved.
+ * Copyright (c) 2011-2013 Google, Inc.  All rights reserved.
  * Copyright (c) 2000-2010 VMware, Inc.  All rights reserved.
  * **********************************************************/
 
@@ -88,6 +88,10 @@ typedef DWORD cxt_seg_t;
 #include "aslr.h"               /* for aslr_context */
 
 /* you can rely on these increasing with later versions */
+/* XXX: when updating, also update DR_WINDOWS_VERSION_* in instrument.h
+ * and get_windows_version() in suite/tests/tools.h
+ */
+#define WINDOWS_VERSION_8      62
 #define WINDOWS_VERSION_7      61
 #define WINDOWS_VERSION_VISTA  60
 #define WINDOWS_VERSION_2003   52
@@ -117,6 +121,7 @@ enum {
     PEB_TIB_OFFSET            = 0x060,
     FLS_DATA_TIB_OFFSET       = 0x17c8,
     NT_RPC_TIB_OFFSET         = 0x1698,
+    NLS_CACHE_TIB_OFFSET      = 0x17a0,
 #else
     EXCEPTION_LIST_TIB_OFFSET = 0x00,
     TOP_STACK_TIB_OFFSET      = 0x04,
@@ -130,6 +135,7 @@ enum {
     PEB_TIB_OFFSET            = 0x30,
     FLS_DATA_TIB_OFFSET       = 0xfb4,
     NT_RPC_TIB_OFFSET         = 0xf1c,
+    NLS_CACHE_TIB_OFFSET      = 0xfa0,
 #endif
 };
 
@@ -211,6 +217,9 @@ void print_dynamo_regions(void);
 size_t get_allocation_size(byte *pc, byte **base_pc);
 byte *get_allocation_base(byte *pc);
 void mark_page_as_guard(byte *pc);
+
+bool
+os_find_free_code_space_in_libs(void **start OUT, void **end OUT);
 
 void merge_writecopy_pages(app_pc start, app_pc end);
 
@@ -383,7 +392,7 @@ void earliest_inject_init(byte *arg_ptr);
 void earliest_inject_cleanup(byte *arg_ptr);
 
 wait_status_t
-os_wait_handle(HANDLE h, uint timeout_ms);
+os_wait_handle(HANDLE h, uint64 timeout_ms);
 
 /* in module.c */
 app_pc get_module_preferred_base_safe(app_pc pc);
@@ -426,12 +435,32 @@ void callback_interception_exit(void);
 void set_asynch_interception(thread_id_t tid, bool intercept);
 bool intercept_asynch_for_thread(thread_id_t tid, bool intercept_unknown);
 bool intercept_asynch_for_self(bool intercept_unknown);
+
 bool
 is_in_interception_buffer(byte *pc);
+
 bool
-is_syscall_trampoline(byte *pc);
-app_pc get_app_pc_from_intercept_pc(byte *pc);
-bool is_intercepted_app_pc(app_pc pc, byte **interception_pc);
+is_part_of_interception(byte *pc);
+
+bool
+is_on_interception_initial_route(byte *pc);
+
+bool
+is_syscall_trampoline(byte *pc, byte **tgt);
+
+app_pc
+get_app_pc_from_intercept_pc(byte *pc);
+
+static inline app_pc
+get_app_pc_from_intercept_pc_if_necessary(app_pc pc)
+{
+    if (is_part_of_interception(pc))
+        return get_app_pc_from_intercept_pc(pc);
+    return pc;
+}
+
+bool
+is_intercepted_app_pc(app_pc pc, byte **interception_pc);
 
 /* in inject_shared.c */
 #include "inject_shared.h"
@@ -451,6 +480,13 @@ wchar_t *get_application_cmdline(void);
 const char *
 get_application_short_unqualified_name(void);
 
+/* in syscall.c */
+bool
+syscall_uses_wow64_index();
+
+bool
+syscall_uses_edx_param_base();
+
 /* in loader.c */
 /* Handles a private-library FLS callback called from interpreted app code */
 bool private_lib_handle_cb(dcontext_t *dcontext, app_pc pc);
@@ -464,11 +500,6 @@ void swap_peb_pointer(dcontext_t *dcontext, bool to_priv);
  * or swap private values.  Up to caller to synchronize w/ other thread.
  */
 void restore_peb_pointer_for_thread(dcontext_t *dcontext);
-/* searches in standard paths instead of requiring abs path.
- * exported for dr_enable_console_printing().
- * XXX: should have an os-shared version.
- */
-app_pc privload_load_private_library(const char *name);
 #endif
 
 

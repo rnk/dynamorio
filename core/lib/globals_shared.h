@@ -97,7 +97,7 @@
 #  include <sys/types.h>        /* Fix for case 5341. */
 #  include <signal.h>
 #endif
-/* DR_API EXPORT BEGIN */
+/* DR_API EXPORT VERBATIM */
 #ifdef WINDOWS
 /* allow nameless struct/union */
 #  pragma warning(disable: 4201)
@@ -111,7 +111,9 @@
 #  define DR_EXPORT __declspec(dllexport)
 #  define LINK_ONCE __declspec(selectany)
 #  define ALIGN_VAR(x) __declspec(align(x))
-#  define inline __inline
+#  ifndef __cplusplus
+#   define inline __inline
+#  endif
 #  define INLINE_FORCED __forceinline
 #else
 /* We assume gcc is being used.  If the client is using -fvisibility
@@ -125,9 +127,14 @@
 #  endif
 #  define LINK_ONCE __attribute__ ((weak))
 #  define ALIGN_VAR(x) __attribute__ ((aligned (x)))
-#  define inline __inline__
+#  ifndef __cplusplus
+#   define inline __inline__
+#  endif
 #  define INLINE_FORCED inline
 #endif
+
+/* DR_API EXPORT END */
+/* DR_API EXPORT BEGIN */
 
 #ifdef AVOID_API_EXPORT
 /* We want a consistent size so we stay away from MAX_PATH.
@@ -287,11 +294,11 @@ extern file_t our_stderr;
 /** Allow use of stdin after the application closes it. */
 extern file_t our_stdin;
 /** The file_t value for standard output. */
-#  define STDOUT (our_stdout == INVALID_FILE ? stdout->_fileno : our_stdout)
+#  define STDOUT our_stdout
 /** The file_t value for standard error. */
-#  define STDERR (our_stderr == INVALID_FILE ? stderr->_fileno : our_stderr)
+#  define STDERR our_stderr
 /** The file_t value for standard error. */
-#  define STDIN  (our_stdin == INVALID_FILE ? stdin->_fileno : our_stdin)
+#  define STDIN  our_stdin
 #endif
 
 #ifdef AVOID_API_EXPORT
@@ -357,11 +364,15 @@ typedef struct _instr_t instr_t;
 
 #ifdef X64
 # define POINTER_MAX ULLONG_MAX
-# define SSIZE_T_MAX LLONG_MAX
+# ifndef SSIZE_T_MAX
+#  define SSIZE_T_MAX LLONG_MAX
+# endif
 # define POINTER_MAX_32BIT ((ptr_uint_t)UINT_MAX) 
 #else
 # define POINTER_MAX UINT_MAX
-# define SSIZE_T_MAX INT_MAX
+# ifndef SSIZE_T_MAX
+#  define SSIZE_T_MAX INT_MAX
+# endif
 #endif
 
 #define MAX_CLIENT_LIBS 16
@@ -383,7 +394,7 @@ typedef struct _instr_t instr_t;
 /* check if a single bit is set in var */
 #define TEST TESTANY
 
-#define BOOLS_MATCH(a, b) (((a) && (b)) || (!(a) && !(b)))
+#define BOOLS_MATCH(a, b) (!!(a) == !!(b))
 
 /* macros to make conditional compilation look prettier */
 #ifdef DEBUG
@@ -650,16 +661,16 @@ typedef uint64 timestamp_t;
 #  define NAKED __declspec( naked )
 #endif
 
-#define FIXED_TIMESTAMP_FORMAT "%10"INT64_FORMAT"u"
+#define FIXED_TIMESTAMP_FORMAT "%10" INT64_FORMAT"u"
 
 /* DR_API EXPORT TOFILE dr_defines.h */
 /* DR_API EXPORT BEGIN */
-#define UINT64_FORMAT_CODE INT64_FORMAT"u"
-#define INT64_FORMAT_CODE INT64_FORMAT"d"
-#define UINT64_FORMAT_STRING "%"UINT64_FORMAT_CODE
-#define INT64_FORMAT_STRING "%"INT64_FORMAT_CODE
-#define HEX64_FORMAT_STRING "%"INT64_FORMAT"x"
-#define ZHEX64_FORMAT_STRING "%016"INT64_FORMAT"x"
+#define UINT64_FORMAT_CODE INT64_FORMAT "u"
+#define INT64_FORMAT_CODE INT64_FORMAT "d"
+#define UINT64_FORMAT_STRING "%" UINT64_FORMAT_CODE
+#define INT64_FORMAT_STRING "%" INT64_FORMAT_CODE
+#define HEX64_FORMAT_STRING "%" INT64_FORMAT "x"
+#define ZHEX64_FORMAT_STRING "%016" INT64_FORMAT "x"
 #ifdef API_EXPORT_ONLY
 #define ZHEX32_FORMAT_STRING "%08x"
 #define HEX32_FORMAT_STRING "%x"
@@ -679,8 +690,8 @@ typedef uint64 timestamp_t;
  * that ignored defines are outermost */
 /* DR_API EXPORT BEGIN */
 #ifdef API_EXPORT_ONLY
-#define PFX "0x"PFMT
-#define PIFX "0x"PIFMT
+#define PFX "0x" PFMT
+#define PIFX "0x" PIFMT
 #endif
 /* DR_API EXPORT END */
 
@@ -841,6 +852,7 @@ typedef char liststring_t[MAX_LIST_OPTION_LENGTH];
 #endif
 
 /* FIXME: the environment vars need to be renamed - it will be a pain */
+#define DYNAMORIO_VAR_CONFIGDIR_ID  DYNAMORIO_CONFIGDIR
 #define DYNAMORIO_VAR_HOME_ID       DYNAMORIO_HOME
 #define DYNAMORIO_VAR_LOGDIR_ID     DYNAMORIO_LOGDIR
 #define DYNAMORIO_VAR_OPTIONS_ID    DYNAMORIO_OPTIONS
@@ -885,6 +897,7 @@ typedef char liststring_t[MAX_LIST_OPTION_LENGTH];
 # define DYNAMORIO_VAR_ANON_PROCESS_BLACKLIST_ID  DYNAMORIO_ANON_PROCESS_BLACKLIST
 #endif
 
+#define DYNAMORIO_VAR_CONFIGDIR  STRINGIFY(DYNAMORIO_VAR_CONFIGDIR_ID)
 #define DYNAMORIO_VAR_HOME       STRINGIFY(DYNAMORIO_VAR_HOME_ID)
 #define DYNAMORIO_VAR_LOGDIR     STRINGIFY(DYNAMORIO_VAR_LOGDIR_ID)
 #define DYNAMORIO_VAR_OPTIONS    STRINGIFY(DYNAMORIO_VAR_OPTIONS_ID)
@@ -916,8 +929,9 @@ typedef char liststring_t[MAX_LIST_OPTION_LENGTH];
 
 #ifdef LINUX
 
-#  define DYNAMORIO_VAR_EXECVE  "DYNAMORIO_POST_EXECVE"
-#  define DYNAMORIO_VAR_EXECVE_LOGDIR  "DYNAMORIO_EXECVE_LOGDIR"
+#  define DYNAMORIO_VAR_EXE_PATH        "DYNAMORIO_EXE_PATH"
+#  define DYNAMORIO_VAR_EXECVE          "DYNAMORIO_POST_EXECVE"
+#  define DYNAMORIO_VAR_EXECVE_LOGDIR   "DYNAMORIO_EXECVE_LOGDIR"
 #  define L_IF_WIN(x) x
 
 #else /* WINDOWS */
@@ -929,6 +943,7 @@ typedef char liststring_t[MAX_LIST_OPTION_LENGTH];
 #  define L_IF_WIN(x) L_EXPAND_LEVEL(x)
 
 /* unicode versions of shared names*/
+#  define L_DYNAMORIO_VAR_CONFIGDIR   L_EXPAND_LEVEL(DYNAMORIO_VAR_CONFIGDIR)
 #  define L_DYNAMORIO_VAR_HOME        L_EXPAND_LEVEL(DYNAMORIO_VAR_HOME)
 #  define L_DYNAMORIO_VAR_LOGDIR      L_EXPAND_LEVEL(DYNAMORIO_VAR_LOGDIR)
 #  define L_DYNAMORIO_VAR_OPTIONS     L_EXPAND_LEVEL(DYNAMORIO_VAR_OPTIONS)
@@ -1000,6 +1015,7 @@ typedef char liststring_t[MAX_LIST_OPTION_LENGTH];
 #  define L_EVENT_MESSAGE_FILE L"EventMessageFile"
 
 /* shared object directory base */
+#  define BASE_NAMED_OBJECTS L"\\BaseNamedObjects"
 /* base root in global object namespace, not in BaseNamedObjects or Sessions */
 #  define DYNAMORIO_SHARED_OBJECT_BASE L("\\")L_EXPAND_LEVEL(COMPANY_NAME)
 /* shared object directory for shared DLL cache */
@@ -1075,7 +1091,7 @@ enum DLL_TYPE {
 #endif /* WINDOWS */
 
 #ifdef STANDALONE_UNIT_TEST
-# define UNIT_TEST_EXE_NAME "unit_test_" STRINGIFY(UNIT_TEST_NAME) IF_WINDOWS(".exe")
+# define UNIT_TEST_EXE_NAME ("unit_tests" IF_WINDOWS(".exe"))
 #endif
 
 /* DYNAMORIO_RUNUNDER controls the injection technique and process naming, 
@@ -1258,6 +1274,14 @@ typedef struct {
 # define NUDGESIG_SIGNUM         SIGILL
 #endif
 
+/* Define AVOID_API_EXPORT here rather than in configure.h.
+ * This way it will just be used for compling dr code and not for
+ * genapi.pl which generates client header files.  In otherwords, this allows
+ * having code that isn't visible in the client headers but is visible for dr
+ * builds.  This helps sharing types and code between dr and client, but with
+ * some hidden extras for dr builds.
+ */
+#define AVOID_API_EXPORT 1
 
 #ifdef HOT_PATCHING_INTERFACE
 /* These type definitions define the hot patch interface between the core &
@@ -1270,15 +1294,6 @@ typedef struct {
  * generate the threat ID for a given hot patch violation.
  */
 #define HOTP_POLICY_ID_LENGTH 9
-
-/* Define AVOID_API_EXPORT here and undef it after the ifdef-endif using it.
- * This way it will just be used for compling dr code and not for
- * genapi.pl which generates client header files.  In otherwords, this allows
- * having code that isn't visible in the client headers but is visible for dr
- * builds.  This helps sharing types and code between dr and client, but with
- * some hidden extras for dr builds.
- */
-#define AVOID_API_EXPORT 1
 
 /* DR_API EXPORT TOFILE dr_probe.h */
 /* DR_API EXPORT BEGIN */
@@ -1424,7 +1439,6 @@ typedef enum {
 # endif /* AVOID_API_EXPORT */
 } dr_probe_status_t;
 /* DR_API EXPORT END */
-#undef AVOID_API_EXPORT
 
 typedef dr_probe_status_t hotp_inject_status_t;
 

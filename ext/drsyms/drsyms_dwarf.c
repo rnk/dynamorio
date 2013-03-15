@@ -1,5 +1,5 @@
 /* **********************************************************
- * Copyright (c) 2011-2012 Google, Inc.  All rights reserved.
+ * Copyright (c) 2011-2013 Google, Inc.  All rights reserved.
  * **********************************************************/
 
 /*
@@ -53,6 +53,7 @@ static bool verbose = false;
 } while (0)
 
 typedef struct _dwarf_module_t {
+    byte *load_base;
     Dwarf_Debug dbg;
     /* we cache the last CU we looked up */
     Dwarf_Die lines_cu;
@@ -60,9 +61,35 @@ typedef struct _dwarf_module_t {
     Dwarf_Signed num_lines;
 } dwarf_module_t;
 
+static bool
+search_addr2line_in_cu(dwarf_module_t *mod, Dwarf_Addr pc, Dwarf_Die cu_die,
+                       drsym_info_t *sym_info INOUT);
+
 /******************************************************************************
  * DWARF parsing code.
  */
+
+/* Find the next DIE matching this tag.  Uses the internal state of dbg to
+ * determine where to start searching.
+ */
+static Dwarf_Die
+next_die_matching_tag(Dwarf_Debug dbg, Dwarf_Tag search_tag)
+{
+    Dwarf_Half tag = 0;
+    Dwarf_Die die = NULL;
+    Dwarf_Error de = {0};
+
+    while (dwarf_siblingof(dbg, die, &die, &de) == DW_DLV_OK) {
+        if (dwarf_tag(die, &tag, &de) != DW_DLV_OK) {
+            NOTIFY_DWARF(de);
+            die = NULL;
+            break;
+        }
+        if (tag == search_tag)
+            break;
+    }
+    return die;
+}
 
 /* Iterate over all the CUs in the module to find the CU containing the given
  * PC.
@@ -71,27 +98,14 @@ static Dwarf_Die
 find_cu_die_via_iter(Dwarf_Debug dbg, Dwarf_Addr pc)
 {
     Dwarf_Die die = NULL;
-    Dwarf_Unsigned cu_offset;
+    Dwarf_Unsigned cu_offset = 0;
     Dwarf_Error de = {0};
     Dwarf_Die cu_die = NULL;
 
     while (dwarf_next_cu_header(dbg, NULL, NULL, NULL, NULL,
                                 &cu_offset, &de) == DW_DLV_OK) {
-        /* Find the first CU DIE in this CU.  dwarf_next_cu_header updates
-         * internal state to track the current CU, and dwarf_siblingof gets us
-         * the first DIE in the CU.
-         */
-        Dwarf_Half tag;
-        die = NULL;
-        while (dwarf_siblingof(dbg, die, &die, &de) == DW_DLV_OK) {
-            if (dwarf_tag(die, &tag, &de) != DW_DLV_OK) {
-                NOTIFY_DWARF(de);
-                die = NULL;
-                break;
-            }
-            if (tag == DW_TAG_compile_unit)
-                break;
-        }
+        /* Scan forward in the tag soup for a CU DIE. */
+        die = next_die_matching_tag(dbg, DW_TAG_compile_unit);
 
         /* We found a CU die, now check if it's the one we wanted. */
         if (die != NULL) {
@@ -166,11 +180,7 @@ drsym_dwarf_search_addr2line(void *mod_in, Dwarf_Addr pc, drsym_info_t *sym_info
     dwarf_module_t *mod = (dwarf_module_t *) mod_in;
     Dwarf_Error de = {0};
     Dwarf_Die cu_die;
-    Dwarf_Line *lines;
-    Dwarf_Signed num_lines;
-    int i;
-    Dwarf_Addr lineaddr, next_lineaddr = 0;
-    Dwarf_Line dw_line;
+    Dwarf_Unsigned cu_offset = 0;
     bool success = false;
 
     /* On failure, these should be zeroed.
@@ -179,22 +189,52 @@ drsym_dwarf_search_addr2line(void *mod_in, Dwarf_Addr pc, drsym_info_t *sym_info
     sym_info->line = 0;
     sym_info->line_offs = 0;
 
-    /* First cut down the search space by finding the CU (ie the .c file) that
-     * this function belongs to.
+    /* First try cutting down the search space by finding the CU (i.e., the .c
+     * file) that this function belongs to.
      */
     cu_die = find_cu_die(mod->dbg, pc);
     if (cu_die == NULL) {
-        NOTIFY("%s: failed to find die for "PFX"\n", __FUNCTION__, pc);
-        return false;
+        NOTIFY("%s: failed to find CU die for "PFX", searching all CUs\n",
+               __FUNCTION__, pc);
+    } else {
+        return search_addr2line_in_cu(mod, pc, cu_die, sym_info);
     }
 
-    if (mod->lines_cu == cu_die) {
-        lines = mod->lines;
-        num_lines = mod->num_lines;
-    } else {
+    /* We failed to find a CU containing this PC.  Some compilers (clang) don't
+     * put lo_pc hi_pc attributes on compilation units.  In this case, we
+     * iterate all the CUs and dig into the dwarf tag soup for all of them.
+     */
+    while (dwarf_next_cu_header(mod->dbg, NULL, NULL, NULL, NULL,
+                                &cu_offset, &de) == DW_DLV_OK) {
+        /* Scan forward in the tag soup for a CU DIE. */
+        cu_die = next_die_matching_tag(mod->dbg, DW_TAG_compile_unit);
+
+        /* We found a CU die, now check if it's the one we wanted. */
+        if (cu_die != NULL && search_addr2line_in_cu(mod, pc, cu_die, sym_info)) {
+            success = true;
+            break;
+        }
+    }
+
+    while (dwarf_next_cu_header(mod->dbg, NULL, NULL, NULL, NULL,
+                                &cu_offset, &de) == DW_DLV_OK) {
+        /* Reset the internal CU header state. */
+    }
+
+    return success;
+}
+
+static Dwarf_Signed
+get_lines_from_cu(dwarf_module_t *mod, Dwarf_Die cu_die,
+                  Dwarf_Line **lines_out OUT)
+{
+    if (mod->lines_cu != cu_die) {
+        Dwarf_Line *lines;
+        Dwarf_Signed num_lines;
+        Dwarf_Error de = {0};
         if (dwarf_srclines(cu_die, &lines, &num_lines, &de) != DW_DLV_OK) {
             NOTIFY_DWARF(de);
-            return false;
+            return -1;
         }
         /* XXX: we should fix libelftc to sort as it builds the table but for now
          * it's easier to sort and store here
@@ -206,6 +246,25 @@ drsym_dwarf_search_addr2line(void *mod_in, Dwarf_Addr pc, drsym_info_t *sym_info
         mod->lines = lines;
         mod->num_lines = num_lines;
     }
+    *lines_out = mod->lines;
+    return mod->num_lines;
+}
+
+static bool
+search_addr2line_in_cu(dwarf_module_t *mod, Dwarf_Addr pc, Dwarf_Die cu_die,
+                       drsym_info_t *sym_info INOUT)
+{
+    Dwarf_Line *lines;
+    Dwarf_Signed num_lines;
+    int i;
+    Dwarf_Addr lineaddr, next_lineaddr = 0;
+    Dwarf_Line dw_line;
+    bool success = false;
+    Dwarf_Error de = {0};
+
+    num_lines = get_lines_from_cu(mod, cu_die, &lines);
+    if (num_lines < 0)
+        return false;
 
     /* We could binary search this, but we assume dwarf_srclines is the
      * bottleneck.
@@ -250,10 +309,102 @@ drsym_dwarf_search_addr2line(void *mod_in, Dwarf_Addr pc, drsym_info_t *sym_info
     return success;
 }
 
+/* Return value: 0 means success but break; 1 means success and continue;
+ * -1 means error.
+ */
+static int
+enumerate_lines_in_cu(dwarf_module_t *mod, Dwarf_Die cu_die,
+                      drsym_enumerate_lines_cb callback, void *data)
+{
+    Dwarf_Line *lines;
+    Dwarf_Signed num_lines;
+    int i;
+    Dwarf_Error de = {0};
+    drsym_line_info_t info;
+
+    if (dwarf_diename(cu_die, (char **) &info.cu_name, &de) != DW_DLV_OK) {
+        NOTIFY_DWARF(de);
+        return -1;
+    }
+
+    num_lines = get_lines_from_cu(mod, cu_die, &lines);
+    if (num_lines < 0) {
+        /* This cu has no line info.  Don't bail: keep going. */
+        info.file = NULL;
+        info.line = 0;
+        info.line_addr = 0;
+        if (!(*callback)(&info, data))
+            return 0;
+        return 1;
+    }
+
+    for (i = 0; i < num_lines; i++) {
+        Dwarf_Unsigned lineno;
+        Dwarf_Addr lineaddr;
+
+        /* We do not want to bail on failure of any of these: we want to
+         * provide as much information as possible.
+         */
+        if (dwarf_linesrc(lines[i], (char **) &info.file, &de) != DW_DLV_OK) {
+            NOTIFY_DWARF(de);
+            info.file = NULL;
+        }
+
+        if (dwarf_lineno(lines[i], &lineno, &de) != DW_DLV_OK) {
+            NOTIFY_DWARF(de);
+            info.line = 0;
+        } else
+            info.line = lineno;
+
+        if (dwarf_lineaddr(lines[i], &lineaddr, &de) != DW_DLV_OK) {
+            NOTIFY_DWARF(de);
+            info.line_addr = 0;
+        } else
+            info.line_addr = (size_t) (lineaddr - (Dwarf_Addr)(ptr_uint_t)mod->load_base);
+
+        if (!(*callback)(&info, data))
+            return 0;
+    }
+
+    return 1;
+}
+
+drsym_error_t
+drsym_dwarf_enumerate_lines(void *mod_in, drsym_enumerate_lines_cb callback, void *data)
+{
+    drsym_error_t success = DRSYM_SUCCESS;
+    dwarf_module_t *mod = (dwarf_module_t *) mod_in;
+    Dwarf_Error de = {0};
+    Dwarf_Die cu_die;
+    Dwarf_Unsigned cu_offset = 0;
+
+    /* Enumerate all CU's */
+    while (dwarf_next_cu_header(mod->dbg, NULL, NULL, NULL, NULL,
+                                &cu_offset, &de) == DW_DLV_OK) {
+        /* Scan forward in the tag soup for a CU DIE. */
+        cu_die = next_die_matching_tag(mod->dbg, DW_TAG_compile_unit);
+        if (cu_die != NULL) {
+            int res = enumerate_lines_in_cu(mod, cu_die, callback, data);
+            if (res < 0)
+                success = DRSYM_ERROR_LINE_NOT_AVAILABLE;
+            if (res <= 0)
+                break;
+        }
+    }
+
+    while (dwarf_next_cu_header(mod->dbg, NULL, NULL, NULL, NULL,
+                                &cu_offset, &de) == DW_DLV_OK) {
+        /* Reset the internal CU header state. */
+    }
+
+    return success;
+}
+
 void *
-drsym_dwarf_init(Dwarf_Debug dbg)
+drsym_dwarf_init(Dwarf_Debug dbg, byte *load_base)
 {
     dwarf_module_t *mod = (dwarf_module_t *) dr_global_alloc(sizeof(*mod));
+    mod->load_base = load_base;
     mod->dbg = dbg;
     mod->lines_cu = NULL;
     mod->lines = NULL;

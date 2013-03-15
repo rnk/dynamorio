@@ -1,4 +1,5 @@
 /* **********************************************************
+ * Copyright (c) 2012 Google, Inc.  All rights reserved.
  * Copyright (c) 2000-2010 VMware, Inc.  All rights reserved.
  * **********************************************************/
 
@@ -50,6 +51,7 @@
 #include <string.h> /* for memset */
 #include "instr.h"
 #include "perscache.h"
+#include "disassemble.h"
 
 #ifdef CLIENT_INTERFACE
 /* in interp.c.  not declared in arch_exports.h to avoid having to go
@@ -160,7 +162,9 @@ create_private_copy(dcontext_t *dcontext, fragment_t *f)
         "Creating private copy of F%d ("PFX") for trace creation\n", f->id, f->tag);
 
     IF_X64(ASSERT((get_x86_mode(dcontext) && FRAG_IS_32(f->flags)) ||
-                  (!get_x86_mode(dcontext) && !FRAG_IS_32(f->flags))));
+                  (!get_x86_mode(dcontext) && !FRAG_IS_32(f->flags)) ||
+                  (get_x86_mode(dcontext) && !FRAG_IS_32(f->flags) &&
+                   DYNAMO_OPTION(x86_to_x64))));
 
     /* only keep one private copy around at a time
      * we delete here, when we add a new copy, and not in internal_restore_last
@@ -221,7 +225,7 @@ create_private_copy(dcontext_t *dcontext, fragment_t *f)
 
 #ifdef CLIENT_INTERFACE
 static void
-extend_unmangled_ilist(dcontext_t *dcontext)
+extend_unmangled_ilist(dcontext_t *dcontext, fragment_t *f)
 {
     monitor_data_t *md = (monitor_data_t *) dcontext->monitor_field;
     if (md->pass_to_client) {
@@ -254,14 +258,16 @@ extend_unmangled_ilist(dcontext_t *dcontext)
         /* PR 299808: we need the end pc for boundary finding later */
         ASSERT(md->num_blks < md->blk_info_length);
         inst = instrlist_last(md->unmangled_bb_ilist);
-        if (inst == NULL) {
-            /* PR 366232: handle empty bbs */
-            md->blk_info[md->num_blks].bounds.end_pc =
-                EXIT_TARGET_TAG(dcontext, md->last_copy, l);
-        } else {
-            md->blk_info[md->num_blks].bounds.end_pc =
-                instr_get_translation(inst) + instr_length(dcontext, inst);
-        }
+
+        md->blk_info[md->num_blks].vmlist = NULL;
+        if (inst != NULL) { /* PR 366232: handle empty bbs */
+            vm_area_add_to_list(dcontext, f->tag,
+                                &(md->blk_info[md->num_blks].vmlist),
+                                md->trace_flags, f, false/*have no locks*/);
+            md->blk_info[md->num_blks].final_cti =
+                instr_is_cti(instrlist_last(md->unmangled_bb_ilist));
+        } else
+            md->blk_info[md->num_blks].final_cti = false;
         
         instrlist_init(md->unmangled_bb_ilist); /* clear fields to make destroy happy */
         instrlist_destroy(dcontext, md->unmangled_bb_ilist);
@@ -274,6 +280,20 @@ extend_unmangled_ilist(dcontext_t *dcontext)
         md->trace_flags |= FRAG_HAS_TRANSLATION_INFO;
 }
 #endif
+
+bool
+mangle_trace_at_end(void)
+{
+    /* There's no reason to keep an unmangled list and mangle at the end
+     * unless there's a client bb or trace hook, for a for-cache trace
+     * or a recreate-state trace.
+     */
+#ifdef CLIENT_INTERFACE
+    return (dr_bb_hook_exists() || dr_trace_hook_exists());
+#else
+    return false;
+#endif
+}
 
 /* Initialization */
 /* thread-shared init does nothing, thread-private init does it all */
@@ -296,6 +316,12 @@ monitor_thread_reset_init(dcontext_t *dcontext)
 /* frees all non-persistent memory */
 void
 monitor_thread_reset_free(dcontext_t *dcontext)
+{
+    trace_abort_and_delete(dcontext);
+}
+
+void
+trace_abort_and_delete(dcontext_t *dcontext)
 {
     /* remove any MultiEntries */
     trace_abort(dcontext);
@@ -501,6 +527,7 @@ static void
 reset_trace_state(dcontext_t *dcontext, bool grab_link_lock)
 {
     monitor_data_t *md = (monitor_data_t *) dcontext->monitor_field;
+    uint i;
     /* reset the trace buffer */
     instrlist_init(&(md->trace));
 #ifdef CLIENT_INTERFACE
@@ -513,6 +540,10 @@ reset_trace_state(dcontext_t *dcontext, bool grab_link_lock)
 #endif
     md->trace_buf_top = 0;
     ASSERT(md->trace_vmlist == NULL);
+    for (i = 0; i < md->num_blks; i++) {
+        vm_area_destroy_list(dcontext, md->blk_info[i].vmlist);
+        md->blk_info[i].vmlist = NULL;
+    }
     md->num_blks = 0;
 
     /* If shared BBs are being used to build a shared trace, we may have
@@ -1100,9 +1131,8 @@ make_room_in_trace_buffer(dcontext_t *dcontext, uint add_size, fragment_t *f)
         } while (md->num_blks + new_blks >= new_len);
         new_buf = (trace_bb_build_t *)
             HEAP_ARRAY_ALLOC(dcontext, trace_bb_build_t, new_len, ACCT_TRACE, true);
-        /* PR 306761 relies on being zeroed */
-        if (new_len == INITIAL_NUM_BLKS)
-            memset(md->blk_info, 0, sizeof(trace_bb_build_t)*new_len);
+        /* PR 306761 relies on being zeroed, as does reset_trace_state to free vmlists */
+        memset(new_buf, 0, sizeof(trace_bb_build_t)*new_len);
         LOG(THREAD, LOG_MONITOR, 3, "\nRe-allocating trace blks from %d to %d\n",
             md->blk_info_length, new_len);
         if (md->blk_info != NULL) {
@@ -1199,7 +1229,7 @@ get_and_check_add_size(dcontext_t *dcontext, fragment_t *f, uint *res_add_size,
 static inline uint
 trace_flags_from_component_flags(uint flags)
 {
-    return (flags & (FRAG_HAS_SYSCALL | FRAG_HAS_DIRECT_CTI));
+    return (flags & (FRAG_HAS_SYSCALL | FRAG_HAS_DIRECT_CTI IF_X64(| FRAG_32_BIT)));
 }
 
 static inline uint
@@ -1247,9 +1277,9 @@ end_and_emit_trace(dcontext_t *dcontext, fragment_t *cur_f)
         /* static count last_exit statistics case 4817 */
         if (LINKSTUB_INDIRECT(dcontext->last_exit->flags)) {
             STATS_INC(num_traces_end_at_ibl);
-            if (TEST(LINK_CALL, dcontext->last_exit->flags)) {
+            if (EXIT_IS_CALL(dcontext->last_exit->flags)) {
                 STATS_INC(num_traces_end_at_ibl_ind_call);
-            } else if (TEST(LINK_JMP, dcontext->last_exit->flags)) {
+            } else if (EXIT_IS_JMP(dcontext->last_exit->flags)) {
                 /* shared system call (case 4995) */
                 if (IS_SHARED_SYSCALLS_LINKSTUB(dcontext->last_exit))
                     STATS_INC(num_traces_end_at_ibl_syscall);
@@ -1581,6 +1611,7 @@ end_and_emit_trace(dcontext_t *dcontext, fragment_t *cur_f)
         mutex_unlock(&trace_building_lock);
 
     RSTATS_INC(num_traces);
+    DOSTATS({ IF_X64(if (FRAG_IS_32(trace_f->flags)) STATS_INC(num_32bit_traces);) });
     STATS_ADD(num_bbs_in_all_traces, md->num_blks);
     STATS_TRACK_MAX(max_bbs_in_a_trace, md->num_blks);
     DOLOG(2, LOG_MONITOR, {
@@ -1687,7 +1718,7 @@ internal_extend_trace(dcontext_t *dcontext, fragment_t *f, linkstub_t *prev_l,
     DEBUG_DECLARE(uint pre_emitted_size = md->emitted_size;)
 
 #ifdef CLIENT_INTERFACE
-    extend_unmangled_ilist(dcontext);
+    extend_unmangled_ilist(dcontext, f);
 #endif
 
     /* if prev_l is fake, NULL it out */
@@ -1774,36 +1805,15 @@ internal_extend_trace(dcontext_t *dcontext, fragment_t *f, linkstub_t *prev_l,
         return end_and_emit_trace(dcontext, f);
     }
 
-    if (TEST(FRAG_SHARED, f->flags) && !TEST(FRAG_TEMP_PRIVATE, f->flags)) {
-        /* strategy: make a private copy of f to avoid synch issues w/ others
-         * modifying its linking before we get back here
+    ASSERT(!TEST(FRAG_SHARED, f->flags));
+    if (TEST(FRAG_TEMP_PRIVATE, f->flags)) {
+        /* We make a private copy earlier for everything other than a normal
+         * thread private fragment.
          */
-        if (!TEST(FRAG_COARSE_GRAIN, f->flags)) {
-            if (!create_private_copy(dcontext, f)) {
-                return end_and_emit_trace(dcontext, f);
-            }
-        }
-        /* else, we should have made the private copy earlier */
+        ASSERT(md->last_fragment == f);
         ASSERT(md->last_copy != NULL);
         ASSERT(md->last_copy->tag == f->tag);
         ASSERT(md->last_fragment == md->last_copy);
-        if (md->trace_tag == NULL) {
-            /* trace was aborted b/c our new fragment clobbered someone (see
-             * comments in create_private_copy) --
-             * when emitting our private bb we can kill the last_fragment):
-             * just exit now
-             */
-            LOG(THREAD, LOG_MONITOR, 4, "Private copy ended up aborting trace!\n");
-            STATS_INC(num_trace_private_copy_abort);
-            /* trace abort happened in emit_fragment, so we went and undid the
-             * clearing of last_fragment by assigning it to last_copy, must re-clear!
-             */
-            md->last_fragment = NULL;
-            return f;
-        }
-
-        /* operate on new f from here on */
-        f = md->last_fragment;
     } else {
         /* must store this fragment, and also duplicate its flags so know what
          * to restore.  can't rely on last_exit for restoring since could end up
@@ -2114,13 +2124,34 @@ monitor_cache_enter(dcontext_t *dcontext, fragment_t *f)
                 f = head;
             }
 #endif
-            if (TEST(FRAG_COARSE_GRAIN, f->flags)
+            if (TEST(FRAG_COARSE_GRAIN, f->flags) || TEST(FRAG_SHARED, f->flags)
                 IF_CLIENT_INTERFACE(|| md->pass_to_client)) {
                 /* We need linkstub_t info for trace_exit_stub_size_diff() so we go
                  * ahead and make a private copy here.
+                 * For shared fragments, we make a private copy of f to avoid
+                 * synch issues with other threads modifying its linkage before
+                 * we get back here.  We do it up front now (i#940) to avoid
+                 * determinism issues that arise when check_thread_vm_area()
+                 * changes its mind over time.
                  */
                 if (create_private_copy(dcontext, f)) {
                     /* operate on new f from here on */
+                    if (md->trace_tag == NULL) {
+                        /* trace was aborted b/c our new fragment clobbered
+                         * someone (see comments in create_private_copy) --
+                         * when emitting our private bb we can kill the
+                         * last_fragment): just exit now
+                         */
+                        LOG(THREAD, LOG_MONITOR, 4,
+                            "Private copy ended up aborting trace!\n");
+                        STATS_INC(num_trace_private_copy_abort);
+                        /* trace abort happened in emit_fragment, so we went and
+                         * undid the clearing of last_fragment by assigning it
+                         * to last_copy, must re-clear!
+                         */
+                        md->last_fragment = NULL;
+                        return f;
+                    }
                     f = md->last_fragment;
                 } else {
                     end_trace = true;
@@ -2296,17 +2327,24 @@ monitor_cache_enter(dcontext_t *dcontext, fragment_t *f)
         /* PR 299808: cache whether we need to re-build bbs for clients up front,
          * to be consistent across whole trace.  If client later unregisters bb
          * hook then it will miss our call on constituent bbs: that's its problem.
+         * We document that trace and bb hooks should not be unregistered.
          */
-        md->pass_to_client = dr_bb_hook_exists() || dr_trace_hook_exists();
+        md->pass_to_client = mangle_trace_at_end();
         /* should already be initialized */
         ASSERT(instrlist_first(&md->unmangled_ilist) == NULL);
     }
 #endif
     if (start_trace &&
-        (TEST(FRAG_COARSE_GRAIN, f->flags) IF_CLIENT_INTERFACE(|| md->pass_to_client))) {
+        (TEST(FRAG_COARSE_GRAIN, f->flags) || TEST(FRAG_SHARED, f->flags)
+         IF_CLIENT_INTERFACE(|| md->pass_to_client))) {
         ASSERT(TEST(FRAG_IS_TRACE_HEAD, f->flags));
         /* We need linkstub_t info for trace_exit_stub_size_diff() so we go
          * ahead and make a private copy here.
+         * For shared fragments, we make a private copy of f to avoid
+         * synch issues with other threads modifying its linkage before
+         * we get back here.  We do it up front now (i#940) to avoid
+         * determinism issues that arise when check_thread_vm_area()
+         * changes its mind over time.
          */
         if (create_private_copy(dcontext, f)) {
             /* operate on new f from here on */
@@ -2448,11 +2486,11 @@ trace_abort(dcontext_t *dcontext)
         internal_restore_last(dcontext);
     }
 
-    /* moved here primarily to delete prior to fragment_thread_exit but
-     * let monitor_thread_exit remain later
+    /* i#791: We can't delete last copy yet because we could still be executing
+     * in that fragment.  For example, a client could have a clean call that
+     * flushes.  We'll delete the last_copy when we start the next trace or at
+     * thread exit instead.
      */
-    if (md->last_copy != NULL)
-        delete_private_copy(dcontext);
 
     /* free the instrlist_t elements */
     trace = &md->trace;

@@ -1,5 +1,5 @@
 /* **********************************************************
- * Copyright (c) 2011 Google, Inc.   All rights reserved.
+ * Copyright (c) 2011-2012 Google, Inc.   All rights reserved.
  * **********************************************************/
 
 /* drwrap: DynamoRIO Function Wrapping and Replacing Extension
@@ -29,6 +29,7 @@ The \p drwrap DynamoRIO Extension provides function wrapping and replacing
 support.
 
  - \ref sec_drwrap_setup
+ - \ref sec_drwrap_events
  - \ref sec_drwrap_api
  - \ref sec_drwrap_license
 
@@ -44,12 +45,18 @@ That will automatically set up the include path and library dependence.
 Initialize and clean up \p drwrap by calling drwrap_init() and
 drwrap_exit().
 
+\section sec_drwrap_events Event Replacement
+
+\p drwrap uses the \p drmgr Extension to ensure its events occur at the
+proper order.  A user of \p drwrap must use the \p drmgr versions of the
+basic block and thread events.
+
 \section sec_drwrap_api API
 
 The first step in replacing or wrapping is to determine the address of the
 target application function.  For functions exported by an application
 library, use dr_get_proc_address() to locate the entry point.  For internal
-functions, use the \p drsyms Extension.
+functions, use the drsyms Extension (see \ref page_drsyms).
 
 Function replacing is provided by drwrap_replace().  The replacement
 function executes as application code and will be passed to the client via

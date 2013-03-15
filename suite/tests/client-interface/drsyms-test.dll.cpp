@@ -1,5 +1,5 @@
 /* **********************************************************
- * Copyright (c) 2011-2012 Google, Inc.  All rights reserved.
+ * Copyright (c) 2011-2013 Google, Inc.  All rights reserved.
  * **********************************************************/
 
 /*
@@ -37,6 +37,7 @@
 #include "drwrap.h"
 #include "client_tools.h"
 
+#include <limits.h>
 #include <string.h>
 
 /* DR's build system usually disables warnings we're not interested in, but the
@@ -63,7 +64,8 @@ static void lookup_overloads(const char *exe_path);
 extern "C" DR_EXPORT void
 dr_init(client_id_t id)
 {
-    drsym_init(0);
+    drsym_error_t r = drsym_init(0);
+    ASSERT(r == DRSYM_SUCCESS);
     drwrap_init();
     dr_register_exit_event(event_exit);
 
@@ -318,11 +320,15 @@ lookup_exe_syms(void)
 }
 
 #ifdef WINDOWS
+# define NUM_OVERLOADED_CLASS 3
 typedef struct _overloaded_params_t {
     const char *exe_path;
     bool overloaded_char;
     bool overloaded_wchar;
     bool overloaded_int;
+    bool overloaded_void_ptr;
+    bool overloaded_void;
+    uint overloaded_class;
 } overloaded_params_t;
 
 static bool
@@ -344,14 +350,52 @@ overloaded_cb(const char *name, size_t modoffs, void *data)
         func_type->arg_types[0]->kind == DRSYM_TYPE_PTR) {
         drsym_ptr_type_t *arg_type = (drsym_ptr_type_t*)func_type->arg_types[0];
         size_t arg_int_size = arg_type->elt_type->size;
-        if (arg_type->elt_type->kind != DRSYM_TYPE_INT)
-            dr_printf("overloaded() arg points to non-integer type!\n");
-        switch (arg_int_size) {
-        case 1: p->overloaded_char = true;  break;
-        case 2: p->overloaded_wchar = true; break;
-        case 4: p->overloaded_int = true;   break;
-        default: break;
+        if (arg_type->elt_type->kind == DRSYM_TYPE_INT) {
+            switch (arg_int_size) {
+            case 1: p->overloaded_char = true;  break;
+            case 2: p->overloaded_wchar = true; break;
+            case 4: p->overloaded_int = true;   break;
+            default: break;
+            }
+        } else if (arg_type->elt_type->kind == DRSYM_TYPE_VOID) {
+            p->overloaded_void_ptr = true;
+        } else if (arg_type->elt_type->kind == DRSYM_TYPE_COMPOUND) {
+            drsym_compound_type_t *ctype = (drsym_compound_type_t *) arg_type->elt_type;
+            int i;
+            ASSERT(ctype->field_types == NULL); /* drsym_get_func_type does not expand */
+            p->overloaded_class++;
+            dr_fprintf(STDERR, "compound arg %s has %d field(s), size %d\n",
+                       ctype->name, ctype->num_fields, ctype->type.size);
+            r = drsym_expand_type(p->exe_path, ctype->type.id, UINT_MAX,
+                                  buf, sizeof(buf), (drsym_type_t **)&ctype);
+            if (r != DRSYM_SUCCESS) {
+                dr_fprintf(STDERR, "drsym_expand_type failed: %d\n", (int)r);
+            } else {
+                ASSERT(ctype->type.kind == DRSYM_TYPE_COMPOUND);
+                for (i=0; i < ctype->num_fields; i++) {
+                    dr_fprintf(STDERR, "  class field %d is type %d and size %d\n",
+                               i, ctype->field_types[i]->kind,
+                               ctype->field_types[i]->size);
+                    if (ctype->field_types[i]->kind == DRSYM_TYPE_FUNC) {
+                        drsym_func_type_t *ftype = (drsym_func_type_t *)
+                            ctype->field_types[i];
+                        dr_fprintf(STDERR, "    func has %d args\n", ftype->num_args);
+                        for (i=0; i < ftype->num_args; i++) {
+                            dr_fprintf(STDERR, "      arg %d is type %d and size %d\n",
+                                       i, ftype->arg_types[i]->kind,
+                                       ftype->arg_types[i]->size);
+                        }
+                    }
+                }
+            }
+        } else {
+            dr_fprintf(STDERR, "overloaded() arg has unexpected type!\n");
         }
+    } else if (func_type->num_args == 0) {
+        /* no arg so not really an overload, but we need to test no-arg func */
+        p->overloaded_void = true;
+    } else {
+        dr_fprintf(STDERR, "overloaded() has unexpected args\n");
     }
 
     return true;
@@ -367,19 +411,56 @@ lookup_overloads(const char *exe_path)
     p.overloaded_char = false;
     p.overloaded_wchar = false;
     p.overloaded_int = false;
+    p.overloaded_void = false;
+    p.overloaded_void_ptr = false;
+    p.overloaded_class = 0;
     r = drsym_enumerate_symbols(exe_path, overloaded_cb, &p,
                                 DRSYM_DEFAULT_FLAGS);
     ASSERT(r == DRSYM_SUCCESS);
     if (!p.overloaded_char)  dr_fprintf(STDERR, "overloaded_char missing!\n");
     if (!p.overloaded_wchar) dr_fprintf(STDERR, "overloaded_wchar missing!\n");
     if (!p.overloaded_int)   dr_fprintf(STDERR, "overloaded_int missing!\n");
+    if (!p.overloaded_void)  dr_fprintf(STDERR, "overloaded_void missing!\n");
+    if (!p.overloaded_void_ptr)  dr_fprintf(STDERR, "overloaded_void_ptr missing!\n");
+    if (p.overloaded_class != NUM_OVERLOADED_CLASS)
+        dr_fprintf(STDERR, "overloaded_class missing!\n");
     if (p.overloaded_char &&
         p.overloaded_wchar &&
-        p.overloaded_int) {
+        p.overloaded_int &&
+        p.overloaded_void &&
+        p.overloaded_void_ptr &&
+        p.overloaded_class == NUM_OVERLOADED_CLASS) {
         dr_fprintf(STDERR, "found all overloads\n");
     }
 }
 #endif /* WINDOWS */
+
+static bool
+enum_line_cb(drsym_line_info_t *info, void *data)
+{
+    static bool found_tools_h, found_appdll;
+    const module_data_t *dll_data = (const module_data_t *) data;
+    ASSERT(info->line_addr <= (size_t)(dll_data->end - dll_data->start));
+    if (info->file != NULL) {
+        if (!found_tools_h && strstr(info->file, "tools.h") != NULL) {
+            found_tools_h = true;
+            dr_fprintf(STDERR, "found tools.h\n");
+        }
+        if (!found_appdll && strstr(info->file, "drsyms-test.appdll.cpp") != NULL) {
+            found_appdll = true;
+            dr_fprintf(STDERR, "found drsyms-test.appdll.cpp\n");
+        }
+    }
+    return true;
+}
+
+static void
+test_line_iteration(const module_data_t *dll_data)
+{
+    drsym_error_t res = drsym_enumerate_lines(dll_data->full_path, enum_line_cb,
+                                              (void *) dll_data);
+    ASSERT(res == DRSYM_SUCCESS);
+}
 
 /* Lookup symbols in the appdll and wrap them. */
 static void
@@ -450,6 +531,10 @@ lookup_dll_syms(void *dc, const module_data_t *dll_data, bool loaded)
     ASSERT(ok);
 
     check_enumerate_dll_syms(dll_path);
+
+    test_line_iteration(dll_data);
+
+    drsym_free_resources(dll_path);
 }
 
 static const char *dll_syms[] = {
@@ -474,17 +559,7 @@ static const char *dll_syms_mangled_pdb[] = {
 
 static const char *dll_syms_mangled[] = {
     "dll_export",
-    /* x64 MinGW gcc 4.7 matches linux.
-     * XXX: will 32-bit MinGW/Cygwin gcc 4.7 also?  For now leaving as X64.
-     */
-#if defined(LINUX) || defined(X64)
-    /* the L is a GNU extension to the Itanium mangling spec which isn't used
-     * by MinGW 32-bit through 4.6.1
-     */
     "_ZL10dll_statici",
-#else
-    "_Z10dll_statici",
-#endif
     "_Z10dll_publici",
     "_Z11stack_tracev",
     NULL
@@ -525,6 +600,7 @@ static const char *dll_syms_full[] = {
 typedef struct {
     bool syms_found[BUFFER_SIZE_ELEMENTS(dll_syms) - 1];
     const char **syms_expected;
+    const char *dll_path;
 } dll_syms_found_t;
 
 /* If this was a symbol we expected that we haven't found yet, mark it found,
@@ -540,11 +616,65 @@ enum_sym_cb(const char *name, size_t modoffs, void *data)
             continue;
         if (strstr(name, dll_syms[i]) != NULL) {
             syms_found->syms_found[i] = true;
-            /* Ignore () at function end. */
-            if (strcmp(name, syms_found->syms_expected[i]) != 0) {
+            const char *expected = syms_found->syms_expected[i];
+            char alternative[MAX_FUNC_LEN] = "\xff";  /* invalid string */
+            /* If the expected mangling is _ZL*, try _Z* too.  Different gccs
+             * from Cyginw, MinGW, and Linux all do different things.
+             */
+            if (strncmp(expected, "_ZL", 3) == 0) {
+                dr_snprintf(alternative, BUFFER_SIZE_ELEMENTS(alternative),
+                            "%.2s%s", expected, expected+3);
+                NULL_TERMINATE_BUFFER(alternative);
+            }
+            if (strcmp(name, expected) != 0 &&
+                strcmp(name, alternative) != 0) {
                 dr_fprintf(STDERR, "symbol had wrong mangling:\n"
                            " expected: %s\n actual: %s\n",
                            syms_found->syms_expected[i], name);
+            }
+        }
+    }
+    return true;
+}
+
+static bool
+enum_sym_ex_cb(drsym_info_t *out, drsym_error_t status, void *data)
+{
+    ASSERT(status == DRSYM_ERROR_LINE_NOT_AVAILABLE);
+    if (data == NULL) {
+        drsym_info_legacy_t *leg = (drsym_info_legacy_t *) out;
+        ASSERT(strlen(leg->name) == leg->name_available_size);
+    } else {
+        dll_syms_found_t *syms_found = (dll_syms_found_t *) data;
+        uint i;
+
+        ASSERT(strlen(out->name) == out->name_available_size);
+
+        for (i = 0; i < BUFFER_SIZE_ELEMENTS(syms_found->syms_found); i++) {
+            if (syms_found->syms_found[i])
+                continue;
+            if (strstr(out->name, dll_syms[i]) != NULL)
+                syms_found->syms_found[i] = true;
+        }
+
+        if (TEST(DRSYM_PDB, out->debug_kind)) { /* else types NYI */
+            static char buf[4096];
+            drsym_type_t *type;
+            drsym_error_t r = drsym_get_type(syms_found->dll_path, out->start_offs, 1,
+                                             buf, sizeof(buf), &type);
+            if (r == DRSYM_SUCCESS) {
+                /* XXX: I'm seeing error 126 (ERROR_MOD_NOT_FOUND) from
+                 * SymFromAddr for some symbols that the enum finds: strange.
+                 * On another machine I saw mismatches in type id:
+                 *   error for __initiallocinfo: 481 != 483, kind = 5
+                 * Grrr!  Do we really have to go and compare all the properties
+                 * of the type to ensure it's the same?!?
+                 */
+                ASSERT(type->id == out->type_id ||
+                       /* Unknown type has id cleared to 0 */
+                       (type->kind == DRSYM_TYPE_OTHER && type->id == 0) ||
+                       /* Some __ types seem to have varying id's */
+                       strstr(out->name, "__") == out->name);
             }
         }
     }
@@ -566,9 +696,27 @@ enum_syms_with_flags(const char *dll_path, const char **syms_expected,
     syms_found.syms_expected = syms_expected;
     r = drsym_enumerate_symbols(dll_path, enum_sym_cb, &syms_found, flags);
     ASSERT(r == DRSYM_SUCCESS);
-    for (i = 0; i < BUFFER_SIZE_ELEMENTS(syms_found.syms_found); i++)
+    for (i = 0; i < BUFFER_SIZE_ELEMENTS(syms_found.syms_found); i++) {
         if (!syms_found.syms_found[i])
             dr_fprintf(STDERR, "failed to find symbol for %s!\n", dll_syms[i]);
+    }
+
+    /* Test the _ex version */
+    ASSERT(sizeof(drsym_info_t) > sizeof(drsym_info_legacy_t));
+    memset(&syms_found, 0, sizeof(syms_found));
+    syms_found.dll_path = dll_path;
+    r = drsym_enumerate_symbols_ex(dll_path, enum_sym_ex_cb,
+                                   sizeof(drsym_info_t), &syms_found, flags);
+    ASSERT(r == DRSYM_SUCCESS);
+    for (i = 0; i < BUFFER_SIZE_ELEMENTS(syms_found.syms_found); i++) {
+        if (!syms_found.syms_found[i])
+            dr_fprintf(STDERR, "_ex failed to find symbol for %s!\n", dll_syms[i]);
+    }
+
+    /* Test legacy */
+    r = drsym_enumerate_symbols_ex(dll_path, enum_sym_ex_cb,
+                                   sizeof(drsym_info_legacy_t), NULL, flags);
+    ASSERT(r == DRSYM_SUCCESS);
 
 #ifdef WINDOWS
     if (TEST(DRSYM_PDB, debug_kind)) {
@@ -583,9 +731,28 @@ enum_syms_with_flags(const char *dll_path, const char **syms_expected,
         r = drsym_search_symbols(dll_path, "*!*stack_trace*", false, enum_sym_cb,
                                  &syms_found);
         ASSERT(r == DRSYM_SUCCESS);
-        for (i = 0; i < BUFFER_SIZE_ELEMENTS(syms_found.syms_found); i++)
+        for (i = 0; i < BUFFER_SIZE_ELEMENTS(syms_found.syms_found); i++) {
             if (!syms_found.syms_found[i])
-                dr_fprintf(STDERR, "failed to find symbol for %s!\n", dll_syms[i]);
+                dr_fprintf(STDERR, "search failed to find %s!\n", dll_syms[i]);
+        }
+
+        /* Test the _ex version */
+        memset(&syms_found, 0, sizeof(syms_found));
+        syms_found.dll_path = dll_path;
+        r = drsym_search_symbols_ex(dll_path, "*!*dll_*", false, enum_sym_ex_cb,
+                                    sizeof(drsym_info_t), &syms_found);
+        ASSERT(r == DRSYM_SUCCESS);
+        r = drsym_search_symbols_ex(dll_path, "*!*stack_trace*", false, enum_sym_ex_cb,
+                                    sizeof(drsym_info_t), &syms_found);
+        ASSERT(r == DRSYM_SUCCESS);
+        for (i = 0; i < BUFFER_SIZE_ELEMENTS(syms_found.syms_found); i++) {
+            if (!syms_found.syms_found[i])
+                dr_fprintf(STDERR, "search _ex failed to find %s!\n", dll_syms[i]);
+        }
+        /* Test legacy */
+        r = drsym_search_symbols_ex(dll_path, "*!*dll_*", false, enum_sym_ex_cb,
+                                    sizeof(drsym_info_legacy_t), NULL);
+        ASSERT(r == DRSYM_SUCCESS);
     }
 #endif
 }

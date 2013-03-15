@@ -33,6 +33,7 @@
 
 #include "globals.h"
 #include "instrument.h"
+#include "native_exec.h"
 #include <string.h> /* for memset */
 #ifdef WINDOWS
 # include "ntdll.h" /* for protect_virtual_memory */
@@ -250,7 +251,7 @@ module_list_add(app_pc base, size_t view_size, bool at_map, const char *filepath
          * the loaded_module_areas vector, to support non-contiguous
          * modules (i#160/PR 562667)
          */
-        DEBUG_DECLARE(module_area_t *ma =)
+        module_area_t *ma =
             module_area_create(base, view_size, at_map, filepath _IF_LINUX(inode));
         ASSERT(ma != NULL);
         
@@ -265,6 +266,8 @@ module_list_add(app_pc base, size_t view_size, bool at_map, const char *filepath
          * or other routines: so we delay and invoke the client event only
          * when DR's module state is consistent
          */
+
+        native_exec_module_load(ma, at_map);
     } else {
         /* already added! */
         /* only possible for manual NtMapViewOfSection, loader 
@@ -317,6 +320,8 @@ module_list_remove(app_pc base, size_t view_size)
     ma = (module_area_t *) vmvector_lookup(loaded_module_areas, base);
     ASSERT_CURIOSITY(ma != NULL); /* loader can't have a race */
 #endif
+
+    native_exec_module_unload(ma);
 
     /* defensively checking */
     if (ma != NULL) {

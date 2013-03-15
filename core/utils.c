@@ -1,5 +1,5 @@
 /* **********************************************************
- * Copyright (c) 2010-2012 Google, Inc.  All rights reserved.
+ * Copyright (c) 2010-2013 Google, Inc.  All rights reserved.
  * Copyright (c) 2000-2010 VMware, Inc.  All rights reserved.
  * **********************************************************/
 
@@ -79,19 +79,17 @@
 
 #include <stdarg.h> /* for varargs */
 
-#include <ctype.h> /* for tolower */
+try_except_t global_try_except;
 
 #ifdef SIDELINE
 extern void sideline_exit(void);
 #endif
 
-#if defined(INTERNAL) || defined(DEBUG) || defined(CLIENT_INTERFACE) \
-    || defined(DR_APP_EXPORTS)
 /* use for soft errors that can handle some cleanup: assertions and apichecks
  * performs some cleanup and then calls os_terminate 
  */
 static void
-assertion_terminate()
+soft_terminate()
 {
 #ifdef SIDELINE
     /* kill child threads */
@@ -109,8 +107,6 @@ assertion_terminate()
     /* do not try to clean up */
     os_terminate(NULL, TERMINATE_PROCESS);
 }
-#endif /* defined(INTERNAL) || defined(DEBUG) || defined(CLIENT_INTERFACE) 
-        * || defined(DR_APP_EXPORTS) */
 
 #if defined(INTERNAL) || defined(DEBUG)
 /* checks whether an assert statement should be ignored, 
@@ -143,7 +139,7 @@ DECLARE_FREQPROT_VAR(static bool do_once_internal_error, false);
 
 /* abort on internal dynamo error */
 void
-internal_error(char *file, int line, char *expr)
+internal_error(const char *file, int line, const char *expr)
 {
     /* note that we no longer obfuscate filenames in non-internal builds
      * xref PR 303817 */
@@ -191,14 +187,13 @@ internal_error(char *file, int line, char *expr)
 #endif
                          );
 
-    assertion_terminate();
+    soft_terminate();
 }
 #endif /* defined(INTERNAL) || defined(DEBUG) */
 
-#if defined(CLIENT_INTERFACE) || defined(DR_APP_EXPORTS)
 /* abort on external application created error, i.e. apicheck */
 void
-external_error(char *file, int line, char *msg)
+external_error(const char *file, int line, const char *msg)
 {
     DO_ONCE({
         /* this syslog is before any core dump, unlike our other reports, but
@@ -209,9 +204,8 @@ external_error(char *file, int line, char *msg)
         report_dynamorio_problem(NULL, DUMPCORE_FATAL_USAGE_ERROR, NULL, NULL,
                                  "Usage error: %s (%s, line %d)", msg, file, line);
     });
-    assertion_terminate();
+    soft_terminate();
 }
-#endif
 
 /****************************************************************************/
 /* SYNCHRONIZATION */
@@ -404,6 +398,15 @@ locks_not_closed()
     while (cur_lock != &innermost_lock) {
         if (allow_do_threshold_leaks && cur_lock->rank == LOCK_RANK(do_threshold_mutex)) {
             ignored++;
+        } else if (cur_lock->deleted &&
+                   (IF_WINDOWS(cur_lock->rank == LOCK_RANK(debugbox_lock) ||
+                               cur_lock->rank == LOCK_RANK(dump_core_lock) ||)
+                    cur_lock->rank == LOCK_RANK(report_buf_lock) ||
+                    cur_lock->rank == LOCK_RANK(datasec_selfprot_lock) ||
+                    cur_lock->rank == LOCK_RANK(logdir_mutex) ||
+                    cur_lock->rank == LOCK_RANK(options_lock))) {
+            /* i#1058: curiosities during exit re-acquire these locks. */
+            ignored++;
         } else {
             LOG(GLOBAL, LOG_STATS, 1, "missing DELETE_LOCK on lock "PFX" %s\n",
                 cur_lock, cur_lock->name);
@@ -412,7 +415,7 @@ locks_not_closed()
         cur_lock = cur_lock->next_process_lock;
     }
     mutex_unlock(&innermost_lock);
-    LOG(GLOBAL, LOG_STATS, 3, "locks_not_closed= %d remaining, %d DO_THRESHOLD_SAFE ignored\n", 
+    LOG(GLOBAL, LOG_STATS, 3, "locks_not_closed= %d remaining, %d ignored\n",
         forgotten, ignored);
     return forgotten;
 }
@@ -702,6 +705,9 @@ mutex_fork_reset(mutex_t *mutex)
     /* i#239/PR 498752: need to free locks held by other threads at fork time.
      * We can't call ASSIGN_INIT_LOCK_FREE as that clobbers any contention event
      * (=> leak) and the debug-build lock lists (=> asserts like PR 504594).
+     * If the synch before fork succeeded, this is unecessary.  If we encounter
+     * more deadlocks after fork because of synch failure, we can add more calls
+     * to reset locks on a case by case basis.
      */
     mutex->lock_requests = LOCK_FREE_STATE;
 # ifdef DEADLOCK_AVOIDANCE
@@ -807,10 +813,29 @@ spinmutex_delete(spin_mutex_t *spin_lock)
     mutex_delete(&spin_lock->lock);
 }
 
+#ifdef DEADLOCK_AVOIDANCE
+static bool
+mutex_ownable(mutex_t *lock)
+{
+    bool ownable = LOCK_OWNABLE;
+# ifdef CLIENT_INTERFACE
+    /* i#779: support DR locks used as app locks */
+    if (lock->app_lock) {
+        ASSERT(lock->rank == dr_client_mutex_rank);
+        ownable = LOCK_NOT_OWNABLE;
+    }
+# endif
+    return ownable;
+}
+#endif
+
 void
 mutex_lock(mutex_t *lock)
 {
     bool acquired;
+#ifdef DEADLOCK_AVOIDANCE
+    bool ownable = mutex_ownable(lock);
+#endif
 
     if (INTERNAL_OPTION(spin_yield_mutex)) {
         spinmutex_lock((spin_mutex_t *)lock);
@@ -850,12 +875,12 @@ mutex_lock(mutex_t *lock)
 
     /* we have strong intentions to grab this lock, increment requests */
     acquired = atomic_inc_and_test(&lock->lock_requests);
-    DEADLOCK_AVOIDANCE_LOCK(lock, acquired, LOCK_OWNABLE);
+    DEADLOCK_AVOIDANCE_LOCK(lock, acquired, ownable);
 
     if (!acquired) {
         mutex_wait_contended_lock(lock);
 #       ifdef DEADLOCK_AVOIDANCE
-        DEADLOCK_AVOIDANCE_LOCK(lock, true, LOCK_OWNABLE); /* now we got it  */
+        DEADLOCK_AVOIDANCE_LOCK(lock, true, ownable); /* now we got it  */
         /* this and previous owner are not included in lock_requests */
         if (lock->max_contended_requests < (uint)lock->lock_requests)
             lock->max_contended_requests = (uint)lock->lock_requests;
@@ -868,6 +893,9 @@ bool
 mutex_trylock(mutex_t *lock)
 {
     bool acquired;
+#ifdef DEADLOCK_AVOIDANCE
+    bool ownable = mutex_ownable(lock);
+#endif
 
     if (INTERNAL_OPTION(spin_yield_mutex)) {
         return spinmutex_trylock((spin_mutex_t *)lock);
@@ -880,7 +908,7 @@ mutex_trylock(mutex_t *lock)
        old value may be >=0 when several threads are trying to acquire lock,
        so we should return false
      */
-    DEADLOCK_AVOIDANCE_LOCK(lock, acquired, LOCK_OWNABLE);
+    DEADLOCK_AVOIDANCE_LOCK(lock, acquired, ownable);
     return acquired;
 }
 
@@ -888,13 +916,17 @@ mutex_trylock(mutex_t *lock)
 void
 mutex_unlock(mutex_t *lock)
 {
+#ifdef DEADLOCK_AVOIDANCE
+    bool ownable = mutex_ownable(lock);
+#endif
+
     if (INTERNAL_OPTION(spin_yield_mutex)) {
         spinmutex_unlock((spin_mutex_t *)lock);
         return;
     }
 
     ASSERT(lock->lock_requests > LOCK_FREE_STATE && "lock not owned");
-    DEADLOCK_AVOIDANCE_UNLOCK(lock, LOCK_OWNABLE);
+    DEADLOCK_AVOIDANCE_UNLOCK(lock, ownable);
     
     if (atomic_dec_and_test(&lock->lock_requests)) 
         return;
@@ -912,6 +944,7 @@ mutex_delete(mutex_t *lock)
 #ifdef DEADLOCK_AVOIDANCE
     LOG(THREAD_GET, LOG_THREADS, 2, "mutex_delete" DUMP_LOCK_INFO_ARGS(0, lock, lock->prev_process_lock));
     remove_process_lock(lock);
+    lock->deleted = true;
 #endif    
     ASSERT(lock->lock_requests == LOCK_FREE_STATE);
 
@@ -924,6 +957,16 @@ mutex_delete(mutex_t *lock)
 #endif
     }
 }
+
+#ifdef CLIENT_INTERFACE
+void
+mutex_mark_as_app(mutex_t *lock)
+{
+# ifdef DEADLOCK_AVOIDANCE
+    lock->app_lock = true;
+# endif
+}
+#endif
 
 static inline 
 void
@@ -1392,6 +1435,29 @@ hash_value(ptr_uint_t val, hash_function_t func, ptr_uint_t mask, uint bits)
                 return val ^ (val >> 12) ^ (val << 12);
             }
 #endif            
+        case HASH_FUNCTION_STRING:
+        case HASH_FUNCTION_STRING_NOCASE:
+            {
+                const char *s = (const char *) val;
+                char c;
+                ptr_uint_t hash = 0;
+                uint i, shift;
+                uint max_shift = ALIGN_FORWARD(bits, 8);
+                /* Simple hash function that combines unbiased via xor and
+                 * shifts to get input chars to cover the full range.  We clamp
+                 * the shift to avoid useful bits being truncated.  An
+                 * alternative is to combine blocks of 4 chars at a time but
+                 * that's more complex.
+                 */
+                for (i = 0; s[i] != '\0'; i++) {
+                    c = s[i];
+                    if (func == HASH_FUNCTION_STRING_NOCASE)
+                        c = (char) tolower(c);
+                    shift = (i % 4) * 8;
+                    hash ^= (c << MIN(shift, max_shift));
+                }
+                return hash;
+            }
         default:
             {
                 ASSERT_NOT_REACHED();
@@ -1682,7 +1748,8 @@ divide_uint64_print(uint64 numerator, uint64 denominator, bool percentage,
                       - (precision_multiple * *top));
 }
 
-#if defined(DEBUG) || defined(INTERNAL) || defined(CLIENT_INTERFACE)
+#if (defined(DEBUG) || defined(INTERNAL) || defined(CLIENT_INTERFACE) || \
+     defined(STANDALONE_UNIT_TEST))
 /* for printing a float (can't use %f on windows with NOLIBC), NOTE: you must
  * preserve floating point state to call this function!! 
  * FIXME : truncates instead of rounding, also negative with width looks funny,
@@ -1694,7 +1761,8 @@ divide_uint64_print(uint64 numerator, uint64 denominator, bool percentage,
  * "%w.pf", a => dp(a, p, &c, &d, &s) "%s%(w-p-1)u.%.pu", s, c, d
  */
 void
-double_print(double val, uint precision, uint *top, uint *bottom, char **sign) 
+double_print(double val, uint precision, uint *top, uint *bottom,
+             const char **sign) 
 {
     uint i, precision_multiple;
     ASSERT(top != NULL && bottom != NULL && sign != NULL);
@@ -1709,7 +1777,7 @@ double_print(double val, uint precision, uint *top, uint *bottom, char **sign)
     *top = (uint)val;
     *bottom = (uint)((val - *top) * precision_multiple);
 }
-#endif /* DEBUG || INTERNAL */
+#endif /* DEBUG || INTERNAL || CLIENT_INTERFACE || STANDALONE_UNIT_TEST */
 
 #ifdef WINDOWS
 /* for pre_inject, injector, and core shared files, is just wrapper for syslog
@@ -1734,7 +1802,7 @@ print_symbolic_address(app_pc tag, char *buf, int max_chars, bool exact_only) {
 #endif /* DEBUG */
 
 void 
-print_file(file_t f, char *fmt, ...)
+print_file(file_t f, const char *fmt, ...)
 {
     va_list ap;
     va_start(ap, fmt);
@@ -1747,22 +1815,37 @@ print_file(file_t f, char *fmt, ...)
  * Returns false if there was not room for the string plus a null,
  * but still prints the maximum that will fit plus a null.
  */
-bool
-print_to_buffer(char *buf, size_t bufsz, size_t *sofar INOUT, const char *fmt, ...)
+static bool
+vprint_to_buffer(char *buf, size_t bufsz, size_t *sofar INOUT, const char *fmt,
+                 va_list ap)
 {
     /* in io.c */
     extern int our_vsnprintf(char *s, size_t max, const char *fmt, va_list ap);
     ssize_t len;
-    va_list ap;
     bool ok;
-    va_start(ap, fmt);
     /* we use our_vsnprintf for consistent return value and to handle floats */
     len = our_vsnprintf(buf + *sofar, bufsz - *sofar, fmt, ap);
-    va_end(ap);
-    ok = (len > 0 && len < (ssize_t)(bufsz - *sofar));
+    /* we support appending an empty string (len==0) */
+    ok = (len >= 0 && len < (ssize_t)(bufsz - *sofar));
     *sofar += (len == -1 ? (bufsz - *sofar - 1) : (len < 0 ? 0 : len));
     /* be paranoid: though usually many calls in a row and could delay until end */
     buf[bufsz-1] = '\0';
+    return ok;
+}
+
+/* For repeated appending to a buffer.  The "sofar" var should be set
+ * to 0 by the caller before the first call to print_to_buffer.
+ * Returns false if there was not room for the string plus a null,
+ * but still prints the maximum that will fit plus a null.
+ */
+bool
+print_to_buffer(char *buf, size_t bufsz, size_t *sofar INOUT, const char *fmt, ...)
+{
+    va_list ap;
+    bool ok;
+    va_start(ap, fmt);
+    ok = vprint_to_buffer(buf, bufsz, sofar, fmt, ap);
+    va_end(ap);
     return ok;
 }
 
@@ -1772,7 +1855,7 @@ print_to_buffer(char *buf, size_t bufsz, size_t *sofar INOUT, const char *fmt, .
  * For now I'm assuming this routine changes little.
  */
 void 
-print_log(file_t logfile, uint mask, uint level, char *fmt, ...)
+print_log(file_t logfile, uint mask, uint level, const char *fmt, ...)
 {
     va_list ap;
 
@@ -1814,8 +1897,8 @@ do_syslog(syslog_event_type_t priority, uint message_id, uint substitutions_num,
  */
 void 
 notify(syslog_event_type_t priority, bool internal, bool synch, 
-       IF_WINDOWS_(uint message_id) uint substitution_num, char *prefix, 
-       char *fmt, ...)
+       IF_WINDOWS_(uint message_id) uint substitution_num, const char *prefix, 
+       const char *fmt, ...)
 {
     char msgbuf[MAX_LOG_LENGTH];
     int size;
@@ -1895,7 +1978,7 @@ notify(syslog_event_type_t priority, bool internal, bool synch,
  *   0xc0000005 0x00000000 0x15003075 0x15003075 0x00000001 0x00000037 
  *   Registers: eax 0x00000000 ebx 0x00000000 ecx 0x177c9040 edx 0x177c9040
  *           esi 0x00000b56 edi 0x0000015f esp 0x177e3eb0 eflags 0x00010246
- *   Delta: 0x0000000
+ *   Base: 0x15000000
  *   internal version, custom build
  *   -loglevel 2 -msgbox_mask 12 -stderr_mask 12 
  *   0x00342ee8 0x150100f2
@@ -1923,13 +2006,13 @@ notify(syslog_event_type_t priority, bool internal, bool synch,
    * # YY defaults to 1st 2 letters of CUR_TREE, unless CASENUM is defined,
    * # in which case it is the last 2 letters of CASENUM (all % 10 of course)
    */
-#define REPORT_LEN_OPTIONS   192
+#define REPORT_LEN_OPTIONS   IF_CLIENT_INTERFACE_ELSE(384, 192)
   /* still not long enough for ALL non-default options but I'll wager money we'll never
    * see this option string truncated, at least for non-internal builds
-   * (famous last words?)
+   * (famous last words?) => yes!  For clients this can get quite long.
    * List options from staging mode could be problematic though.
    */
-#define REPORT_NUM_STACK      10
+#define REPORT_NUM_STACK      IF_CLIENT_INTERFACE_ELSE(15, 10)
 #ifdef X64
 # define REPORT_LEN_STACK_EACH (22+2*8)
 #else
@@ -1937,9 +2020,15 @@ notify(syslog_event_type_t priority, bool internal, bool synch,
 #endif
   /* just frame ptr, ret addr: "0x0342fc7c 0x77f8c6dd\n" == 22 chars per line */
 #define REPORT_LEN_STACK      (REPORT_LEN_STACK_EACH)*(REPORT_NUM_STACK)
+#ifdef CLIENT_INTERFACE
+/* We have to stay under MAX_LOG_LENGTH so we limit to ~10 basenames */
+# define REPORT_LEN_PRIVLIBS  (45 * 10)
+#endif
 /* Not persistent across code cache execution, so not protected */
 DECLARE_NEVERPROT_VAR(static char reportbuf[REPORT_MSG_MAX + REPORT_LEN_VERSION +
-                                            REPORT_LEN_OPTIONS + REPORT_LEN_STACK + 1],
+                                            REPORT_LEN_OPTIONS + REPORT_LEN_STACK +
+                                            IF_CLIENT_INTERFACE(REPORT_LEN_PRIVLIBS +)
+                                            1],
                       {0,});
 DECLARE_CXTSWPROT_VAR(static mutex_t report_buf_lock, INIT_LOCK_FREE(report_buf_lock));
 /* Avoid deadlock w/ nested reports */
@@ -1974,7 +2063,16 @@ under_internal_exception()
 #else
 # define EXCEPTION_PREFIX "Unrecoverable error at PC 0x00000000\n"
 #endif
+#ifdef CLIENT_INTERFACE
+# ifdef X64
+#  define CLIENT_EXCEPTION_PREFIX "Client exception at PC 0x0000000000000000\n"
+# else
+#  define CLIENT_EXCEPTION_PREFIX "Client exception at PC 0x00000000\n"
+# endif
+#endif
 #define REPORT_EXCEPTION_SKIP_PREFIX (sizeof(EXCEPTION_PREFIX) - 1/*NULL*/ -1/*include newline!*/)
+#define REPORT_CLIENT_EXCEPTION_SKIP_PREFIX \
+    (sizeof(CLIENT_EXCEPTION_PREFIX) - 1/*NULL*/ -1/*include newline!*/)
 
 /* Fine to pass NULL for dcontext, will obtain it for you.
  * If dumpcore_flag == DUMPCORE_INTERNAL_EXCEPTION, does a full SYSLOG;
@@ -2052,6 +2150,20 @@ report_dynamorio_problem(dcontext_t *dcontext, uint dumpcore_flag,
         curbuf += (len == -1 ? REPORT_LEN_STACK_EACH : (len < 0 ? 0 : len));
     }
 
+#ifdef CLIENT_INTERFACE
+    /* Only walk the module list if we think the data structs are safe */
+    if (dumpcore_flag != DUMPCORE_INTERNAL_EXCEPTION) {
+        size_t sofar = 0;
+        /* We decided it's better to include the paths even if it means we may
+         * not fit all the modules (i#968).  We plan to add the modules to the
+         * forensics file to have complete info (i#972).
+         */
+        privload_print_modules(true/*include path*/, false/*no lock*/,
+                               curbuf, REPORT_LEN_PRIVLIBS, &sofar);
+        curbuf += sofar;
+    }
+#endif
+
     /* SYSLOG_INTERNAL and diagnostics expect no trailing newline */
     ASSERT(*(curbuf-1) == '\n');
     curbuf--;
@@ -2067,16 +2179,27 @@ report_dynamorio_problem(dcontext_t *dcontext, uint dumpcore_flag,
 
     /* we already synchronized the options at the top of this function and we
      * might be stack critical so use _NO_OPTION_SYNCH */
-    if (dumpcore_flag == DUMPCORE_INTERNAL_EXCEPTION) {
+    if (dumpcore_flag == DUMPCORE_INTERNAL_EXCEPTION
+        IF_CLIENT_INTERFACE(|| dumpcore_flag == DUMPCORE_CLIENT_EXCEPTION)) {
         char saddr[IF_X64_ELSE(19,11)];
         snprintf(saddr, BUFFER_SIZE_ELEMENTS(saddr), PFX, exception_addr);
         NULL_TERMINATE_BUFFER(saddr);
-        SYSLOG_NO_OPTION_SYNCH(SYSLOG_CRITICAL, EXCEPTION, 4,
-                               get_application_name(), get_application_pid(), 
-                               saddr,
-                               /* skip the prefix since the event log string 
-                                * already has it */
-                               reportbuf + REPORT_EXCEPTION_SKIP_PREFIX);
+        if (dumpcore_flag == DUMPCORE_INTERNAL_EXCEPTION) {
+            SYSLOG_NO_OPTION_SYNCH(SYSLOG_CRITICAL, EXCEPTION, 4,
+                                   get_application_name(), get_application_pid(),
+                                   saddr,
+                                   /* skip the prefix since the event log string
+                                    * already has it */
+                                   reportbuf + REPORT_EXCEPTION_SKIP_PREFIX);
+        } 
+#ifdef CLIENT_INTERFACE
+        else {
+            SYSLOG_NO_OPTION_SYNCH(SYSLOG_CRITICAL, CLIENT_EXCEPTION, 4,
+                                   get_application_name(), get_application_pid(),
+                                   saddr,
+                                   reportbuf + REPORT_CLIENT_EXCEPTION_SKIP_PREFIX);
+        }
+#endif
     } else if (dumpcore_flag == DUMPCORE_ASSERTION) {
         /* We need to report ASSERTS in DEBUG=1 INTENERAL=0 builds since we're still
          * going to kill the process. Xref PR 232783. internal_error() already 
@@ -2084,6 +2207,8 @@ report_dynamorio_problem(dcontext_t *dcontext, uint dumpcore_flag,
         SYSLOG_NO_OPTION_SYNCH(SYSLOG_ERROR, INTERNAL_SYSLOG_ERROR, 3,
                                get_application_name(), get_application_pid(),
                                reportbuf);
+    } else if (dumpcore_flag == DUMPCORE_CURIOSITY) {
+        SYSLOG_INTERNAL_NO_OPTION_SYNCH(SYSLOG_WARNING, "%s", reportbuf);
     } else {
         SYSLOG_INTERNAL_NO_OPTION_SYNCH(SYSLOG_ERROR, "%s", reportbuf);
     }
@@ -2097,7 +2222,12 @@ report_dynamorio_problem(dcontext_t *dcontext, uint dumpcore_flag,
         report_diagnostics(reportbuf, NULL, NO_VIOLATION_BAD_INTERNAL_STATE);
     }
 
-    /* print out pretty call stack */
+    /* Print out pretty call stack to logfile where we have plenty of room.
+     * This avoids grabbing a lock b/c print_symbolic_address() checks
+     * under_internal_exception().  However we cannot include module info b/c
+     * that grabs locks: hence the fancier callstack in the main report
+     * for client and app crashes but not DR crashes.
+     */
     DOLOG(1, LOG_ALL, {
         if (dumpcore_flag == DUMPCORE_INTERNAL_EXCEPTION)
             dump_callstack(exception_addr, report_ebp, THREAD, DUMP_NOT_XML);
@@ -2126,6 +2256,45 @@ report_dynamorio_problem(dcontext_t *dcontext, uint dumpcore_flag,
     }
 }
 
+void
+report_app_problem(dcontext_t *dcontext, uint appfault_flag,
+                   app_pc pc, app_pc report_ebp, const char *fmt, ...)
+{
+    char buf[MAX_LOG_LENGTH];
+    size_t sofar = 0;
+    va_list ap;
+    char excpt_addr[IF_X64_ELSE(20,12)];
+
+    if (!TEST(appfault_flag, DYNAMO_OPTION(appfault_mask)))
+        return;
+
+    snprintf(excpt_addr, BUFFER_SIZE_ELEMENTS(excpt_addr), PFX, pc);
+    NULL_TERMINATE_BUFFER(excpt_addr);
+
+    va_start(ap, fmt);
+    vprint_to_buffer(buf, BUFFER_SIZE_ELEMENTS(buf), &sofar, fmt, ap);
+    va_end(ap);
+
+    print_to_buffer(buf, BUFFER_SIZE_ELEMENTS(buf), &sofar, "Callstack:\n");
+    if (report_ebp == NULL)
+        GET_FRAME_PTR(report_ebp);
+    /* We decided it's better to include the paths even if it means we may
+     * not fit all the modules (i#968).  A forensics file can be requested
+     * to get full info.
+     */
+    dump_callstack_to_buffer(buf, BUFFER_SIZE_ELEMENTS(buf), &sofar,
+                             pc, report_ebp,
+                             CALLSTACK_MODULE_INFO | CALLSTACK_MODULE_PATH);
+
+    SYSLOG(SYSLOG_WARNING, APP_EXCEPTION, 4,
+           get_application_name(), get_application_pid(), excpt_addr, buf);
+
+    report_diagnostics(buf, NULL, NO_VIOLATION_OK_INTERNAL_STATE);
+
+    if (TEST(DUMPCORE_APP_EXCEPTION, DYNAMO_OPTION(dumpcore_mask)))
+        os_dump_core("application fault");
+}
+
 bool
 is_readable_without_exception_try(byte *pc, size_t size)
 {
@@ -2144,7 +2313,7 @@ is_readable_without_exception_try(byte *pc, size_t size)
         return is_readable_without_exception(pc, size);
     }
 
-    TRY(dcontext, {
+    TRY_EXCEPT(dcontext, {
         byte *check_pc = (byte *) ALIGN_BACKWARD(pc, PAGE_SIZE);
         if (size > (size_t)((byte *)POINTER_MAX - pc)) {
             ASSERT_NOT_TESTED();
@@ -2162,10 +2331,10 @@ is_readable_without_exception_try(byte *pc, size_t size)
             check_pc += PAGE_SIZE;
         } while (check_pc != 0/*overflow*/ && check_pc < pc+size);
         /* TRY usage note: can't return here */
-    }, EXCEPT(dcontext, {
+    }, { /* EXCEPT */
         /* no state to preserve */
         return false;
-    }));
+    });
 
     return true;
 }
@@ -2216,7 +2385,7 @@ is_string_readable_without_exception(char *str, size_t *str_length /* OPTIONAL O
 }
 
 
-char *
+const char *
 memprot_string(uint prot)
 {
     switch (prot) {
@@ -2283,7 +2452,6 @@ double_strrchr(const char *string, char c1, char c2)
 #endif
 
 #ifdef WINDOWS
-# if !defined(NOT_DYNAMORIO_CORE) && !defined(NOT_DYNAMORIO_CORE_PROPER)
 /* Just like wcslen, but if the string is >= MAX characters long returns MAX
  * whithout interrogating past str+MAX.  NOTE - this matches most library 
  * implementations, but does NOT work the same way as the strnlen etc.
@@ -2292,7 +2460,7 @@ double_strrchr(const char *string, char c1, char c2)
  * eventually would be nice to share the various string routines used both by
  * the core and the hotpatch2 module. */
 size_t
-wcsnlen(const wchar_t *str, size_t max)
+our_wcsnlen(const wchar_t *str, size_t max)
 {
     const wchar_t *s = str;
     size_t i = 0;
@@ -2304,7 +2472,6 @@ wcsnlen(const wchar_t *str, size_t max)
 
     return i;
 }
-# endif
 #endif
 
 static int
@@ -2429,12 +2596,13 @@ create_log_dir(int dir_type)
     SELF_UNPROTECT_DATASEC(DATASEC_RARELY_PROT);
 #ifdef LINUX
     if (dir_type == PROCESS_DIR && pre_execve != NULL) {
-        /* if this app has a logdir config, that should trump sharing
+        /* if this app has a logdir option or config, that should trump sharing
          * the pre-execve logdir.  a logdir env var should not.
          */
         bool is_env;
-        if (get_config_val_ex(DYNAMORIO_VAR_LOGDIR, NULL, &is_env) == NULL ||
-            is_env) {
+        if (IS_STRING_OPTION_EMPTY(logdir) &&
+            (get_config_val_ex(DYNAMORIO_VAR_LOGDIR, NULL, &is_env) == NULL ||
+             is_env)) {
             /* use same dir as pre-execve! */
             sharing_logdir = true;
             strncpy(logdir, pre_execve, BUFFER_SIZE_ELEMENTS(logdir));
@@ -2452,10 +2620,17 @@ create_log_dir(int dir_type)
             int retval;
             ASSERT(sizeof(basedir) == sizeof(old_basedir));
             strncpy(old_basedir, basedir, sizeof(basedir));
-            retval = get_parameter(PARAM_STR(DYNAMORIO_VAR_LOGDIR), basedir, 
-                                   sizeof(basedir));
-            if (IS_GET_PARAMETER_FAILURE(retval))
-                basedir[0] = '\0';
+            /* option takes precedence over config var */
+            if (IS_STRING_OPTION_EMPTY(logdir)) {
+                retval = get_parameter(PARAM_STR(DYNAMORIO_VAR_LOGDIR), basedir,
+                                       BUFFER_SIZE_ELEMENTS(basedir));
+                if (IS_GET_PARAMETER_FAILURE(retval))
+                    basedir[0] = '\0';
+            } else {
+                string_option_read_lock();
+                strncpy(basedir, DYNAMO_OPTION(logdir), BUFFER_SIZE_ELEMENTS(basedir));
+                string_option_read_unlock();
+            }
             basedir[sizeof(basedir)-1] =  '\0';
             if (!basedir_initialized ||
                 strncmp(old_basedir, basedir, sizeof(basedir))) {
@@ -2736,7 +2911,7 @@ print_statistics(int *data, int size)
     PRESERVE_FLOATING_POINT_STATE_START();
     double mean, stddev, sum;
     uint top, bottom;
-    char *sign;
+    const char *sign;
 
     sum = 0.;
     min = max = data[0];
@@ -2755,6 +2930,11 @@ print_statistics(int *data, int size)
         stddev += diff*diff;
     }
     stddev /= (double)size;
+    /* FIXME i#46: We need a private sqrt impl.  libc's sqrt can actually
+     * clobber errno, too!
+     */
+    ASSERT(!DYNAMO_OPTION(early_inject) &&
+           "FRAGMENT_SIZES_STUDY incompatible with early injection");
     stddev = sqrt(stddev);
 
     LOG(GLOBAL, LOG_ALL, 0, "\t#      = %9d\n", size);
@@ -3118,42 +3298,6 @@ print_xml_cdata(file_t f, const char *str)
 
 /* TODO - NYI print_xml_body_string, print_xml_attribute_string */
 
-#ifdef LINUX
-void 
-getnamefrompid(int pid, char *name, uint maxlen)
-{
-    int fd,n;
-    char tempstring[200+1], *lastpart;
-
-# ifdef VMX86_SERVER
-    if (os_in_vmkernel_userworld()) {
-        vmk_getnamefrompid(pid, name, maxlen);
-        return;
-    }
-# endif
-
-    /*this is a shitty way of getting the process name,
-    but i can't think of anything better... */
-
-    snprintf(tempstring, 200+1, "/proc/%d/cmdline", pid);
-    fd = open_syscall(tempstring, O_RDONLY, 0);
-    /* buffer overflow even if only off by 1 can be devastating */
-    n = read_syscall(fd, tempstring, 200);   
-    tempstring[n] = '\0';
-    lastpart = rindex(tempstring, '/');
-
-    if (lastpart == NULL)
-      lastpart = tempstring;
-    else
-      lastpart++; /*don't include last '/' in name*/ 
-
-    strncpy(name, lastpart, maxlen-1);
-    name[maxlen-1]  = '\0'; /* if max no null */
-
-    close_syscall(fd);
-}
-#endif
-
 void
 print_version_and_app_info(file_t file)
 {
@@ -3271,8 +3415,13 @@ static const uint days_per_month_normal[12] =
 static const uint days_per_month_leap[12] = 
     {31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
 
-/* On Linux, millis is the number of milliseconds since the Epoch (Jan 1, 1970).
- * On Windows, millis is the number of milliseconds since Jan 1, 1600 (this is
+static bool
+year_is_leap_year(uint year)
+{
+    return (year % 4 == 0) && ((year % 100 != 0) || (year % 400 == 0));
+}
+
+/* millis is the number of milliseconds since Jan 1, 1601 (this is
  * the current UTC time).
  */ 
 void
@@ -3294,20 +3443,15 @@ convert_millis_to_date(uint64 millis, dr_time_t *dr_time OUT)
      * operations than continuing to use LONGLONG time. */
     time /= 24;
 
-    /* time is now num. of days since Sun. Jan. 1, 1601 (1970 for Linux) */
-    dr_time->day_of_week = (uint)(time % 7); /* Sun. is 0 */
+    /* time is now num. of days since Mon. Jan. 1, 1601 */
+    dr_time->day_of_week = (uint)((time+1) % 7); /* Sun. is 0 */
 
-#ifdef WINDOWS
     /* Since 1601 is the first year of a 400 year leap year cycle, we can use
      * the following to figure out the correct year. NOTE the 100 year and 4
      * year values are only correct if not crossing a 400 year of 100 year
      * (respectively) alignment. */
-# define BASE_YEAR 1601
+#define BASE_YEAR 1601
     ASSERT(BASE_YEAR % 400 == 1); /* verify alignment */
-#else
-# define BASE_YEAR 1970
-    /* this all works since 2000 is in fact a leap year */
-#endif
 #define DAYS_IN_400_YEARS (400*365 + 97)
 #define DAYS_IN_100_YEARS (100*365 + 24)
 #define DAYS_IN_4_YEARS (4*365 + 1)
@@ -3319,7 +3463,7 @@ convert_millis_to_date(uint64 millis, dr_time_t *dr_time OUT)
     time %= DAYS_IN_4_YEARS;
     year = (uint)(year + (time / 365));
     time %= 365;
-    leap_year = (year % 4 == 0) && ((year % 100 != 0) || (year % 400 == 0));
+    leap_year = year_is_leap_year(year);
     dr_time->year = year;
     
     /* time is now num. of days since the first of the year */
@@ -3337,6 +3481,43 @@ convert_millis_to_date(uint64 millis, dr_time_t *dr_time OUT)
     ASSERT (month != 13);
     dr_time->month = month;
     dr_time->day = (uint)(time+1); /* day, like month, is not zero indexed */
+}
+
+/* millis is the number of milliseconds since Jan 1, 1601 (this is
+ * the current UTC time).
+ */ 
+void
+convert_date_to_millis(const dr_time_t *dr_time, uint64 *millis OUT)
+{
+    uint days, month, year;
+    bool leap_year = year_is_leap_year(dr_time->year);
+
+    /* first get days this year */
+    days = dr_time->day - 1 /*1-based*/;
+    for (month = 1; month < dr_time->month; month++) {
+        uint days_in_month = leap_year ? 
+            days_per_month_leap[month-1] :
+            days_per_month_normal[month-1];
+        days += days_in_month;
+    }
+
+    /* now add in days since Jan 1, 1601 */
+    year = dr_time->year;
+    year -= BASE_YEAR;
+
+    days += (year / 400) * DAYS_IN_400_YEARS;
+    year %= 400;
+
+    days += (year / 100) * DAYS_IN_100_YEARS;
+    year %= 100;
+
+    days += (year / 4) * DAYS_IN_4_YEARS;
+    year %= 4;
+
+    days += year * 365;
+
+    *millis = (((((uint64)days*24 + dr_time->hour)*60 + dr_time->minute)*60 +
+                dr_time->second)*1000 + dr_time->milliseconds);
 }
 
 const uint crctab[] = {
@@ -4076,7 +4257,7 @@ profile_callers_exit()
 #endif /* CALL_PROFILE */
 
 
-#ifdef UTILS_UNIT_TEST
+#ifdef STANDALONE_UNIT_TEST
 
 # ifdef printf
 #  undef printf
@@ -4084,20 +4265,23 @@ profile_callers_exit()
 # define printf(...) print_file(STDERR, __VA_ARGS__)
 
 /* some tests for double_print() and divide_uint64_print() */
-int main()
+void
+unit_test_utils(void)
 {
     char buf[128];
     uint c, d;
-    char *s;
+    const char *s;
 
 # define DO_TEST(a, b, p, percent, fmt, result)                           \
     divide_uint64_print(a, b, percent, p, &c, &d);                        \
     snprintf(buf, BUFFER_SIZE_ELEMENTS(buf), fmt, c, d);                  \
     NULL_TERMINATE_BUFFER(buf);                                           \
-    if (strcmp(buf, result) == 0)                                         \
+    if (strcmp(buf, result) == 0) {                                       \
         printf("PASS\n");                                                 \
-    else                                                                  \
+    } else {                                                              \
         printf("FAIL : \"%s\" doesn't match \"%s\"\n", buf, result);      \
+        exit(-1);                                                         \
+    }
 
     DO_TEST(1, 20, 3, false, "%u.%.3u", "0.050");
     DO_TEST(2, 5, 2, false, "%3u.%.2u", "  0.40");
@@ -4109,10 +4293,12 @@ int main()
     double_print(a, p, &c, &d, &s);                                       \
     snprintf(buf, BUFFER_SIZE_ELEMENTS(buf), fmt, s, c, d);               \
     NULL_TERMINATE_BUFFER(buf);                                           \
-    if (strcmp(buf, result) == 0)                                         \
+    if (strcmp(buf, result) == 0) {                                       \
         printf("PASS\n");                                                 \
-    else                                                                  \
+    } else {                                                              \
         printf("FAIL : \"%s\" doesn't match \"%s\"\n", buf, result);      \
+        exit(-1);                                                         \
+    }
 
     DO_TEST(-2.06, 3, "%s%u.%.3u", "-2.060");
     DO_TEST(2.06, 4, "%s%u.%.4u", "2.0600");
@@ -4122,11 +4308,19 @@ int main()
     DO_TEST(-23.0456, 5, "%s%4u.%.5u", "-  23.04560");
 
 # undef DO_TEST
+
+    EXPECT(BOOLS_MATCH(1, 1), true);
+    EXPECT(BOOLS_MATCH(1, 0), false);
+    EXPECT(BOOLS_MATCH(0, 1), false);
+    EXPECT(BOOLS_MATCH(0, 0), true);
+    EXPECT(BOOLS_MATCH(1, 2), true);
+    EXPECT(BOOLS_MATCH(2, 1), true);
+    EXPECT(BOOLS_MATCH(1, -1), true);
 }
 
 # undef printf
 
-#endif /* UTILS_UNIT_TEST */
+#endif /* STANDALONE_UNIT_TEST */
 
 
 char *
@@ -4151,6 +4345,7 @@ char *
 dr_wstrdup(const wchar_t *str HEAPACCT(which_heap_t which))
 {
     char *dup;
+    ssize_t encode_len;
     size_t str_len;
     int res;
     if (str == NULL)
@@ -4159,20 +4354,29 @@ dr_wstrdup(const wchar_t *str HEAPACCT(which_heap_t which))
      * I'm assuming we're using not directly on external inputs.
      * If we do put in a max length, should do the same for dr_strdup.
      */
-    str_len = wcslen(str) + 1;      /* Extra 1 char for the '\0' at the end. */
+    encode_len = utf16_to_utf8_size(str, 0/*no max*/, NULL);
+    if (encode_len < 0)
+        str_len = 1;
+    else
+        str_len = encode_len + 1;   /* Extra 1 char for the '\0' at the end. */
     dup = (char*) heap_alloc(GLOBAL_DCONTEXT, str_len HEAPACCT(which));
-    res = snprintf(dup, str_len, "%S", str);
-    if (res < 0 || (size_t)res < str_len - 1) {
-        /* apparently for some versions of ntdll!_snprintf, if %S
-         * conversion hits a non-ASCII char it will write a NULL and
-         * snprintf will return -1 (that's the libc behavior) or the
-         * number of chars to that point.  we don't want strlen to return
-         * fewer chars than we allocated so we fill it in (i#347).
-         */
-        ASSERT_NOT_TESTED(); /* all my ntdll's stick in '?' and don't stop! */
-        if (res < 0)
-            dup[0] = '\0';
-        memset(dup + strlen(dup), '?', str_len - 1 - strlen(dup));
+    if (encode_len >= 0) {
+        res = snprintf(dup, str_len, "%S", str);
+        if (res < 0 || (size_t)res < str_len - 1) {
+            ASSERT_NOT_REACHED();
+            if (res < 0)
+                dup[0] = '\0';
+            /* apparently for some versions of ntdll!_snprintf, if %S
+             * conversion hits a non-ASCII char it will write a NULL and
+             * snprintf will return -1 (that's the libc behavior) or the
+             * number of chars to that point.  we don't want strlen to return
+             * fewer chars than we allocated so we fill it in (i#347).
+             */
+            /* Xref i#347, though we shouldn't get here b/c utf16_to_utf8_size uses
+             * the same code.  We fall back on filling with '?'.
+             */
+            memset(dup + strlen(dup), '?', str_len - 1 - strlen(dup));
+        }
     }
     dup[str_len - 1] = '\0';        /* Being on the safe side. */
     /* Ensure when we free we'll pass the same size (i#347) */

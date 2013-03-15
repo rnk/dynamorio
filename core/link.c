@@ -818,16 +818,16 @@ get_ibl_sourceless_linkstub(uint link_flags, uint frag_flags)
     if (TEST(FRAG_IS_TRACE, frag_flags)) {
         if (TEST(LINK_RETURN, link_flags))
             return &linkstub_ibl_trace_ret;
-        if (TEST(LINK_JMP, link_flags))
+        if (EXIT_IS_JMP(link_flags))
             return &linkstub_ibl_trace_jmp;
-        if (TEST(LINK_CALL, link_flags))
+        if (EXIT_IS_CALL(link_flags))
             return &linkstub_ibl_trace_call;
     } else {
         if (TEST(LINK_RETURN, link_flags))
             return &linkstub_ibl_bb_ret;
-        if (TEST(LINK_JMP, link_flags))
+        if (EXIT_IS_JMP(link_flags))
             return &linkstub_ibl_bb_jmp;
-        if (TEST(LINK_CALL, link_flags))
+        if (EXIT_IS_CALL(link_flags))
             return &linkstub_ibl_bb_call;
     }
     ASSERT_NOT_REACHED();
@@ -1682,7 +1682,7 @@ incoming_remove_fragment(dcontext_t *dcontext, fragment_t *f)
 
 #ifdef DEBUG
 static void inline
-debug_after_link_change(dcontext_t *dcontext, fragment_t *f, char *msg)
+debug_after_link_change(dcontext_t *dcontext, fragment_t *f, const char *msg)
 {
     DOLOG(5, LOG_LINKS, {
         LOG(THREAD, LOG_LINKS, 5, "%s\n", msg);

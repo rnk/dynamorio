@@ -1,4 +1,5 @@
 /* **********************************************************
+ * Copyright (c) 2013 Google, Inc.  All rights reserved.
  * Copyright (c) 2010 VMware, Inc.  All rights reserved.
  * **********************************************************/
 
@@ -33,20 +34,24 @@
 #ifndef _DR_INJECT_H_
 #define _DR_INJECT_H_ 1
 
-#ifdef WINDOWS
-
 /* DR_API EXPORT TOFILE dr_inject.h */
 /* DR_API EXPORT BEGIN */
-#ifdef WINDOWS
 /****************************************************************************
  * Injection API
  */
 /**
  * @file dr_inject.h
- * @brief Injection API for Windows.  Use these functions to launch
- * processes under the control of under DynamoRIO.
+ * @brief Injection API.  Use these functions to launch processes under the
+ * control of DynamoRIO.
  */
 
+#ifdef WINDOWS
+# ifndef ERROR_IMAGE_MACHINE_TYPE_MISMATCH_EXE /* in VS2008+ */
+#  define ERROR_IMAGE_MACHINE_TYPE_MISMATCH_EXE 720L
+# endif
+#endif
+
+DR_EXPORT
 /**
  * Creates a new process for the executable and command line specified.
  * The initial thread in the process is suspended.
@@ -56,23 +61,105 @@
  * the thread, and dr_inject_process_exit() to finish and free
  * resources.
  *
- * \param[in]   app_name       The path to the target executable.
+ * \param[in]   app_name       The path to the target executable.  The caller
+ *                             must ensure this data is valid until the
+ *                             inject data is disposed.
  *
- * \param[in]   app_cmdline    The target executable and its arguments.
+ * \param[in]   app_cmdline    A NULL-terminated array of strings representing
+ *                             the app's command line.  This should match what
+ *                             the app will receive as \p argv in main().  The
+ *                             caller must ensure this data is valid until the
+ *                             inject data is disposed.
  *
  * \param[out]  data           An opaque pointer that should be passed to
  *                             subsequent dr_inject_* routines to refer to
  *                             this process.
- * \return  Returns 0 on success.  On failure, returns a Windows API error code.
+ * \return  Returns 0 on success.  On failure, returns a system error code.
+ *          For a mismatched bitwidth on Windows, the code is
+ *          ERROR_IMAGE_MACHINE_TYPE_MISMATCH_EXE.
  *          Regardless of success, caller must call dr_inject_process_exit()
  *          when finished to clean up internally-allocated resources.
  */
 int
-dr_inject_process_create(const char *app_name, const char *app_cmdline,
+dr_inject_process_create(const char *app_name, const char **app_cmdline,
                          void **data);
 
+#ifdef LINUX
+
+DR_EXPORT
 /**
- * Injects DynamoRIO into a process created by dr_inject_process_create().
+ * Prepare to exec() the provided command from the current process.  Use
+ * dr_inject_process_inject() to perform the exec() under DR.
+ *
+ * \note Only available on Linux.
+ *
+ * \param[in]   app_name       The path to the target executable.  The caller
+ *                             must ensure this data is valid until the
+ *                             inject data is disposed.
+ *
+ * \param[in]   app_cmdline    A NULL-terminated array of strings representing
+ *                             the app's command line.  This should match what
+ *                             the app will receive as \p argv in main().  The
+ *                             caller must ensure this data is valid until the
+ *                             inject data is disposed.
+ *
+ * \param[out]  data           An opaque pointer that should be passed to
+ *                             subsequent dr_inject_* routines to refer to
+ *                             this process.
+ * \return  Returns 0 on success.  On failure, returns a system error code.
+ *          Regardless of success, caller must call dr_inject_process_exit()
+ *          when finished to clean up internally-allocated resources.
+ */
+int
+dr_inject_prepare_to_exec(const char *app_name, const char **app_cmdline,
+                          void **data);
+
+DR_EXPORT
+/**
+ * Use the ptrace system call to inject into the targetted process.  Must be
+ * called before dr_inject_process_inject().  Does not work with
+ * dr_inject_prepare_to_exec().
+ *
+ * Newer Linux distributions restrict which processes can be ptraced.  If DR
+ * fails to attach, make sure that gdb can attach to the process in question.
+ *
+ * Once in the injectee, DynamoRIO searches the $HOME directory of the user of
+ * the injector, not the user of the injectee.  Normal usage of drconfig and
+ * drinjectlib will ensure that DynamoRIO finds the right config files, however
+ * users that wish to examine config files need to check the home directory of
+ * the injector's user.
+ *
+ * \warning ptrace injection is still experimental and subject to change.
+ *
+ * \param[in]   data           The pointer returned by dr_inject_process_create()
+ *
+ * \return  Whether successful.
+ */
+bool
+dr_inject_prepare_to_ptrace(void *data);
+
+/**
+ * Put the child in a new process group.  If termination is requested with
+ * dr_inject_process_exit(), the entire child process group is killed.  Using
+ * this option creates a new process group, so if the process group of the
+ * injector is killed, the child will survive, which may not be desirable.
+ * This routine only operates on child process, and will fail if
+ * dr_inject_prepare_to_exec() has been called instead of
+ * dr_inject_process_create().
+ *
+ * \note Only available on Linux.
+ *
+ * \param[in]   data           The pointer returned by dr_inject_process_create()
+ */
+bool
+dr_inject_prepare_new_process_group(void *data);
+
+#endif /* LINUX */
+
+DR_EXPORT
+/**
+ * Injects DynamoRIO into a process created by dr_inject_process_create(), or
+ * the current process if using dr_inject_prepare_to_exec() on Linux.
  *
  * \param[in]   data           The pointer returned by dr_inject_process_create()
  *
@@ -89,6 +176,7 @@ bool
 dr_inject_process_inject(void *data, bool force_injection,
                          const char *library_path);
 
+DR_EXPORT
 /**
  * Resumes the suspended thread in a process created by dr_inject_process_create().
  *
@@ -99,8 +187,25 @@ dr_inject_process_inject(void *data, bool force_injection,
 bool
 dr_inject_process_run(void *data);
 
+DR_EXPORT
 /**
- * Frees resources used by dr_inject_process_create().
+ * Waits for the child process to exit with the given timeout.
+ *
+ * \param[in]   data           The pointer returned by dr_inject_process_create()
+ * \param[in]   timeout_millis The timeout in milliseconds.  Zero means wait
+ *                             forever.
+ *
+ * \return  Return true if the child exited, and false if we timed out.
+ *
+ * \note On Linux, this sets a signal handler for SIGALRM.
+ */
+bool
+dr_inject_wait_for_child(void *data, uint64 timeout_millis);
+
+DR_EXPORT
+/**
+ * Frees resources used by dr_inject_process_create().  Does not wait for the
+ * child to exit, unless terminate is true.
  *
  * \param[in]   data           The pointer returned by dr_inject_process_create()
  *
@@ -113,6 +218,7 @@ dr_inject_process_run(void *data);
 int
 dr_inject_process_exit(void *data, bool terminate);
 
+DR_EXPORT
 /**
  * Returns the process name of a process created by dr_inject_process_create().
  *
@@ -124,17 +230,23 @@ dr_inject_process_exit(void *data, bool terminate);
 char *
 dr_inject_get_image_name(void *data);
 
+#ifdef WINDOWS
+DR_EXPORT
 /**
  * Returns a handle to a process created by dr_inject_process_create().
  *
  * \param[in]   data           The pointer returned by dr_inject_process_create()
+ *
+ * \note Windows only.
  *
  * \return  Returns the handle used by drinjectlib.  Do not close the handle: it
  *          will be closed in dr_inject_process_exit().
  */
 HANDLE
 dr_inject_get_process_handle(void *data);
+#endif /* WINDOWS */
 
+DR_EXPORT
 /**
  * Returns the pid of a process created by dr_inject_process_create().
  *
@@ -145,10 +257,12 @@ dr_inject_get_process_handle(void *data);
 process_id_t
 dr_inject_get_process_id(void *data);
 
+DR_EXPORT
 /* Deliberately not documented: not fully supported */
 bool
 dr_inject_using_debug_key(void *data);
 
+DR_EXPORT
 /**
  * Prints statistics for a process created by dr_inject_process_create().
  *
@@ -164,10 +278,6 @@ dr_inject_using_debug_key(void *data);
 void
 dr_inject_print_stats(void *data, int elapsed_secs, bool showstats, bool showmem);
 
-#endif /* WINDOWS */
-
 /* DR_API EXPORT END */
-
-#endif /* WINDOWS */
 
 #endif /* _DR_INJECT_H_ */

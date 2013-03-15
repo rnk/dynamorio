@@ -1,5 +1,5 @@
 /* **********************************************************
- * Copyright (c) 2011 Google, Inc.  All rights reserved.
+ * Copyright (c) 2011-2012 Google, Inc.  All rights reserved.
  * Copyright (c) 2008-2010 VMware, Inc.  All rights reserved.
  * **********************************************************/
 
@@ -53,6 +53,7 @@
 # define ELF_ST_VISIBILITY ELF64_ST_VISIBILITY
 # define ELF_REL_TYPE Elf64_Rel
 # define ELF_RELA_TYPE Elf64_Rela
+# define ELF_AUXV_TYPE Elf64_auxv_t
 #else
 # define ELF_HEADER_TYPE Elf32_Ehdr
 # define ELF_PROGRAM_HEADER_TYPE Elf32_Phdr
@@ -68,6 +69,7 @@
 # define ELF_ST_VISIBILITY ELF32_ST_VISIBILITY
 # define ELF_REL_TYPE Elf32_Rel
 # define ELF_RELA_TYPE Elf32_Rela
+# define ELF_AUXV_TYPE Elf32_auxv_t
 #endif
 
 #ifdef X64 
@@ -176,6 +178,7 @@ typedef struct _os_module_data_t {
     app_pc gnu_bitmask;
     ptr_uint_t gnu_shift;
     ptr_uint_t gnu_bitidx;
+    size_t gnu_symbias;   /* .dynsym index of first export */
 
     /* i#160/PR 562667: support non-contiguous library mappings */
     bool contiguous;
@@ -223,8 +226,6 @@ typedef struct _os_privmod_data_t {
     uint           tls_image_size; /* tls variables size in the file */
     uint           tls_first_byte; /* aligned addr of the first tls variable */
     app_pc         tls_image;      /* tls block address in memory */
-    /* Section info for gdb. */
-    app_pc         text_addr;
 } os_privmod_data_t;
 
 ELF_ADDR 
@@ -242,6 +243,9 @@ module_relocate_rela(app_pc modbase,
                      os_privmod_data_t *pd,
                      ELF_RELA_TYPE *start,
                      ELF_RELA_TYPE *end);
+
+bool
+module_get_relro(app_pc base, OUT app_pc *relro_base, OUT size_t *relro_size);
 
 bool
 module_read_os_data(app_pc base,
@@ -272,7 +276,7 @@ uint
 module_segment_prot_to_osprot(ELF_PROGRAM_HEADER_TYPE *prog_hdr);
 
 void
-module_get_os_privmod_data(app_pc base, size_t size,
+module_get_os_privmod_data(app_pc base, size_t size, bool relocated,
                            OUT os_privmod_data_t *pd);
 
 ELF_ADDR 
@@ -297,5 +301,76 @@ extern struct _IO_FILE  **privmod_stdin;
 
 /* loader.c */
 bool  privload_redirect_sym(ELF_ADDR *r_addr, const char *name);
+
+/* Data structure for loading an ELF.
+ */
+typedef struct elf_loader_t {
+    const char *filename;
+    file_t fd;
+    ELF_HEADER_TYPE *ehdr;              /* Points into buf. */
+    ELF_PROGRAM_HEADER_TYPE *phdrs;     /* Points into buf or file_map. */
+    app_pc load_base;                   /* Load base. */
+    ptr_int_t load_delta;               /* Delta from preferred base. */
+    size_t image_size;                  /* Size of the mapped image. */
+    void *file_map;                     /* Whole file map, if needed. */
+    size_t file_size;                   /* Size of the file map. */
+
+    /* Static buffer sized to hold most headers in a single read.  A typical ELF
+     * file has an ELF header followed by program headers.  On my workstation,
+     * most ELFs in /usr/lib have 7 phdrs, and the maximum is 9.  We choose 12
+     * as a good upper bound and to allow for padding.  If the headers don't
+     * fit, we fall back to file mapping.
+     */
+    byte buf[sizeof(ELF_HEADER_TYPE) + sizeof(ELF_PROGRAM_HEADER_TYPE) * 12];
+} elf_loader_t;
+
+typedef byte *(*map_fn_t)(file_t f, size_t *size INOUT, uint64 offs,
+                          app_pc addr, uint prot/*MEMPROT_*/, bool cow,
+                          bool image, bool fixed);
+typedef bool (*unmap_fn_t)(byte *map, size_t size);
+typedef bool (*prot_fn_t)(byte *map, size_t size, uint prot/*MEMPROT_*/);
+
+/* Initialized an ELF loader for use with the given file. */
+bool
+elf_loader_init(elf_loader_t *elf, const char *filename);
+
+/* Frees resources needed to load the ELF, not the mapped image itself. */
+void
+elf_loader_destroy(elf_loader_t *elf);
+
+/* Reads the main ELF header. */
+ELF_HEADER_TYPE *
+elf_loader_read_ehdr(elf_loader_t *elf);
+
+/* Reads the ELF program headers, via read() or mmap() syscalls. */
+ELF_PROGRAM_HEADER_TYPE *
+elf_loader_read_phdrs(elf_loader_t *elf);
+
+/* Shorthand to initialize the loader and read the ELF and program headers. */
+bool
+elf_loader_read_headers(elf_loader_t *elf, const char *filename);
+
+/* Maps in the entire ELF file, including unmapped portions such as section
+ * headers and debug info.  Does not re-map the same file if called twice.
+ */
+app_pc
+elf_loader_map_file(elf_loader_t *elf);
+
+/* Maps in the PT_LOAD segments of an ELF file, returning the base.  Must be
+ * called after reading program headers with elf_loader_read_phdrs() or the
+ * elf_loader_read_headers() shortcut.  All image mappings are done via the
+ * provided function pointers.
+ */
+app_pc
+elf_loader_map_phdrs(elf_loader_t *elf, bool fixed, map_fn_t map_func,
+                     unmap_fn_t unmap_func, prot_fn_t prot_func);
+
+/* Iterate program headers of a mapped ELF image and find the string that
+ * PT_INTERP points to.  Typically this comes early in the file and is always
+ * included in PT_LOAD segments, so we safely do this after the initial
+ * mapping.
+ */
+const char *
+elf_loader_find_pt_interp(elf_loader_t *elf);
 
 #endif /* MODULE_H */

@@ -1,5 +1,5 @@
 /* **********************************************************
- * Copyright (c) 2011-2012 Google, Inc.  All rights reserved.
+ * Copyright (c) 2011-2013 Google, Inc.  All rights reserved.
  * Copyright (c) 2005-2010 VMware, Inc.  All rights reserved.
  * **********************************************************/
 
@@ -77,7 +77,12 @@ typedef struct {
     char dynamorio_lib_path[MAX_PATH];
 } earliest_args_t;
 
-#define EARLY_INJECT_HOOK_SIZE 5
+/* Max size is x64 ind jmp (6 bytes) + target (8 bytes).
+ * Simpler to always use the same size, esp wrt cross-arch injection.
+ * We assume all our early inject target functions are at least
+ * this size.  We restore the hook right away in any case.
+ */
+#define EARLY_INJECT_HOOK_SIZE 14
 
 bool
 is_first_thread_in_new_process(HANDLE process_handle, CONTEXT *cxt);
@@ -113,6 +118,9 @@ int
 osprot_to_memprot(uint prot);
 
 int
+osprot_add_writecopy(uint prot);
+
+int
 process_mmap(dcontext_t *dcontext, app_pc pc, size_t size, bool add,
              const char *filepath);
 
@@ -127,6 +135,13 @@ client_thread_target(void *param);
 bool os_delete_file_w(const wchar_t *file_name,
                       file_t directory_handle);
 
+byte *
+os_terminate_wow64_stack(HANDLE thread_handle);
+
+void
+os_terminate_wow64_write_args(bool exit_process, HANDLE proc_or_thread_handle,
+                              int exit_status);
+
 /* in syscall.c *********************************************************/
 
 /* this points to a windows-version-specific syscall array */
@@ -135,6 +150,9 @@ extern int *syscalls;
 /* this points to a windows-version-specific WOW table index array */
 extern int *wow64_index;
 
+extern const int windows_8_x64_syscalls[];
+extern const int windows_8_wow64_syscalls[];
+extern const int windows_8_x86_syscalls[];
 extern const int windows_7_x64_syscalls[];
 extern const int windows_7_syscalls[];
 extern const int windows_vista_sp1_x64_syscalls[];
@@ -143,7 +161,7 @@ extern const int windows_vista_sp0_x64_syscalls[];
 extern const int windows_vista_sp0_syscalls[];
 extern const int windows_2003_syscalls[];
 extern const int windows_XP_x64_syscalls[];
-extern const int windows_XP_wow64_index[];
+extern const int windows_XP_wow64_index[]; /* for XP through Win7 */
 extern const int windows_XP_syscalls[];
 extern const int windows_2000_syscalls[];
 extern const int windows_NT_sp3_syscalls[];
@@ -166,8 +184,9 @@ void
 windows_version_init(void);
 
 enum {
-#define SYSCALL(name, act, nargs, arg32, w7x64, w7, vista_sp1_x64, vista_sp1, \
-                vista_sp0_x64, vista_sp0, tk3, xp64, wow64, xp, tk, ntsp4, ntsp3, ntsp0) \
+#define SYSCALL(name, act, nargs, arg32, ntsp0, ntsp3, ntsp4, w2k, xp, wow64, xp64,\
+                w2k3, vista0, vista0_x64, vista1, vista1_x64, w7x86, w7x64,        \
+                w8x86, w8w64, w8x64)                                               \
     SYS_##name,
 #include "syscallx.h"
 #undef SYSCALL
@@ -193,10 +212,15 @@ enum {
 /* edx is 4 less than on 2000, plus there's an extra call to provide
  * return address for sysenter, so we have to skip 2 slots:
  */
+/* On Win8, wow64 syscalls do not point edx at the params and
+ * instead simply use esp and thus must skip the retaddr.
+ */
 # define SYSCALL_PARAM_OFFSET()                          \
     ((get_syscall_method() == SYSCALL_METHOD_SYSCALL || \
       get_syscall_method() == SYSCALL_METHOD_SYSENTER)  \
-     ? SYSCALL_PARAM_MAX_OFFSET : 0)
+     ? SYSCALL_PARAM_MAX_OFFSET :                       \
+     ((get_syscall_method() == SYSCALL_METHOD_WOW64 &&  \
+       !syscall_uses_wow64_index()) ? XSP_SZ : 0))
 #endif
 
 static inline reg_t *
@@ -220,12 +244,18 @@ sys_param_addr(dcontext_t *dcontext, reg_t *param_base, int num)
 static inline reg_t
 sys_param(dcontext_t *dcontext, reg_t *param_base, int num)
 {
+    /* sys_param is also called from handle_system_call where dcontext->whereami
+     * is not set to WHERE_SYSCALL_HANDLER yet.
+     */
+    ASSERT(!dcontext->post_syscall);
     return *sys_param_addr(dcontext, param_base, num);
 }
 
 static inline reg_t
 postsys_param(dcontext_t *dcontext, reg_t *param_base, int num)
 {
+    ASSERT(dcontext->whereami == WHERE_SYSCALL_HANDLER &&
+           dcontext->post_syscall);
 #ifdef X64
     switch (num) {
     /* Register params are volatile so we save in dcontext in pre-syscall */
@@ -336,7 +366,7 @@ void
 context_to_mcontext(priv_mcontext_t *mcontext, CONTEXT* cxt);
 
 void
-mcontext_to_context(CONTEXT* cxt, priv_mcontext_t *mcontext);
+mcontext_to_context(CONTEXT* cxt, priv_mcontext_t *mcontext, bool set_cur_seg);
 
 #ifdef DEBUG
 void dump_context_info(CONTEXT *context, file_t file, bool all);
@@ -497,9 +527,11 @@ typedef union _unwind_code_t {
     USHORT FrameOffset;
 } unwind_code_t;
 
-#define UNW_FLAG_EHANDLER  0x01
-#define UNW_FLAG_UHANDLER  0x02
-#define UNW_FLAG_CHAININFO 0x04
+#ifndef UNW_FLAG_EHANDLER
+# define UNW_FLAG_EHANDLER  0x01
+# define UNW_FLAG_UHANDLER  0x02
+# define UNW_FLAG_CHAININFO 0x04
+#endif
 
 typedef struct _unwind_info_t {
     byte Version      :3;
@@ -631,6 +663,12 @@ bool
 aslr_compare_header(app_pc original_module_base, size_t original_header_len,
                     app_pc suspect_module_base);
 
+bool
+get_executable_segment(app_pc module_base,
+                       app_pc *sec_start /* OPTIONAL OUT */,
+                       app_pc *sec_end /* OPTIONAL OUT */,
+                       app_pc *sec_end_nopad /* OPTIONAL OUT */);
+
 /* Returns a dr_strdup-ed string which caller must dr_strfree w/ ACCT_VMAREAS */
 const char *
 section_to_file_lookup(HANDLE section_handle);
@@ -685,6 +723,18 @@ os_supports_avx();
 byte *
 context_ymmh_saved_area(CONTEXT *cxt);
 
+#ifndef NOT_DYNAMORIO_CORE_PROPER /* b/c of global_heap_* */
+/* always null-terminates when it returns non-NULL */
+wchar_t *
+convert_to_NT_file_path_wide(OUT wchar_t *fixedbuf, IN const wchar_t *fname,
+                             IN size_t fixedbuf_len/*# elements*/,
+                             OUT size_t *allocbuf_sz/*#bytes*/);
+
+void
+convert_to_NT_file_path_wide_free(IN wchar_t *alloc, IN size_t alloc_buf_sz/*#bytes*/);
+#endif
+
+/* always null-terminates when it returns true */
 bool
 convert_to_NT_file_path(OUT wchar_t *buf, IN const char *fname,
                         IN size_t buf_len/*# elements*/);

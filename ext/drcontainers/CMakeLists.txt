@@ -1,5 +1,5 @@
 # **********************************************************
-# Copyright (c) 2010-2011 Google, Inc.    All rights reserved.
+# Copyright (c) 2010-2012 Google, Inc.    All rights reserved.
 # Copyright (c) 2010 VMware, Inc.    All rights reserved.
 # **********************************************************
 
@@ -36,14 +36,14 @@ cmake_minimum_required(VERSION 2.6)
 add_library(drcontainers STATIC
   hashtable.c
   drvector.c
+  drtable.c
   # add more here
   )
 configure_DynamoRIO_client(drcontainers)
 if (UNIX)
   # static containers must be PIC to be linked into clients: else requires
   # relocations that run afoul of security policies, etc.
-  get_target_property(cur_flags drcontainers COMPILE_FLAGS)
-  set_target_properties(drcontainers PROPERTIES COMPILE_FLAGS "${cur_flags} -fPIC")
+  append_property_string(TARGET drcontainers COMPILE_FLAGS "-fPIC")
 endif (UNIX)
 # ensure we rebuild if includes change
 add_dependencies(drcontainers api_headers)
@@ -51,18 +51,15 @@ add_dependencies(drcontainers api_headers)
 if (WIN32 AND GENERATE_PDBS)
   # I believe it's the lack of CMAKE_BUILD_TYPE that's eliminating this?
   # In any case we make sure to add it (for release and debug, to get pdb):
-  get_target_property(cur_flags drcontainers LINK_FLAGS)
-  set_target_properties(drcontainers PROPERTIES LINK_FLAGS "${cur_flags} /debug")
+  append_property_string(TARGET drcontainers LINK_FLAGS "/debug")
 endif (WIN32 AND GENERATE_PDBS)
 
 # documentation is put into main DR docs/ dir
 
-export(TARGETS drcontainers
-  FILE ${PROJECT_BINARY_DIR}/cmake/${exported_targets_name}.cmake
-  APPEND)
-DR_install(TARGETS drcontainers EXPORT ${exported_targets_name}
-  DESTINATION ${INSTALL_EXT_LIB})
+DR_export_target(drcontainers)
+install_exported_target(drcontainers ${INSTALL_EXT_LIB})
 DR_install(FILES
   hashtable.h
+  drtable.h
   # add more here
   DESTINATION ${INSTALL_EXT_INCLUDE})

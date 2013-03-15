@@ -1,5 +1,5 @@
 /* **********************************************************
- * Copyright (c) 2011-2012 Google, Inc.  All rights reserved.
+ * Copyright (c) 2011-2013 Google, Inc.  All rights reserved.
  * Copyright (c) 2000-2010 VMware, Inc.  All rights reserved.
  * **********************************************************/
 
@@ -38,6 +38,20 @@
 /* file "instr.c" -- x86-specific IR utilities
  */
 
+/* We need to provide at least one out-of-line definition for our inline
+ * functions in instr_inline.h in case they are all inlined away within DR.
+ *
+ * For gcc, we use -std=gnu99, which uses the C99 inlining model.  Using "extern
+ * inline" will provide a definition, but we can only do this in one C file.
+ * Elsewhere we use plain "inline", which will not emit an out of line
+ * definition if inlining fails.
+ *
+ * MSVC always emits link_once definitions for dllexported inline functions, so
+ * this macro magic is unnecessary.
+ * http://msdn.microsoft.com/en-us/library/xa0d9ste.aspx
+ */
+#define INSTR_INLINE extern inline
+
 #include "../globals.h"
 #include "instr.h"
 #include "arch.h"
@@ -58,75 +72,65 @@
 
 #if defined(DEBUG) && !defined(STANDALONE_DECODER)
 /* case 10450: give messages to clients */
-# undef ASSERT /* N.B.: if have issues w/ DYNAMO_OPTION, re-instate */
+/* we can't undef ASSERT b/c of DYNAMO_OPTION */
 # undef ASSERT_TRUNCATE
 # undef ASSERT_BITFIELD_TRUNCATE
 # undef ASSERT_NOT_REACHED
-# define ASSERT DO_NOT_USE_ASSERT_USE_CLIENT_ASSERT_INSTEAD
 # define ASSERT_TRUNCATE DO_NOT_USE_ASSERT_USE_CLIENT_ASSERT_INSTEAD
 # define ASSERT_BITFIELD_TRUNCATE DO_NOT_USE_ASSERT_USE_CLIENT_ASSERT_INSTEAD
 # define ASSERT_NOT_REACHED DO_NOT_USE_ASSERT_USE_CLIENT_ASSERT_INSTEAD
 #endif
 
+/* forward decls */
+
+static bool
+opcode_is_ubr(int opc);
+
+static bool
+opcode_is_cbr(int opc);
+
 /*************************
  ***       opnd_t        ***
  *************************/
 
-/* predicates */
-bool opnd_is_valid(opnd_t opnd)
-{
-    return opnd.kind < LAST_kind;
-}
-bool opnd_is_null(opnd_t opnd) { return opnd.kind == NULL_kind; }
-bool opnd_is_reg(opnd_t opnd) { return opnd.kind == REG_kind; }
-bool opnd_is_immed(opnd_t opnd) { return opnd.kind == IMMED_INTEGER_kind ||
-                               opnd.kind == IMMED_FLOAT_kind; }
-bool opnd_is_immed_int(opnd_t opnd) { return opnd.kind == IMMED_INTEGER_kind; }
-bool opnd_is_immed_float(opnd_t opnd) { return opnd.kind == IMMED_FLOAT_kind; }
-bool opnd_is_pc(opnd_t opnd) {
-    return opnd.kind == PC_kind || opnd.kind == FAR_PC_kind; 
-}
-bool opnd_is_near_pc(opnd_t opnd) { return opnd.kind == PC_kind; }
-bool opnd_is_far_pc(opnd_t opnd) { return opnd.kind == FAR_PC_kind; }
-bool opnd_is_instr(opnd_t opnd) {
-    return opnd.kind == INSTR_kind || opnd.kind == FAR_INSTR_kind;
-}
-bool opnd_is_near_instr(opnd_t opnd) { return opnd.kind == INSTR_kind; }
-bool opnd_is_far_instr(opnd_t opnd) { return opnd.kind == FAR_INSTR_kind; }
-
-/* Though we have "protected" visibility, gcc still does not inline
- * these exported routines.  We can get noticeably better performance by
- * forcing an inline (PR 622253).  I also found that using macros
- * produces better code than having gcc inline these functions: with
- * inlining there are extra local var slots and memory traffic to them.
- *
- * XXX: figure out how to get as-fast code with inlining for better
- * debuggability!  For now going with macros as the speed difference
- * is noticeable; these macros uses are confined to this file as well.
- * I'm including some sanity type checks in the macros.
- */
-#define inlined_opnd_is_base_disp(opnd) \
-    (IF_DEBUG_(CLIENT_ASSERT(sizeof(opnd) == sizeof(opnd_t), "invalid type")) \
-     (opnd).kind == BASE_DISP_kind)
-bool opnd_is_base_disp(opnd_t opnd) { return inlined_opnd_is_base_disp(opnd); }
-/* in rest of file, directly de-reference for performance (PR 622253) */
-#define opnd_is_base_disp inlined_opnd_is_base_disp
-
-bool opnd_is_near_base_disp(opnd_t opnd) {
-    return opnd.kind == BASE_DISP_kind && opnd.seg.segment == REG_NULL; 
-}
-bool opnd_is_far_base_disp(opnd_t opnd) {
-    return opnd.kind == BASE_DISP_kind && opnd.seg.segment != REG_NULL;
-}
+#undef opnd_is_null
+#undef opnd_is_immed_int
+#undef opnd_is_immed_float
+#undef opnd_is_near_pc
+#undef opnd_is_near_instr
+#undef opnd_is_reg
+#undef opnd_is_base_disp
+#undef opnd_is_far_pc
+#undef opnd_is_far_instr
+#undef opnd_is_mem_instr
+#undef opnd_is_valid
+bool opnd_is_null       (opnd_t op) { return OPND_IS_NULL(op); }
+bool opnd_is_immed_int  (opnd_t op) { return OPND_IS_IMMED_INT(op); }
+bool opnd_is_immed_float(opnd_t op) { return OPND_IS_IMMED_FLOAT(op); }
+bool opnd_is_near_pc    (opnd_t op) { return OPND_IS_NEAR_PC(op); }
+bool opnd_is_near_instr (opnd_t op) { return OPND_IS_NEAR_INSTR(op); }
+bool opnd_is_reg        (opnd_t op) { return OPND_IS_REG(op); }
+bool opnd_is_base_disp  (opnd_t op) { return OPND_IS_BASE_DISP(op); }
+bool opnd_is_far_pc     (opnd_t op) { return OPND_IS_FAR_PC(op); }
+bool opnd_is_far_instr  (opnd_t op) { return OPND_IS_FAR_INSTR(op); }
+bool opnd_is_mem_instr  (opnd_t op) { return OPND_IS_MEM_INSTR(op); }
+bool opnd_is_valid      (opnd_t op) { return OPND_IS_VALID(op); }
+#define opnd_is_null            OPND_IS_NULL
+#define opnd_is_immed_int       OPND_IS_IMMED_INT
+#define opnd_is_immed_float     OPND_IS_IMMED_FLOAT
+#define opnd_is_near_pc         OPND_IS_NEAR_PC
+#define opnd_is_near_instr      OPND_IS_NEAR_INSTR
+#define opnd_is_reg             OPND_IS_REG
+#define opnd_is_base_disp       OPND_IS_BASE_DISP
+#define opnd_is_far_pc          OPND_IS_FAR_PC
+#define opnd_is_far_instr       OPND_IS_FAR_INSTR
+#define opnd_is_mem_instr       OPND_IS_MEM_INSTR
+#define opnd_is_valid           OPND_IS_VALID
 
 #ifdef X64
-bool opnd_is_rel_addr(opnd_t opnd) { return opnd.kind == REL_ADDR_kind; }
-bool opnd_is_near_rel_addr(opnd_t opnd) {
-    return opnd.kind == REL_ADDR_kind && opnd.seg.segment == REG_NULL; 
-}
-bool opnd_is_far_rel_addr(opnd_t opnd) {
-    return opnd.kind == REL_ADDR_kind && opnd.seg.segment != REG_NULL; 
-}
+# undef opnd_is_rel_addr
+bool opnd_is_rel_addr(opnd_t op) { return OPND_IS_REL_ADDR(op); }
+# define opnd_is_rel_addr OPND_IS_REL_ADDR
 #endif
 
 /* We allow overlap between ABS_ADDR_kind and BASE_DISP_kind w/ no base or index */
@@ -191,36 +195,13 @@ reg_is_pointer_sized(reg_id_t reg)
 #endif
 }
 
-/* null operands */
-
-opnd_t
-opnd_create_null(void)
-{
-    opnd_t opnd;
-    opnd.kind = NULL_kind;
-    return opnd;
-}
-
-/* register operands */
-
-opnd_t
-opnd_create_reg(reg_id_t r)
-{
-    opnd_t opnd IF_DEBUG(= {0});  /* FIXME: Needed until i#417 is fixed. */
-    CLIENT_ASSERT(r <= REG_LAST_ENUM && r != REG_INVALID,
-                  "opnd_create_reg: invalid register");
-    opnd.kind = REG_kind;
-    opnd.value.reg = r;
-    return opnd;
-}
-
+#undef opnd_get_reg
 reg_id_t
 opnd_get_reg(opnd_t opnd)
 {
-    CLIENT_ASSERT(opnd_is_reg(opnd), "opnd_get_reg called on non-reg opnd");
-    return opnd.value.reg;
+    return OPND_GET_REG(opnd);
 }
-
+#define opnd_get_reg OPND_GET_REG
 
 opnd_size_t
 opnd_get_size(opnd_t opnd)
@@ -235,9 +216,16 @@ opnd_get_size(opnd_t opnd)
     case REL_ADDR_kind: 
     case ABS_ADDR_kind: 
 #endif
+    case MEM_INSTR_kind:
         return opnd.size;
     case INSTR_kind:
+    case PC_kind:
         return OPSZ_PTR;
+    case FAR_PC_kind:
+    case FAR_INSTR_kind:
+        return OPSZ_6_irex10_short4;
+    case NULL_kind:
+        return OPSZ_NA;
     default:
         CLIENT_ASSERT(false, "opnd_get_size: unknown opnd type");
         return OPSZ_NA;
@@ -254,6 +242,7 @@ opnd_set_size(opnd_t *opnd, opnd_size_t newsize)
     case REL_ADDR_kind: 
     case ABS_ADDR_kind: 
 #endif
+    case MEM_INSTR_kind:
         opnd->size = newsize;
         return;
     default:
@@ -337,15 +326,6 @@ opnd_get_immed_float(opnd_t opnd)
 
 /* address operands */
 
-opnd_t
-opnd_create_pc(app_pc pc)
-{
-    opnd_t opnd;
-    opnd.kind = PC_kind;
-    opnd.value.pc = pc;
-    return opnd;
-}
-
 /* N.B.: seg_selector is a segment selector, not a SEG_ constant */
 opnd_t
 opnd_create_far_pc(ushort seg_selector, app_pc pc)
@@ -376,6 +356,18 @@ opnd_create_far_instr(ushort seg_selector, instr_t *instr)
     return opnd;
 }
 
+DR_API
+opnd_t
+opnd_create_mem_instr(instr_t *instr, short disp, opnd_size_t data_size)
+{
+    opnd_t opnd;
+    opnd.kind = MEM_INSTR_kind;
+    opnd.size = data_size;
+    opnd.seg.disp = disp;
+    opnd.value.instr = instr;
+    return opnd;
+}
+
 app_pc
 opnd_get_pc(opnd_t opnd)
 {
@@ -402,10 +394,18 @@ opnd_get_segment_selector(opnd_t opnd)
 instr_t *
 opnd_get_instr(opnd_t opnd)
 {
-    CLIENT_ASSERT(opnd_is_instr(opnd), "opnd_get_instr called on non-instr");
+    CLIENT_ASSERT(opnd_is_instr(opnd) || opnd_is_mem_instr(opnd),
+                  "opnd_get_instr called on non-instr");
     return opnd.value.instr;
 }
 
+short 
+opnd_get_mem_instr_disp(opnd_t opnd)
+{
+    CLIENT_ASSERT(opnd_is_mem_instr(opnd),
+                  "opnd_get_mem_instr_disp called on non-mem-instr");
+    return opnd.seg.disp;
+}
 
 /* Base+displacement+scaled index operands */
 
@@ -466,27 +466,21 @@ opnd_create_far_base_disp(reg_id_t seg, reg_id_t base_reg, reg_id_t index_reg, i
                                         false, false, false);
 }
 
-reg_id_t
-opnd_get_base(opnd_t opnd)
-{
-    if (opnd_is_base_disp(opnd))
-        return opnd.value.base_disp.base_reg;
-#ifdef X64
-    if (opnd_is_abs_addr(opnd))
-        return REG_NULL;
-#endif
-    CLIENT_ASSERT(false, "opnd_get_base called on invalid opnd type");
-    return REG_INVALID;
-}
-
-int
-opnd_get_disp(opnd_t opnd)
-{
-    if (opnd_is_base_disp(opnd))
-        return opnd.value.base_disp.disp;
-    CLIENT_ASSERT(false, "opnd_get_disp called on invalid opnd type");
-    return REG_INVALID;
-}
+#undef opnd_get_base
+#undef opnd_get_disp
+#undef opnd_get_index
+#undef opnd_get_scale
+#undef opnd_get_segment
+reg_id_t opnd_get_base   (opnd_t opnd) { return OPND_GET_BASE(opnd); }
+int      opnd_get_disp   (opnd_t opnd) { return OPND_GET_DISP(opnd); }
+reg_id_t opnd_get_index  (opnd_t opnd) { return OPND_GET_INDEX(opnd); }
+int      opnd_get_scale  (opnd_t opnd) { return OPND_GET_SCALE(opnd); }
+reg_id_t opnd_get_segment(opnd_t opnd) { return OPND_GET_SEGMENT(opnd); }
+#define opnd_get_base  OPND_GET_BASE
+#define opnd_get_disp  OPND_GET_DISP
+#define opnd_get_index OPND_GET_INDEX
+#define opnd_get_scale OPND_GET_SCALE
+#define opnd_get_segment OPND_GET_SEGMENT
 
 bool
 opnd_is_disp_encode_zero(opnd_t opnd)
@@ -536,46 +530,6 @@ opnd_set_disp_ex(opnd_t *opnd, int disp, bool encode_zero_disp, bool force_full_
     } else
         CLIENT_ASSERT(false, "opnd_set_disp_ex called on invalid opnd type"); 
 }
-
-#define inlined_opnd_get_index(opnd) \
-    (IF_DEBUG_(CLIENT_ASSERT(sizeof(opnd) == sizeof(opnd_t), "invalid type")) \
-     (opnd_is_base_disp(opnd) ? (opnd).value.base_disp.index_reg : \
-      (IF_DEBUG_(CLIENT_ASSERT(false, "opnd_get_index called on invalid opnd type")) \
-       REG_INVALID)))
-reg_id_t
-opnd_get_index(opnd_t opnd)
-{
-    return inlined_opnd_get_index(opnd);
-}
-/* in rest of file, directly de-reference for performance (PR 622253) */
-#define opnd_get_index inlined_opnd_get_index
-
-int
-opnd_get_scale(opnd_t opnd)
-{
-    if (opnd_is_base_disp(opnd))
-        return opnd.value.base_disp.scale;
-#ifdef X64
-    if (opnd_is_abs_addr(opnd))
-        return REG_NULL;
-#endif
-    CLIENT_ASSERT(false, "opnd_get_scale called on invalid opnd type");
-    return -1;
-}
-
-#define inlined_opnd_get_segment(opnd) \
-    (IF_DEBUG_(CLIENT_ASSERT(sizeof(opnd) == sizeof(opnd_t), "invalid type")) \
-     ((opnd_is_base_disp(opnd) IF_X64(|| opnd_is_abs_addr(opnd) || \
-       opnd_is_rel_addr(opnd))) ? (opnd).seg.segment : \
-      (IF_DEBUG_(CLIENT_ASSERT(false, "opnd_get_segment called on invalid opnd type")) \
-       REG_INVALID)))
-reg_id_t
-opnd_get_segment(opnd_t opnd)
-{
-    return inlined_opnd_get_segment(opnd);
-}
-/* in rest of file, directly de-reference for performance (PR 622253) */
-#define opnd_get_segment inlined_opnd_get_segment
 
 opnd_t 
 opnd_create_abs_addr(void *addr, opnd_size_t data_size)
@@ -660,7 +614,8 @@ bool
 opnd_is_memory_reference(opnd_t opnd)
 {
     return (opnd_is_base_disp(opnd)
-            IF_X64(|| opnd_is_abs_addr(opnd) || opnd_is_rel_addr(opnd)));
+            IF_X64(|| opnd_is_abs_addr(opnd) || opnd_is_rel_addr(opnd)) ||
+            opnd_is_mem_instr(opnd));
 }
 
 bool
@@ -674,7 +629,8 @@ bool
 opnd_is_near_memory_reference(opnd_t opnd)
 {
     return (opnd_is_near_base_disp(opnd)
-            IF_X64(|| opnd_is_near_abs_addr(opnd) || opnd_is_near_rel_addr(opnd)));
+            IF_X64(|| opnd_is_near_abs_addr(opnd) || opnd_is_near_rel_addr(opnd)) ||
+            opnd_is_mem_instr(opnd));
 }
 
 int
@@ -688,6 +644,7 @@ opnd_num_regs_used(opnd_t opnd)
     case FAR_PC_kind:
     case INSTR_kind:
     case FAR_INSTR_kind:
+    case MEM_INSTR_kind:
         return 0;
 
     case REG_kind: 
@@ -718,6 +675,7 @@ opnd_get_reg_used(opnd_t opnd, int index)
     case IMMED_FLOAT_kind:
     case PC_kind:
     case FAR_PC_kind:
+    case MEM_INSTR_kind:
         CLIENT_ASSERT(false, "opnd_get_reg_used called on invalid opnd type");
         return REG_NULL;
 
@@ -838,6 +796,7 @@ opnd_uses_reg(opnd_t opnd, reg_id_t reg)
     case FAR_PC_kind:
     case INSTR_kind:
     case FAR_INSTR_kind:
+    case MEM_INSTR_kind:
         return false;
 
     case REG_kind: 
@@ -871,6 +830,7 @@ opnd_replace_reg(opnd_t *opnd, reg_id_t old_reg, reg_id_t new_reg)
     case FAR_PC_kind:
     case INSTR_kind:
     case FAR_INSTR_kind:
+    case MEM_INSTR_kind:
         return false;
 
     case REG_kind: 
@@ -1038,6 +998,9 @@ bool opnd_same(opnd_t op1, opnd_t op2)
         return (op1.seg.segment == op2.seg.segment && 
                 op1.value.addr == op2.value.addr);
 #endif
+    case MEM_INSTR_kind:
+        return (op1.value.instr == op2.value.instr &&
+                op1.seg.disp == op2.seg.disp);
     default: 
         CLIENT_ASSERT(false, "opnd_same: invalid opnd type"); 
         return false;
@@ -1054,6 +1017,7 @@ bool opnd_share_reg(opnd_t op1, opnd_t op2)
     case FAR_PC_kind:
     case INSTR_kind:
     case FAR_INSTR_kind:
+    case MEM_INSTR_kind:
         return false;
     case REG_kind: 
         return opnd_uses_reg(op2, opnd_get_reg(op1));
@@ -1142,6 +1106,11 @@ bool opnd_defines_use(opnd_t def, opnd_t use)
                              opnd_size_in_bytes(opnd_get_size(def)),
                              opnd_size_in_bytes(opnd_get_size(use)));
 #endif
+    case MEM_INSTR_kind:
+        if (!opnd_is_memory_reference(use))
+            return false;
+        /* we don't know our address so we have to assume true */
+        return true;
     default: 
         CLIENT_ASSERT(false, "opnd_defines_use: invalid opnd type"); 
         return false;
@@ -1196,6 +1165,7 @@ opnd_size_in_bytes(opnd_size_t size)
         return 8;
     case OPSZ_16:
     case OPSZ_16_vex32:
+    case OPSZ_16_of_32:
         return 16;
     case OPSZ_6x10:
         /* table base + limit; w/ addr16, different format, but same total footprint */
@@ -1227,6 +1197,28 @@ opnd_size_in_bytes(opnd_size_t size)
     default:
         CLIENT_ASSERT(false, "opnd_size_in_bytes: invalid opnd type");
         return 0;
+    }
+}
+
+DR_API
+opnd_size_t
+opnd_size_from_bytes(uint bytes)
+{
+    switch (bytes) {
+    case 0: return OPSZ_0;
+    case 1: return OPSZ_1;
+    case 2: return OPSZ_2;
+    case 4: return OPSZ_4;
+    case 6: return OPSZ_6;
+    case 8: return OPSZ_8;
+    case 10: return OPSZ_10;
+    case 16: return OPSZ_16;
+    case 14: return OPSZ_14;
+    case 28: return OPSZ_28;
+    case 94: return OPSZ_94;
+    case 108: return OPSZ_108;
+    case 512: return OPSZ_512;
+    default: return OPSZ_NA;
     }
 }
 
@@ -1658,7 +1650,7 @@ instr_create(dcontext_t *dcontext)
     /* everything initializes to 0, even flags, to indicate
      * an uninitialized instruction */
     memset((void *)instr, 0, sizeof(instr_t));
-    IF_X64(instr_set_x86_mode(instr, get_x86_mode(dcontext)));
+    IF_X64(instr_set_x86_mode(instr, !X64_CACHE_MODE_DC(dcontext)));
     return instr;
 }
 
@@ -1879,7 +1871,6 @@ instr_build_bits(dcontext_t *dcontext, int opcode, uint num_bytes)
     return instr;
 }
 
-
 /* encodes to buffer, then returns length.
  * needed for things we must have encoding for: length and eflags.
  * if !always_cache, only caches the encoding if instr_ok_to_mangle();
@@ -1894,8 +1885,14 @@ private_instr_encode(dcontext_t *dcontext, instr_t *instr, bool always_cache)
     byte *buf = heap_alloc(dcontext, 32 /* max instr length is 17 bytes */
                            HEAPACCT(ACCT_IR));
     uint len;
-    byte *nxt = instr_encode_check_reachability(dcontext, instr, buf);
-    bool valid_to_cache = true;
+    /* Do not cache instr opnds as they are pc-relative to final encoding location.
+     * Rather than us walking all of the operands separately here, we have
+     * instr_encode_check_reachability tell us while it does its normal walk.
+     * Xref i#731.
+     */
+    bool has_instr_opnds;
+    byte *nxt = instr_encode_check_reachability(dcontext, instr, buf, &has_instr_opnds);
+    bool valid_to_cache = !has_instr_opnds;
     if (nxt == NULL) {
         nxt = instr_encode_ignore_reachability(dcontext, instr, buf);
         if (nxt == NULL) {
@@ -1955,7 +1952,7 @@ private_instr_encode(dcontext_t *dcontext, instr_t *instr, bool always_cache)
 #define inlined_instr_get_opcode(instr) \
     (IF_DEBUG_(CLIENT_ASSERT(sizeof(*instr) == sizeof(instr_t), "invalid type")) \
      (((instr)->opcode == OP_UNDECODED) ? \
-      (instr_decode_opcode(get_thread_private_dcontext(), instr), (instr)->opcode) : \
+      (instr_decode_with_current_dcontext(instr), (instr)->opcode) : \
       (instr)->opcode))
 int
 instr_get_opcode(instr_t *instr)
@@ -2035,48 +2032,21 @@ get_instr_info(int opcode)
     return op_instr[opcode];
 }
 
-int
-instr_num_srcs(instr_t *instr)
-{
-    if ((instr->flags & INSTR_OPERANDS_VALID) == 0)
-        instr_decode(get_thread_private_dcontext(), instr);
-    return instr->num_srcs;
-}
-
-int
-instr_num_dsts(instr_t *instr)
-{
-    if ((instr->flags & INSTR_OPERANDS_VALID) == 0)
-        instr_decode(get_thread_private_dcontext(), instr);
-    return instr->num_dsts;
-}
-
-/* Returns the pos-th source operand of instr.
- * If instr's operands are not decoded, goes ahead and decodes them.
- * Assumes that instr is a single instr (i.e., NOT Level 0).
- */
+#undef instr_get_src
 opnd_t
 instr_get_src(instr_t *instr, uint pos)
 {
-    if ((instr->flags & INSTR_OPERANDS_VALID) == 0)
-        instr_decode(get_thread_private_dcontext(), instr);
-    CLIENT_ASSERT(pos >= 0 && pos < instr->num_srcs, "instr_get_src: ordinal invalid");
-    /* remember that src0 is static, rest are dynamic */
-    if (pos == 0)
-        return instr->src0;
-    else
-        return instr->srcs[pos-1];
+    return INSTR_GET_SRC(instr, pos);
 }
+#define instr_get_src INSTR_GET_SRC
 
-/* returns the dst opnd at position pos in instr */
+#undef instr_get_dst
 opnd_t
 instr_get_dst(instr_t *instr, uint pos)
 {
-    if ((instr->flags & INSTR_OPERANDS_VALID) == 0)
-        instr_decode(get_thread_private_dcontext(), instr);
-    CLIENT_ASSERT(pos >= 0 && pos < instr->num_dsts, "instr_get_dst: ordinal invalid");
-    return instr->dsts[pos];
+    return INSTR_GET_DST(instr, pos);
 }
+#define instr_get_dst INSTR_GET_DST
 
 /* allocates storage for instr_num_srcs src operands and instr_num_dsts dst operands
  * assumes that instr is currently all zeroed out!
@@ -2139,18 +2109,17 @@ instr_set_dst(instr_t *instr, uint pos, opnd_t opnd)
     instr_set_operands_valid(instr, true);
 }
 
-/* These next two functions assume that, if an instr_t has a target
-   field, the target is kept in the 0th src location. */
+#undef instr_get_target
 opnd_t
 instr_get_target(instr_t *instr)
 {
-    if ((instr->flags & INSTR_OPERANDS_VALID) == 0)
-        instr_decode(get_thread_private_dcontext(), instr);
-    CLIENT_ASSERT(instr_is_cti(instr), "instr_get_target called on non-cti");
-    CLIENT_ASSERT(instr->num_srcs >= 1, "instr_get_target: instr has no sources");
-    return instr->src0;
+    return INSTR_GET_TARGET(instr);
 }
+#define instr_get_target INSTR_GET_TARGET
 
+/* Assumes that if an instr has a jump target, it's stored in the 0th src
+ * location.
+ */
 void
 instr_set_target(instr_t *instr, opnd_t target)
 {
@@ -2296,12 +2265,6 @@ instr_exit_branch_set_type(instr_t *instr, uint type)
     instr->flags |= type;
 }
 
-bool
-instr_ok_to_mangle(instr_t *instr)
-{
-    return ((instr->flags & INSTR_DO_NOT_MANGLE) == 0);
-}
-
 void
 instr_set_ok_to_mangle(instr_t *instr, bool val)
 {
@@ -2333,13 +2296,6 @@ instr_set_meta_no_translation(instr_t *instr)
 {
     instr_set_ok_to_mangle(instr, false);
     instr_set_translation(instr, NULL);
-}
-
-bool
-instr_ok_to_emit(instr_t *instr)
-{
-    CLIENT_ASSERT(instr != NULL, "instr_ok_to_emit: passed NULL");
-    return (!TEST(INSTR_DO_NOT_EMIT, instr->flags));
 }
 
 void
@@ -2565,30 +2521,6 @@ instr_set_raw_bits_valid(instr_t *instr, bool valid)
     }
 }
 
-bool
-instr_operands_valid(instr_t *instr)
-{
-    return ((instr->flags & INSTR_OPERANDS_VALID) != 0);
-}
-
-bool
-instr_raw_bits_valid(instr_t *instr)
-{
-    return ((instr->flags & INSTR_RAW_BITS_VALID) != 0);
-}
-
-bool
-instr_has_allocated_bits(instr_t *instr)
-{
-    return ((instr->flags & INSTR_RAW_BITS_ALLOCATED) != 0);
-}
-
-bool
-instr_needs_encoding(instr_t *instr)
-{
-    return ((instr->flags & INSTR_RAW_BITS_VALID) == 0);
-}
-
 void
 instr_free_raw_bits(dcontext_t *dcontext, instr_t *instr)
 {
@@ -2638,22 +2570,7 @@ instr_t *
 instr_set_translation(instr_t *instr, app_pc addr)
 {
 #if defined(WINDOWS) && !defined(STANDALONE_DECODER)
-    /* The first jump (to the trampoline) in a landing pad is never interpreted
-     * (see must_not_be_elided(), so we come here only for the second jump
-     * (back to the instruction after the hook, which is always 32-bit.  For
-     * this we set the translation address to the same as the instruction after
-     * the hook, so we get the jump target and use it. */
-    if (vmvector_overlap(landing_pad_areas, addr, addr + 1)) {
-        
-        CLIENT_ASSERT(*addr == JMP_REL32_OPCODE,
-                      "eliding wrong jmp in the landing pad");
-        addr = (addr + 5) + *(int *)(addr + 1); /* end of jump + rel addr */
-        CLIENT_ASSERT(!is_in_interception_buffer(addr),
-                      "eliding wrong jmp in the landing pad");
-    }
-
-    if (is_in_interception_buffer(addr))
-        addr = get_app_pc_from_intercept_pc(addr);
+    addr = get_app_pc_from_intercept_pc_if_necessary(addr);
 #endif
     instr->translation = addr;
     return instr;
@@ -2757,48 +2674,6 @@ instr_set_raw_word(instr_t *instr, uint pos, uint word)
 #endif
 }
 
-/* set the note field of instr to value */
-void 
-instr_set_note(instr_t *instr, void *value)
-{
-    instr->note = value;
-}
-
-/* return the note field of instr */
-void *
-instr_get_note(instr_t *instr)
-{
-    return instr->note;
-}
-
-/* return instr->next */
-instr_t*
-instr_get_next(instr_t *instr)
-{
-    return instr->next;
-}
-
-/* return instr->prev */
-instr_t*
-instr_get_prev(instr_t *instr)
-{
-    return instr->prev;
-}
-
-/* set instr->next to next */
-void
-instr_set_next(instr_t *instr, instr_t *next)
-{
-    instr->next = next;
-}
-
-/* set instr->prev to prev */
-void
-instr_set_prev(instr_t *instr, instr_t *prev)
-{
-    instr->prev = prev;
-}
-
 int
 instr_length(dcontext_t *dcontext, instr_t *instr)
 {
@@ -2830,7 +2705,8 @@ instr_length(dcontext_t *dcontext, instr_t *instr)
     case OP_loop:
     case OP_loope:
     case OP_loopne: 
-        if (opnd_get_reg(instr_get_src(instr, 1)) != REG_XCX)
+        if (opnd_get_reg(instr_get_src(instr, 1)) != REG_XCX
+            IF_X64(&& !instr_get_x86_mode(instr)))
             return 3; /* need addr prefix */
         else
             return 2;
@@ -3126,6 +3002,17 @@ instr_decode(dcontext_t *dcontext, instr_t *instr)
     }
 }
 
+/* Calls instr_decode() with the current dcontext.  Mostly useful as the slow
+ * path for IR routines that get inlined.
+ */
+NOINLINE  /* rarely called */
+instr_t *
+instr_decode_with_current_dcontext(instr_t *instr)
+{
+    instr_decode(get_thread_private_dcontext(), instr);
+    return instr;
+}
+
 /* Brings all instrs in ilist up to the decode_cti level, and
  * hooks up intra-ilist cti targets to use instr_t targets, by
  * matching pc targets to each instruction's raw bits.
@@ -3218,7 +3105,7 @@ instrlist_decode_cti(dcontext_t *dcontext, instrlist_t *ilist)
 /* utility routines */
 
 void 
-loginst(dcontext_t *dcontext, uint level, instr_t *instr, char *string)
+loginst(dcontext_t *dcontext, uint level, instr_t *instr, const char *string)
 {
     DOLOG(level, LOG_ALL, {
         LOG(THREAD, LOG_ALL, level, "%s: ", string);
@@ -3228,7 +3115,7 @@ loginst(dcontext_t *dcontext, uint level, instr_t *instr, char *string)
 }
 
 void 
-logopnd(dcontext_t *dcontext, uint level, opnd_t opnd, char *string) 
+logopnd(dcontext_t *dcontext, uint level, opnd_t opnd, const char *string) 
 {
     DOLOG(level, LOG_ALL, {
         LOG(THREAD, LOG_ALL, level, "%s: ", string);
@@ -3239,7 +3126,7 @@ logopnd(dcontext_t *dcontext, uint level, opnd_t opnd, char *string)
 
 
 void
-logtrace(dcontext_t *dcontext, uint level, instrlist_t *trace, char *string)
+logtrace(dcontext_t *dcontext, uint level, instrlist_t *trace, const char *string)
 {
     DOLOG(level, LOG_ALL, {
         instr_t *inst;
@@ -3299,14 +3186,15 @@ instr_shrink_to_32_bits(instr_t *instr)
     CLIENT_ASSERT(instr_operands_valid(instr), "instr_shrink_to_32_bits: invalid opnds");
     for (i=0; i<instr_num_dsts(instr); i++) {
         opnd = instr_get_dst(instr, i);
+        instr_set_dst(instr, i, opnd_shrink_to_32_bits(opnd));
+    }
+    for (i=0; i<instr_num_srcs(instr); i++) {
+        opnd = instr_get_src(instr, i);
         if (opnd_is_immed_int(opnd)) {
             CLIENT_ASSERT(opnd_get_immed_int(opnd) <= INT_MAX,
                           "instr_shrink_to_32_bits: immed int will be truncated");
-            instr_set_dst(instr, i, opnd_shrink_to_32_bits(opnd));
         }
-    }
-    for (i=0; i<instr_num_srcs(instr); i++) {
-        instr_set_src(instr, i, opnd_shrink_to_32_bits(instr_get_src(instr, i)));
+        instr_set_src(instr, i, opnd_shrink_to_32_bits(opnd));
     }
 }
 #endif
@@ -3757,15 +3645,15 @@ uint
 instr_branch_type(instr_t *cti_instr)
 {
     switch (instr_get_opcode(cti_instr)) {
-    case OP_call: case OP_call_far:
+    case OP_call:
         return LINK_DIRECT|LINK_CALL;     /* unconditional */
-    case OP_jmp_short: case OP_jmp: case OP_jmp_far:
+    case OP_jmp_short: case OP_jmp:
         return LINK_DIRECT|LINK_JMP;     /* unconditional */
-    case OP_ret: case OP_ret_far: case OP_iret:
+    case OP_ret:
         return LINK_INDIRECT|LINK_RETURN;
-    case OP_jmp_ind: case OP_jmp_far_ind: 
+    case OP_jmp_ind:
         return LINK_INDIRECT|LINK_JMP;
-    case OP_call_ind: case OP_call_far_ind:
+    case OP_call_ind:
         return LINK_INDIRECT|LINK_CALL;
     case OP_jb_short: case OP_jnb_short: case OP_jbe_short: case OP_jnbe_short:
     case OP_jl_short: case OP_jnl_short: case OP_jle_short: case OP_jnle_short:
@@ -3779,6 +3667,18 @@ instr_branch_type(instr_t *cti_instr)
     case OP_jo: case OP_jno: case OP_jp: case OP_jnp:
     case OP_js: case OP_jns: case OP_jz: case OP_jnz:
         return LINK_DIRECT|LINK_JMP;     /* conditional */
+    case OP_jmp_far:
+        /* far direct is treated as indirect (i#823) */
+        return LINK_INDIRECT|LINK_JMP|LINK_FAR;
+    case OP_jmp_far_ind:
+        return LINK_INDIRECT|LINK_JMP|LINK_FAR;
+    case OP_call_far:
+        /* far direct is treated as indirect (i#823) */
+        return LINK_INDIRECT|LINK_CALL|LINK_FAR;
+    case OP_call_far_ind:
+        return LINK_INDIRECT|LINK_CALL|LINK_FAR;
+    case OP_ret_far: case OP_iret:
+        return LINK_INDIRECT|LINK_RETURN|LINK_FAR;
     default:
         LOG(THREAD_GET, LOG_ALL, 0, "branch_type: unknown opcode: %d\n",
             instr_get_opcode(cti_instr));
@@ -3817,15 +3717,17 @@ instr_set_branch_target_pc(instr_t *cti_instr, app_pc pc)
 bool
 instr_is_exit_cti(instr_t *instr)
 {
+    int opc;
     if (!instr_operands_valid(instr) || /* implies !opcode_valid */
-        !instr_ok_to_mangle(instr) ||
-        !instr_is_cti(instr) ||
-        instr_is_call(instr) ||
-        instr_is_return(instr))
+        !instr_ok_to_mangle(instr))
         return false;
-    return (instr_num_srcs(instr) > 0 &&
-             /* far pc should only happen for mangle's call to here */
-            opnd_is_pc(instr_get_src(instr, 0)));
+    /* XXX: avoid conditional decode in instr_get_opcode() for speed. */
+    opc = instr->opcode;
+    if (opcode_is_ubr(opc) || opcode_is_cbr(opc)) {
+        /* far pc should only happen for mangle's call to here */
+        return opnd_is_pc(instr_get_target(instr));
+    }
+    return false;
 }
 
 bool 
@@ -3839,10 +3741,9 @@ instr_is_mov(instr_t *instr)
             opc == OP_mov_priv);
 }
 
-bool 
-instr_is_call(instr_t *instr)
+static bool
+opcode_is_call(int opc)
 {
-    int opc = instr_get_opcode(instr);
     return (opc == OP_call ||
             opc == OP_call_far ||
             opc == OP_call_ind ||
@@ -3850,10 +3751,24 @@ instr_is_call(instr_t *instr)
 }
 
 bool 
+instr_is_call(instr_t *instr)
+{
+    int opc = instr_get_opcode(instr);
+    return opcode_is_call(opc);
+}
+
+bool 
 instr_is_call_direct(instr_t *instr)
 {
     int opc = instr_get_opcode(instr);
     return (opc == OP_call || opc == OP_call_far);
+}
+
+bool 
+instr_is_near_call_direct(instr_t *instr)
+{
+    int opc = instr_get_opcode(instr);
+    return (opc == OP_call);
 }
 
 bool 
@@ -3872,19 +3787,24 @@ instr_is_return(instr_t *instr)
 
 /*** WARNING!  The following rely on ordering of opcodes! ***/
 
-bool
-instr_is_cbr(instr_t *instr)      /* conditional branch */
+static bool
+opcode_is_cbr(int opc)
 {
-    int opc = instr_get_opcode(instr);
     return ((opc >= OP_jo && opc <= OP_jnle) ||
             (opc >= OP_jo_short && opc <= OP_jnle_short) ||
             (opc >= OP_loopne && opc <= OP_jecxz));
 }
 
 bool
-instr_is_mbr(instr_t *instr)      /* multi-way branch */
+instr_is_cbr(instr_t *instr)      /* conditional branch */
 {
     int opc = instr_get_opcode(instr);
+    return opcode_is_cbr(opc);
+}
+
+static bool
+opcode_is_mbr(int opc)
+{
     return (opc == OP_jmp_ind ||
             opc == OP_call_ind ||
             opc == OP_ret ||
@@ -3892,6 +3812,13 @@ instr_is_mbr(instr_t *instr)      /* multi-way branch */
             opc == OP_call_far_ind ||
             opc == OP_ret_far ||
             opc == OP_iret);
+}
+
+bool
+instr_is_mbr(instr_t *instr)      /* multi-way branch */
+{
+    int opc = instr_get_opcode(instr);
+    return opcode_is_mbr(opc);
 }
 
 bool
@@ -3913,20 +3840,35 @@ instr_is_far_abs_cti(instr_t *instr)
     return (opc == OP_jmp_far || opc == OP_call_far);
 }
 
-bool
-instr_is_ubr(instr_t *instr)      /* unconditional branch */
+static bool
+opcode_is_ubr(int opc)
 {
-    int opc = instr_get_opcode(instr);
     return (opc == OP_jmp ||
             opc == OP_jmp_short ||
             opc == OP_jmp_far);
 }
 
+bool
+instr_is_ubr(instr_t *instr)      /* unconditional branch */
+{
+    int opc = instr_get_opcode(instr);
+    return opcode_is_ubr(opc);
+}
+
+bool
+instr_is_near_ubr(instr_t *instr)      /* unconditional branch */
+{
+    int opc = instr_get_opcode(instr);
+    return (opc == OP_jmp ||
+            opc == OP_jmp_short);
+}
+
 bool 
 instr_is_cti(instr_t *instr)      /* any control-transfer instruction */
 {
-    return (instr_is_cbr(instr) || instr_is_mbr(instr) || instr_is_ubr(instr) ||
-            instr_is_call(instr));
+    int opc = instr_get_opcode(instr);
+    return (opcode_is_cbr(opc) || opcode_is_ubr(opc) || opcode_is_mbr(opc) ||
+            opcode_is_call(opc));
 }
 
 /* This routine does NOT decode the cti of instr if the raw bits are valid,
@@ -4088,7 +4030,10 @@ instr_is_wow64_syscall(instr_t *instr)
     if (instr_get_opcode(instr) != OP_call_ind)
         return false;
 # else
-    if (!is_wow64_process(NT_CURRENT_PROCESS) ||
+    /* For x64 DR we assume we're controlling the wow64 code too and thus
+     * a wow64 "syscall" is just an indirect call (xref i#821, i#49)
+     */
+    if (IF_X64_ELSE(true, !is_wow64_process(NT_CURRENT_PROCESS)) ||
         instr_get_opcode(instr) != OP_call_ind)
         return false;
     CLIENT_ASSERT(get_syscall_method() == SYSCALL_METHOD_WOW64,
@@ -4142,14 +4087,247 @@ bool instr_is_prefetch(instr_t *instr)
     return false;
 }
 
+bool
+instr_is_floating_ex(instr_t *instr, dr_fp_type_t *type OUT)
+{
+    int opc = instr_get_opcode(instr);
+
+    switch (opc) {
+    case OP_fxsave:          case OP_fxrstor:
+    case OP_ldmxcsr:         case OP_stmxcsr:
+    case OP_fldenv:          case OP_fldcw:
+    case OP_fnstenv:         case OP_fnstcw:
+    case OP_frstor:          case OP_fnsave:
+    case OP_fnstsw:          case OP_xsave:
+    case OP_xrstor:          case OP_xsaveopt:
+    case OP_vldmxcsr:        case OP_vstmxcsr:
+    {
+        if (type != NULL)
+            *type = DR_FP_STATE;
+        return true;
+    }
+
+    case OP_fld:             case OP_fst:
+    case OP_fstp:            case OP_fild:
+    case OP_movntps:         case OP_movntpd:
+    case OP_movups:          case OP_movss:
+    case OP_movupd:          case OP_movsd:
+    case OP_movlps:          case OP_movlpd:
+    case OP_movhps:          case OP_movhpd:
+    case OP_movaps:          case OP_movapd:
+    case OP_movsldup:        case OP_movshdup:
+    case OP_movddup:         case OP_vmovss:
+    case OP_vmovsd:          case OP_vmovups:
+    case OP_vmovupd:         case OP_vmovlps:
+    case OP_vmovsldup:       case OP_vmovlpd:
+    case OP_vmovddup:        case OP_vmovhps:
+    case OP_vmovshdup:       case OP_vmovhpd:
+    case OP_vmovaps:         case OP_vmovapd:
+    case OP_vmovntps:        case OP_vmovntpd:
+    case OP_unpcklps:        case OP_unpcklpd:
+    case OP_unpckhps:        case OP_unpckhpd:
+    case OP_vunpcklps:       case OP_vunpcklpd:
+    case OP_vunpckhps:       case OP_vunpckhpd:
+    case OP_extractps:       case OP_insertps:
+    case OP_vextractps:      case OP_vinsertps:
+    case OP_vinsertf128:     case OP_vextractf128:
+    case OP_vbroadcastss:    case OP_vbroadcastsd:
+    case OP_vbroadcastf128:  case OP_vperm2f128:
+    case OP_vpermilpd:       case OP_vpermilps:
+    case OP_vmaskmovps:      case OP_vmaskmovpd:
+    case OP_shufps:          case OP_shufpd:
+    case OP_vshufps:         case OP_vshufpd:
+    {
+        if (type != NULL)
+            *type = DR_FP_MOVE;
+        return true;
+    }
+
+    case OP_fist:            case OP_fistp:
+    case OP_fbld:            case OP_fbstp:
+    case OP_fisttp:
+    case OP_cvtpi2ps:        case OP_cvtsi2ss:
+    case OP_cvtpi2pd:        case OP_cvtsi2sd:
+    case OP_cvttps2pi:       case OP_cvttss2si:
+    case OP_cvttpd2pi:       case OP_cvttsd2si:
+    case OP_cvtps2pi:        case OP_cvtss2si:
+    case OP_cvtpd2pi:        case OP_cvtsd2si:
+    case OP_cvtps2pd:        case OP_cvtss2sd:
+    case OP_cvtpd2ps:        case OP_cvtsd2ss:
+    case OP_cvtdq2ps:        case OP_cvttps2dq:
+    case OP_cvtps2dq:        case OP_cvtdq2pd:
+    case OP_cvttpd2dq:       case OP_cvtpd2dq:
+    case OP_vcvtsi2ss:       case OP_vcvtsi2sd:
+    case OP_vcvttss2si:      case OP_vcvttsd2si:
+    case OP_vcvtss2si:       case OP_vcvtsd2si:
+    case OP_vcvtps2pd:       case OP_vcvtss2sd:
+    case OP_vcvtpd2ps:       case OP_vcvtsd2ss:
+    case OP_vcvtdq2ps:       case OP_vcvttps2dq:
+    case OP_vcvtps2dq:       case OP_vcvtdq2pd:
+    case OP_vcvttpd2dq:      case OP_vcvtpd2dq:
+    case OP_vcvtph2ps:       case OP_vcvtps2ph:
+    {
+        if (type != NULL)
+            *type = DR_FP_CONVERT;
+        return true;
+    }
+
+    case OP_ucomiss:         case OP_ucomisd:
+    case OP_comiss:          case OP_comisd:
+    case OP_movmskps:        case OP_movmskpd:
+    case OP_sqrtps:          case OP_sqrtss:
+    case OP_sqrtpd:          case OP_sqrtsd:
+    case OP_rsqrtps:         case OP_rsqrtss:
+    case OP_rcpps:           case OP_rcpss:
+    case OP_andps:           case OP_andpd:
+    case OP_andnps:          case OP_andnpd:
+    case OP_orps:            case OP_orpd:
+    case OP_xorps:           case OP_xorpd:
+    case OP_addps:           case OP_addss:
+    case OP_addpd:           case OP_addsd:
+    case OP_mulps:           case OP_mulss:
+    case OP_mulpd:           case OP_mulsd:
+    case OP_subps:           case OP_subss:
+    case OP_subpd:           case OP_subsd:
+    case OP_minps:           case OP_minss:
+    case OP_minpd:           case OP_minsd:
+    case OP_divps:           case OP_divss:
+    case OP_divpd:           case OP_divsd:
+    case OP_maxps:           case OP_maxss:
+    case OP_maxpd:           case OP_maxsd:
+    case OP_cmpps:           case OP_cmpss:
+    case OP_cmppd:           case OP_cmpsd:
+
+    case OP_fadd:            case OP_fmul:
+    case OP_fcom:            case OP_fcomp:
+    case OP_fsub:            case OP_fsubr:
+    case OP_fdiv:            case OP_fdivr:
+    case OP_fiadd:           case OP_fimul:
+    case OP_ficom:           case OP_ficomp:
+    case OP_fisub:           case OP_fisubr:
+    case OP_fidiv:           case OP_fidivr:
+    case OP_fxch:            case OP_fnop:
+    case OP_fchs:            case OP_fabs:
+    case OP_ftst:            case OP_fxam:
+    case OP_fld1:            case OP_fldl2t:
+    case OP_fldl2e:          case OP_fldpi:
+    case OP_fldlg2:          case OP_fldln2:
+    case OP_fldz:            case OP_f2xm1:
+    case OP_fyl2x:           case OP_fptan:
+    case OP_fpatan:          case OP_fxtract:
+    case OP_fprem1:          case OP_fdecstp:
+    case OP_fincstp:         case OP_fprem:
+    case OP_fyl2xp1:         case OP_fsqrt:
+    case OP_fsincos:         case OP_frndint:
+    case OP_fscale:          case OP_fsin:
+    case OP_fcos:            case OP_fcmovb:
+    case OP_fcmove:          case OP_fcmovbe:
+    case OP_fcmovu:          case OP_fucompp:
+    case OP_fcmovnb:         case OP_fcmovne:
+    case OP_fcmovnbe:        case OP_fcmovnu:
+    case OP_fnclex:          case OP_fninit:
+    case OP_fucomi:          case OP_fcomi:
+    case OP_ffree:           case OP_fucom:
+    case OP_fucomp:          case OP_faddp:
+    case OP_fmulp:           case OP_fcompp:
+    case OP_fsubrp:          case OP_fsubp:
+    case OP_fdivrp:          case OP_fdivp:
+    case OP_fucomip:         case OP_fcomip:
+    case OP_ffreep:
+
+    /* SSE3/3D-Now!/SSE4 */
+    case OP_haddpd:          case OP_haddps:
+    case OP_hsubpd:          case OP_hsubps:
+    case OP_addsubpd:        case OP_addsubps:
+    case OP_femms:           case OP_movntss:
+    case OP_movntsd:         case OP_blendvps:
+    case OP_blendvpd:        case OP_roundps:
+    case OP_roundpd:         case OP_roundss:
+    case OP_roundsd:         case OP_blendps:
+    case OP_blendpd:         case OP_dpps:
+    case OP_dppd:
+
+    /* AVX */
+    case OP_vucomiss:        case OP_vucomisd:
+    case OP_vcomiss:         case OP_vcomisd:
+    case OP_vmovmskps:       case OP_vmovmskpd:
+    case OP_vsqrtps:         case OP_vsqrtss:
+    case OP_vsqrtpd:         case OP_vsqrtsd:
+    case OP_vrsqrtps:        case OP_vrsqrtss:
+    case OP_vrcpps:          case OP_vrcpss:
+    case OP_vandps:          case OP_vandpd:
+    case OP_vandnps:         case OP_vandnpd:
+    case OP_vorps:           case OP_vorpd:
+    case OP_vxorps:          case OP_vxorpd:
+    case OP_vaddps:          case OP_vaddss:
+    case OP_vaddpd:          case OP_vaddsd:
+    case OP_vmulps:          case OP_vmulss:
+    case OP_vmulpd:          case OP_vmulsd:
+    case OP_vsubps:          case OP_vsubss:
+    case OP_vsubpd:          case OP_vsubsd:
+    case OP_vminps:          case OP_vminss:
+    case OP_vminpd:          case OP_vminsd:
+    case OP_vdivps:          case OP_vdivss:
+    case OP_vdivpd:          case OP_vdivsd:
+    case OP_vmaxps:          case OP_vmaxss:
+    case OP_vmaxpd:          case OP_vmaxsd:
+    case OP_vcmpps:          case OP_vcmpss:
+    case OP_vcmppd:          case OP_vcmpsd:
+    case OP_vhaddpd:         case OP_vhaddps:
+    case OP_vhsubpd:         case OP_vhsubps:
+    case OP_vaddsubpd:       case OP_vaddsubps:
+    case OP_vblendvps:       case OP_vblendvpd:
+    case OP_vroundps:        case OP_vroundpd:
+    case OP_vroundss:        case OP_vroundsd:
+    case OP_vblendps:        case OP_vblendpd:
+    case OP_vdpps:           case OP_vdppd:
+    case OP_vtestps:         case OP_vtestpd:
+
+    /* FMA */
+    case OP_vfmadd132ps:     case OP_vfmadd132pd:
+    case OP_vfmadd213ps:     case OP_vfmadd213pd:
+    case OP_vfmadd231ps:     case OP_vfmadd231pd:
+    case OP_vfmadd132ss:     case OP_vfmadd132sd:
+    case OP_vfmadd213ss:     case OP_vfmadd213sd:
+    case OP_vfmadd231ss:     case OP_vfmadd231sd:
+    case OP_vfmaddsub132ps:  case OP_vfmaddsub132pd:
+    case OP_vfmaddsub213ps:  case OP_vfmaddsub213pd:
+    case OP_vfmaddsub231ps:  case OP_vfmaddsub231pd:
+    case OP_vfmsubadd132ps:  case OP_vfmsubadd132pd:
+    case OP_vfmsubadd213ps:  case OP_vfmsubadd213pd:
+    case OP_vfmsubadd231ps:  case OP_vfmsubadd231pd:
+    case OP_vfmsub132ps:     case OP_vfmsub132pd:
+    case OP_vfmsub213ps:     case OP_vfmsub213pd:
+    case OP_vfmsub231ps:     case OP_vfmsub231pd:
+    case OP_vfmsub132ss:     case OP_vfmsub132sd:
+    case OP_vfmsub213ss:     case OP_vfmsub213sd:
+    case OP_vfmsub231ss:     case OP_vfmsub231sd:
+    case OP_vfnmadd132ps:    case OP_vfnmadd132pd:
+    case OP_vfnmadd213ps:    case OP_vfnmadd213pd:
+    case OP_vfnmadd231ps:    case OP_vfnmadd231pd:
+    case OP_vfnmadd132ss:    case OP_vfnmadd132sd:
+    case OP_vfnmadd213ss:    case OP_vfnmadd213sd:
+    case OP_vfnmadd231ss:    case OP_vfnmadd231sd:
+    case OP_vfnmsub132ps:    case OP_vfnmsub132pd:
+    case OP_vfnmsub213ps:    case OP_vfnmsub213pd:
+    case OP_vfnmsub231ps:    case OP_vfnmsub231pd:
+    case OP_vfnmsub132ss:    case OP_vfnmsub132sd:
+    case OP_vfnmsub213ss:    case OP_vfnmsub213sd:
+    case OP_vfnmsub231ss:    case OP_vfnmsub231sd:
+    {
+        if (type != NULL)
+            *type = DR_FP_MATH;
+        return true;
+    }
+
+    default: return false;
+    }
+}
+
 bool 
 instr_is_floating(instr_t *instr)
 {
-    int op = instr_get_opcode(instr);
-    /* WARNING -- assumes things about order of OP_ constants */
-    if (op >= OP_fadd && op <= OP_fcomip)
-        return true;
-    return false;
+    return instr_is_floating_ex(instr, NULL);
 }
 
 bool
@@ -4975,7 +5153,11 @@ instr_create_nbyte_nop(dcontext_t *dcontext, uint num_bytes, bool raw)
 {
     CLIENT_ASSERT(num_bytes != 0, "instr_create_nbyte_nop: 0 bytes passed");
     CLIENT_ASSERT(num_bytes <= 3, "instr_create_nbyte_nop: > 3 bytes not supported");
-    if (raw) {
+    /* INSTR_CREATE_nop*byte creates nop according to dcontext->x86_mode.
+     * In x86_to_x64, we want to create x64 nop, but dcontext may be in x86 mode.
+     * As a workaround, we call INSTR_CREATE_RAW_nop*byte here if in x86_to_x64.
+     */
+    if (raw IF_X64(|| DYNAMO_OPTION(x86_to_x64))) {
         switch(num_bytes) {
         case 1 :
             return INSTR_CREATE_RAW_nop1byte(dcontext);
@@ -5336,6 +5518,20 @@ instr_is_tls_spill(instr_t *instr, reg_id_t reg, ushort offs)
  * to support identification w/o ruining level 0 in decode_fragment, etc.
  */
 bool
+instr_is_tls_restore(instr_t *instr, reg_id_t reg, ushort offs)
+{
+    reg_id_t check_reg;
+    int check_disp;
+    bool spill;
+    return (instr_check_tls_spill_restore(instr, &spill, &check_reg, &check_disp) &&
+            !spill && (reg == REG_NULL || check_reg == reg) &&
+            check_disp == os_tls_offset(offs));
+}
+
+/* if instr is level 1, does not upgrade it and instead looks at raw bits,
+ * to support identification w/o ruining level 0 in decode_fragment, etc.
+ */
+bool
 instr_is_tls_xcx_spill(instr_t *instr)
 {
     if (instr_raw_bits_valid(instr)) {
@@ -5436,6 +5632,19 @@ instr_create_restore_from_tls(dcontext_t *dcontext, reg_id_t reg, ushort offs)
 {
     return INSTR_CREATE_mov_ld(dcontext, opnd_create_reg(reg), 
                                opnd_create_tls_slot(os_tls_offset(offs)));
+}
+
+/* For -x86_to_x64, we can spill to 64-bit extra registers (xref i#751). */
+instr_t *
+instr_create_save_to_reg(dcontext_t *dcontext, reg_id_t reg1, reg_id_t reg2)
+{
+    return INSTR_CREATE_mov_ld(dcontext, opnd_create_reg(reg2), opnd_create_reg(reg1));
+}
+
+instr_t *
+instr_create_restore_from_reg(dcontext_t *dcontext, reg_id_t reg1, reg_id_t reg2)
+{
+    return INSTR_CREATE_mov_ld(dcontext, opnd_create_reg(reg1), opnd_create_reg(reg2));
 }
 
 #ifdef X64

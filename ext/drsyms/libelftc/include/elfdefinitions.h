@@ -23,7 +23,7 @@
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
  *
- * $Id$
+ * $Id: elfdefinitions.h 2612 2012-10-19 02:16:43Z jkoshy $
  */
 
 /*
@@ -782,7 +782,12 @@ _ELF_DEFINE_EM(EM_OPEN8,            196,				\
 	"Open8 8-bit RISC soft processor core")				\
 _ELF_DEFINE_EM(EM_RL78,             197, "Renesas RL78 family")		\
 _ELF_DEFINE_EM(EM_VIDEOCORE5,       198, "Broadcom VideoCore V processor") \
-_ELF_DEFINE_EM(EM_78KOR,            199, "Renesas 78KOR family")
+_ELF_DEFINE_EM(EM_78KOR,            199, "Renesas 78KOR family")	\
+_ELF_DEFINE_EM(EM_56800EX,          200,				\
+	"Freescale 56800EX Digital Signal Controller")	\
+_ELF_DEFINE_EM(EM_BA1,              201, "Beyond BA1 CPU architecture")	\
+_ELF_DEFINE_EM(EM_BA2,              202, "Beyond BA2 CPU architecture")	\
+_ELF_DEFINE_EM(EM_XCORE,            203, "XMOS xCORE processor family")
 
 #undef	_ELF_DEFINE_EM
 #define	_ELF_DEFINE_EM(N, V, DESCR)	N = V ,
@@ -867,12 +872,22 @@ _ELF_DEFINE_PT(PT_PHDR,             6,				\
 _ELF_DEFINE_PT(PT_TLS,              7, "thread local storage")	\
 _ELF_DEFINE_PT(PT_LOOS,             0x60000000UL,		\
 	"start of OS-specific range")				\
+_ELF_DEFINE_PT(PT_SUNW_UNWIND,      0x6464E550UL,		\
+	"Solaris/amd64 stack unwind tables")			\
 _ELF_DEFINE_PT(PT_GNU_EH_FRAME,     0x6474E550UL,		\
-	"GCC generated .eh_frame_hdr segment ")			\
+	"GCC generated .eh_frame_hdr segment")			\
 _ELF_DEFINE_PT(PT_GNU_STACK,	    0x6474E551UL,		\
 	"Stack flags")						\
 _ELF_DEFINE_PT(PT_GNU_RELRO,	    0x6474E552UL,		\
 	"Segment becomes read-only after relocation")		\
+_ELF_DEFINE_PT(PT_SUNWBSS,          0x6FFFFFFAUL,		\
+	"A Solaris .SUNW_bss section")				\
+_ELF_DEFINE_PT(PT_SUNWSTACK,        0x6FFFFFFBUL,		\
+	"A Solaris process stack")				\
+_ELF_DEFINE_PT(PT_SUNWDTRACE,       0x6FFFFFFCUL,		\
+	"Used by dtrace(1)")					\
+_ELF_DEFINE_PT(PT_SUNWCAP,          0x6FFFFFFDUL,		\
+	"Special hardware capability requirements")		\
 _ELF_DEFINE_PT(PT_HIOS,             0x6FFFFFFFUL,		\
 	"end of OS-specific range")				\
 _ELF_DEFINE_PT(PT_LOPROC,           0x70000000UL,		\
@@ -899,6 +914,8 @@ enum {
 
 /* synonyms. */
 #define	PT_ARM_UNWIND	PT_ARM_EXIDX
+#define	PT_HISUNW	PT_HIOS
+#define	PT_LOSUNW	PT_SUNWBSS
 
 /*
  * Section flags.
@@ -924,6 +941,8 @@ _ELF_DEFINE_SHF(SHF_GROUP,           0x200,				\
 	"member of a section group")					\
 _ELF_DEFINE_SHF(SHF_TLS,             0x400,				\
 	"holds thread-local storage")					\
+_ELF_DEFINE_SHF(SHF_COMPRESSED,      0x800,				\
+	"holds compressed data")					\
 _ELF_DEFINE_SHF(SHF_MASKOS,          0x0FF00000UL,			\
 	"bits reserved for OS-specific semantics")			\
 _ELF_DEFINE_SHF(SHF_AMD64_LARGE,     0x10000000UL,			\
@@ -1589,6 +1608,7 @@ _ELF_DEFINE_RELOC(R_MIPS_GOT16,		9)	\
 _ELF_DEFINE_RELOC(R_MIPS_PC16,		10)	\
 _ELF_DEFINE_RELOC(R_MIPS_CALL16,	11)	\
 _ELF_DEFINE_RELOC(R_MIPS_GPREL32,	12)	\
+_ELF_DEFINE_RELOC(R_MIPS_64,		18)	\
 _ELF_DEFINE_RELOC(R_MIPS_GOTHI16,	21)	\
 _ELF_DEFINE_RELOC(R_MIPS_GOTLO16,	22)	\
 _ELF_DEFINE_RELOC(R_MIPS_CALLHI16,	30)	\

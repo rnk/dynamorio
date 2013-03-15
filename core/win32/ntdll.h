@@ -1,5 +1,5 @@
 /* **********************************************************
- * Copyright (c) 2011-2012 Google, Inc.  All rights reserved.
+ * Copyright (c) 2011-2013 Google, Inc.  All rights reserved.
  * Copyright (c) 2003-2010 VMware, Inc.  All rights reserved.
  * **********************************************************/
 
@@ -52,7 +52,10 @@
 
 #include <stddef.h> /* for offsetof */
 
+#include "ntdll_types.h"
 #include "globals_shared.h" /* for reg_t */
+
+#pragma warning(disable : 4214) /* allow short-sized bitfields for TEB */
 
 /* Current method is to statically link with ntdll.lib obtained from the DDK */
 /* We cannot call get_module_handle at arbitrary points.
@@ -77,22 +80,8 @@
  * or from the ddk's header files
  */
 
-typedef unsigned int uint;
-typedef LONG NTSTATUS;
-/* make sure to cast to signed in case passed reg_t */
-#define NT_SUCCESS(Status) ((NTSTATUS)(Status) >= 0)
-#define STATUS_SUCCESS ((NTSTATUS)0x00000000L)
-
 #define NT_CURRENT_PROCESS ( (HANDLE) PTR_UINT_MINUS_1 )
 #define NT_CURRENT_THREAD  ( (HANDLE) (ptr_uint_t)-2 )
-
-typedef struct _UNICODE_STRING {
-    /* Length field is size in bytes not counting final 0 */
-    USHORT Length;
-    USHORT MaximumLength;
-    PWSTR  Buffer;
-} UNICODE_STRING;
-typedef UNICODE_STRING *PUNICODE_STRING;
 
 #ifndef X64
 typedef struct ALIGN_VAR(8) _UNICODE_STRING_64 {
@@ -105,85 +94,12 @@ typedef struct ALIGN_VAR(8) _UNICODE_STRING_64 {
 } UNICODE_STRING_64;
 #endif
 
-typedef struct _STRING {
-  USHORT  Length;
-  USHORT  MaximumLength;
-  PCHAR  Buffer;
-} ANSI_STRING;
-typedef ANSI_STRING *PANSI_STRING;
-typedef ANSI_STRING OEM_STRING;
-
-typedef struct _OBJECT_ATTRIBUTES {
-    ULONG Length;
-    HANDLE RootDirectory;
-    PUNICODE_STRING ObjectName;
-    ULONG Attributes;
-    PSECURITY_DESCRIPTOR SecurityDescriptor;
-    PVOID SecurityQualityOfService;  // Points to type SECURITY_QUALITY_OF_SERVICE
-} OBJECT_ATTRIBUTES;
-typedef OBJECT_ATTRIBUTES *POBJECT_ATTRIBUTES;
-
-#define InitializeObjectAttributes( p, n, a, r, s ) { \
-    (p)->Length = sizeof( OBJECT_ATTRIBUTES );          \
-    (p)->RootDirectory = r;                             \
-    (p)->Attributes = a;                                \
-    (p)->ObjectName = n;                                \
-    (p)->SecurityDescriptor = s;                        \
-    (p)->SecurityQualityOfService = NULL;               \
-    }
-
-/* from DDK2003SP1/3790.1830/inc/wnet/ntdef.h */
-#define OBJ_INHERIT             0x00000002L
-#define OBJ_PERMANENT           0x00000010L
-#define OBJ_EXCLUSIVE           0x00000020L
-#define OBJ_CASE_INSENSITIVE    0x00000040L
-#define OBJ_OPENIF              0x00000080L
-#define OBJ_OPENLINK            0x00000100L
-#define OBJ_KERNEL_HANDLE       0x00000200L /* N.B.: this is an invalid parameter on NT4! */
-#define OBJ_FORCE_ACCESS_CHECK  0x00000400L /* N.B.: introduced with Win2003 */
-
-typedef ULONG ACCESS_MASK;
-
 /* from DDK2003SP1/3790.1830/inc/ddk/wnet/ntddk.h */
 #define DIRECTORY_QUERY                 (0x0001)
 #define DIRECTORY_TRAVERSE              (0x0002)
 #define DIRECTORY_CREATE_OBJECT         (0x0004)
 #define DIRECTORY_CREATE_SUBDIRECTORY   (0x0008)
 #define DIRECTORY_ALL_ACCESS (STANDARD_RIGHTS_REQUIRED | 0xF)
-
-/* From http://undocumented.ntinternals.net/UserMode/Structures/RTL_USER_PROCESS_PARAMETERS.html */
-
-typedef struct _RTL_USER_PROCESS_PARAMETERS {
-    ULONG MaximumLength;
-    ULONG Length;
-    ULONG Flags;
-    ULONG DebugFlags;
-    PVOID ConsoleHandle;
-    ULONG ConsoleFlags;
-    HANDLE StdInputHandle;
-    HANDLE StdOutputHandle;
-    HANDLE StdErrorHandle;
-    UNICODE_STRING CurrentDirectoryPath;
-    HANDLE CurrentDirectoryHandle;
-    UNICODE_STRING DllPath;
-    UNICODE_STRING ImagePathName;
-    UNICODE_STRING CommandLine;
-    PVOID Environment;
-    ULONG StartingPositionLeft;
-    ULONG StartingPositionTop;
-    ULONG Width;
-    ULONG Height;
-    ULONG CharWidth;
-    ULONG CharHeight;
-    ULONG ConsoleTextAttributes;
-    ULONG WindowFlags;
-    ULONG ShowWindowFlags;
-    UNICODE_STRING WindowTitle;
-    UNICODE_STRING DesktopName;
-    UNICODE_STRING ShellInfo;
-    UNICODE_STRING RuntimeData;
-    // RTL_DRIVE_LETTER_CURDIR DLCurrentDirectory[0x20]
-} RTL_USER_PROCESS_PARAMETERS, *PRTL_USER_PROCESS_PARAMETERS;
 
 /* module information filled by the loader */
 typedef struct _PEB_LDR_DATA {  
@@ -263,6 +179,7 @@ typedef const RTL_BITMAP *PCRTL_BITMAP;
 
 /* The layout here is from ntdll pdb on x64 xpsp2, though we
  * changed some PVOID types to more specific types.
+ * Later updated to win8 pdb info.
  */
 typedef struct _PEB {                                     /* offset: 32bit / 64bit */
     BOOLEAN                      InheritedAddressSpace;           /* 0x000 / 0x000 */
@@ -359,6 +276,20 @@ typedef struct _PEB {                                     /* offset: 32bit / 64b
     PVOID                        FlsBitmap;                       /* 0x218 / 0x338 */
     DWORD                        FlsBitmapBits[4];                /* 0x21c / 0x340 */
     DWORD                        FlsHighIndex;                    /* 0x22c / 0x350 */
+    PVOID                        WerRegistrationData;             /* 0x230 / 0x358 */
+    PVOID                        WerShipAssertPtr;                /* 0x234 / 0x360 */
+    PVOID                        pUnused;                         /* 0x238 / 0x368 */
+    PVOID                        pImageHeaderHash;                /* 0x23c / 0x370 */
+    union {
+        ULONG                    TracingFlags;                    /* 0x240 / 0x378 */
+        struct {
+            ULONG                HeapTracingEnabled:1;            /* 0x240 / 0x378 */
+            ULONG                CritSecTracingEnabled:1;         /* 0x240 / 0x378 */
+            ULONG                LibLoaderTracingEnabled:1;       /* 0x240 / 0x378 */
+            ULONG                SpareTracingBits:29;             /* 0x240 / 0x378 */
+        };
+    };
+    ULONG64                      CsrServerReadOnlySharedMemoryBase;/*0x248 / 0x380 */
 } PEB, *PPEB;
 
 #ifndef _W64
@@ -377,50 +308,6 @@ typedef struct _KERNEL_USER_TIMES {
     LARGE_INTEGER KernelTime;
     LARGE_INTEGER UserTime;
 } KERNEL_USER_TIMES;
-
-/* from DDK2003SP1/3790.1830/inc/ddk/wnet/ntddk.h */
-typedef enum _PROCESSINFOCLASS {
-    ProcessBasicInformation,
-    ProcessQuotaLimits,
-    ProcessIoCounters,
-    ProcessVmCounters,
-    ProcessTimes,
-    ProcessBasePriority,
-    ProcessRaisePriority,
-    ProcessDebugPort,
-    ProcessExceptionPort,
-    ProcessAccessToken,
-    ProcessLdtInformation,
-    ProcessLdtSize,
-    ProcessDefaultHardErrorMode,
-    ProcessIoPortHandlers,          // Note: this is kernel mode only
-    ProcessPooledUsageAndLimits,
-    ProcessWorkingSetWatch,
-    ProcessUserModeIOPL,
-    ProcessEnableAlignmentFaultFixup,
-    ProcessPriorityClass,
-    ProcessWx86Information,
-    ProcessHandleCount,
-    ProcessAffinityMask,
-    ProcessPriorityBoost,
-    ProcessDeviceMap,
-    ProcessSessionInformation,
-    ProcessForegroundInformation,
-    ProcessWow64Information,
-    /* added after XP+ */
-    ProcessImageFileName,
-    ProcessLUIDDeviceMapsEnabled,
-    ProcessBreakOnTermination,
-    ProcessDebugObjectHandle,
-    ProcessDebugFlags,
-    ProcessHandleTracing,
-    ProcessIoPriority,
-    ProcessExecuteFlags,
-    ProcessResourceManagement,
-    ProcessCookie,
-    ProcessImageInformation,
-    MaxProcessInfoClass             // MaxProcessInfoClass should always be the last enum
-} PROCESSINFOCLASS;
 
 /* Process Information Structures */
 
@@ -566,19 +453,12 @@ typedef struct _PROCESS_ACCESS_TOKEN {
 /* End of Job Limits */
 #endif /* !NOT_DYNAMORIO_CORE && !NOT_DYNAMORIO_CORE_PROPER */
 
-typedef struct _CLIENT_ID {
-    /* These are numeric ids */
-    HANDLE UniqueProcess;
-    HANDLE UniqueThread;
-} CLIENT_ID;
-typedef CLIENT_ID *PCLIENT_ID;
-
 /* OS dependent SEH frame supported by ntdll.dll 
    referred to in WINNT.H as _EXCEPTION_REGISTRATION_RECORD */
 typedef struct _EXCEPTION_REGISTRATION {
      struct _EXCEPTION_REGISTRATION* prev;
      PVOID                   handler;
-} EXCEPTION_REGISTRATION, *PEXCEPTION_REGISTRATION_RECORD;
+} EXCEPTION_REGISTRATION, *PEXCEPTION_REGISTRATION;
 
 typedef struct _GDI_TEB_BATCH
 {
@@ -587,10 +467,12 @@ typedef struct _GDI_TEB_BATCH
     ULONG  Buffer[0x136];
 } GDI_TEB_BATCH;
 
-/* The layout here is from ntdll pdb on x64 xpsp2 */
+/* The layout here is from ntdll pdb on x64 xpsp2,
+ * later updated to win8 pdb info.
+ */
 typedef struct _TEB {                               /* offset: 32bit / 64bit */
     /* We lay out NT_TIB, which is declared in winnt.h */    
-    PEXCEPTION_REGISTRATION_RECORD ExceptionList;           /* 0x000 / 0x000 */
+    PEXCEPTION_REGISTRATION   ExceptionList;                /* 0x000 / 0x000 */
     PVOID                     StackBase;                    /* 0x004 / 0x008 */
     PVOID                     StackLimit;                   /* 0x008 / 0x010 */
     PVOID                     SubSystemTib;                 /* 0x00c / 0x018 */
@@ -676,8 +558,45 @@ typedef struct _TEB {                               /* offset: 32bit / 64bit */
     PVOID                     CurrentTransactionHandle;     /* 0xfac / 0x17b8 */
     PVOID                     ActiveFrame;                  /* 0xfb0 / 0x17c0 */
     PVOID                     FlsData;                      /* 0xfb4 / 0x17c8 */
+#ifndef PRE_VISTA_TEB /* pre-vs-post-Vista: we'll have to make a union if we care */
+    PVOID                     PreferredLanguages;           /* 0xfb8 / 0x17d0 */
+    PVOID                     UserPrefLanguages;            /* 0xfbc / 0x17d8 */
+    PVOID                     MergedPrefLanguages;          /* 0xfc0 / 0x17e0 */
+    ULONG                     MuiImpersonation;             /* 0xfc4 / 0x17e8 */
+    union {
+        USHORT                CrossTebFlags;                /* 0xfc8 / 0x17ec */
+        USHORT                SpareCrossTebFlags:16;        /* 0xfc8 / 0x17ec */
+    };
+    union
+    {
+        USHORT                SameTebFlags;                 /* 0xfca / 0x17ee */
+        struct {
+            USHORT            SafeThunkCall:1;              /* 0xfca / 0x17ee */
+            USHORT            InDebugPrint:1;               /* 0xfca / 0x17ee */
+            USHORT            HasFiberData2:1;              /* 0xfca / 0x17ee */
+            USHORT            SkipThreadAttach:1;           /* 0xfca / 0x17ee */
+            USHORT            WerInShipAssertCode:1;        /* 0xfca / 0x17ee */
+            USHORT            RanProcessInit:1;             /* 0xfca / 0x17ee */
+            USHORT            ClonedThread:1;               /* 0xfca / 0x17ee */
+            USHORT            SuppressDebugMsg:1;           /* 0xfca / 0x17ee */
+            USHORT            DisableUserStackWalk:1;       /* 0xfca / 0x17ee */
+            USHORT            RtlExceptionAttached:1;       /* 0xfca / 0x17ee */
+            USHORT            InitialThread:1;              /* 0xfca / 0x17ee */
+            USHORT            SessionAware:1;               /* 0xfca / 0x17ee */
+            USHORT            SpareSameTebBits:4;           /* 0xfca / 0x17ee */
+        };
+    };
+    PVOID                     TxnScopeEntercallback;        /* 0xfcc / 0x17f0 */
+    PVOID                     TxnScopeExitCAllback;         /* 0xfd0 / 0x17f8 */
+    PVOID                     TxnScopeContext;              /* 0xfd4 / 0x1800 */
+    ULONG                     LockCount;                    /* 0xfd8 / 0x1808 */
+    ULONG                     SpareUlong0;                  /* 0xfdc / 0x180c */
+    PVOID                     ResourceRetValue;             /* 0xfe0 / 0x1810 */
+    PVOID                     ReservedForWdf;               /* 0xfe4 / 0x1818 */
+#else /* pre-Vista: */
     byte                      SafeThunkCall;                /* 0xfb8 / 0x17d0 */
     byte                      BooleanSpare[3];              /* 0xfb9 / 0x17d1 */
+#endif
 } TEB;
 
 typedef struct _THREAD_BASIC_INFORMATION { // Information Class 0
@@ -688,66 +607,6 @@ typedef struct _THREAD_BASIC_INFORMATION { // Information Class 0
     KPRIORITY Priority;
     KPRIORITY BasePriority;
 } THREAD_BASIC_INFORMATION, *PTHREAD_BASIC_INFORMATION;
-
-typedef struct _USER_STACK {
-    PVOID FixedStackBase;
-    PVOID FixedStackLimit;
-    PVOID ExpandableStackBase;
-    PVOID ExpandableStackLimit;
-    PVOID ExpandableStackBottom;
-} USER_STACK, *PUSER_STACK;
-
-typedef enum _KEY_VALUE_INFORMATION_CLASS {
-    KeyValueBasicInformation,
-    KeyValueFullInformation,
-    KeyValuePartialInformation,
-    KeyValueFullInformationAlign64,
-    KeyValuePartialInformationAlign64
-} KEY_VALUE_INFORMATION_CLASS;
-
-typedef struct _KEY_VALUE_FULL_INFORMATION {
-    ULONG   TitleIndex;
-    ULONG   Type;
-    ULONG   DataOffset;
-    ULONG   DataLength;
-    ULONG   NameLength;
-    WCHAR   Name[1];            // Variable size
-//          Data[1]             // Variable size data not declared
-} KEY_VALUE_FULL_INFORMATION, *PKEY_VALUE_FULL_INFORMATION;
-
-typedef struct _KEY_VALUE_PARTIAL_INFORMATION {
-    ULONG   TitleIndex;
-    ULONG   Type;
-    ULONG   DataLength;
-    UCHAR   Data[1];            // Variable size
-} KEY_VALUE_PARTIAL_INFORMATION, *PKEY_VALUE_PARTIAL_INFORMATION;
-
-typedef enum _KEY_INFORMATION_CLASS {
-    KeyBasicInformation,
-    KeyNodeInformation,
-    KeyFullInformation,
-    KeyNameInformation
-} KEY_INFORMATION_CLASS;
-
-typedef struct _KEY_NAME_INFORMATION {
-    ULONG   NameLength;
-    WCHAR   Name[1];            // Variable size
-} KEY_NAME_INFORMATION, *PKEY_NAME_INFORMATION;
-
-typedef enum _SYSTEM_INFORMATION_CLASS {
-    SystemBasicInformation = 0,
-    SystemProcessorInformation = 1,
-    SystemPerformanceInformation = 2,
-    SystemTimeOfDayInformation = 3,
-    SystemProcessesAndThreadsInformation = 5,
-    SystemProcessorTimes = 8,
-    SystemGlobalFlag = 9,
-    SystemModuleInformation = 11,
-    SystemLockInformation = 12,
-    SystemHandleInformation = 16,
-    SystemObjectInformation = 17
-    /* many more, see Nebbett */
-} SYSTEM_INFORMATION_CLASS;
 
 typedef struct _SYSTEM_BASIC_INFORMATION {
     ULONG   Unknown;
@@ -954,23 +813,6 @@ typedef struct _SYSTEM_GLOBAL_FLAG {
     ULONG   GlobalFlag;
 } SYSTEM_GLOBAL_FLAG, *PSYSTEM_GLOBAL_FLAG;
 
-typedef struct _FILE_NETWORK_OPEN_INFORMATION {
-    LARGE_INTEGER CreationTime;
-    LARGE_INTEGER LastAccessTime;
-    LARGE_INTEGER LastWriteTime;
-    LARGE_INTEGER ChangeTime;
-    LARGE_INTEGER AllocationSize;
-    LARGE_INTEGER EndOfFile;
-    ULONG   FileAttributes;
-} FILE_NETWORK_OPEN_INFORMATION, *PFILE_NETWORK_OPEN_INFORMATION;
-
-typedef enum _MEMORY_INFORMATION_CLASS {
-    MemoryBasicInformation,
-    MemoryWorkingSetList,
-    MemorySectionName,
-    MemoryBasicVlmInformation
-} MEMORY_INFORMATION_CLASS;
-
 typedef struct _MEMORY_SECTION_NAME {
     UNICODE_STRING SectionFileName;
 } MEMORY_SECTION_NAME, *PMEMORY_SECTION_NAME;
@@ -1062,6 +904,53 @@ typedef struct _create_thread_info_t { /* NOTE - this is speculative */
     thread_info_elm_t teb;
 } create_thread_info_t;
 
+/* PEB.ReadOnlyStaticServerData has an array of pointers sized to match the
+ * kernel (so 64-bit for WOW64).  The second pointer points at this structure.
+ * However, be careful b/c the UNICODE_STRING structs are really UNICODE_STRING_64
+ * for WOW64.
+ */
+typedef struct _BASE_STATIC_SERVER_DATA
+{
+    UNICODE_STRING WindowsDirectory;
+    UNICODE_STRING WindowsSystemDirectory;
+    UNICODE_STRING NamedObjectDirectory;
+    USHORT WindowsMajorVersion;
+    USHORT WindowsMinorVersion;
+    USHORT BuildNumber;
+    /* rest we don't care about */
+} BASE_STATIC_SERVER_DATA, *PBASE_STATIC_SERVER_DATA;
+
+#ifndef X64
+typedef struct _BASE_STATIC_SERVER_DATA_64
+{
+    UNICODE_STRING_64 WindowsDirectory;
+    UNICODE_STRING_64 WindowsSystemDirectory;
+    UNICODE_STRING_64 NamedObjectDirectory;
+    USHORT WindowsMajorVersion;
+    USHORT WindowsMinorVersion;
+    USHORT BuildNumber;
+    /* rest we don't care about */
+} BASE_STATIC_SERVER_DATA_64, *PBASE_STATIC_SERVER_DATA_64;
+#endif
+
+/* NtQueryDirectoryFile information, from ntifs.h */
+typedef struct _FILE_BOTH_DIR_INFORMATION {
+    ULONG NextEntryOffset;
+    ULONG FileIndex;
+    LARGE_INTEGER CreationTime;
+    LARGE_INTEGER LastAccessTime;
+    LARGE_INTEGER LastWriteTime;
+    LARGE_INTEGER ChangeTime;
+    LARGE_INTEGER EndOfFile;
+    LARGE_INTEGER AllocationSize;
+    ULONG FileAttributes;
+    ULONG FileNameLength;
+    ULONG EaSize;
+    CCHAR ShortNameLength;
+    WCHAR ShortName[12];
+    WCHAR FileName[1];
+} FILE_BOTH_DIR_INFORMATION, *PFILE_BOTH_DIR_INFORMATION;
+
 /***************************************************************************
  * convenience enums
  */
@@ -1078,6 +967,9 @@ ntdll_init(void);
 
 void
 ntdll_exit(void);
+
+NTSTATUS
+nt_raw_close(HANDLE h);
 
 bool
 close_handle(HANDLE h);
@@ -1125,6 +1017,10 @@ bool
 is_in_ntdll(app_pc pc);
 #endif
 
+NTSTATUS
+nt_remote_query_virtual_memory(HANDLE process, const byte *pc,
+                               MEMORY_BASIC_INFORMATION *mbi, size_t mbilen, size_t *got);
+
 /* replacement for API call VirtualQuery */
 size_t
 query_virtual_memory(const byte *pc, MEMORY_BASIC_INFORMATION *mbi, size_t mbilen);
@@ -1171,6 +1067,11 @@ nt_read_virtual_memory(HANDLE process, const void *base, void *buffer,
 bool
 nt_write_virtual_memory(HANDLE process, void *base, const void *buffer, 
                         size_t buffer_length, size_t *bytes_written);
+
+/* returns raw NTSTATUS */
+NTSTATUS
+nt_raw_read_virtual_memory(HANDLE process, const void *base, void *buffer, 
+                           size_t buffer_length, size_t *bytes_read);
 
 /* returns raw NTSTATUS */
 NTSTATUS
@@ -1275,6 +1176,14 @@ bool
 get_section_attributes(HANDLE h, uint *section_attributes /* OUT */,
                        LARGE_INTEGER* section_size /* OUT OPTIONAL */);
 
+/* This is a low-level interface.  Use the reg_* routines below if possible. */
+NTSTATUS
+nt_query_value_key(IN HANDLE key,
+                   IN PUNICODE_STRING value_name,
+                   IN KEY_VALUE_INFORMATION_CLASS class,
+                   OUT PVOID info,
+                   IN ULONG info_length,
+                   OUT PULONG res_length);
 
 HANDLE
 reg_create_key(HANDLE parent, PCWSTR keyname, ACCESS_MASK rights);
@@ -1402,6 +1311,7 @@ query_full_attributes_file(PCWSTR filename,
 #define FILE_COMPLETE_IF_OPLOCKED               0x00000100
 #define FILE_NO_EA_KNOWLEDGE                    0x00000200
 #define FILE_OPEN_FOR_RECOVERY                  0x00000400
+#define FILE_OPEN_REMOTE_INSTANCE               0x00000400 /* alt name */
 #define FILE_RANDOM_ACCESS                      0x00000800
 
 #define FILE_DELETE_ON_CLOSE                    0x00001000
@@ -1446,18 +1356,44 @@ query_full_attributes_file(PCWSTR filename,
 #define FILE_WRITE_TO_END_OF_FILE       0xffffffff
 #define FILE_USE_FILE_POINTER_POSITION  0xfffffffe
 
+#if _MSC_VER <= 1200
+/* from ntstatus.h, NtFsControlFile typically returns this, if not using 
+ * overlapped (i.e. asynch io) then TransactNamedPipe specifically checks for 
+ * this value to determine whether or not it should wait on the pipe, this is
+ * the only return code it specifically checks for */
+# define STATUS_PENDING 0x103
+#endif
+
+// Define the interesting device type values
+#define FILE_DEVICE_FILE_SYSTEM         0x00000009
+#define FILE_DEVICE_NAMED_PIPE          0x00000011
+
 /* From NTSTATUS.H -- this shouldn't change, but you never know... */
 /* DDK2003SP1/3790.1830/inc/wnet/ntstatus.h */
 #define STATUS_INFO_LENGTH_MISMATCH      ((NTSTATUS)0xC0000004L)
 
+/* The requested operation is not implemented. */
+#define STATUS_NOT_IMPLEMENTED           ((NTSTATUS)0xC0000002L)
+
+/* The file does not exist. */
+#define STATUS_NO_SUCH_FILE              ((NTSTATUS)0xC000000FL)
+
 /* {Conflicting Address Range}  The specified address range conflicts with the address space. */
 #define STATUS_CONFLICTING_ADDRESSES     ((NTSTATUS)0xC0000018L)
+
+/* The end-of-file marker has been reached. There is no valid data in
+ * the file beyond this marker.
+ */
+#define STATUS_END_OF_FILE               ((NTSTATUS)0xC0000011L)
 
 /* "The address handle given to the transport was invalid." */
 #define STATUS_INVALID_ADDRESS           ((NTSTATUS)0xC0000141L)
 
 /* "The data was too large to fit into the specified buffer." */
 #define STATUS_BUFFER_OVERFLOW           ((NTSTATUS)0x80000005L)
+
+/* No more files were found which match the file specification. */
+#define STATUS_NO_MORE_FILES             ((NTSTATUS)0x80000006L)
 
 /*  {Bad File} The attributes of the specified mapping file for a
 *  section of memory cannot be read. */
@@ -1471,14 +1407,37 @@ query_full_attributes_file(PCWSTR filename,
  * written to the buffer." */
 #define STATUS_BUFFER_TOO_SMALL          ((NTSTATUS)0xC0000023L)
 
+/* There is a mismatch between the type of object required by the requested operation
+ * and the type of object that is specified in the request.
+ */
+#define STATUS_OBJECT_TYPE_MISMATCH      ((NTSTATUS)0xC0000024L)
+
+/* Object Name invalid. */
+#define STATUS_OBJECT_NAME_INVALID       ((NTSTATUS)0xC0000033L)
+
 /*  Object Name not found. */
 #define STATUS_OBJECT_NAME_NOT_FOUND     ((NTSTATUS)0xC0000034L)
 
 /* Error: Object Name already exists */
 #define STATUS_OBJECT_NAME_COLLISION     ((NTSTATUS)0xC0000035L)
 
+/* Object Path Component was not a directory object. */
+#define STATUS_OBJECT_PATH_INVALID       ((NTSTATUS)0xC0000039L)
+
+/* The path does not exist. */
+#define STATUS_OBJECT_PATH_NOT_FOUND     ((NTSTATUS)0xC000003AL)
+
+/* The specified section is too big to map the file. */
+#define STATUS_SECTION_TOO_BIG           ((NTSTATUS)0xC0000040L)
+
 /*  A file cannot be opened because the share access flags are incompatible. */
 #define STATUS_SHARING_VIOLATION         ((NTSTATUS)0xC0000043L)
+
+/* The specified page protection was not valid. */
+#define STATUS_INVALID_PAGE_PROTECTION   ((NTSTATUS)0xC0000045L)
+
+/* A requested read/write cannot be granted due to a conflicting file lock. */
+#define STATUS_FILE_LOCK_CONFLICT        ((NTSTATUS)0xC0000054L)
 
 /*  A non close operation has been requested of a file object with a delete pending. */
 #define STATUS_DELETE_PENDING            ((NTSTATUS)0xC0000056L)
@@ -1495,9 +1454,6 @@ query_full_attributes_file(PCWSTR filename,
 
 /* Warning: An attempt was made to create an object and the object name already existed. */
 #define STATUS_OBJECT_NAME_EXISTS        ((NTSTATUS)0x40000000L)
-
-/*  An invalid parameter was passed to a service or function as the fourth argument. */
-#define STATUS_INVALID_PARAMETER_4       ((NTSTATUS)0xC00000F2L)
 
 /* Warning: Image Relocated
  *  "An image file could not be mapped at the address specified in the image file. "
@@ -1552,7 +1508,65 @@ query_full_attributes_file(PCWSTR filename,
 /* needed for PR 233191 */
 #define STATUS_INVALID_INFO_CLASS        ((NTSTATUS)0xC0000003L)
 
+/* An attempt was made to map a file of size zero with the maximum size specified as
+ * zero.
+ */
+#define STATUS_MAPPED_FILE_SIZE_ZERO     ((NTSTATUS)0xC000011EL)
+
 #define STATUS_PARTIAL_COPY              ((NTSTATUS)0x8000000DL)
+
+#ifndef STATUS_INVALID_PARAMETER
+/* An invalid parameter was passed to a service or function. */
+# define STATUS_INVALID_PARAMETER         ((NTSTATUS)0xC000000DL)
+#endif
+
+/* Specified section to flush does not map a data file. */
+#define STATUS_NOT_MAPPED_DATA           ((NTSTATUS)0xC0000088L)
+
+/* An invalid parameter was passed to a service or function as the first argument. */
+#define STATUS_INVALID_PARAMETER_1       ((NTSTATUS)0xC00000EFL)
+
+/* An invalid parameter was passed to a service or function as the second argument. */
+#define STATUS_INVALID_PARAMETER_2       ((NTSTATUS)0xC00000F0L)
+
+/* An invalid parameter was passed to a service or function as the third argument. */
+#define STATUS_INVALID_PARAMETER_3       ((NTSTATUS)0xC00000F1L)
+
+/* An invalid parameter was passed to a service or function as the fourth argument. */
+#define STATUS_INVALID_PARAMETER_4       ((NTSTATUS)0xC00000F2L)
+
+/* An invalid parameter was passed to a service or function as the fifth argument. */
+#define STATUS_INVALID_PARAMETER_5       ((NTSTATUS)0xC00000F3L)
+
+/* An invalid parameter was passed to a service or function as the sixth argument. */
+#define STATUS_INVALID_PARAMETER_6       ((NTSTATUS)0xC00000F4L)
+
+/* An invalid parameter was passed to a service or function as the seventh argument. */
+#define STATUS_INVALID_PARAMETER_7       ((NTSTATUS)0xC00000F5L)
+
+/* An invalid parameter was passed to a service or function as the eighth argument. */
+#define STATUS_INVALID_PARAMETER_8       ((NTSTATUS)0xC00000F6L)
+
+/* An invalid parameter was passed to a service or function as the ninth argument. */
+#define STATUS_INVALID_PARAMETER_9       ((NTSTATUS)0xC00000F7L)
+
+/* An invalid parameter was passed to a service or function as the tenth argument. */
+#define STATUS_INVALID_PARAMETER_10      ((NTSTATUS)0xC00000F8L)
+
+/* An invalid parameter was passed to a service or function as the eleventh argument. */
+#define STATUS_INVALID_PARAMETER_11      ((NTSTATUS)0xC00000F9L)
+
+/* An invalid parameter was passed to a service or function as the twelfth argument. */
+#define STATUS_INVALID_PARAMETER_12      ((NTSTATUS)0xC00000FAL)
+
+/* An attempt was made to access a thread that has begun termination. */
+#define STATUS_THREAD_IS_TERMINATING     ((NTSTATUS)0xC000004BL)
+
+/* An attempt was made to access an exiting process. */
+#define STATUS_PROCESS_IS_TERMINATING    ((NTSTATUS)0xC000010AL)
+
+/* The NTFS file or directory is not a reparse point. */
+#define STATUS_NOT_A_REPARSE_POINT       ((NTSTATUS)0xC0000275L)
 
 /* This is in VS2005 winnt.h but not in SDK winnt.h */
 #ifndef IMAGE_SIZEOF_BASE_RELOCATION
@@ -1572,11 +1586,17 @@ HANDLE
 create_file(PCWSTR filename, bool is_dir, ACCESS_MASK rights, uint sharing,
             uint create_disposition, bool synch);
 
-bool
-delete_file(PCWSTR filename);
+#if !defined(NOT_DYNAMORIO_CORE_PROPER) && !defined(NOT_DYNAMORIO_CORE)
+NTSTATUS
+nt_open_file(HANDLE *handle OUT, PCWSTR filename, ACCESS_MASK rights, uint sharing,
+             uint options);
+#endif
 
-bool
-flush_file_buffers(HANDLE file_handle);
+NTSTATUS
+nt_delete_file(PCWSTR nt_filename);
+
+NTSTATUS
+nt_flush_file_buffers(HANDLE file_handle);
 
 bool
 read_file(HANDLE file_handle, void *buffer, uint num_bytes_to_read, 
@@ -1590,63 +1610,7 @@ write_file(HANDLE file_handle, const void *buffer, uint num_bytes_to_write,
 bool
 close_file(HANDLE hfile);
 
-
 /* from DDK2003SP1/3790.1830/inc/ddk/wnet/ntddk.h */
-/* Define the file information class values */
-typedef enum _FILE_INFORMATION_CLASS {
-    FileDirectoryInformation         = 1,
-    FileFullDirectoryInformation,   // 2
-    FileBothDirectoryInformation,   // 3
-    FileBasicInformation,           // 4  wdm
-    FileStandardInformation,        // 5  wdm
-    FileInternalInformation,        // 6
-    FileEaInformation,              // 7
-    FileAccessInformation,          // 8
-    FileNameInformation,            // 9
-    FileRenameInformation,          // 10
-    FileLinkInformation,            // 11
-    FileNamesInformation,           // 12
-    FileDispositionInformation,     // 13
-    FilePositionInformation,        // 14 wdm
-    FileFullEaInformation,          // 15
-    FileModeInformation,            // 16
-    FileAlignmentInformation,       // 17
-    FileAllInformation,             // 18
-    FileAllocationInformation,      // 19
-    FileEndOfFileInformation,       // 20 wdm
-    FileAlternateNameInformation,   // 21
-    FileStreamInformation,          // 22
-    FilePipeInformation,            // 23
-    FilePipeLocalInformation,       // 24
-    FilePipeRemoteInformation,      // 25
-    FileMailslotQueryInformation,   // 26
-    FileMailslotSetInformation,     // 27
-    FileCompressionInformation,     // 28
-    FileObjectIdInformation,        // 29
-    FileCompletionInformation,      // 30
-    FileMoveClusterInformation,     // 31
-    FileQuotaInformation,           // 32
-    FileReparsePointInformation,    // 33
-    FileNetworkOpenInformation,     // 34
-    FileAttributeTagInformation,    // 35
-    FileTrackingInformation,        // 36
-    FileIdBothDirectoryInformation, // 37
-    FileIdFullDirectoryInformation, // 38
-    /* the following types introduced in XP and later */
-    FileValidDataLengthInformation, // 39
-    FileShortNameInformation,       // 40
-    FileMaximumInformation
-} FILE_INFORMATION_CLASS, *PFILE_INFORMATION_CLASS;
-
-/* Information class structures returned by NtQueryInformationFile */
-typedef struct _FILE_BASIC_INFORMATION {                    
-    LARGE_INTEGER CreationTime;                             
-    LARGE_INTEGER LastAccessTime;                           
-    LARGE_INTEGER LastWriteTime;                            
-    LARGE_INTEGER ChangeTime;                               
-    ULONG FileAttributes;                                   
-} FILE_BASIC_INFORMATION, *PFILE_BASIC_INFORMATION;         
-                                                            
 typedef struct _FILE_STANDARD_INFORMATION {                 
     LARGE_INTEGER AllocationSize;                           
     LARGE_INTEGER EndOfFile;                                
@@ -1654,7 +1618,11 @@ typedef struct _FILE_STANDARD_INFORMATION {
     BOOLEAN DeletePending;                                  
     BOOLEAN Directory;                                      
 } FILE_STANDARD_INFORMATION, *PFILE_STANDARD_INFORMATION;   
-                                                            
+
+typedef struct _FILE_INTERNAL_INFORMATION {
+    LARGE_INTEGER IndexNumber;
+} FILE_INTERNAL_INFORMATION, *PFILE_INTERNAL_INFORMATION;
+                                                  
 typedef struct _FILE_POSITION_INFORMATION {                 
     LARGE_INTEGER CurrentByteOffset;                        
 } FILE_POSITION_INFORMATION, *PFILE_POSITION_INFORMATION;   
@@ -1695,44 +1663,6 @@ typedef struct _FILE_VALID_DATA_LENGTH_INFORMATION {
     LARGE_INTEGER ValidDataLength;                                                      
 } FILE_VALID_DATA_LENGTH_INFORMATION, *PFILE_VALID_DATA_LENGTH_INFORMATION;             
 
-/* FileSystem types for nt_query_volume_info */
-/* should be available in ntifs.h from IFS.
- * This version is from reactos/0.2.9/include/ndk/iotypes.h 
- */
-typedef enum _FS_INFORMATION_CLASS {
-    FileFsVolumeInformation=1,
-    FileFsLabelInformation,     /* not documented in IFS */
-    FileFsSizeInformation,
-    FileFsDeviceInformation,
-    FileFsAttributeInformation,
-    FileFsControlInformation,
-    FileFsFullSizeInformation,
-    FileFsObjectIdInformation,
-    FileFsDriverPathInformation, /* in reactos */
-    FileFsMaximumInformation
-} FS_INFORMATION_CLASS, *PFS_INFORMATION_CLASS;
-
-typedef struct _FILE_FS_SIZE_INFORMATION {
-    LARGE_INTEGER TotalAllocationUnits;
-    LARGE_INTEGER AvailableAllocationUnits;
-    ULONG SectorsPerAllocationUnit;
-    ULONG BytesPerSector;
-} FILE_FS_SIZE_INFORMATION, *PFILE_FS_SIZE_INFORMATION;
-
-typedef struct _FILE_FS_FULL_SIZE_INFORMATION {
-    LARGE_INTEGER TotalAllocationUnits;
-    LARGE_INTEGER CallerAvailableAllocationUnits;
-    LARGE_INTEGER ActualAvailableAllocationUnits;
-    ULONG SectorsPerAllocationUnit;
-    ULONG BytesPerSector;
-} FILE_FS_FULL_SIZE_INFORMATION, *PFILE_FS_FULL_SIZE_INFORMATION;
-
-
-/* Event types and functions */
-typedef enum _EVENT_TYPE {
-    NotificationEvent,   /* manual-reset event - used for broadcasting to multiple waiting threads */
-    SynchronizationEvent /* automatically changes state to non-signaled after releasing a waiting thread */
-} EVENT_TYPE, *PEVENT_TYPE;
 
 /* event synchronization, using both automatic and manual events */
 HANDLE
@@ -1764,11 +1694,22 @@ nt_pipe_transceive(HANDLE hpipe, void *input, uint input_size,
 
 #define TIMER_UNITS_PER_MILLISECOND (1000 * 10) /* 100ns intervals */
 
+wchar_t *
+get_process_param_buf(RTL_USER_PROCESS_PARAMETERS *params, wchar_t *buf);
+
 /* uint query_time_seconds() declared in os_shared.h */
 /* uint64 query_time_millis() declared in os_shared.h */
 
 void
-query_system_time(SYSTEMTIME *st);
+convert_100ns_to_system_time(uint64 time_in_100ns, SYSTEMTIME *st OUT);
+
+void
+convert_system_time_to_100ns(const SYSTEMTIME *st, uint64 *time_in_100ns OUT);
+
+LONGLONG query_time_100ns(void);
+
+void
+query_system_time(SYSTEMTIME *st OUT);
 
 void
 nt_query_performance_counter(PLARGE_INTEGER counter, PLARGE_INTEGER frequency);
@@ -1862,6 +1803,16 @@ LDR_MODULE *
 get_ldr_module_by_name(wchar_t *name);;
 
 #ifndef X64
+void *
+get_own_x64_peb(void);
+
+/* caller must synchronize if not called during init */
+HANDLE
+load_library_64(const char *path);
+
+bool
+free_library_64(HANDLE lib);
+
 HANDLE
 get_module_handle_64(wchar_t *name);
 
@@ -1902,29 +1853,6 @@ free_library(module_handle_t lib);
 
 module_handle_t
 get_module_handle(wchar_t *lib_name);
-
-/* from ntddk.h */
-typedef enum _SECTION_INHERIT {
-    ViewShare = 1,
-    ViewUnmap = 2
-} SECTION_INHERIT;
-
-NTSTATUS
-nt_map_view_of_section(IN HANDLE           SectionHandle,
-                       IN HANDLE           ProcessHandle,
-                       IN OUT PVOID       *BaseAddress,
-                       IN ULONG            ZeroBits,
-                       IN SIZE_T           CommitSize,
-                       IN OUT PLARGE_INTEGER  SectionOffset OPTIONAL,
-                       IN OUT PSIZE_T      ViewSize,
-                       IN SECTION_INHERIT  InheritDisposition,
-                       IN ULONG            AllocationType,
-                       IN ULONG            Protect
-                       );
-NTSTATUS
-nt_unmap_view_of_section(IN HANDLE         ProcessHandle,
-                         IN PVOID          BaseAddress
-                         );
 
 /* From WINNT.H for .NET 2.0 (Visual Studio.NET VC7)
  * Needed for IMAGE_COR20_HEADER
@@ -2032,6 +1960,9 @@ typedef struct _OBJECT_NAME_INFORMATION {
 } OBJECT_NAME_INFORMATION, *POBJECT_NAME_INFORMATION;
 
 NTSTATUS
+wchar_to_unicode(PUNICODE_STRING dst, PCWSTR src);
+
+NTSTATUS
 nt_get_object_name(HANDLE handle, OBJECT_NAME_INFORMATION* object_name /* OUT */,
                    uint byte_length, uint *returned_byte_length);
 
@@ -2087,8 +2018,180 @@ nt_query_security_object(IN HANDLE Handle,
                          IN SECURITY_INFORMATION RequestedInformation,
                          OUT PSECURITY_DESCRIPTOR SecurityDescriptor,
                          IN ULONG SecurityDescriptorLength,
-                         OUT PULONG ReturnLength
-                         );
+                         OUT PULONG ReturnLength);
 
+/***************************************************************************
+ * SHARED NON-RAW NTDLL WRAPPERS
+ *
+ * These are ones for which there's no extra value we want to add in
+ * an nt_() routine of our own, but we want to share (typically between
+ * ntdll.c and drwinapi/).
+ */
+
+GET_NTDLL(RtlEnterCriticalSection, (IN OUT RTL_CRITICAL_SECTION *crit));
+GET_NTDLL(RtlLeaveCriticalSection, (IN OUT RTL_CRITICAL_SECTION *crit));
+
+GET_NTDLL(NtWaitForSingleObject, (IN HANDLE ObjectHandle, 
+                                  IN BOOLEAN Alertable, 
+                                  IN PLARGE_INTEGER TimeOut));
+
+GET_NTDLL(NtFsControlFile, (IN HANDLE               FileHandle,
+                            IN HANDLE               Event OPTIONAL,
+                            IN PIO_APC_ROUTINE      ApcRoutine OPTIONAL,
+                            IN PVOID                ApcContext OPTIONAL,
+                            OUT PIO_STATUS_BLOCK    IoStatusBlock,
+                            IN ULONG                FsControlCode,
+                            IN PVOID                InputBuffer OPTIONAL,
+                            IN ULONG                InputBufferLength,
+                            OUT PVOID               OutputBuffer OPTIONAL,
+                            IN ULONG                OutputBufferLength));
+
+GET_NTDLL(NtReadFile, (IN HANDLE FileHandle,
+                       IN HANDLE Event OPTIONAL,
+                       IN PIO_APC_ROUTINE ApcRoutine OPTIONAL,
+                       IN PVOID ApcContext OPTIONAL,
+                       OUT PIO_STATUS_BLOCK IoStatusBlock,
+                       OUT PVOID Buffer,
+                       IN ULONG Length,
+                       IN PLARGE_INTEGER ByteOffset OPTIONAL,
+                       IN PULONG Key OPTIONAL));
+
+GET_NTDLL(NtWriteFile, (IN HANDLE FileHandle,
+                        IN HANDLE Event OPTIONAL,
+                        IN PIO_APC_ROUTINE ApcRoutine OPTIONAL,
+                        IN PVOID ApcContext OPTIONAL,
+                        OUT PIO_STATUS_BLOCK IoStatusBlock,
+                        IN const void *Buffer, /* PVOID, but need const */
+                        IN ULONG Length,
+                        IN PLARGE_INTEGER ByteOffset OPTIONAL,
+                        IN PULONG Key OPTIONAL));
+
+/* Not really a syscall: reads KUSER_SHARED_DATA.
+ * Redirects to RtlGetTickCount on Win2003+.
+ */
+NTSYSAPI ULONG_PTR NTAPI NtGetTickCount(void);
+
+/***************************************************************************
+ * RAW WRAPPERS
+ */
+
+#if !defined(NOT_DYNAMORIO_CORE_PROPER) && !defined(NOT_DYNAMORIO_CORE)
+
+NTSTATUS
+nt_raw_CreateFile(PHANDLE file_handle,
+                  ACCESS_MASK desired_access,
+                  POBJECT_ATTRIBUTES object_attributes,
+                  PIO_STATUS_BLOCK io_status_block,
+                  PLARGE_INTEGER allocation_size,
+                  ULONG file_attributes,
+                  ULONG share_access,
+                  ULONG create_disposition,
+                  ULONG create_options,
+                  PVOID ea_buffer,
+                  ULONG ea_length);
+
+NTSTATUS
+nt_raw_OpenFile(PHANDLE file_handle,
+                ACCESS_MASK desired_access,
+                POBJECT_ATTRIBUTES object_attributes,
+                PIO_STATUS_BLOCK io_status_block,
+                ULONG share_access,
+                ULONG open_options);
+
+NTSTATUS
+nt_raw_OpenKey(PHANDLE key_handle,
+               ACCESS_MASK desired_access,
+               POBJECT_ATTRIBUTES object_attributes);
+
+NTSTATUS
+nt_raw_OpenKeyEx(PHANDLE key_handle,
+                 ACCESS_MASK desired_access,
+                 POBJECT_ATTRIBUTES object_attributes,
+                 ULONG open_options);
+
+NTSTATUS
+nt_raw_OpenProcessTokenEx(HANDLE process_handle,
+                          ACCESS_MASK desired_access,
+                          ULONG handle_attributes,
+                          PHANDLE token_handle);
+
+NTSTATUS
+nt_raw_OpenThread(PHANDLE thread_handle,
+                  ACCESS_MASK desired_access,
+                  POBJECT_ATTRIBUTES object_attributes,
+                  PCLIENT_ID client_id);
+
+NTSTATUS
+nt_raw_OpenThreadTokenEx(HANDLE thread_handle,
+                         ACCESS_MASK desired_access,
+                         BOOLEAN open_as_self,
+                         ULONG handle_attributes,
+                         PHANDLE token_handle);
+
+NTSTATUS
+nt_raw_QueryAttributesFile(POBJECT_ATTRIBUTES object_attributes,
+                           PFILE_BASIC_INFORMATION file_information);
+
+NTSTATUS
+nt_raw_SetInformationFile(HANDLE file_handle,
+                          PIO_STATUS_BLOCK io_status_block,
+                          PVOID file_information,
+                          ULONG length,
+                          FILE_INFORMATION_CLASS file_information_class);
+
+NTSTATUS
+nt_raw_SetInformationThread(HANDLE thread_handle,
+                            THREADINFOCLASS thread_information_class,
+                            PVOID thread_information,
+                            ULONG thread_information_length);
+
+NTSTATUS
+nt_raw_UnmapViewOfSection(HANDLE process_handle,
+                          PVOID base_address);
+#endif /* !NOT_DYNAMORIO_CORE && !NOT_DYNAMORIO_CORE_PROPER */
+
+NTSTATUS
+nt_raw_OpenProcess(PHANDLE process_handle,
+                   ACCESS_MASK desired_access,
+                   POBJECT_ATTRIBUTES object_attributes,
+                   PCLIENT_ID client_id);
+
+NTSTATUS
+nt_raw_MapViewOfSection(HANDLE section_handle,
+                        HANDLE process_handle,
+                        PVOID *base_address,
+                        ULONG_PTR  zero_bits,
+                        SIZE_T commit_size,
+                        PLARGE_INTEGER section_offset,
+                        PSIZE_T view_size,
+                        SECTION_INHERIT inherit_disposition,
+                        ULONG allocation_type,
+                        ULONG win32_protect);
+
+NTSTATUS
+nt_raw_QueryFullAttributesFile(POBJECT_ATTRIBUTES object_attributes,
+                               PFILE_NETWORK_OPEN_INFORMATION file_information);
+
+NTSTATUS
+nt_raw_CreateKey(PHANDLE key_handle,
+                 ACCESS_MASK desired_access,
+                 POBJECT_ATTRIBUTES object_attributes,
+                 ULONG title_index,
+                 PUNICODE_STRING class,
+                 ULONG create_options,
+                 PULONG disposition);
+
+NTSTATUS
+nt_raw_OpenThreadToken(HANDLE thread_handle,
+                       ACCESS_MASK desired_access,
+                       BOOLEAN open_as_self,
+                       PHANDLE token_handle);
+
+NTSTATUS
+nt_raw_OpenProcessToken(HANDLE process_handle,
+                        ACCESS_MASK desired_access,
+                        PHANDLE token_handle);
+
+#define HEAP_CLASS_PRIVATE 0x00001000
 
 #endif /* _NTDLL_H_ */

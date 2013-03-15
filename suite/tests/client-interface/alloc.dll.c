@@ -1,4 +1,5 @@
 /* **********************************************************
+ * Copyright (c) 2013 Google, Inc.  All rights reserved.
  * Copyright (c) 2007-2010 VMware, Inc.  All rights reserved.
  * **********************************************************/
 
@@ -31,10 +32,17 @@
  */
 
 #include "dr_api.h"
+#include "client_tools.h"
+#ifdef LINUX
+# include <sys/personality.h>
+#endif
 
 char *global;
 #define SIZE 10
 #define VAL 17
+
+/* i#262 add exec if READ_IMPLIES_EXEC is set in personality */
+static bool add_exec = false;
 
 static
 void write_array(char *array)
@@ -54,21 +62,57 @@ static
 void global_test(void)
 {
     char *array;
-    uint prot;
+    uint prot, expect;
     dr_fprintf(STDERR, "  testing global memory alloc...");
     array = dr_global_alloc(SIZE);
     write_array(array);
     dr_query_memory((const byte *)array, NULL, NULL, &prot);
-    if (prot != (DR_MEMPROT_READ|DR_MEMPROT_WRITE))
+    expect = DR_MEMPROT_READ|DR_MEMPROT_WRITE;
+    if (add_exec)
+        expect |= DR_MEMPROT_EXEC;
+    if (prot != expect)
         dr_fprintf(STDERR, "[error: prot %d doesn't match rw] ", prot);
     dr_global_free(array, SIZE);
+    dr_fprintf(STDERR, "success\n");
+}
+
+#ifdef X64
+# define PREFERRED_ADDR (char *)0x1000000000
+#else
+# define PREFERRED_ADDR (char *)0x2000000
+#endif
+static
+void raw_alloc_test(void)
+{
+    uint prot, expect;
+    char *array = PREFERRED_ADDR;
+    dr_mem_info_t info;
+    bool res;
+    dr_fprintf(STDERR, "  testing raw memory alloc...");
+    res = dr_raw_mem_alloc(PAGE_SIZE, DR_MEMPROT_READ | DR_MEMPROT_WRITE,
+                           array) != NULL;
+    if (!res) {
+        dr_fprintf(STDERR, "[error: fail to alloc at "PFX"]\n", array);
+        return;
+    }
+    write_array(array);
+    dr_query_memory((const byte *)array, NULL, NULL, &prot);
+    expect = DR_MEMPROT_READ|DR_MEMPROT_WRITE;
+    if (add_exec)
+        expect |= DR_MEMPROT_EXEC;
+    if (prot != expect)
+        dr_fprintf(STDERR, "[error: prot %d doesn't match rw]\n", prot);
+    dr_raw_mem_free(array, PAGE_SIZE);
+    dr_query_memory_ex((const byte *)array, &info);
+    if (info.prot != DR_MEMPROT_NONE)
+        dr_fprintf(STDERR, "[error: prot %d doesn't match none]\n", info.prot);
     dr_fprintf(STDERR, "success\n");
 }
 
 static
 void nonheap_test(void)
 {
-    uint prot;
+    uint prot, expect;
     char *array =
         dr_nonheap_alloc(SIZE, DR_MEMPROT_READ|DR_MEMPROT_WRITE|DR_MEMPROT_EXEC);
     dr_fprintf(STDERR, "  testing nonheap memory alloc...");
@@ -79,16 +123,30 @@ void nonheap_test(void)
     dr_memory_protect(array, SIZE, DR_MEMPROT_NONE);
     dr_query_memory((const byte *)array, NULL, NULL, &prot);
     if (prot != DR_MEMPROT_NONE)
-        dr_fprintf(STDERR, "[error: prot %d doesn't match r] ", prot);
+        dr_fprintf(STDERR, "[error: prot %d doesn't match none] ", prot);
     dr_memory_protect(array, SIZE, DR_MEMPROT_READ);
     dr_query_memory((const byte *)array, NULL, NULL, &prot);
-    if (prot != DR_MEMPROT_READ)
+    expect = DR_MEMPROT_READ;
+    if (add_exec)
+        expect |= DR_MEMPROT_EXEC;
+    if (prot != expect)
         dr_fprintf(STDERR, "[error: prot %d doesn't match r] ", prot);
     if (dr_safe_write(array, 1, (const void *) &prot, NULL))
         dr_fprintf(STDERR, "[error: should not be writable] ");
     dr_nonheap_free(array, SIZE);
     dr_fprintf(STDERR, "success\n");
 }
+
+#ifdef LINUX
+static void
+calloc_test(void)
+{
+    /* using the trigger from i#1115 */
+    char *array = (char *) calloc(100000, 16);
+    if (array[100000*16 - 1] != 0)
+        dr_fprintf(STDERR, "error: calloc not zeroing\n");
+}
+#endif
 
 static
 void local_test(void *drcontext)
@@ -120,6 +178,10 @@ void inline_alloc_test(void)
     local_test(dr_get_current_drcontext());
     global_test();
     nonheap_test();
+    raw_alloc_test();
+#ifdef LINUX
+    calloc_test();
+#endif
 }
 
 #define MINSERT instrlist_meta_preinsert
@@ -141,6 +203,44 @@ dr_emit_flags_t bb_event(void* drcontext, void *tag, instrlist_t* bb, bool for_t
         inserted = true;
     }
 
+    /* Match nop,nop,nop,ret in client's +w code */
+    if (instr_get_opcode(instrlist_first(bb)) == OP_nop) {
+        instr_t *nxt = instr_get_next(instrlist_first(bb));
+        if (nxt != NULL && instr_get_opcode(nxt) == OP_nop) {
+            nxt = instr_get_next(nxt);
+            if (nxt != NULL && instr_get_opcode(nxt) == OP_nop) {
+                nxt = instr_get_next(nxt);
+                if (nxt != NULL && instr_get_opcode(nxt) == OP_ret) {
+                    uint prot;
+                    dr_mem_info_t info;
+                    app_pc pc = dr_fragment_app_pc(tag);
+#ifdef WINDOWS
+                    MEMORY_BASIC_INFORMATION mbi;
+#endif
+                    dr_fprintf(STDERR, "  testing query pretend-write....");
+
+                    if (!dr_query_memory(pc, NULL, NULL, &prot))
+                        dr_fprintf(STDERR, "error: unable to query code prot\n");
+                    if (!TESTALL(DR_MEMPROT_WRITE | DR_MEMPROT_PRETEND_WRITE, prot))
+                        dr_fprintf(STDERR, "error: not pretend-writable\n");
+
+                    if (!dr_query_memory_ex(pc, &info))
+                        dr_fprintf(STDERR, "error: unable to query code prot\n");
+                    if (!TESTALL(DR_MEMPROT_WRITE | DR_MEMPROT_PRETEND_WRITE, info.prot))
+                        dr_fprintf(STDERR, "error: not pretend-writable\n");
+
+#ifdef WINDOWS
+                    if (dr_virtual_query(pc, &mbi, sizeof(mbi)) != sizeof(mbi))
+                        dr_fprintf(STDERR, "error: unable to query code prot\n");
+                    if (mbi.Protect != PAGE_EXECUTE_READWRITE)
+                        dr_fprintf(STDERR, "error: not pretend-writable\n");
+#endif
+                    dr_fprintf(STDERR, "success\n");
+                }
+            }
+        }
+    }
+
     /* store, since we're not deterministic */
     return DR_EMIT_STORE_TRANSLATIONS;
 }
@@ -149,6 +249,18 @@ DR_EXPORT
 void dr_init(client_id_t id)
 {
     dr_fprintf(STDERR, "thank you for testing the client interface\n");
+
+#ifdef LINUX
+    /* i#262: check if READ_IMPLIES_EXEC in personality. If true,
+     * we expect the readable memory also has exec right.
+     */
+    int res = personality(0xffffffff);
+    if (res == -1)
+        fprintf(stderr, "Error: fail to get personality\n");
+    else if (TEST(READ_IMPLIES_EXEC, res))
+        add_exec = true;
+#endif
+
     global_test();
     nonheap_test();
 

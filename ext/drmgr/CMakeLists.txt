@@ -37,7 +37,7 @@ cmake_minimum_required(VERSION 2.6)
 # the client and by multiple other libraries, some of which may
 # be shared: the whole point is to have one master drmgr.
 option(DR_EXT_DRMGR_STATIC "create drmgr as a static, not shared, library (N.B.: ensure no separately-linked components of your tool also use drmgr before enabling as a static library)")
-if (DR_EXT_DRMGR_STATIC)
+if (DR_EXT_DRMGR_STATIC OR STATIC_LIBRARY)
   set(libtype STATIC)
 else()
   set(libtype SHARED)
@@ -55,25 +55,20 @@ add_dependencies(drmgr api_headers)
 if (UNIX)
   # static libs must be PIC to be linked into clients: else requires
   # relocations that run afoul of security policies, etc.
-  get_target_property(cur_flags drmgr COMPILE_FLAGS)
-  set_target_properties(drmgr PROPERTIES COMPILE_FLAGS "${cur_flags} -fPIC")
+  append_property_string(TARGET drmgr COMPILE_FLAGS "-fPIC")
 endif (UNIX)
 
 if (WIN32 AND GENERATE_PDBS)
   # I believe it's the lack of CMAKE_BUILD_TYPE that's eliminating this?
   # In any case we make sure to add it (for release and debug, to get pdb):
-  get_target_property(cur_flags drmgr LINK_FLAGS)
-  set_target_properties(drmgr PROPERTIES LINK_FLAGS "${cur_flags} /debug")
+  append_property_string(TARGET drmgr LINK_FLAGS "/debug")
 endif (WIN32 AND GENERATE_PDBS)
 
 # documentation is put into main DR docs/ dir
 
-export(TARGETS drmgr
-  FILE ${PROJECT_BINARY_DIR}/cmake/${exported_targets_name}.cmake
-  APPEND)
-install(TARGETS drmgr EXPORT ${exported_targets_name}
-  DESTINATION ${INSTALL_EXT_LIB})
-install(FILES
+DR_export_target(drmgr)
+install_exported_target(drmgr ${INSTALL_EXT_LIB})
+DR_install(FILES
   drmgr.h
   # add more here
   DESTINATION ${INSTALL_EXT_INCLUDE})

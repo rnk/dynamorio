@@ -1,5 +1,5 @@
 /* **********************************************************
- * Copyright (c) 2011-2012 Google, Inc.  All rights reserved.
+ * Copyright (c) 2011-2013 Google, Inc.  All rights reserved.
  * Copyright (c) 2001-2010 VMware, Inc.  All rights reserved.
  * ********************************************************** */
 
@@ -84,8 +84,8 @@ START_FILE
 
 /* Count the slots for client clean call inlining. */
 #ifdef CLIENT_INTERFACE
-/* Add CLEANCALL_NUM_INLINE_SLOTS(4) * ARG_SZ for these slots.  No padding. */
-# define UPCXT_EXTRA (UPCXT_BEFORE_INLINE_SLOTS + 4 * ARG_SZ)
+/* Add CLEANCALL_NUM_INLINE_SLOTS(5) * ARG_SZ for these slots.  No padding. */
+# define UPCXT_EXTRA (UPCXT_BEFORE_INLINE_SLOTS + 5 * ARG_SZ)
 #else
 # define UPCXT_EXTRA UPCXT_BEFORE_INLINE_SLOTS
 #endif
@@ -168,7 +168,8 @@ START_FILE
 # define dstack_OFFSET     (PRIV_MCXT_SIZE+UPCXT_EXTRA+3*ARG_SZ)
 # define MCONTEXT_PC_OFFS  (9*ARG_SZ)
 #endif
-#define is_exiting_OFFSET (dstack_OFFSET+3*ARG_SZ)
+/* offsetof(dcontext_t, is_exiting) */
+#define is_exiting_OFFSET (dstack_OFFSET+1*ARG_SZ)
 #define PUSHGPR_XSP_OFFS  (3*ARG_SZ)
 #define MCONTEXT_XSP_OFFS (PUSHGPR_XSP_OFFS)
 #define PUSH_PRIV_MCXT_PRE_PC_SHIFT (- XMM_SAVED_SIZE - PRE_XMM_PADDING)
@@ -189,6 +190,20 @@ START_FILE
         lea      REG_XAX, [PRIV_MCXT_SIZE + REG_XSP] @N@\
         mov      [PUSHGPR_XSP_OFFS + REG_XSP], REG_XAX
 
+/* Pops the GPRs and flags from a priv_mcontext off the stack.  Does not
+ * restore xmm/ymm regs.
+ */
+#define POP_PRIV_MCXT_GPRS() \
+        POPGPR                                          @N@\
+        POPF                                            @N@\
+        lea      REG_XSP, [REG_XSP - PUSH_PRIV_MCXT_PRE_PC_SHIFT + ARG_SZ/*pc*/]
+
+/* This is really the alignment needed by x64 code.  For now, when we bother to
+ * align the stack pointer, we just go for 16 byte alignment.  We do *not*
+ * assume 16-byte alignment across the code base.
+ * i#847: Investigate using aligned SSE ops (see get_xmm_caller_saved).
+ */
+#define FRAME_ALIGNMENT 16
 
 /****************************************************************************/
 /****************************************************************************/
@@ -197,7 +212,8 @@ START_FILE
 DECL_EXTERN(get_own_context_integer_control)
 DECL_EXTERN(get_xmm_vals)
 DECL_EXTERN(auto_setup)
-DECL_EXTERN(back_from_native_C)
+DECL_EXTERN(return_from_native)
+DECL_EXTERN(native_module_callout)
 DECL_EXTERN(dispatch)
 #ifdef DR_APP_EXPORTS
 DECL_EXTERN(dr_app_start_helper)
@@ -214,7 +230,7 @@ DECL_EXTERN(internal_error)
 DECL_EXTERN(internal_exception_info)
 DECL_EXTERN(is_currently_on_dstack)
 DECL_EXTERN(nt_continue_setup)
-#if defined(LINUX) && defined(X64)
+#if defined(LINUX)
 DECL_EXTERN(master_signal_handler_C)
 #endif
 DECL_EXTERN(hashlookup_null_target)
@@ -225,9 +241,12 @@ DECL_EXTERN(fixup_rtframe_pointers)
 #endif
 #ifdef LINUX
 DECL_EXTERN(dr_setjmp_sigmask)
+DECL_EXTERN(privload_early_inject)
+DECL_EXTERN(dynamorio_dl_fixup)
 #endif
 #ifdef WINDOWS
 DECL_EXTERN(dynamorio_earliest_init_takeover_C)
+DECL_EXTERN(os_terminate_wow64_stack)
 #endif
 
 /* non-functions: these make us non-PIC! (PR 212290) */
@@ -240,7 +259,6 @@ DECL_EXTERN(sysenter_ret_address)
 DECL_EXTERN(sysenter_tls_offset)
 #ifdef WINDOWS
 DECL_EXTERN(wow64_index)
-DECL_EXTERN(wow64_syscall_stack)
 # ifdef X64
 DECL_EXTERN(syscall_argsz)
 # endif
@@ -418,17 +436,19 @@ GLOBAL_LABEL(clone_and_swap_stack:)
 #ifdef DR_APP_EXPORTS
         DECLARE_EXPORTED_FUNC(dr_app_start)
 GLOBAL_LABEL(dr_app_start:)
+        sub     REG_XSP, FRAME_ALIGNMENT - ARG_SZ  /* Maintain alignment. */
 
         /* grab exec state and pass as param in a priv_mcontext_t struct */
-        PUSH_PRIV_MCXT([REG_XSP - PUSH_PRIV_MCXT_PRE_PC_SHIFT]) /* return address as pc */
+        PUSH_PRIV_MCXT([FRAME_ALIGNMENT - ARG_SZ + REG_XSP -
+                        PUSH_PRIV_MCXT_PRE_PC_SHIFT]) /* return address as pc */
 
         /* do the rest in C */
-        lea      REG_XAX, [REG_XSP] /* stack grew down, so priv_mcontext_t at tos */
+        lea     REG_XAX, [REG_XSP] /* stack grew down, so priv_mcontext_t at tos */
         CALLC1(dr_app_start_helper, REG_XAX)
 
         /* if we come back, then DR is not taking control so 
          * clean up stack and return */
-        add      REG_XSP, PRIV_MCXT_SIZE
+        add      REG_XSP, PRIV_MCXT_SIZE + FRAME_ALIGNMENT - ARG_SZ
         ret
         END_FUNC(dr_app_start)
 
@@ -449,9 +469,11 @@ GLOBAL_LABEL(dr_app_take_over:  )
  */
         DECLARE_EXPORTED_FUNC(dynamorio_app_take_over)
 GLOBAL_LABEL(dynamorio_app_take_over:)
+        sub     REG_XSP, FRAME_ALIGNMENT - ARG_SZ  /* Maintain alignment. */
 
         /* grab exec state and pass as param in a priv_mcontext_t struct */
-        PUSH_PRIV_MCXT([REG_XSP - PUSH_PRIV_MCXT_PRE_PC_SHIFT]) /* return address as pc */
+        PUSH_PRIV_MCXT([FRAME_ALIGNMENT - ARG_SZ + REG_XSP -
+                        PUSH_PRIV_MCXT_PRE_PC_SHIFT]) /* return address as pc */
 
         /* do the rest in C */
         lea      REG_XAX, [REG_XSP] /* stack grew down, so priv_mcontext_t at tos */
@@ -459,7 +481,7 @@ GLOBAL_LABEL(dynamorio_app_take_over:)
 
         /* if we come back, then DR is not taking control so 
          * clean up stack and return */
-        add      REG_XSP, PRIV_MCXT_SIZE
+        add      REG_XSP, PRIV_MCXT_SIZE + FRAME_ALIGNMENT - ARG_SZ
         ret
         END_FUNC(dynamorio_app_take_over)
         
@@ -569,6 +591,16 @@ cat_spin:
         jmp      cat_spin
 cat_have_lock:
         /* need to grab everything off dstack first */
+#ifdef WINDOWS
+        /* PR 601533: the wow64 syscall writes to the stack b/c it
+         * makes a call, so we have a race that can lead to a hang or
+         * worse.  we do not expect the syscall to return, so we can
+         * use a global single-entry stack (the wow64 layer swaps to a
+         * different stack: presumably for alignment and other reasons).
+         */
+        CALLC1(os_terminate_wow64_stack, -1/*INVALID_HANDLE_VALUE*/)
+        mov      REG_XDI, REG_XAX    /* esp to use */
+#endif
         mov      REG_XSI, [2*ARG_SZ + REG_XBP]  /* sysnum */
         pop      REG_XAX             /* syscall */
         pop      REG_XCX             /* dstack */
@@ -583,6 +615,9 @@ cat_have_lock:
         mov      REG_XSP, PTRSZ SYMREF(initstack) /* rip-relative on x64 */
 #endif
         /* now save registers */
+#ifdef WINDOWS
+        push     REG_XDI   /* esp to use */
+#endif
         push     REG_XDX   /* sys_arg2 */
         push     REG_XBX   /* sys_arg1 */
         push     REG_XAX   /* syscall */
@@ -608,21 +643,15 @@ cat_have_lock:
         pop      REG_XCX   /* sys_arg2 */
 # else
         pop      REG_XDX   /* sys_arg1 == param_base */
-        /* sys_arg2 unused */
+        pop      REG_XCX   /* sys_arg2 (unused) */
 # endif
+#endif
+#ifdef WINDOWS
+        pop      REG_XSP    /* get the stack pointer we pushed earlier */
 #endif
         /* give up initstack mutex -- potential problem here with a thread getting 
          *   an asynch event that then uses initstack, but syscall should only care 
          *   about ebx and edx */
-#ifdef WINDOWS
-        /* PR 601533: the wow64 syscall writes to the stack b/c it
-         * makes a call, so we have a race that can lead to a hang or
-         * worse.  we do not expect the syscall to return, so we can
-         * use a global single-entry stack (the wow64 layer swaps to a
-         * different stack: presumably for alignment and other reasons).
-         */
-        mov      REG_XSP, PTRSZ SYMREF(wow64_syscall_stack)
-#endif
 #if !defined(X64) && defined(LINUX)
         /* PIC base is still in xdi */
 	lea      REG_XBP, VAR_VIA_GOT(REG_XDI, initstack_mutex)
@@ -999,6 +1028,27 @@ GLOBAL_LABEL(dynamorio_syscall_wow64:)
         call     PTRSZ SEGMEM(fs,HEX(0c0))
         ret
         END_FUNC(dynamorio_syscall_wow64)
+
+/* Win8 has no index and furthermore requires the stack to be set
+ * up (i.e., we can't just point edx where we want it).
+ * Thus, we must shift the retaddr one slot down on top of sys_enum.
+ * => signature: dynamorio_syscall_wow64_noedx(sys_enum, arg1, arg2, ...)
+ */
+        DECLARE_FUNC(dynamorio_syscall_wow64_noedx)
+GLOBAL_LABEL(dynamorio_syscall_wow64_noedx:)
+        mov      eax, [4 + esp]
+        mov      ecx, DWORD SYMREF(syscalls)
+        mov      eax, [ecx + eax*4]
+        mov      ecx, [esp]
+        mov      [esp + 4], ecx
+        lea      esp, [esp + 4]
+        call     PTRSZ SEGMEM(fs,HEX(0c0))
+        /* we have to restore the stack shift of course (i#1036) */
+        mov      ecx, [esp]
+        mov      [esp - 4], ecx
+        lea      esp, [esp - 4]
+        ret
+        END_FUNC(dynamorio_syscall_wow64_noedx)
       
 #endif /* WINDOWS */
 
@@ -1099,6 +1149,24 @@ GLOBAL_LABEL(client_int_syscall:)
 #endif /* LINUX */
 #ifndef NOT_DYNAMORIO_CORE_PROPER
 #ifdef LINUX
+
+#if !defined(STANDALONE_UNIT_TEST) && !defined(STATIC_LIBRARY)
+/* i#47: Early injection _start routine.  The kernel sets all registers to zero
+ * except the SP and PC.  The stack has argc, argv[], envp[], and the auxiliary
+ * vector laid out on it.
+ */
+        DECLARE_FUNC(_start)
+GLOBAL_LABEL(_start:)
+        xor     REG_XBP, REG_XBP  /* Terminate stack traces at NULL. */
+#ifdef X64
+        mov     ARG1, REG_XSP
+#else
+        push    REG_XSP
+#endif
+        call    privload_early_inject
+        jmp     unexpected_return
+        END_FUNC(_start)
+#endif /* !STANDALONE_UNIT_TEST && !STATIC_LIBRARY */
 
 /* while with pre-2.6.9 kernels we were able to rely on the kernel's
  * default sigreturn code sequence and be more platform independent,
@@ -1208,21 +1276,34 @@ GLOBAL_LABEL(dynamorio_nonrt_sigreturn:)
         jmp      unexpected_return
         END_FUNC(dynamorio_sigreturn)
 #endif
-        
-#if defined(X64) && defined(HAVE_SIGALTSTACK)
-/* PR 305020: for x64 we can't use args to get the original stack pointer,
- * so we use a stub routine here that adds a 4th arg to our C routine:
- *   master_signal_handler(int sig, siginfo_t *siginfo, kernel_ucontext_t *ucxt)
+
+#ifdef HAVE_SIGALTSTACK
+/* We used to get the SP by taking the address of our args, but that doesn't
+ * work on x64 nor with other compilers.  Today we use asm to pass in the
+ * initial SP.  For x64, we add a 4th register param and tail call to
+ * master_signal_handler_C.  Adding a param and doing a tail call on ia32 is
+ * hard, so we make a real call and pass only xsp.  The C routine uses it to
+ * read the original params.
+ * See also PR 305020.
  */
         DECLARE_FUNC(master_signal_handler)
 GLOBAL_LABEL(master_signal_handler:)
-        mov      rcx, rsp /* pass as 4th arg */
+#ifdef X64
+        mov      ARG4, REG_XSP /* pass as 4th arg */
         jmp      master_signal_handler_C
         /* master_signal_handler_C will do the ret */
-        END_FUNC(master_signal_handler)
+#else
+        /* We need to pass in xsp.  The easiest way is to create an
+         * intermediate frame.
+         */
+        mov      REG_XAX, REG_XSP
+        CALLC1(master_signal_handler_C, REG_XAX)
+        ret
 #endif
+        END_FUNC(master_signal_handler)
 
-#ifndef HAVE_SIGALTSTACK
+#else /* !HAVE_SIGALTSTACK */
+
 /* PR 283149: if we're on the app stack now and we need to deliver
  * immediately, we can't copy over our own sig frame w/ the app's, and we
  * can't push the app's below ours and have continuation work.  One choice
@@ -1295,13 +1376,17 @@ no_swap:
         pop      ARG2
         pop      ARG1
         mov      rcx, rsp /* pass as 4th arg */
+        jmp      master_signal_handler_C
+        /* can't return, no retaddr */
 # else
         add      REG_XSP, 3*ARG_SZ
-# endif
-        jmp      master_signal_handler_C
-        /* shouldn't return */
-        jmp      unexpected_return
+        /* We need to pass in xsp.  The easiest way is to create an
+         * intermediate frame.
+         */
+        mov      REG_XAX, REG_XSP
+        CALLC1(master_signal_handler_C, REG_XAX)
         ret
+# endif
         END_FUNC(master_signal_handler)
 #endif /* !HAVE_SIGALTSTACK */
 
@@ -1388,6 +1473,46 @@ GLOBAL_LABEL(nt_continue_dynamo_start:)
         END_FUNC(nt_continue_dynamo_start)
 #endif /* WINDOWS */
 
+/* back_from_native_retstubs -- We use a different version of back_from_native for
+ * each nested module transition.  This has to have MAX_NATIVE_RETSTACK
+ * elements, which we check in native_exec_init().  The size of each entry has
+ * to match BACK_FROM_NATIVE_RETSTUB_SIZE in arch_exports.h.  Currently we
+ * assume that the assembler uses push imm8 and jmp rel8.  As in
+ * back_from_native, this code is executed natively by the app, so we assume the
+ * app stack is valid and can be clobbered.
+ */
+        DECLARE_FUNC(back_from_native_retstubs)
+GLOBAL_LABEL(back_from_native_retstubs:)
+#ifndef ASSEMBLE_WITH_GAS
+/* MASM does short jumps for public symbols. */
+# define Lback_from_native back_from_native
+#endif
+        push     0
+        jmp      Lback_from_native
+        push     1
+        jmp      Lback_from_native
+        push     2
+        jmp      Lback_from_native
+        push     3
+        jmp      Lback_from_native
+        push     4
+        jmp      Lback_from_native
+        push     5
+        jmp      Lback_from_native
+        push     6
+        jmp      Lback_from_native
+        push     7
+        jmp      Lback_from_native
+        push     8
+        jmp      Lback_from_native
+        push     9
+        jmp      Lback_from_native
+DECLARE_GLOBAL(back_from_native_retstubs_end)
+#ifndef ASSEMBLE_WITH_GAS
+# undef Lback_from_native
+#endif
+ADDRTAKEN_LABEL(back_from_native_retstubs_end:)
+        END_FUNC(back_from_native_retstubs)
 
 /*
  * back_from_native -- for taking control back after letting a module
@@ -1396,6 +1521,10 @@ GLOBAL_LABEL(nt_continue_dynamo_start:)
  */
         DECLARE_FUNC(back_from_native)
 GLOBAL_LABEL(back_from_native:)
+#ifdef ASSEMBLE_WITH_GAS
+        /* We use Lback_from_native to force short jumps with gas.  */
+Lback_from_native:
+#endif
         /* assume valid esp  
          * FIXME: more robust if don't use app's esp -- should use initstack
          */
@@ -1403,16 +1532,49 @@ GLOBAL_LABEL(back_from_native:)
         PUSH_PRIV_MCXT(0 /* for priv_mcontext_t.pc */)
         lea      REG_XAX, [REG_XSP] /* stack grew down, so priv_mcontext_t at tos */
 
-        /* Call back_from_native_C passing the priv_mcontext_t.  It will 
-         * obtain this thread's dcontext pointer and
-         * begin execution with the passed-in state.
+        /* Call return_from_native passing the priv_mcontext_t.  It will obtain
+         * this thread's dcontext pointer and begin execution with the passed-in
+         * state.
          */
-        CALLC1(back_from_native_C, REG_XAX)
+#ifdef X64
+        and      REG_XSP, -FRAME_ALIGNMENT  /* x64 alignment */
+#endif
+        CALLC1(return_from_native, REG_XAX)
         /* should not return */
         jmp      unexpected_return
         END_FUNC(back_from_native)
 
-        
+#ifdef LINUX
+/* Like back_from_native, except we're calling from a native module into a
+ * module that should execute from the code cache.  We transfer here from PLT
+ * stubs generated by create_plt_stub() in core/linux/native_elf.c.  See also
+ * initialize_plt_stub_template().  On entry, next_pc is on the stack for ia32
+ * and in %r11 for x64.  We use %r11 because it is scratch in the sysv amd64
+ * calling convention.
+ */
+        DECLARE_FUNC(native_plt_call)
+GLOBAL_LABEL(native_plt_call:)
+        PUSH_PRIV_MCXT(0 /* pc */)
+        lea      REG_XAX, [REG_XSP]  /* lea priv_mcontext_t */
+# ifdef X64
+        mov      REG_XCX, r11  /* next_pc in r11 */
+# else
+        mov      REG_XCX, [REG_XSP + PRIV_MCXT_SIZE]     /* next_pc on stack */
+        add      DWORD [REG_XAX + MCONTEXT_XSP_OFFS], ARG_SZ   /* adjust app xsp for arg */
+# endif
+        CALLC2(native_module_callout, REG_XAX, REG_XCX)
+
+        /* If we returned, continue to execute natively on the app stack. */
+        POP_PRIV_MCXT_GPRS()
+# ifdef X64
+        jmp      r11    /* next_pc still in r11 */
+# else
+        ret             /* next_pc was on stack */
+# endif
+        END_FUNC(native_plt_call)
+#endif /* LINUX */
+
+
 #ifdef RETURN_STACK
 /*#############################################################################
  *#############################################################################
@@ -1705,9 +1867,6 @@ GLOBAL_LABEL(call_intr_excpt_alt_stack:)
 #undef stack
 #endif
 
-
-/* void get_segments_defg(cxt_seg_t *ds, cxt_seg_t *es, cxt_seg_t *fs, cxt_seg_t *gs) */
-        DECLARE_FUNC(get_segments_defg)
 /* CONTEXT.Seg* is WORD for x64 but DWORD for x86 */
 #ifdef X64
 # define REG_XAX_SEGWIDTH ax
@@ -1724,6 +1883,8 @@ GLOBAL_LABEL(call_intr_excpt_alt_stack:)
 #else
 # define FREE_REG REG_XCX
 #endif
+/* void get_segments_defg(cxt_seg_t *ds, cxt_seg_t *es, cxt_seg_t *fs, cxt_seg_t *gs) */
+        DECLARE_FUNC(get_segments_defg)
 GLOBAL_LABEL(get_segments_defg:)
         xor      eax, eax           /* Zero XAX, use it for reading segments. */
         mov      FREE_REG, ARG1
@@ -1740,6 +1901,19 @@ GLOBAL_LABEL(get_segments_defg:)
         mov      [FREE_REG], REG_XAX_SEGWIDTH
         ret
         END_FUNC(get_segments_defg)
+
+/* void get_segments_cs_ss(cxt_seg_t *cs, cxt_seg_t *ss) */
+        DECLARE_FUNC(get_segments_cs_ss)
+GLOBAL_LABEL(get_segments_cs_ss:)
+        xor      eax, eax           /* Zero XAX, use it for reading segments. */
+        mov      FREE_REG, ARG1
+        mov      ax, cs
+        mov      [FREE_REG], REG_XAX_SEGWIDTH
+        mov      FREE_REG, ARG2
+        mov      ax, ss
+        mov      [FREE_REG], REG_XAX_SEGWIDTH
+        ret
+        END_FUNC(get_segments_cs_ss)
 #undef FREE_REG
 #undef REG_XAX_SEGWIDTH
 
@@ -1896,6 +2070,225 @@ GLOBAL_LABEL(hashlookup_null_handler:)
 #endif
         END_FUNC(hashlookup_null_handler)
 
+#ifdef X64
+# define PTRSZ_SHIFT_BITS 3
+# define PTRSZ_SUFFIXED(string_op) string_op##q
+# ifdef LINUX
+#  define ARGS_TO_XDI_XSI_XDX()         /* ABI handles this. */
+#  define RESTORE_XDI_XSI()             /* Not needed. */
+# else /* WINDOWS */
+/* Get args 1, 2, 3 into rdi, rsi, and rdx. */
+#  define ARGS_TO_XDI_XSI_XDX() \
+        push     rdi                            @N@\
+        push     rsi                            @N@\
+        mov      rdi, ARG1                      @N@\
+        mov      rsi, ARG2                      @N@\
+        mov      rdx, ARG3
+#  define RESTORE_XDI_XSI() \
+        pop      rsi                            @N@\
+        pop      rdi
+# endif /* WINDOWS */
+#else
+# define PTRSZ_SHIFT_BITS 2
+# define PTRSZ_SUFFIXED(string_op) string_op##d
+
+/* Get args 1, 2, 3 into edi, esi, and edx to match Linux x64 ABI.  Need to save
+ * edi and esi since they are callee-saved.  The ARGN macros can't handle
+ * stack adjustments, so use the scratch regs eax and ecx to hold the args
+ * before the pushes.
+ */
+# define ARGS_TO_XDI_XSI_XDX() \
+        mov     eax, ARG1                       @N@\
+        mov     ecx, ARG2                       @N@\
+        mov     edx, ARG3                       @N@\
+        push    edi                             @N@\
+        push    esi                             @N@\
+        mov     edi, eax                        @N@\
+        mov     esi, ecx
+# define RESTORE_XDI_XSI() \
+        pop esi                                 @N@\
+        pop edi
+#endif
+
+/* Repeats string_op for XDX bytes using aligned pointer-sized operations when
+ * possible.  Assumes that string_op works by counting down until XCX reaches
+ * zero.  The pointer-sized string ops are aligned based on ptr_to_align.
+ * For string ops that have both a src and dst, aligning based on src is
+ * preferred, subject to micro-architectural differences.
+ *
+ * XXX: glibc memcpy uses SSE instructions to copy, which is 10% faster on x64
+ * and ~2x faster for 20kb copies on plain x86.  Using SSE is quite complicated,
+ * because it means doing cpuid checks and loop unrolling.  Many of our string
+ * operations are short anyway.  For safe_read, it also increases the number of
+ * potentially faulting PCs.
+ */
+#define REP_STRING_OP(funcname, ptr_to_align, string_op) \
+        mov     REG_XCX, ptr_to_align                           @N@\
+        and     REG_XCX, (ARG_SZ - 1)                           @N@\
+        jz      funcname##_aligned                              @N@\
+        neg     REG_XCX                                         @N@\
+        add     REG_XCX, ARG_SZ                                 @N@\
+        cmp     REG_XDX, REG_XCX  /* if (n < xcx) */            @N@\
+        cmovb   REG_XCX, REG_XDX  /*     xcx = n; */            @N@\
+        sub     REG_XDX, REG_XCX                                @N@\
+ADDRTAKEN_LABEL(funcname##_pre:)                                @N@\
+        rep string_op##b                                        @N@\
+funcname##_aligned:                                             @N@\
+        /* Aligned word-size ops. */                            @N@\
+        mov     REG_XCX, REG_XDX                                @N@\
+        shr     REG_XCX, PTRSZ_SHIFT_BITS                       @N@\
+ADDRTAKEN_LABEL(funcname##_mid:)                                @N@\
+        rep PTRSZ_SUFFIXED(string_op)                           @N@\
+        /* Handle trailing bytes. */                            @N@\
+        mov     REG_XCX, REG_XDX                                @N@\
+        and     REG_XCX, (ARG_SZ - 1)                           @N@\
+ADDRTAKEN_LABEL(funcname##_post:)                               @N@\
+        rep string_op##b
+
+/* Declare these labels global so we can take their addresses in C.  pre, mid,
+ * and post are defined by REP_STRING_OP().
+ */
+DECLARE_GLOBAL(safe_read_asm_pre)
+DECLARE_GLOBAL(safe_read_asm_mid)
+DECLARE_GLOBAL(safe_read_asm_post)
+DECLARE_GLOBAL(safe_read_asm_recover)
+
+/* i#350: We implement safe_read in assembly and save the PCs that can fault.
+ * If these PCs fault, we return from the signal handler to the epilog, which
+ * can recover.  We return the source pointer from XSI, and the caller uses this
+ * to determine how many bytes were copied and whether it matches size.
+ *
+ * XXX: Do we care about differentiating whether the read or write faulted?
+ * Currently this is just "safe_memcpy", and we recover regardless of whether
+ * the read or write faulted.
+ *
+ * void *
+ * safe_read_asm(void *dst, const void *src, size_t n);
+ */
+        DECLARE_FUNC(safe_read_asm)
+GLOBAL_LABEL(safe_read_asm:)
+        ARGS_TO_XDI_XSI_XDX()           /* dst=xdi, src=xsi, n=xdx */
+        /* Copy xdx bytes, align on src. */
+        REP_STRING_OP(safe_read_asm, REG_XSI, movs)
+ADDRTAKEN_LABEL(safe_read_asm_recover:)
+        mov     REG_XAX, REG_XSI        /* Return cur_src */
+        RESTORE_XDI_XSI()
+        ret
+        END_FUNC(safe_read_asm)
+
+#ifdef LINUX
+/* i#46: Implement private memcpy and memset for libc isolation.  If we import
+ * memcpy and memset from libc in the normal way, the application can override
+ * those definitions and intercept them.  In particular, this occurs when
+ * running an app that links in the Address Sanitizer runtime.  Since we already
+ * need a reasonably efficient assembly memcpy implementation for safe_read, we
+ * go ahead and reuse the code for private memcpy and memset.
+ *
+ * XXX: See comment on REP_STRING_OP about maybe using SSE instrs.  It's more
+ * viable for memcpy and memset than for safe_read_asm.
+ */
+
+/* Private memcpy.
+ */
+        DECLARE_FUNC(memcpy)
+GLOBAL_LABEL(memcpy:)
+        ARGS_TO_XDI_XSI_XDX()           /* dst=xdi, src=xsi, n=xdx */
+        mov    REG_XAX, REG_XDI         /* Save dst for return. */
+        /* Copy xdx bytes, align on src. */
+        REP_STRING_OP(memcpy, REG_XSI, movs)
+        RESTORE_XDI_XSI()
+        ret                             /* Return original dst. */
+        END_FUNC(memcpy)
+
+/* Private memset.
+ */
+        DECLARE_FUNC(memset)
+GLOBAL_LABEL(memset:)
+        ARGS_TO_XDI_XSI_XDX()           /* dst=xdi, val=xsi, n=xdx */
+        push    REG_XDI                 /* Save dst for return. */
+        test    esi, esi                /* Usually val is zero. */
+        jnz     make_val_word_size
+        xor     eax, eax
+do_memset:
+        /* Set xdx bytes, align on dst. */
+        REP_STRING_OP(memset, REG_XDI, stos)
+        pop     REG_XAX                 /* Return original dst. */
+        RESTORE_XDI_XSI()
+        ret
+
+        /* Create pointer-sized value in XAX using multiply. */
+make_val_word_size:
+        and     esi, HEX(ff)
+# ifdef X64
+        mov     rax, HEX(0101010101010101)
+# else
+        mov     eax, HEX(01010101)
+# endif
+        /* Use two-operand imul to avoid clobbering XDX. */
+        imul    REG_XAX, REG_XSI
+        jmp     do_memset
+        END_FUNC(memset)
+
+/* gcc emits calls to these *_chk variants in release builds when the size of
+ * dst is known at compile time.  In C, the caller is responsible for cleaning
+ * up arguments on the stack, so we alias these *_chk routines to the non-chk
+ * routines and rely on the caller to clean up the extra dst_len arg.
+ */
+.global __memcpy_chk
+.hidden __memcpy_chk
+.set __memcpy_chk,memcpy
+
+.global __memset_chk
+.hidden __memset_chk
+.set __memset_chk,memset
+
+
+/* Replacement for _dl_runtime_resolve() used for catching module transitions
+ * out of native modules.
+ */
+        DECLARE_FUNC(_dynamorio_runtime_resolve)
+GLOBAL_LABEL(_dynamorio_runtime_resolve:)
+# ifdef X64
+        /* Preserve all 6 argument registers and rax (num fp reg args). */
+        push     rax
+        push     rdi
+        push     rsi
+        push     rdx
+        push     rcx
+        push     r8
+        push     r9
+
+        /* Should be 16-byte aligned now: retaddr, 2 args, 7 regs. */
+        mov      rdi, [rsp + 7 * ARG_SZ]        /* link map */
+        mov      rsi, [rsp + 8 * ARG_SZ]        /* .dynamic index */
+        call     dynamorio_dl_fixup
+        mov      r11, rax                       /* preserve */
+
+        pop      r9
+        pop      r8
+        pop      rcx
+        pop      rdx
+        pop      rsi
+        pop      rdi
+        pop      rax
+
+        add      rsp, 16        /* clear args */
+        jmp      r11            /* Jump to resolved PC, or into DR. */
+# else /* !X64 */
+        push 	 REG_XAX
+        push 	 REG_XCX
+        mov      REG_XAX, [REG_XSP + 2 * ARG_SZ]  /* link map */
+        mov      REG_XCX, [REG_XSP + 3 * ARG_SZ]  /* .dynamic index */
+        CALLC2(dynamorio_dl_fixup, REG_XAX, REG_XCX)
+        mov      [REG_XSP + 2 * ARG_SZ], REG_XAX /* overwrite arg1 */
+        pop 	 REG_XCX
+        pop 	 REG_XAX
+        ret	 4 /* ret to target, pop arg2 */
+# endif /* !X64 */
+        END_FUNC(_dynamorio_runtime_resolve)
+
+#endif /* LINUX */
+
 /*#############################################################################
  *#############################################################################
  */
@@ -2045,6 +2438,231 @@ GLOBAL_LABEL(load_dynamo_failure:)
         ret
         END_FUNC(load_dynamo_failure)
         
+
+/***************************************************************************/
+#ifndef X64
+
+/* Routines to switch to 64-bit mode from 32-bit WOW64, make a 64-bit
+ * call, and then return to 32-bit mode.
+ */
+
+/* FIXME: check these selector values on all platforms: these are for XPSP2.
+ * Keep in synch w/ defines in arch.h.
+ */
+# define CS32_SELECTOR HEX(23)
+# define CS64_SELECTOR HEX(33)
+
+/*
+ * int switch_modes_and_load(void *ntdll64_LdrLoadDll,
+ *                           UNICODE_STRING_64 *lib,
+ *                           HANDLE *result)
+ */
+# define FUNCNAME switch_modes_and_load
+        DECLARE_FUNC(FUNCNAME)
+GLOBAL_LABEL(FUNCNAME:)
+        /* get args before we change esp */
+        mov      eax, ARG1
+        mov      ecx, ARG2
+        mov      edx, ARG3
+        /* save callee-saved registers */
+        push     ebx
+        /* far jmp to next instr w/ 64-bit switch: jmp 0033:<sml_transfer_to_64> */
+        RAW(ea)
+        DD offset sml_transfer_to_64
+        DB CS64_SELECTOR
+        RAW(00)
+sml_transfer_to_64:
+    /* Below here is executed in 64-bit mode, but with guarantees that
+     * no address is above 4GB, as this is a WOW64 process.
+     */
+       /* Call LdrLoadDll to load 64-bit lib:
+        *   LdrLoadDll(IN PWSTR DllPath OPTIONAL,
+        *              IN PULONG DllCharacteristics OPTIONAL,
+        *              IN PUNICODE_STRING DllName,
+        *              OUT PVOID *DllHandle));
+        */
+        RAW(4c) RAW(8b) RAW(ca)  /* mov r9, rdx : 4th arg: result */
+        RAW(4c) RAW(8b) RAW(c1)  /* mov r8, rcx : 3rd arg: lib */
+        push     0               /* slot for &DllCharacteristics */
+        lea      edx, dword ptr [esp] /* 2nd arg: &DllCharacteristics */
+        xor      ecx, ecx        /* 1st arg: DllPath = NULL */
+        /* save WOW64 state */
+        RAW(41) push     esp /* push r12 */
+        RAW(41) push     ebp /* push r13 */
+        RAW(41) push     esi /* push r14 */
+        RAW(41) push     edi /* push r15 */
+        /* align the stack pointer */
+        mov      ebx, esp        /* save esp in callee-preserved reg */
+        sub      esp, 32         /* call conv */
+        and      esp, HEX(fffffff0) /* align to 16-byte boundary */
+        call     eax
+        mov      esp, ebx        /* restore esp */
+        /* restore WOW64 state */
+        RAW(41) pop      edi /* pop r15 */
+        RAW(41) pop      esi /* pop r14 */
+        RAW(41) pop      ebp /* pop r13 */
+        RAW(41) pop      esp /* pop r12 */
+        /* far jmp to next instr w/ 32-bit switch: jmp 0023:<sml_return_to_32> */
+        push     offset sml_return_to_32  /* 8-byte push */
+        mov      dword ptr [esp + 4], CS32_SELECTOR /* top 4 bytes of prev push */
+        jmp      fword ptr [esp]
+sml_return_to_32:
+        add      esp, 16         /* clean up far jmp target and &DllCharacteristics */
+        pop      ebx             /* restore callee-saved reg */
+        ret                      /* return value already in eax */
+        END_FUNC(FUNCNAME)
+
+/*
+ * int switch_modes_and_call(void_func_t func, void *arg)
+ */
+# undef FUNCNAME
+# define FUNCNAME switch_modes_and_call
+        DECLARE_FUNC(FUNCNAME)
+GLOBAL_LABEL(FUNCNAME:)
+        mov      eax, ARG1
+        mov      ecx, ARG2
+        /* save callee-saved registers */
+        push     ebx
+        /* far jmp to next instr w/ 64-bit switch: jmp 0033:<smc_transfer_to_64> */
+        RAW(ea)
+        DD offset smc_transfer_to_64
+        DB CS64_SELECTOR
+        RAW(00)
+smc_transfer_to_64:
+    /* Below here is executed in 64-bit mode, but with guarantees that
+     * no address is above 4GB, as this is a WOW64 process.
+     */
+        /* save WOW64 state */
+        RAW(41) push     esp /* push r12 */
+        RAW(41) push     ebp /* push r13 */
+        RAW(41) push     esi /* push r14 */
+        RAW(41) push     edi /* push r15 */
+        /* align the stack pointer */
+        mov      ebx, esp        /* save esp in callee-preserved reg */
+        sub      esp, 32         /* call conv */
+        and      esp, HEX(fffffff0) /* align to 16-byte boundary */
+        call     eax             /* arg is already in rcx */
+        mov      esp, ebx        /* restore esp */
+        /* restore WOW64 state */
+        RAW(41) pop      edi /* pop r15 */
+        RAW(41) pop      esi /* pop r14 */
+        RAW(41) pop      ebp /* pop r13 */
+        RAW(41) pop      esp /* pop r12 */
+        /* far jmp to next instr w/ 32-bit switch: jmp 0023:<smc_return_to_32> */
+        push     offset smc_return_to_32  /* 8-byte push */
+        mov      dword ptr [esp + 4], CS32_SELECTOR /* top 4 bytes of prev push */
+        jmp      fword ptr [esp]
+smc_return_to_32:
+        add      esp, 8          /* clean up far jmp target */
+        pop      ebx             /* restore callee-saved reg */
+        ret                      /* return value already in eax */
+        END_FUNC(FUNCNAME)
+
+/*
+ * DR_API ptr_int_t
+ * dr_invoke_x64_routine(dr_auxlib64_routine_ptr_t func64, uint num_params, ...)
+ */
+# undef FUNCNAME
+# define FUNCNAME dr_invoke_x64_routine
+        DECLARE_EXPORTED_FUNC(FUNCNAME)
+GLOBAL_LABEL(FUNCNAME:)
+        /* This is 32-bit so we just need the stack ptr to locate all the args */
+        mov      eax, esp
+        /* save callee-saved registers */
+        push     ebx
+        /* far jmp to next instr w/ 64-bit switch: jmp 0033:<inv64_transfer_to_64> */
+        RAW(ea)
+        DD offset inv64_transfer_to_64
+        DB CS64_SELECTOR
+        RAW(00)
+inv64_transfer_to_64:
+    /* Below here is executed in 64-bit mode, but with guarantees that
+     * no address is above 4GB, as this is a WOW64 process.
+     */
+        /* Save WOW64 state.
+         * FIXME: if the x64 code makes any callbacks, not only do we need
+         * a wrapper to go back to x86 mode but we need to restore these
+         * values in case the x86 callback invokes any syscalls!
+         * Really messy and fragile.
+         */
+        RAW(41) push     esp /* push r12 */
+        RAW(41) push     ebp /* push r13 */
+        RAW(41) push     esi /* push r14 */
+        RAW(41) push     edi /* push r15 */
+        /* align the stack pointer */
+        mov      ebx, esp        /* save esp in callee-preserved reg */
+        sub      esp, 32         /* call conv */
+        mov      ecx, dword ptr [12 + eax] /* #args (func64 takes two slots) */
+        sub      ecx, 4
+        jle      inv64_arg_copy_done
+        shl      ecx, 3          /* (#args-4)*8 */
+        sub      esp, ecx        /* slots for args */
+        and      esp, HEX(fffffff0) /* align to 16-byte boundary */
+        /* copy the args to their stack slots (simpler to copy the 1st 4 too) */
+        mov      ecx, dword ptr [12 + eax] /* #args */
+        cmp      ecx, 0
+        je       inv64_arg_copy_done
+inv64_arg_copy_loop:
+        mov      edx, dword ptr [12 + 4*ecx + eax] /* ecx = 1-based arg ordinal */
+        /* FIXME: sign-extension is not always what the user wants.
+         * But the only general way to solve it would be to take in type codes
+         * for each arg!
+         */
+        RAW(48) RAW(63) RAW(d2)  /* movsxd rdx, edx  (sign-extend) */
+        RAW(48)  /* qword ptr */
+        mov      dword ptr [-8 + 8*ecx + esp], edx
+        sub      ecx, 1 /* we can't use "dec" as it will be encoded wrong! */
+        jnz      inv64_arg_copy_loop
+inv64_arg_copy_done:
+        /* put the 1st 4 args into their reg slots */
+        mov      ecx, dword ptr [12 + eax] /* #args */
+        cmp      ecx, 4
+        jl       inv64_arg_lt4
+        mov      edx, dword ptr [12 + 4*4 + eax] /* 1-based arg ordinal */
+        RAW(4c) RAW(63) RAW(ca) /* movsxd r9, edx */
+inv64_arg_lt4:
+        cmp      ecx, 3
+        jl       inv64_arg_lt3
+        mov      edx, dword ptr [12 + 4*3 + eax] /* 1-based arg ordinal */
+        RAW(4c) RAW(63) RAW(c2) /* movsxd r8, edx */
+inv64_arg_lt3:
+        cmp      ecx, 2
+        jl       inv64_arg_lt2
+        mov      edx, dword ptr [12 + 4*2 + eax] /* 1-based arg ordinal */
+        RAW(48) RAW(63) RAW(d2)  /* movsxd rdx, edx  (sign-extend) */
+inv64_arg_lt2:
+        cmp      ecx, 1
+        jl       inv64_arg_lt1
+        mov      ecx, dword ptr [12 + 4*1 + eax] /* 1-based arg ordinal */
+        RAW(48) RAW(63) RAW(c9)  /* movsxd rcx, ecx  (sign-extend) */
+inv64_arg_lt1:
+        /* make the call */
+        RAW(48)  /* qword ptr */
+        mov      eax, dword ptr [4 + eax] /* func64 */
+        RAW(48) call     eax
+        /* get top 32 bits of return value into edx for 64-bit x86 return value */
+        RAW(48) mov      edx, eax
+        RAW(48) shr      edx, 32
+        mov      esp, ebx        /* restore esp */
+        /* restore WOW64 state */
+        RAW(41) pop      edi /* pop r15 */
+        RAW(41) pop      esi /* pop r14 */
+        RAW(41) pop      ebp /* pop r13 */
+        RAW(41) pop      esp /* pop r12 */
+        /* far jmp to next instr w/ 32-bit switch: jmp 0023:<inv64_return_to_32> */
+        push     offset inv64_return_to_32  /* 8-byte push */
+        mov      dword ptr [esp + 4], CS32_SELECTOR /* top 4 bytes of prev push */
+        jmp      fword ptr [esp]
+inv64_return_to_32:
+        add      esp, 8          /* clean up far jmp target */
+        pop      ebx             /* restore callee-saved reg */
+        ret                      /* return value in edx:eax */
+        END_FUNC(FUNCNAME)
+
+#endif /* !X64 */
+/***************************************************************************/
+
+
 # ifndef NOT_DYNAMORIO_CORE_PROPER
 /* void dynamorio_earliest_init_takeover(void)
  *

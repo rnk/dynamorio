@@ -287,10 +287,11 @@ main(int argc, char **argv)
     /* test xlat for drutil_insert_get_mem_addr,
      * we do not bother to run this test on Windows side.
      */
-    __asm("mov %0, %%ebx" : : "g"(&table));
-    __asm("mov $0x1, %eax");
-    __asm("xlat");
-    __asm("movb %%al, %0" : "=m"(ch));
+    __asm("mov %1, %%ebx\n\t"
+          "mov $0x1, %%eax\n\t"
+          "xlat\n\t"
+          "movb %%al, %0\n\t"
+          : "=m"(ch) : "g"(&table) : "%eax", "%ebx");
     print("%c\n", ch);
     /* XXX: should come up w/ some clever way to ensure
      * this gets the right address: for now just making sure
@@ -302,8 +303,8 @@ main(int argc, char **argv)
     pthread_mutex_init(&pi_lock, NULL);
 
     /* Make the two threads */
-    if (pthread_create(&thread0, NULL, process, "0") ||
-	pthread_create(&thread1, NULL, process, "1")) {
+    if (pthread_create(&thread0, NULL, process, (void *)"0") ||
+	pthread_create(&thread1, NULL, process, (void *)"1")) {
 	print("%s: cannot make thread\n", argv[0]);
 	exit(1);
     }

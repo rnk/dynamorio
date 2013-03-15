@@ -1,5 +1,5 @@
 /* **********************************************************
- * Copyright (c) 2011 Google, Inc.  All rights reserved.
+ * Copyright (c) 2011-2013 Google, Inc.  All rights reserved.
  * Copyright (c) 2008-2010 VMware, Inc.  All rights reserved.
  * **********************************************************/
 
@@ -35,21 +35,32 @@
 
 #include "configure.h"
 
-#define WIN32_LEAN_AND_MEAN
-#include <windows.h>
+#ifdef WINDOWS
+# define WIN32_LEAN_AND_MEAN
+# include <windows.h>
+# include <io.h>
+# include "config.h"
+# include "share.h"
+#endif
+
+#ifdef LINUX
+# include <errno.h>
+# include <fcntl.h>
+# include <unistd.h>
+# include <sys/stat.h>
+# include <sys/mman.h>
+# include <sys/wait.h>
+#endif
+
 #include <string.h>
+#include <stdarg.h>
 #include <stdlib.h>
 #include <stdio.h>
-#include <io.h>
 #include <time.h>
 #include <assert.h>
 #include "globals_shared.h"
 #include "dr_config.h" /* MUST be before share.h (it sets HOT_PATCHING_INTERFACE) */
 #include "dr_inject.h"
-#include "config.h"
-#include "share.h"
-
-#define MAX_CMDLINE 4096
 
 typedef enum _action_t {
     action_none,
@@ -61,27 +72,33 @@ typedef enum _action_t {
 
 static bool verbose;
 static bool quiet;
-static bool DR_dll_not_needed;
+static bool DR_dll_not_needed =
+#ifdef STATIC_LIBRARY
+    true
+#else
+    false
+#endif
+    ;
 static bool nocheck;
 
 #define die() exit(1)
 
 /* up to caller to call die() if necessary */
 #define error(msg, ...) do { \
-    fprintf(stderr, "ERROR: " msg "\n", __VA_ARGS__);    \
+    fprintf(stderr, "ERROR: " msg "\n", ##__VA_ARGS__);    \
     fflush(stderr); \
 } while (0)
 
 #define warn(msg, ...) do { \
     if (!quiet) { \
-        fprintf(stderr, "WARNING: " msg "\n", __VA_ARGS__); \
+        fprintf(stderr, "WARNING: " msg "\n", ##__VA_ARGS__); \
         fflush(stderr); \
     } \
 } while (0)
 
 #define info(msg, ...) do { \
     if (verbose) { \
-        fprintf(stderr, "INFO: " msg "\n", __VA_ARGS__); \
+        fprintf(stderr, "INFO: " msg "\n", ##__VA_ARGS__); \
         fflush(stderr); \
     } \
 } while (0)
@@ -100,6 +117,8 @@ const char *usage_str =
 #elif defined(DRRUN) || defined (DRINJECT)
     "usage: "TOOLNAME" [options] <app and args to run>\n"
     "   or: "TOOLNAME" [options] [DR options] -- <app and args to run>\n"
+    "   or: "TOOLNAME" [options] [DR options] -c <client> [client options]"
+    " -- <app and args to run>\n"
     "\n"
 #endif
     "       -v                 Display version information\n"
@@ -126,6 +145,8 @@ const char *usage_str =
 # endif
 #endif
 #ifdef DRCONFIG
+    /* FIXME i#840: Syswide NYI on Linux. */
+# ifdef WINDOWS
     "       -syswide_on        Set up systemwide injection so that registered\n"
     "                          applications will run under DR however they are\n"
     "                          launched.  Otherwise, drinject must be used to\n"
@@ -133,6 +154,7 @@ const char *usage_str =
     "                          This option requires administrative privileges.\n"
     "       -syswide_off       Disable systemwide injection.\n"
     "                          This option requires administrative privileges.\n"
+# endif
     "       -global            Use global configuration files instead of local\n"
     "                          user-private configuration files.  The global\n"
     "                          config dir must be set up ahead of time.\n"
@@ -153,6 +175,14 @@ const char *usage_str =
     "                          Alternatively, if the application is separated\n"
     "                          by \"--\", the -ops may be omitted and DR options\n"
     "                          specified prior to \"--\" without quotes.\n"
+    "\n"
+    "        -c <path> <options>*\n"
+    "                           Registers one client to run alongside DR.  Assigns\n"
+    "                           the client an id of 0.  All remaining arguments\n"
+    "                           until the -- arg before the app are interpreted as\n"
+    "                           client options.  Must come after all drrun and DR\n"
+    "                           ops.  Incompatible with -client.  Requires using --\n"
+    "                           to separate the app executable.\n"
     "\n"
     "       -client <path> <ID> \"<options>\"\n"
     "                          Register one or more clients to run alongside DR.\n"
@@ -199,10 +229,22 @@ const char *usage_str =
     "                          specified number of minutes.\n"
     "       -h <hours>         Kill the application if it runs longer than the\n"
     "                          specified number of hours.\n"
+#ifdef LINUX
+    "       -killpg            Create a new process group for the app.  If the app\n"
+    "                          times out, kill the entire process group.  This forces\n"
+    "                          the child to be a new process with a new pid, rather\n"
+    "                          than reusing the parent's pid.\n"
+#endif
     "       -stats             Print /usr/bin/time-style elapsed time and memory used.\n"
     "       -mem               Print memory usage statistics.\n"
     "       -pidfile <file>    Print the pid of the child process to the given file.\n"
     "       -no_inject         Run the application natively.\n"
+# ifdef LINUX  /* FIXME i#725: Windows attach NYI */
+    "       -early             Whether to use early injection.\n"
+    "       -attach <pid>      Attach to the process with the given pid.  Pass 0\n"
+    "                          for pid to launch and inject into a new process.\n"
+    "       -logdir <dir>      Logfiles will be stored in this directory.\n"
+# endif
     "       -use_dll <dll>     Inject given dll instead of configured DR dll.\n"
     "       -force             Inject regardless of configuration.\n"
     "       -exit0             Return a 0 exit code instead of the app's exit code.\n"
@@ -213,10 +255,104 @@ const char *usage_str =
 
 #define usage(msg, ...) do {                                    \
     fprintf(stderr, "\n");                                      \
-    fprintf(stderr, "ERROR: " msg "\n\n", __VA_ARGS__);         \
+    fprintf(stderr, "ERROR: " msg "\n\n", ##__VA_ARGS__);       \
     fprintf(stderr, "%s\n", usage_str);                         \
-    die();                                                    \
+    die();                                                      \
 } while (0)
+
+#ifdef LINUX
+/* Minimal Windows compatibility layer.
+ */
+
+# define _snprintf snprintf
+
+/* Semi-compatibility with the Windows CRT _access function.
+ */
+static int
+_access(const char *fname, int mode)
+{
+    int r;
+    struct stat st;
+    if (mode != 0) {
+        error("_access called with non-zero mode");
+        die();
+    }
+    r = stat(fname, &st);
+    return (r == 0 ? 0 : -1);
+}
+
+# ifndef DRCONFIG
+/* Implements a normal path search for fname on the paths in env_var.  Assumes
+ * full_path is at least MAXIMUM_PATH bytes long.  Resolves symlinks, which is
+ * needed to get the right config filename (i#1062).
+ */
+static int
+_searchenv(const char *fname, const char *env_var, char *full_path)
+{
+    const char *paths = getenv(env_var);
+    const char *cur;
+    const char *next;
+    const char *end;
+    char tmp[MAXIMUM_PATH];
+
+    /* Windows searches the current directory first. */
+    /* XXX: realpath resolves symlinks, which we may not want. */
+    if (realpath(fname, full_path) && _access(full_path, 0) == 0)
+        return 0;
+
+    cur = paths;
+    end = strchr(paths, '\0');
+    while (cur < end) {
+        next = strchr(cur, ':');
+        next = (next == NULL ? end : next);
+        snprintf(tmp, BUFFER_SIZE_ELEMENTS(tmp),
+                 "%.*s/%s", (int)(next - cur), cur, fname);
+        NULL_TERMINATE_BUFFER(tmp);
+        /* realpath checks for existence too. */
+        if (realpath(tmp, full_path) != NULL && _access(full_path, 0) == 0)
+            return 0;
+        cur = next + 1;
+    }
+    full_path[0] = '\0';
+    return -1;
+}
+
+static int
+GetLastError(void)
+{
+    return errno;
+}
+# endif
+
+/* Simply concatenates the cwd with the given relative path.  Previously we
+ * called realpath, but this requires the path to exist and expands symlinks,
+ * which is inconsistent with Windows GetFullPathName().
+ */
+static void
+GetFullPathName(const char *rel, size_t abs_len, char *abs, char **ext)
+{
+    size_t len = 0;
+    assert(ext == NULL && "invalid param");
+    if (rel[0] != '/') {
+        char *err = getcwd(abs, abs_len);
+        if (err != NULL) {
+            len = strlen(abs);
+            /* Append a slash if it doesn't have a trailing slash. */
+            if (abs[len-1] != '/' && len < abs_len) {
+                abs[len++] = '/';
+                abs[len] = '\0';
+            }
+            /* Omit any leading ./. */
+            if (rel[0] == '.' && rel[0] == '/') {
+                rel += 2;
+            }
+        }
+    }
+    strncpy(abs + len, rel, abs_len - len);
+    abs[abs_len-1] = '\0';
+}
+
+#endif /* LINUX */
 
 /* Unregister a process */
 bool unregister_proc(const char *process, process_id_t pid,
@@ -242,17 +378,28 @@ static bool check_dr_root(const char *dr_root, bool debug,
                           dr_platform_t dr_platform, bool preinject)
 {
     int i;
-    char buf[MAX_PATH];
+    char buf[MAXIMUM_PATH];
     bool ok = true;
     bool nowarn = false;
 
     const char *checked_files[] = {
+#ifdef WINDOWS
         "lib32\\drpreinject.dll",
         "lib32\\release\\dynamorio.dll",
         "lib32\\debug\\dynamorio.dll",
         "lib64\\drpreinject.dll",
         "lib64\\release\\dynamorio.dll",
         "lib64\\debug\\dynamorio.dll"
+#else /* LINUX */
+        "lib32/debug/libdrpreload.so",
+        "lib32/debug/libdynamorio.so",
+        "lib32/release/libdrpreload.so",
+        "lib32/release/libdynamorio.so",
+        "lib64/debug/libdrpreload.so",
+        "lib64/debug/libdynamorio.so",
+        "lib64/release/libdrpreload.so",
+        "lib64/release/libdynamorio.so"
+#endif
     };
 
     const char *arch = IF_X64_ELSE("lib64", "lib32");
@@ -270,12 +417,12 @@ static bool check_dr_root(const char *dr_root, bool debug,
      * by looking for CMakeCache.txt in the root dir
      * (warnings can also be suppressed via -quiet)
      */
-    sprintf_s(buf, _countof(buf), "%s/%s", dr_root, "CMakeCache.txt");
+    _snprintf(buf, BUFFER_SIZE_ELEMENTS(buf), "%s/%s", dr_root, "CMakeCache.txt");
     if (_access(buf, 0) == 0)
         nowarn = true;
 
-    for (i=0; i<_countof(checked_files); i++) {
-        sprintf_s(buf, _countof(buf), "%s/%s", dr_root, checked_files[i]);
+    for (i=0; i<BUFFER_SIZE_ELEMENTS(checked_files); i++) {
+        _snprintf(buf, BUFFER_SIZE_ELEMENTS(buf), "%s/%s", dr_root, checked_files[i]);
         if (_access(buf, 0) == -1) {
             ok = false;
             if (!nocheck &&
@@ -313,11 +460,13 @@ bool register_proc(const char *process,
 
     assert(dr_root != NULL);
     if (_access(dr_root, 0) == -1) {
-        usage("cannot access DynamoRIO root directory %s", dr_root);
+        error("cannot access DynamoRIO root directory %s", dr_root);
+        return false;
     }
 #ifdef CLIENT_INTERFACE
     if (dr_mode == DR_MODE_NONE) {
-        usage("you must provide a DynamoRIO mode");
+        error("you must provide a DynamoRIO mode");
+        return false;
     }
 #endif
 
@@ -340,11 +489,15 @@ bool register_proc(const char *process,
 
     if (status != DR_SUCCESS) {
         /* USERPROFILE is not set by default over cygwin ssh */
+#ifdef WINDOWS
         char buf[MAXIMUM_PATH];
         if (GetEnvironmentVariableA("USERPROFILE", buf,
-                                    BUFFER_SIZE_ELEMENTS(buf)) <= 0) {
-            error("process registration failed: USERPROFILE env var not set!");
+                                    BUFFER_SIZE_ELEMENTS(buf)) == 0 &&
+            GetEnvironmentVariableA("DYNAMORIO_CONFIGDIR", buf,
+                                    BUFFER_SIZE_ELEMENTS(buf)) == 0) {
+            error("process registration failed: neither USERPROFILE nor DYNAMORIO_CONFIGDIR env var set!");
         } else
+#endif
             error("process registration failed");
         return false;
     }
@@ -396,6 +549,8 @@ bool register_client(const char *process_name,
     return true;
 }
 
+/* FIXME i#840: Port registered process iterator. */
+#ifdef WINDOWS
 static const char *
 platform_name(dr_platform_t platform)
 {
@@ -408,8 +563,8 @@ static void
 list_process(char *name, bool global, dr_platform_t platform,
              dr_registered_process_iterator_t *iter)
 {
-    char name_buf[MAX_PATH] = {0};
-    char root_dir_buf[MAX_PATH] = {0};
+    char name_buf[MAXIMUM_PATH] = {0};
+    char root_dir_buf[MAXIMUM_PATH] = {0};
     dr_operation_mode_t dr_mode;
     bool debug;
     char dr_options[DR_MAX_OPTIONS_LENGTH] = {0};
@@ -437,7 +592,7 @@ list_process(char *name, bool global, dr_platform_t platform,
     while (dr_client_iterator_hasnext(c_iter)) {
         client_id_t id;
         size_t client_pri;
-        char client_path[MAX_PATH] = {0};
+        char client_path[MAXIMUM_PATH] = {0};
         char client_opts[DR_MAX_OPTIONS_LENGTH] = {0};
         
         dr_client_iterator_next(c_iter, &id, &client_pri, client_path, client_opts);
@@ -447,50 +602,105 @@ list_process(char *name, bool global, dr_platform_t platform,
     }
     dr_client_iterator_stop(c_iter);
 }
+#endif /* WINDOWS */
 
+#ifndef DRCONFIG
 /* i#200/PR 459481: communicate child pid via file */
 static void
 write_pid_to_file(const char *pidfile, process_id_t pid)
 {
-    HANDLE f = CreateFile(pidfile, GENERIC_WRITE, FILE_SHARE_READ,
-                          NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
-    if (f == INVALID_HANDLE_VALUE) {
+    FILE *f = fopen(pidfile, "w");
+    if (f == NULL) {
         warn("cannot open %s: %d\n", pidfile, GetLastError());
     } else {
-        TCHAR pidbuf[16];
-        BOOL ok;
-        DWORD written;
+        char pidbuf[16];
+        ssize_t written;
         _snprintf(pidbuf, BUFFER_SIZE_ELEMENTS(pidbuf), "%d\n", pid);
         NULL_TERMINATE_BUFFER(pidbuf);
-        ok = WriteFile(f, pidbuf, (DWORD)strlen(pidbuf), &written, NULL);
-        assert(ok && written == strlen(pidbuf));
-        CloseHandle(f);
+        written = fwrite(pidbuf, 1, strlen(pidbuf), f);
+        assert(written == strlen(pidbuf));
+        fclose(f);
     }
+}
+#endif /* DRCONFIG */
+
+#if defined(DRCONFIG) || defined(DRRUN)
+static void
+append_client(const char *client, int id, const char *client_ops,
+              char client_paths[MAX_CLIENT_LIBS][MAXIMUM_PATH],
+              client_id_t client_ids[MAX_CLIENT_LIBS],
+              const char *client_options[MAX_CLIENT_LIBS],
+              size_t *num_clients)
+{
+    GetFullPathName(client, BUFFER_SIZE_ELEMENTS(client_paths[*num_clients]),
+                    client_paths[*num_clients], NULL);
+    NULL_TERMINATE_BUFFER(client_paths[*num_clients]);
+    info("client %d path: %s", (int)*num_clients, client_paths[*num_clients]);
+    client_ids[*num_clients] = id;
+    client_options[*num_clients] = client_ops;
+    (*num_clients)++;
+}
+#endif
+
+/* Appends a space-separated option string to buf.  A space is appended only if
+ * the buffer is non-empty.  Aborts on buffer overflow.  Always null terminates
+ * the string.
+ * XXX: Use print_to_buffer.
+ */
+static void
+add_extra_option(char *buf, size_t bufsz, size_t *sofar, const char *fmt, ...)
+{
+    ssize_t len;
+    va_list ap;
+    if (*sofar > 0 && *sofar < bufsz)
+        buf[(*sofar)++] = ' ';  /* Add a space. */
+
+    va_start(ap, fmt);
+    len = vsnprintf(buf + *sofar, bufsz - *sofar, fmt, ap);
+    va_end(ap);
+
+    if (len < 0 || (size_t)len >= bufsz) {
+        error("option string too long, buffer overflow");
+        die();
+    }
+    *sofar += len;
+    /* be paranoid: though usually many calls in a row and could delay until end */
+    buf[bufsz-1] = '\0';
 }
 
 int main(int argc, char *argv[])
 {
-    char *process = NULL;
     char *dr_root = NULL;
-    char *client_paths[MAX_CLIENT_LIBS][MAXIMUM_PATH];
-    char *client_options[MAX_CLIENT_LIBS] = {NULL,};
+    char client_paths[MAX_CLIENT_LIBS][MAXIMUM_PATH];
+#if defined(DRCONFIG) || defined(DRRUN)
+    char *process = NULL;
+    const char *client_options[MAX_CLIENT_LIBS] = {NULL,};
     client_id_t client_ids[MAX_CLIENT_LIBS] = {0,};
     size_t num_clients = 0;
-#if defined(MF_API) || defined(PROBE_API)
+    char single_client_ops[DR_MAX_OPTIONS_LENGTH];
+#endif
+#ifndef DRINJECT
+# if defined(MF_API) || defined(PROBE_API)
     /* must set -mode */
     dr_operation_mode_t dr_mode = DR_MODE_NONE;
-#else
-    /* only one choice so no -mode */
-# ifdef CLIENT_INTERFACE
-    dr_operation_mode_t dr_mode = DR_MODE_CODE_MANIPULATION;
 # else
+    /* only one choice so no -mode */
+#  ifdef CLIENT_INTERFACE
+    dr_operation_mode_t dr_mode = DR_MODE_CODE_MANIPULATION;
+#  else
     dr_operation_mode_t dr_mode = DR_MODE_NONE;
+#  endif
 # endif
-#endif
+#endif /* !DRINJECT */
     char extra_ops[MAX_OPTIONS_STRING];
+    size_t extra_ops_sofar = 0;
+#ifdef DRCONFIG
     action_t action = action_none;
+#endif
     bool use_debug = false;
     dr_platform_t dr_platform = DR_PLATFORM_DEFAULT;
+#ifdef WINDOWS
+    /* FIXME i#840: Implement nudges on Linux. */
     bool nudge_all = false;
     process_id_t nudge_pid = 0;
     client_id_t nudge_id = 0;
@@ -499,6 +709,7 @@ int main(int argc, char *argv[])
     uint nudge_timeout = INFINITE;
     bool syswide_on = false;
     bool syswide_off = false;
+#endif /* WINDOWS */
     bool global = false;
 #if defined(DRRUN) || defined(DRINJECT)
     char *pidfile = NULL;
@@ -507,15 +718,20 @@ int main(int argc, char *argv[])
     bool force_injection = false;
     bool inject = true;
     int limit = 0; /* in seconds */
-    bool debugger_key_injection = false;
+    char *drlib_path = NULL;
+    int exitcode;
+# ifdef WINDOWS
+    time_t start_time, end_time;
+# else
+    bool use_ptrace = false;
+    bool kill_group = false;
+# endif
     char *app_name;
     char full_app_name[MAXIMUM_PATH];
-    char app_cmdline[MAX_CMDLINE];
+    const char **app_argv;
     char custom_dll[MAXIMUM_PATH];
     int errcode;
     void *inject_data;
-    int wait_result;
-    time_t start_time, end_time;
     bool success;
     bool exit0 = false;
 #endif
@@ -526,7 +742,6 @@ int main(int argc, char *argv[])
     char buf[MAXIMUM_PATH];
     char default_root[MAXIMUM_PATH];
     char *c;
-    char *drlib_path = NULL;
 
     memset(client_paths, 0, sizeof(client_paths));
     extra_ops[0] = '\0';
@@ -548,7 +763,8 @@ int main(int argc, char *argv[])
     for (i=1; i<argc; i++) {
 
         /* params with no arg */
-        if (strcmp(argv[i], "-verbose") == 0) {
+        if (strcmp(argv[i], "-verbose") == 0 ||
+            strcmp(argv[i], "-v") == 0) {
             verbose = true;
             continue;
         }
@@ -560,7 +776,7 @@ int main(int argc, char *argv[])
             use_debug = true;
             continue;
         }
-        else if (!strcmp(argv[i], "-v")) {
+        else if (!strcmp(argv[i], "-version")) {
 #if defined(BUILD_NUMBER) && defined(VERSION_NUMBER)
           printf(TOOLNAME" version %s -- build %d\n", STRINGIFY(VERSION_NUMBER), BUILD_NUMBER);
 #elif defined(BUILD_NUMBER)
@@ -571,6 +787,8 @@ int main(int argc, char *argv[])
           exit(0);
         }
 #ifdef DRCONFIG
+# ifdef WINDOWS
+        /* FIXME i#840: These are NYI for Linux. */
         else if (!strcmp(argv[i], "-list_registered")) {
             action = action_list;
             list_registered = true;
@@ -584,6 +802,7 @@ int main(int argc, char *argv[])
             syswide_off = true;
             continue;
         }
+# endif
         else if (strcmp(argv[i], "-global") == 0) {
             global = true;
             continue;
@@ -625,6 +844,32 @@ int main(int argc, char *argv[])
             limit = -1;
             continue;
         }
+# ifdef LINUX
+        else if (strcmp(argv[i], "-use_ptrace") == 0) {
+            /* Undocumented option for using ptrace on a fresh process. */
+            use_ptrace = true;
+            continue;
+        }
+        else if (strcmp(argv[i], "-attach") == 0) {
+            const char *pid_str = argv[++i];
+            process_id_t pid = strtoul(pid_str, NULL, 10);
+            if (pid == ULONG_MAX)
+                usage("-attach expects an integer pid");
+            if (pid != 0)
+                usage("attaching to running processes is not yet implemented");
+            use_ptrace = true;
+            /* FIXME: use pid below to attach. */
+            continue;
+        }
+        else if (strcmp(argv[i], "-early") == 0) {
+            /* Appending -early_inject to extra_ops communicates our intentions
+             * to drinjectlib.
+             */
+            add_extra_option(extra_ops, BUFFER_SIZE_ELEMENTS(extra_ops),
+                             &extra_ops_sofar, "-early_inject");
+            continue;
+        }
+# endif /* LINUX */
         else if (strcmp(argv[i], "-exit0") == 0) {
             exit0 = true;
             continue;
@@ -636,8 +881,19 @@ int main(int argc, char *argv[])
         }
 
         /* params with an arg */
-        if (strcmp(argv[i], "-root") == 0) {
+        if (strcmp(argv[i], "-root") == 0 ||
+            /* support -dr_home alias used by script */
+            strcmp(argv[i], "-dr_home") == 0) {
             dr_root = argv[++i];
+        }
+        else if (strcmp(argv[i], "-logdir") == 0) {
+            /* Accept this for compatibility with the old drrun shell script. */
+            const char *dir = argv[++i];
+            if (_access(dir, 0) == -1)
+                usage("-logdir %s does not exist", dir);
+            add_extra_option(extra_ops, BUFFER_SIZE_ELEMENTS(extra_ops),
+                             &extra_ops_sofar, "-logdir `%s`", dir);
+            continue;
         }
 #ifdef DRCONFIG
         else if (strcmp(argv[i], "-reg") == 0) {
@@ -661,6 +917,8 @@ int main(int argc, char *argv[])
             action = action_list;
             process = argv[++i];
         }
+# ifdef WINDOWS
+        /* FIXME i#840: Nudge is NYI for Linux. */
         else if (strcmp(argv[i], "-nudge_timeout") == 0) {
             nudge_timeout = strtoul(argv[++i], NULL, 10);
         }
@@ -684,6 +942,7 @@ int main(int argc, char *argv[])
             nudge_id = strtoul(argv[++i], NULL, 16);
             nudge_arg = _strtoui64(argv[++i], NULL, 16);
         }        
+# endif
 #endif
 #if defined(DRCONFIG) || defined(DRRUN)
 # if defined(MF_API) || defined(PROBE_API)
@@ -715,27 +974,25 @@ int main(int argc, char *argv[])
                 die();
             }
             else {
+                const char *client;
+                int id;
+                const char *ops;
                 if (i + 3 >= argc) {
                     usage("too few arguments to -client");
                 }
 
                 /* Support relative client paths: very useful! */
-                GetFullPathName(argv[++i],
-                                BUFFER_SIZE_ELEMENTS(client_paths[num_clients]),
-                                (char *)client_paths[num_clients], NULL);
-                NULL_TERMINATE_BUFFER(client_paths[num_clients]);
-                info("client %d path: %s", num_clients, client_paths[num_clients]);
-                client_ids[num_clients] = strtoul(argv[++i], NULL, 16);
-                client_options[num_clients] = argv[++i];
-                num_clients++;
+                client = argv[++i];
+                id = strtoul(argv[++i], NULL, 16);
+                ops = argv[++i];
+                append_client(client, id, ops, client_paths, client_ids,
+                              client_options, &num_clients);
             }
         }
         else if (strcmp(argv[i], "-ops") == 0) {
             /* support repeating the option (i#477) */
-            _snprintf(extra_ops + strlen(extra_ops),
-                      BUFFER_SIZE_ELEMENTS(extra_ops) - strlen(extra_ops),
-                      "%s%s", (extra_ops[0] == '\0') ? "" : " ", argv[++i]);
-            NULL_TERMINATE_BUFFER(extra_ops);
+            add_extra_option(extra_ops, BUFFER_SIZE_ELEMENTS(extra_ops),
+                             &extra_ops_sofar, "%s", argv[++i]);
 	}
 #endif
 #if defined(DRRUN) || defined(DRINJECT)
@@ -765,6 +1022,11 @@ int main(int argc, char *argv[])
             if (limit <= 0)
                 usage("invalid time");
 	}
+# ifdef LINUX
+        else if (strcmp(argv[i], "-killpg") == 0) {
+            kill_group = true;
+        }
+# endif
 #endif
 #if defined(DRCONFIG) || defined(DRRUN)
         /* if there are still options, assume user is using -- to separate and pass
@@ -774,15 +1036,38 @@ int main(int argc, char *argv[])
          */
         else if (argv[i][0] == '-') {
             while (i<argc) {
-                if (strcmp(argv[i], "--") == 0) {
-                    i++;
-                    goto done_with_options;
+                if (strcmp(argv[i], "-c") == 0 ||
+                    strcmp(argv[i], "--") == 0) {
+                    break;
                 }
-                _snprintf(extra_ops + strlen(extra_ops),
-                          BUFFER_SIZE_ELEMENTS(extra_ops) - strlen(extra_ops),
-                          "%s%s", (extra_ops[0] == '\0') ? "" : " ", argv[i]);
-                NULL_TERMINATE_BUFFER(extra_ops);
+                add_extra_option(extra_ops, BUFFER_SIZE_ELEMENTS(extra_ops),
+                                 &extra_ops_sofar, "%s", argv[i]);
                 i++;
+            }
+            if (i < argc && strcmp(argv[i], "-c") == 0) {
+                const char *client;
+                size_t client_sofar = 0;
+                if (i + 1 >= argc)
+                    usage("too few arguments to -c");
+                if (num_clients != 0)
+                    usage("Cannot use -client with -c.");
+                client = argv[++i];
+
+                /* Treat everything up to -- or end of argv as client args. */
+                i++;
+                single_client_ops[0] = '\0';
+                while (i < argc && strcmp(argv[i], "--") != 0) {
+                    add_extra_option(single_client_ops,
+                                     BUFFER_SIZE_ELEMENTS(single_client_ops),
+                                     &client_sofar, "%s", argv[i]);
+                    i++;
+                }
+                append_client(client, 0, single_client_ops, client_paths,
+                              client_ids, client_options, &num_clients);
+            }
+            if (i < argc && strcmp(argv[i], "--") == 0) {
+                i++;
+                goto done_with_options;
             }
 	}
 #endif
@@ -825,28 +1110,32 @@ int main(int argc, char *argv[])
     info("targeting application: \"%s\"", app_name);
 
     /* note that we want target app name as part of cmd line
+     * (hence &argv[i - 1])
      * (FYI: if we were using WinMain, the pzsCmdLine passed in
      *  does not have our own app name in it)
-     * it's easier to construct than to call GetCommandLine() and then
-     * remove our own args.
      */
-    c = app_cmdline;
-    c += _snprintf(c, BUFFER_SIZE_ELEMENTS(app_cmdline) - (c - app_cmdline),
-                   "\"%s\"", app_name);
-    for (; i < argc; i++) {
-        c += _snprintf(c, BUFFER_SIZE_ELEMENTS(app_cmdline) - (c - app_cmdline),
-                       " \"%s\"", argv[i]);
+    app_argv = (const char **) &argv[i - 1];
+    if (verbose) {
+        c = buf;
+        for (i = 0; app_argv[i] != NULL; i++) {
+            c += _snprintf(c, BUFFER_SIZE_ELEMENTS(buf) - (c - buf),
+                           " \"%s\"", app_argv[i]);
+        }
+        info("app cmdline: %s", buf);
     }
-    NULL_TERMINATE_BUFFER(app_cmdline);
-    assert(c - app_cmdline < BUFFER_SIZE_ELEMENTS(app_cmdline));
-    info("app cmdline: %s", app_cmdline);
+
 #else
     if (i < argc)
         usage("%s", "invalid extra arguments specified");
 #endif
 
+#ifdef WINDOWS
+    /* FIXME i#900: This doesn't work on Linux, and doesn't do the right thing
+     * on Windows.
+     */
     /* PR 244206: set the registry view before any registry access */
     set_dr_platform(dr_platform);
+#endif
 
 #ifdef DRCONFIG
     if (action == action_register) {
@@ -855,7 +1144,7 @@ int main(int argc, char *argv[])
             die();
         for (j=0; j<num_clients; j++) {
             if (!register_client(process, 0, global, dr_platform, client_ids[j],
-                                 (char *)client_paths[j], client_options[j]))
+                                 client_paths[j], client_options[j]))
                 die();
         }
     }
@@ -863,6 +1152,12 @@ int main(int argc, char *argv[])
         if (!unregister_proc(process, 0, global, dr_platform))
             die();
     }
+# ifndef WINDOWS
+    else {
+        usage("no action specified");
+    }
+# else /* WINDOWS */
+    /* FIXME i#840: Nudge NYI on Linux. */
     else if (action == action_nudge) {
         int count = 1;
         dr_config_status_t res = DR_SUCCESS;
@@ -885,6 +1180,8 @@ int main(int argc, char *argv[])
         else if (res != DR_SUCCESS)
             printf("nudge operation failed, verify adequate permissions for this operation.");
     }
+#  ifdef WINDOWS
+    /* FIXME i#840: Process iterator NYI for Linux. */
     else if (action == action_list) {
         if (!list_registered)
             list_process(process, global, dr_platform, NULL);
@@ -898,21 +1195,26 @@ int main(int argc, char *argv[])
             dr_registered_process_iterator_stop(iter);
         }
     }
+#  endif
     else if (!syswide_on && !syswide_off) {
         usage("no action specified");
     }
     if (syswide_on) {
+        DWORD platform;
+        if (get_platform(&platform) != ERROR_SUCCESS)
+            platform = PLATFORM_UNKNOWN;
+        if (platform >= PLATFORM_WIN_8) {
+            error("syswide_on is not yet supported on Windows 8");
+            die();
+        }
         if (!check_dr_root(dr_root, false, dr_platform, true))
             die();
         /* If this is the first setting of AppInit on NT, warn about reboot */
         if (!dr_syswide_is_on(dr_platform, dr_root)) {
-            DWORD platform;
-            if (get_platform(&platform) == ERROR_SUCCESS &&
-                platform == PLATFORM_WIN_NT_4) {
+            if (platform == PLATFORM_WIN_NT_4) {
                 warn("on Windows NT, applications will not be taken over until reboot");
             }
-            else if (get_platform(&platform) == ERROR_SUCCESS &&
-                     platform >= PLATFORM_WIN_7) {
+            else if (platform >= PLATFORM_WIN_7) {
                 /* i#323 will fix this but good to warn the user */
                 warn("on Windows 7, syswide_on relaxes system security by removing certain code signing requirements");
             }
@@ -928,20 +1230,59 @@ int main(int argc, char *argv[])
             warn("syswide set failed: re-run as administrator");
         }
     }
+# endif /* WINDOWS */
     return 0;
 #else /* DRCONFIG */
-    errcode = dr_inject_process_create(app_name, app_cmdline, &inject_data);
+    if (!global) {
+        /* i#939: attempt to work w/o any HOME/USERPROFILE by using a temp dir */
+        dr_get_config_dir(global, true/*use temp*/, buf, BUFFER_SIZE_ELEMENTS(buf));
+    }
+# ifdef LINUX
+    /* On Linux, we use exec by default to create the app process.  This matches
+     * our drrun shell script and makes scripting easier for the user.
+     */
+    if (limit == 0 && !use_ptrace && !kill_group) {
+        info("will exec %s", app_name);
+        errcode = dr_inject_prepare_to_exec(app_name, app_argv, &inject_data);
+    } else
+# endif /* LINUX */
+    {
+        errcode = dr_inject_process_create(app_name, app_argv, &inject_data);
+        info("created child with pid %d for %s",
+             dr_inject_get_process_id(inject_data), app_name);
+    }
+# ifdef LINUX
+    if (limit != 0 && kill_group) {
+        /* Move the child to its own process group. */
+        process_id_t child_pid = dr_inject_get_process_id(inject_data);
+        int res = setpgid(child_pid, child_pid);
+        if (res < 0) {
+            perror("ERROR in setpgid");
+            goto error;
+        }
+    }
+# endif
+# ifdef WINDOWS
+    if (errcode == ERROR_IMAGE_MACHINE_TYPE_MISMATCH_EXE) {
+        /* Better error message than the FormatMessage */
+        error("Target process %s is for the wrong architecture", app_name);
+        die(); /* no process created, so don't "goto error" */
+    }
+# endif
     if (errcode != 0) {
-        int sofar = _snprintf(app_cmdline, BUFFER_SIZE_ELEMENTS(app_cmdline), 
-                              "Failed to create process for \"%s\": ", app_name);
+        IF_WINDOWS(int sofar =)
+            _snprintf(buf, BUFFER_SIZE_ELEMENTS(buf),
+                      "Failed to create process for \"%s\": ", app_name);
+# ifdef WINDOWS
         if (sofar > 0) {
             FormatMessage(FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS,
                           NULL, errcode, MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
-                          (LPTSTR) app_cmdline + sofar,
-                          BUFFER_SIZE_ELEMENTS(app_cmdline) - sofar*sizeof(char), NULL);
+                          (LPTSTR) buf + sofar,
+                          BUFFER_SIZE_ELEMENTS(buf) - sofar*sizeof(char), NULL);
         }
-        NULL_TERMINATE_BUFFER(app_cmdline);
-        error("%s", app_cmdline);
+# endif /* WINDOWS */
+        NULL_TERMINATE_BUFFER(buf);
+        error("%s", buf);
         goto error;
     }
 
@@ -960,8 +1301,27 @@ int main(int argc, char *argv[])
     for (j=0; j<num_clients; j++) {
         if (!register_client(process, dr_inject_get_process_id(inject_data), global,
                              dr_platform, client_ids[j],
-                             (char *)client_paths[j], client_options[j]))
+                             client_paths[j], client_options[j]))
             goto error;
+    }
+# endif
+
+# ifdef LINUX
+    if (use_ptrace) {
+        if (!dr_inject_prepare_to_ptrace(inject_data)) {
+            error("unable to use ptrace");
+            goto error;
+        } else {
+            info("using ptrace to inject");
+        }
+    }
+    if (kill_group) {
+        /* Move the child to its own process group. */
+        bool res = dr_inject_prepare_new_process_group(inject_data);
+        if (!res) {
+            error("error moving child to new process group");
+            goto error;
+        }
     }
 # endif
 
@@ -970,41 +1330,54 @@ int main(int argc, char *argv[])
         goto error;
     }
 
-    success = FALSE;
-    start_time = time(NULL);
+    IF_WINDOWS(start_time = time(NULL);)
 
-    dr_inject_process_run(inject_data);
+    if (!dr_inject_process_run(inject_data)) {
+        error("unable to run");
+        goto error;
+    }
 
+# ifdef WINDOWS
     if (limit == 0 && dr_inject_using_debug_key(inject_data)) {
         info("%s", "Using debugger key injection");
         limit = -1; /* no wait */
     }
+# endif
 
     if (limit >= 0) {
+# ifdef WINDOWS
         double wallclock;
-        int exitcode;
+# endif
+        uint64 limit_millis = limit * 1000;
         info("waiting %sfor app to exit...", (limit <= 0) ? "forever " : "");
-        wait_result = WaitForSingleObject(dr_inject_get_process_handle(inject_data),
-                                          (limit==0) ? INFINITE : (limit*1000));
+        success = dr_inject_wait_for_child(inject_data, limit_millis);
+# ifdef WINDOWS
         end_time = time(NULL);
         wallclock = difftime(end_time, start_time);
-        if (wait_result == WAIT_OBJECT_0)
-            success = TRUE;
-        else
-            info("timeout after %d seconds\n", limit);
-
         if (showstats || showmem)
             dr_inject_print_stats(inject_data, (int) wallclock, showstats, showmem);
-        exitcode = dr_inject_process_exit(inject_data, !success/*kill process*/);
-        if (exit0)
-            exitcode = 0;
-        return exitcode;
+# endif
+        if (!success)
+            info("timeout after %d seconds\n", limit);
     } else {
-        /* if we are using env -> registry our changes won't get undone!
-         * we can't unset now, the app may still reference them */
-        success = TRUE;
-        return 0;
+        success = true;  /* Don't kill the child if we're not waiting. */
     }
+
+    exitcode = dr_inject_process_exit(inject_data, !success/*kill process*/);
+
+    if (limit < 0)
+        exitcode = 0;  /* Return success if we didn't wait. */
+
+    if (exit0)
+        exitcode = 0;
+
+    /* FIXME i#840: We can't actually match exit status on Linux perfectly
+     * since the kernel reserves most of the bits for signal codes.  At the
+     * very least, we should ensure if the app exits with a signal we exit
+     * non-zero.
+     */
+    return exitcode;
+
  error:
     /* we created the process suspended so if we later had an error be sure
      * to kill it instead of leaving it hanging

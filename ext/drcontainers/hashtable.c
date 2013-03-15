@@ -1,5 +1,5 @@
 /* **********************************************************
- * Copyright (c) 2011-2012 Google, Inc.  All rights reserved.
+ * Copyright (c) 2011-2013 Google, Inc.  All rights reserved.
  * Copyright (c) 2007-2010 VMware, Inc.  All rights reserved.
  * **********************************************************/
 
@@ -38,23 +38,11 @@
 #endif
 #include "dr_api.h"
 #include "hashtable.h"
+#include "containers_private.h"
 #ifdef LINUX
 # include <string.h>
 #endif
 #include <stddef.h> /* offsetof */
-
-#ifdef DEBUG
-# define IF_DEBUG(x) x
-#else
-# define IF_DEBUG(x) /* nothing */
-#endif
-
-/* check if all bits in mask are set in var */
-#define TESTALL(mask, var) (((mask) & (var)) == (mask))
-/* check if any bit in mask is set in var */
-#define TESTANY(mask, var) (((mask) & (var)) != 0)
-/* check if a single bit is set in var */
-#define TEST TESTANY
 
 /***************************************************************************
  * UTILITIES
@@ -173,10 +161,17 @@ hash_key(hashtable_t *table, void *key)
     } else if (table->hashtype == HASH_STRING || table->hashtype == HASH_STRING_NOCASE) {
         const char *s = (const char *) key;
         char c;
-        for (c = *s; c != '\0'; c = *(s++)) {
+        uint i, shift;
+        uint max_shift = ALIGN_FORWARD(table->table_bits, 8);
+        /* XXX: share w/ core's hash_value() function */
+        for (i = 0; s[i] != '\0'; i++) {
+            c = s[i];
             if (table->hashtype == HASH_STRING_NOCASE)
                 c = (char) tolower(c);
-            hash ^= (c << (((s - (const char *)key) %4) * 8));
+            shift = (i % 4) * 8;
+            if (shift > max_shift)
+                shift = max_shift;
+            hash ^= c << shift;
         }
     } else {
         /* HASH_INTPTR, or fallback for HASH_CUSTOM in release build */

@@ -1,5 +1,5 @@
 /* **********************************************************
- * Copyright (c) 2011-2012 Google, Inc.  All rights reserved.
+ * Copyright (c) 2011-2013 Google, Inc.  All rights reserved.
  * Copyright (c) 2000-2010 VMware, Inc.  All rights reserved.
  * **********************************************************/
 
@@ -54,6 +54,14 @@
 /* to avoid duplicating code we use our own exported macros */
 #define DR_FAST_IR 1
 
+/* drpreinject.dll doesn't link in instr.c so we can't include our inline
+ * functions.  We want to use our inline functions for the standalone decoder
+ * and everything else, so we single out drpreinject.
+ */
+#ifdef RC_IS_PRELOAD
+# undef DR_FAST_IR
+#endif
+
 /* can't include decode.h, it includes us, just declare struct */
 struct instr_info_t;
 
@@ -86,7 +94,20 @@ struct instr_info_t;
 # error REG_ enum conflict between DR and ucontext.h!  Use DR_REG_ constants instead.
 #endif
 /* DR_API EXPORT END */
+
+/* If INSTR_INLINE is already defined, that means we've been included by
+ * instr.c, which wants to use C99 extern inline.  Otherwise, DR_FAST_IR
+ * determines whether our instr routines are inlined.
+ */
 /* DR_API EXPORT BEGIN */
+/* Inlining macro controls. */
+#ifndef INSTR_INLINE
+# ifdef DR_FAST_IR
+#  define INSTR_INLINE inline
+# else
+#  define INSTR_INLINE
+# endif
+#endif
 
 #ifdef AVOID_API_EXPORT
 /* We encode this enum plus the OPSZ_ extensions in bytes, so we can have
@@ -198,6 +219,14 @@ extern const char * const reg_names[];
 extern const reg_id_t dr_reg_fixer[];
 /* DR_API EXPORT BEGIN */
 
+#define DR_REG_START_GPR DR_REG_XAX /**< Start of general register enum values */
+#ifdef X64
+# define DR_REG_STOP_GPR DR_REG_R15 /**< End of general register enum values */
+#else
+# define DR_REG_STOP_GPR DR_REG_XDI /**< End of general register enum values */
+#endif
+/**< Number of general registers */
+#define DR_NUM_GPR_REGS (DR_REG_STOP_GPR - DR_REG_START_GPR)
 #define DR_REG_START_64    DR_REG_RAX  /**< Start of 64-bit general register enum values */
 #define DR_REG_STOP_64     DR_REG_R15  /**< End of 64-bit general register enum values */  
 #define DR_REG_START_32    DR_REG_EAX  /**< Start of 32-bit general register enum values */
@@ -441,9 +470,6 @@ extern const reg_id_t dr_reg_fixer[];
 #endif /* DR_REG_ENUM_COMPATIBILITY */
 /* DR_API EXPORT END */
 
-#define REG_SPECIFIER_BITS 8
-#define SCALE_SPECIFIER_BITS 4
-
 #ifndef INT8_MIN
 # define INT8_MIN   SCHAR_MIN
 # define INT8_MAX   SCHAR_MAX
@@ -460,6 +486,10 @@ extern const reg_id_t dr_reg_fixer[];
 /* DR_API EXPORT BEGIN */
 
 #ifdef DR_FAST_IR
+
+# define REG_SPECIFIER_BITS 8
+# define SCALE_SPECIFIER_BITS 4
+
 /**
  * opnd_t type exposed for optional "fast IR" access.  Note that DynamoRIO
  * reserves the right to change this structure across releases and does
@@ -485,6 +515,7 @@ struct _opnd_t {
         /* We could fit segment in value.base_disp but more consistent here */
         reg_id_t segment : REG_SPECIFIER_BITS; /* BASE_DISP_kind, REL_ADDR_kind,
                                                 * and ABS_ADDR_kind */
+        ushort disp;           /* MEM_INSTR_kind */
     } seg;
     union {
         /* all are 64 bits or less */
@@ -500,7 +531,7 @@ struct _opnd_t {
          * segment selector (which is NOT a DR_SEG_ constant) in far_pc_seg_selector
          * above, to save space.
          */
-        instr_t *instr;         /* INSTR_kind and FAR_INSTR_kind */
+        instr_t *instr;         /* INSTR_kind, FAR_INSTR_kind, and MEM_INSTR_kind */
         reg_id_t reg;           /* REG_kind */
         struct {
             int disp;
@@ -548,6 +579,7 @@ enum {
     REL_ADDR_kind,  /* pc-relative address: x64 only */
     ABS_ADDR_kind,  /* 64-bit absolute address: x64 only */
 #endif
+    MEM_INSTR_kind,
     LAST_kind,      /* sentinal; not a valid opnd kind */
 };
 #endif /* DR_FAST_IR */
@@ -556,11 +588,13 @@ enum {
 /* functions to build an operand */
 
 DR_API
+INSTR_INLINE
 /** Returns an empty operand. */
 opnd_t 
 opnd_create_null(void);
 
 DR_API
+INSTR_INLINE
 /** Returns a register operand (\p r must be a DR_REG_ constant). */
 opnd_t 
 opnd_create_reg(reg_id_t r);
@@ -587,6 +621,7 @@ opnd_t
 opnd_create_immed_float_zero(void);
 
 DR_API
+INSTR_INLINE
 /** Returns a program address operand with value \p pc. */
 opnd_t 
 opnd_create_pc(app_pc pc);
@@ -600,7 +635,11 @@ opnd_t
 opnd_create_far_pc(ushort seg_selector, app_pc pc);
 
 DR_API
-/** Returns an instr_t pointer address with value \p instr. */
+/**
+ * Returns an operand whose value will be the encoded address of \p
+ * instr.  This operand can be used as an immediate integer or as a
+ * direct call or jump target.  Its size is always #OPSZ_PTR.
+ */
 opnd_t 
 opnd_create_instr(instr_t *instr);
 
@@ -611,6 +650,22 @@ DR_API
  */
 opnd_t 
 opnd_create_far_instr(ushort seg_selector, instr_t *instr);
+
+DR_API
+/**
+ * Returns a memory reference operand whose value will be the encoded
+ * address of \p instr plus the 16-bit displacement \p disp.  For 32-bit
+ * mode, it will be encoded just like an absolute address
+ * (opnd_create_abs_addr()); for 64-bit mode, it will be encoded just
+ * like a pc-relative address (opnd_create_rel_addr()). This operand
+ * can be used anywhere a regular memory operand can be used.  Its
+ * size is always #OPSZ_PTR.
+ *
+ * \note This operand will return false to opnd_is_instr(), opnd_is_rel_addr(),
+ * and opnd_is_abs_addr().  It is a separate type.
+ */
+opnd_t
+opnd_create_mem_instr(instr_t *instr, short disp, opnd_size_t data_size);
 
 DR_API
 /** 
@@ -805,6 +860,7 @@ bool
 opnd_is_reg(opnd_t opnd);
 
 DR_API
+INSTR_INLINE
 /** Returns true iff \p opnd is an immediate (integer or float) operand. */
 bool 
 opnd_is_immed(opnd_t opnd);
@@ -820,6 +876,7 @@ bool
 opnd_is_immed_float(opnd_t opnd);
 
 DR_API
+INSTR_INLINE
 /** Returns true iff \p opnd is a (near or far) program address operand. */
 bool 
 opnd_is_pc(opnd_t opnd);
@@ -835,6 +892,7 @@ bool
 opnd_is_far_pc(opnd_t opnd);
 
 DR_API
+INSTR_INLINE
 /** Returns true iff \p opnd is a (near or far) instr_t pointer address operand. */
 bool 
 opnd_is_instr(opnd_t opnd);
@@ -850,11 +908,17 @@ bool
 opnd_is_far_instr(opnd_t opnd);
 
 DR_API
+/** Returns true iff \p opnd is a memory reference to an instr_t address operand. */
+bool
+opnd_is_mem_instr(opnd_t opnd);
+
+DR_API
 /** Returns true iff \p opnd is a (near or far) base+disp memory reference operand. */
 bool 
 opnd_is_base_disp(opnd_t opnd);
 
 DR_API
+INSTR_INLINE
 /**
  * Returns true iff \p opnd is a near (i.e., default segment) base+disp memory
  * reference operand.
@@ -863,6 +927,7 @@ bool
 opnd_is_near_base_disp(opnd_t opnd);
 
 DR_API
+INSTR_INLINE
 /** Returns true iff \p opnd is a far base+disp memory reference operand. */
 bool 
 opnd_is_far_base_disp(opnd_t opnd);
@@ -907,6 +972,7 @@ bool
 opnd_is_rel_addr(opnd_t opnd);
 
 DR_API
+INSTR_INLINE
 /**
  * Returns true iff \p opnd is a near (i.e., default segment) pc-relative memory
  * reference operand. 
@@ -917,6 +983,7 @@ bool
 opnd_is_near_rel_addr(opnd_t opnd);
 
 DR_API
+INSTR_INLINE
 /**
  * Returns true iff \p opnd is a far pc-relative memory reference operand. 
  *
@@ -959,7 +1026,6 @@ opnd_is_near_memory_reference(opnd_t opnd);
 DR_API
 /** 
  * Return the data size of \p opnd as a OPSZ_ constant.
- * Assumes \p opnd is a register, immediate integer, or memory reference.
  * If \p opnd is a register returns the result of opnd_reg_get_size()
  * called on the DR_REG_ constant.
  * Returns OPSZ_NA if \p opnd does not have a valid size.
@@ -984,7 +1050,7 @@ reg_id_t
 opnd_get_reg(opnd_t opnd);
 
 DR_API
-/* Assumes opnd is an immediate integer, returns its value. */
+/** Assumes opnd is an immediate integer, returns its value. */
 ptr_int_t
 opnd_get_immed_int(opnd_t opnd);
 
@@ -1011,9 +1077,16 @@ ushort
 opnd_get_segment_selector(opnd_t opnd);
 
 DR_API
-/** Assumes \p opnd is an instr_t pointer, returns its value. */
+/** Assumes \p opnd is an instr_t (near, far, or memory) operand and returns its value. */
 instr_t*
 opnd_get_instr(opnd_t opnd);
+
+DR_API
+/**
+ * Assumes \p opnd is a memory instr operand.  Returns its displacement.
+ */
+short
+opnd_get_mem_instr_disp(opnd_t opnd);
 
 DR_API
 /**
@@ -1435,6 +1508,17 @@ opnd_size_in_bytes(opnd_size_t size);
 
 DR_API
 /** 
+ * Returns the appropriate OPSZ_ constant for the given number of bytes.
+ * Returns OPSZ_NA if there is no such constant.
+ * The intended use case is something like "opnd_size_in_bytes(sizeof(foo))" for
+ * integer/pointer types.  This routine returns simple single-size
+ * types and will not return complex/variable size types.
+ */
+opnd_size_t
+opnd_size_from_bytes(uint bytes);
+
+DR_API
+/** 
  * Shrinks all 32-bit registers in \p opnd to their 16-bit versions.  
  * Also shrinks the size of immediate integers and memory references from
  * OPSZ_4 to OPSZ_2.
@@ -1530,8 +1614,16 @@ opnd_compute_address_priv(opnd_t opnd, priv_mcontext_t *mc);
  * the instr or not.
  */
 
+/* DR_API EXPORT TOFILE dr_ir_instr.h */
+/* For inlining, we need to expose some of these flags.  We bracket the ones we
+ * want in export begin/end.  AVOID_API_EXPORT does not work because there are
+ * nested ifdefs.
+ */
+/* DR_API EXPORT BEGIN */
+#ifdef DR_FAST_IR
 /* flags */
 enum {
+/* DR_API EXPORT END */
     /* these first flags are shared with the LINK_ flags and are
      * used to pass on info to link stubs 
      */
@@ -1539,10 +1631,13 @@ enum {
     INSTR_DIRECT_EXIT           = LINK_DIRECT,
     INSTR_INDIRECT_EXIT         = LINK_INDIRECT,
     INSTR_RETURN_EXIT           = LINK_RETURN,
+    /* JMP|CALL marks an indirect jmp preceded by a call (== a PLT-style ind call)
+     * so use EXIT_IS_{JMP,CALL} rather than these raw bits
+     */
     INSTR_CALL_EXIT             = LINK_CALL,
     INSTR_JMP_EXIT              = LINK_JMP,
-    /* marks an indirect jmp preceded by a call (== a PLT-style ind call) */
-    INSTR_IND_JMP_PLT_EXIT      = LINK_IND_JMP_PLT,
+    INSTR_IND_JMP_PLT_EXIT      = (INSTR_JMP_EXIT | INSTR_CALL_EXIT),
+    INSTR_FAR_EXIT              = LINK_FAR,
     INSTR_BRANCH_SELFMOD_EXIT   = LINK_SELFMOD_EXIT,
 #ifdef UNSUPPORTED_API
     INSTR_BRANCH_TARGETS_PREFIX = LINK_TARGET_PREFIX,
@@ -1563,7 +1658,8 @@ enum {
     /* meta-flag */
     EXIT_CTI_TYPES              = (INSTR_DIRECT_EXIT | INSTR_INDIRECT_EXIT |
                                    INSTR_RETURN_EXIT | INSTR_CALL_EXIT |     
-                                   INSTR_JMP_EXIT | INSTR_IND_JMP_PLT_EXIT |
+                                   INSTR_JMP_EXIT |
+                                   INSTR_FAR_EXIT |
                                    INSTR_BRANCH_SELFMOD_EXIT |
 #ifdef UNSUPPORTED_API
                                    INSTR_BRANCH_TARGETS_PREFIX |
@@ -1586,7 +1682,9 @@ enum {
     INSTR_EFLAGS_6_VALID        = 0x00040000,
     INSTR_RAW_BITS_VALID        = 0x00080000,
     INSTR_RAW_BITS_ALLOCATED    = 0x00100000,
+/* DR_API EXPORT BEGIN */
     INSTR_DO_NOT_MANGLE         = 0x00200000,
+/* DR_API EXPORT END */
     INSTR_HAS_CUSTOM_STUB       = 0x00400000,
     /* used to indicate that an indirect call can be treated as a direct call */
     INSTR_IND_CALL_DIRECT       = 0x00800000,
@@ -1595,7 +1693,9 @@ enum {
     INSTR_SHARED_SYSCALL        = 0x01000000,
 #endif
 
-    /* (unused)                 = 0x02000000, */
+#ifdef CLIENT_INTERFACE
+    INSTR_CLOBBER_RETADDR       = 0x02000000,
+#endif
 
     /* Signifies that this instruction may need to be hot patched and should
      * therefore not cross a cache line. It is not necessary to set this for
@@ -1618,14 +1718,9 @@ enum {
 #endif
     /* PR 267260: distinguish our own mangling from client-added instrs */
     INSTR_OUR_MANGLING          = 0x80000000,
-};
-
-/* DR_API EXPORT TOFILE dr_ir_instr.h */
-
-/* FIXME: could shrink prefixes, eflags, opcode, and flags fields
- * this struct isn't a memory bottleneck though b/c it isn't persistent
- */
 /* DR_API EXPORT BEGIN */
+};
+#endif /* DR_FAST_IR */
 
 /**
  * Data slots available in a label (instr_create_label()) instruction
@@ -1637,6 +1732,12 @@ typedef struct _dr_instr_label_data_t {
 } dr_instr_label_data_t;
 
 #ifdef DR_FAST_IR
+/* DR_API EXPORT END */
+/* FIXME: could shrink prefixes, eflags, opcode, and flags fields
+ * this struct isn't a memory bottleneck though b/c it isn't persistent
+ */
+/* DR_API EXPORT BEGIN */
+
 /**
  * instr_t type exposed for optional "fast IR" access.  Note that DynamoRIO
  * reserves the right to change this structure across releases and does
@@ -1699,11 +1800,301 @@ struct _instr_t {
 
 }; /* instr_t */
 #endif /* DR_FAST_IR */
+
+/****************************************************************************
+ * INSTR ROUTINES
+ */
+/**
+ * @file dr_ir_instr.h
+ * @brief Functions to create and manipulate instructions.
+ */
+
 /* DR_API EXPORT END */
 
-/* functions to inspect and manipulate the fields of an instr_t 
- * NB: a number of instr_ routines are declared in arch_exports.h.
+DR_API
+/**
+ * Returns an initialized instr_t allocated on the thread-local heap.
+ * Sets the x86/x64 mode of the returned instr_t to the mode of dcontext.
  */
+/* For -x86_to_x64, sets the mode of the instr to the code cache mode instead of
+the app mode. */
+instr_t*
+instr_create(dcontext_t *dcontext);
+
+DR_API
+/** Initializes \p instr.
+ * Sets the x86/x64 mode of \p instr to the mode of dcontext.
+ */
+void
+instr_init(dcontext_t *dcontext, instr_t *instr);
+
+DR_API
+/**
+ * Deallocates all memory that was allocated by \p instr.  This
+ * includes raw bytes allocated by instr_allocate_raw_bits() and
+ * operands allocated by instr_set_num_opnds().  Does not deallocate
+ * the storage for \p instr itself.
+ */
+void
+instr_free(dcontext_t *dcontext, instr_t *instr);
+
+DR_API
+/**
+ * Performs both instr_free() and instr_init().
+ * \p instr must have been initialized.
+ */
+void
+instr_reset(dcontext_t *dcontext, instr_t *instr);
+
+DR_API
+/**
+ * Frees all dynamically allocated storage that was allocated by \p instr,
+ * except for allocated bits.
+ * Also zeroes out \p instr's fields, except for raw bit fields,
+ * whether \p instr is instr_ok_to_mangle(), and the x86 mode of \p instr.
+ * \p instr must have been initialized.
+ */
+void
+instr_reuse(dcontext_t *dcontext, instr_t *instr);
+
+DR_API
+/**
+ * Performs instr_free() and then deallocates the thread-local heap
+ * storage for \p instr.
+ */
+void
+instr_destroy(dcontext_t *dcontext, instr_t *instr);
+
+DR_API
+INSTR_INLINE
+/**
+ * Returns the next instr_t in the instrlist_t that contains \p instr.
+ * \note The next pointer for an instr_t is inside the instr_t data
+ * structure itself, making it impossible to have on instr_t in
+ * two different InstrLists (but removing the need for an extra data
+ * structure for each element of the instrlist_t).
+ */
+instr_t*
+instr_get_next(instr_t *instr);
+
+DR_API
+INSTR_INLINE
+/** Returns the previous instr_t in the instrlist_t that contains \p instr. */
+instr_t*
+instr_get_prev(instr_t *instr);
+
+DR_API
+INSTR_INLINE
+/** Sets the next field of \p instr to point to \p next. */
+void
+instr_set_next(instr_t *instr, instr_t *next);
+
+DR_API
+INSTR_INLINE
+/** Sets the prev field of \p instr to point to \p prev. */
+void
+instr_set_prev(instr_t *instr, instr_t *prev);
+
+DR_API
+INSTR_INLINE
+/**
+ * Gets the value of the user-controlled note field in \p instr.
+ * \note Important: is also used when emitting for targets that are other
+ * instructions.  Thus it will be overwritten when calling instrlist_encode()
+ * or instrlist_encode_to_copy() with \p has_instr_jmp_targets set to true.
+ * \note The note field is copied (shallowly) by instr_clone().
+ */
+void *
+instr_get_note(instr_t *instr);
+
+DR_API
+INSTR_INLINE
+/** Sets the user-controlled note field in \p instr to \p value. */
+void
+instr_set_note(instr_t *instr, void *value);
+
+DR_API
+/** Return the taken target pc of the (direct branch) instruction. */
+app_pc
+instr_get_branch_target_pc(instr_t *cti_instr);
+
+DR_API
+/** Set the taken target pc of the (direct branch) instruction. */
+void
+instr_set_branch_target_pc(instr_t *cti_instr, app_pc pc);
+
+DR_API
+/**
+ * Returns true iff \p instr is a conditional branch, unconditional branch,
+ * or indirect branch with a program address target (NOT an instr_t address target)
+ * and \p instr is ok to mangle.
+ */
+#ifdef UNSUPPORTED_API
+/**
+ * This routine does NOT try to decode an opcode in a Level 1 or Level
+ * 0 routine, and can thus be called on Level 0 routines.
+ */
+#endif
+bool
+instr_is_exit_cti(instr_t *instr);
+
+DR_API
+/** Return true iff \p instr's opcode is OP_int, OP_into, or OP_int3. */
+bool
+instr_is_interrupt(instr_t *instr);
+
+#ifdef UNSUPPORTED_API
+DR_API
+/**
+ * Returns true iff \p instr has been marked as targeting the prefix of its
+ * target fragment.
+ *
+ * Some code manipulations need to store a target address in a
+ * register and then jump there, but need the register to be restored
+ * as well.  DR provides a single-instruction prefix that is
+ * placed on all fragments (basic blocks as well as traces) that
+ * restores ecx.  It is on traces for internal DR use.  To have
+ * it added to basic blocks as well, call
+ * dr_add_prefixes_to_basic_blocks() during initialization.
+ */
+bool
+instr_branch_targets_prefix(instr_t *instr);
+
+DR_API
+/**
+ * If \p val is true, indicates that \p instr's target fragment should be
+ *   entered through its prefix, which restores ecx.
+ * If \p val is false, indicates that \p instr should target the normal entry
+ *   point and not the prefix.
+ *
+ * Some code manipulations need to store a target address in a
+ * register and then jump there, but need the register to be restored
+ * as well.  DR provides a single-instruction prefix that is
+ * placed on all fragments (basic blocks as well as traces) that
+ * restores ecx.  It is on traces for internal DR use.  To have
+ * it added to basic blocks as well, call
+ * dr_add_prefixes_to_basic_blocks() during initialization.
+ */
+void
+instr_branch_set_prefix_target(instr_t *instr, bool val);
+#endif /* UNSUPPORTED_API */
+
+DR_UNS_API
+/**
+ * Returns true iff \p instr has been marked as a selfmod check failure
+ * exit.
+ */
+bool
+instr_branch_selfmod_exit(instr_t *instr);
+
+DR_UNS_API
+/**
+ * If \p val is true, indicates that \p instr is a selfmod check failure exit.
+ * If \p val is false, indicates otherwise.
+ */
+void
+instr_branch_set_selfmod_exit(instr_t *instr, bool val);
+
+DR_API
+INSTR_INLINE
+/**
+ * Return true iff \p instr is not a meta-instruction
+ * (see instr_set_ok_to_mangle() for more information).
+ */
+bool
+instr_ok_to_mangle(instr_t *instr);
+
+DR_API
+/**
+ * Sets \p instr to "ok to mangle" if \p val is true and "not ok to
+ * mangle" if \p val is false.  An instruction that is "not ok to
+ * mangle" is treated by DR as a "meta-instruction", distinct from
+ * normal application instructions, and is not mangled in any way.
+ * This is necessary to have DR not create an exit stub for a direct
+ * jump.  All non-meta instructions that are added to basic blocks or
+ * traces should have their translation fields set (via
+ * #instr_set_translation(), or the convenience routine
+ * #instr_set_meta_no_translation()) when recreating state at a fault;
+ * meta instructions should not fault (unless such faults are handled
+ * by the client) and are not considered
+ * application instructions but rather added instrumentation code (see
+ * #dr_register_bb_event() for further information on recreating).
+ */
+void
+instr_set_ok_to_mangle(instr_t *instr, bool val);
+
+DR_API
+/**
+ * A convenience routine that calls both
+ * #instr_set_ok_to_mangle (instr, false) and
+ * #instr_set_translation (instr, NULL).
+ */
+void
+instr_set_meta_no_translation(instr_t *instr);
+
+DR_API
+#ifdef AVOID_API_EXPORT
+/* This is hot internally, but unlikely to be used by clients. */
+INSTR_INLINE
+#endif
+/** Return true iff \p instr is to be emitted into the cache. */
+bool
+instr_ok_to_emit(instr_t *instr);
+
+DR_API
+/**
+ * Set \p instr to "ok to emit" if \p val is true and "not ok to emit"
+ * if \p val is false.  An instruction that should not be emitted is
+ * treated normally by DR for purposes of exits but is not placed into
+ * the cache.  It is used for final jumps that are to be elided.
+ */
+void
+instr_set_ok_to_emit(instr_t *instr, bool val);
+
+#ifdef CUSTOM_EXIT_STUBS
+DR_API
+/**
+ * If \p instr is not an exit cti, does nothing.
+ * If \p instr is an exit cti, sets \p stub to be custom exit stub code
+ * that will be inserted in the exit stub prior to the normal exit
+ * stub code.  If \p instr already has custom exit stub code, that
+ * existing instrlist_t is cleared and destroyed (using current thread's
+ * context).  (If \p stub is NULL, any existing stub code is NOT destroyed.)
+ * The creator of the instrlist_t containing \p instr is
+ * responsible for destroying stub.
+ * \note Custom exit stubs containing control transfer instructions to
+ * other instructions inside a fragment besides the custom stub itself
+ * are not fully supported in that they will not be decoded from the
+ * cache properly as having instr_t targets.
+ */
+void
+instr_set_exit_stub_code(instr_t *instr, instrlist_t *stub);
+
+DR_API
+/**
+ * Returns the custom exit stub code instruction list that has been
+ * set for this instruction.  If none exists, returns NULL.
+ */
+instrlist_t *
+instr_exit_stub_code(instr_t *instr);
+#endif
+
+DR_API
+/**
+ * Returns the length of \p instr.
+ * As a side effect, if instr_ok_to_mangle(instr) and \p instr's raw bits
+ * are invalid, encodes \p instr into bytes allocated with
+ * instr_allocate_raw_bits(), after which instr is marked as having
+ * valid raw bits.
+ */
+int
+instr_length(dcontext_t *dcontext, instr_t *instr);
+
+/* not exported */
+void instr_shift_raw_bits(instr_t *instr, ssize_t offs);
+uint instr_branch_type(instr_t *cti_instr);
+int instr_exit_branch_type(instr_t *instr);
+void instr_exit_branch_set_type(instr_t *instr, uint type);
 
 DR_API
 /** Returns number of bytes of heap used by \p instr. */
@@ -1778,6 +2169,7 @@ const struct instr_info_t *
 get_instr_info(int opcode);
 
 DR_API
+INSTR_INLINE
 /**
  * Returns the number of source operands of \p instr.
  *
@@ -1789,6 +2181,7 @@ int
 instr_num_srcs(instr_t *instr);
 
 DR_API
+INSTR_INLINE
 /**
  * Returns the number of destination operands of \p instr.
  */
@@ -1854,6 +2247,9 @@ DR_API
 void 
 instr_set_target(instr_t *cti_instr, opnd_t target);
 
+#ifdef AVOID_API_EXPORT
+INSTR_INLINE  /* hot internally */
+#endif
 DR_API
 /** Returns true iff \p instr's operands are up to date. */
 bool 
@@ -1935,16 +2331,25 @@ DR_API
 void 
 instr_set_raw_bits_valid(instr_t *instr, bool valid);
 
+#ifdef AVOID_API_EXPORT
+INSTR_INLINE  /* internal inline */
+#endif
 DR_API
 /** Returns true iff \p instr's raw bits are a valid encoding of instr. */
 bool 
 instr_raw_bits_valid(instr_t *instr);
 
+#ifdef AVOID_API_EXPORT
+INSTR_INLINE  /* internal inline */
+#endif
 DR_API
 /** Returns true iff \p instr has its own allocated memory for raw bits. */
 bool 
 instr_has_allocated_bits(instr_t *instr);
 
+#ifdef AVOID_API_EXPORT
+INSTR_INLINE  /* internal inline */
+#endif
 DR_API
 /** Returns true iff \p instr's raw bits are not a valid encoding of \p instr. */
 bool 
@@ -2217,6 +2622,12 @@ DR_UNS_API
  */
 void
 instr_decode(dcontext_t *dcontext, instr_t *instr);
+
+/* Calls instr_decode() with the current dcontext.  *Not* exported.  Mostly
+ * useful as the slow path for IR routines that get inlined.
+ */
+instr_t *
+instr_decode_with_current_dcontext(instr_t *instr);
 
 /* DR_API EXPORT TOFILE dr_ir_instrlist.h */
 DR_UNS_API
@@ -2561,7 +2972,7 @@ decode_memory_reference_size(dcontext_t *dcontext, app_pc pc, uint *size_in_byte
 /* DR_API EXPORT TOFILE dr_ir_instr.h */
 DR_API
 /**
- * Returns true iff \p instr is an IA-32 "mov" instruction: either OP_mov_st,
+ * Returns true iff \p instr is an IA-32/AMD64 "mov" instruction: either OP_mov_st,
  * OP_mov_ld, OP_mov_imm, OP_mov_seg, or OP_mov_priv.
  */
 bool 
@@ -2579,6 +2990,11 @@ DR_API
 /** Returns true iff \p instr's opcode is OP_call or OP_call_far. */
 bool 
 instr_is_call_direct(instr_t *instr);
+
+DR_API
+/** Returns true iff \p instr's opcode is OP_call. */
+bool 
+instr_is_near_call_direct(instr_t *instr);
 
 DR_API
 /** Returns true iff \p instr's opcode is OP_call_ind or OP_call_far_ind. */
@@ -2666,6 +3082,14 @@ instr_is_ubr(instr_t *instr);
 
 DR_API
 /**
+ * Returns true iff \p instr is a near unconditional direct branch: OP_jmp,
+ * or OP_jmp_short.
+ */
+bool 
+instr_is_near_ubr(instr_t *instr);
+
+DR_API
+/**
  * Returns true iff \p instr is a far control transfer instruction: OP_jmp_far,
  * OP_call_far, OP_jmp_far_ind, OP_call_far_ind, OP_ret_far, or OP_iret.
  */
@@ -2728,6 +3152,28 @@ DR_API
 /** Returns true iff \p instr is a floating point instruction. */
 bool 
 instr_is_floating(instr_t *instr);
+
+/* DR_API EXPORT BEGIN */
+/**
+ * Indicates which type of floating-point operation and instruction performs.
+ */
+typedef enum {
+    DR_FP_STATE,   /**< Loads, stores, or queries general floating point state. */
+    DR_FP_MOVE,    /**< Moves floating point values from one location to another. */
+    DR_FP_CONVERT, /**< Converts to or from floating point values. */
+    DR_FP_MATH,    /**< Performs arithmetic or conditional operations. */
+} dr_fp_type_t;
+/* DR_API EXPORT END */
+
+DR_API
+/**
+ * Returns true iff \p instr is a floating point instruction.
+ * @param[in] instr  The instruction to query
+ * @param[out] type  If the return value is true and \p type is
+ *   non-NULL, the type of the floating point operation is written to \p type.
+ */
+bool 
+instr_is_floating_ex(instr_t *instr, dr_fp_type_t *type);
 
 DR_API
 /** Returns true iff \p instr is part of Intel's MMX instructions. */
@@ -2829,10 +3275,10 @@ opnd_t
 instr_get_src_mem_access(instr_t *instr);
 
 void 
-loginst(dcontext_t *dcontext, uint level, instr_t *instr, char *string);
+loginst(dcontext_t *dcontext, uint level, instr_t *instr, const char *string);
 
 void 
-logopnd(dcontext_t *dcontext, uint level, opnd_t opnd, char *string);
+logopnd(dcontext_t *dcontext, uint level, opnd_t opnd, const char *string);
 
 DR_API
 /**
@@ -3183,6 +3629,9 @@ opnd_t opnd_create_sized_tls_slot(int offs, opnd_size_t size);
 bool instr_raw_is_tls_spill(byte *pc, reg_id_t reg, ushort offs);
 bool instr_is_tls_spill(instr_t *instr, reg_id_t reg, ushort offs);
 bool instr_is_tls_xcx_spill(instr_t *instr);
+/* Pass REG_NULL to not care about the reg */
+bool
+instr_is_tls_restore(instr_t *instr, reg_id_t reg, ushort offs);
 bool
 instr_is_reg_spill_or_restore(dcontext_t *dcontext, instr_t *instr,
                               bool *tls, bool *spill, reg_id_t *reg);
@@ -3192,6 +3641,10 @@ instr_is_reg_spill_or_restore(dcontext_t *dcontext, instr_t *instr,
  * client use the rest. */
 instr_t * instr_create_save_to_tls(dcontext_t *dcontext, reg_id_t reg, ushort offs);
 instr_t * instr_create_restore_from_tls(dcontext_t *dcontext, reg_id_t reg, ushort offs);
+/* For -x86_to_x64, we can spill to 64-bit extra registers (xref i#751). */
+instr_t * instr_create_save_to_reg(dcontext_t *dcontext, reg_id_t reg1, reg_id_t reg2);
+instr_t * instr_create_restore_from_reg(dcontext_t *dcontext,
+                                        reg_id_t reg1, reg_id_t reg2);
 
 #ifdef X64
 byte *
@@ -4487,5 +4940,7 @@ enum {
 
 /****************************************************************************/
 /* DR_API EXPORT END */
+
+#include "instr_inline.h"
 
 #endif /* _INSTR_H_ */

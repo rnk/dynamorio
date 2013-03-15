@@ -41,6 +41,10 @@
 
 #include "configure.h"
 
+#if defined(X86_64) && !defined(X64)
+# define X64
+#endif
+
 /****************************************************/
 #if defined(ASSEMBLE_WITH_GAS)
 # define START_FILE .text
@@ -102,11 +106,13 @@ ASSUME fs:_DATA @N@\
 # define END_FILE END
 /* we don't seem to need EXTERNDEF or GLOBAL */
 # define DECLARE_FUNC(symbol) symbol PROC
-# define DECLARE_EXPORTED_FUNC(symbol) symbol PROC
+# define DECLARE_EXPORTED_FUNC(symbol) symbol PROC EXPORT
 # define END_FUNC(symbol) symbol ENDP
-# define DECLARE_GLOBAL(symbol) 
-# define GLOBAL_LABEL(label) 
-# define ADDRTAKEN_LABEL(label) label
+# define DECLARE_GLOBAL(symbol) PUBLIC symbol
+/* XXX: this should be renamed FUNC_ENTRY_LABEL */
+# define GLOBAL_LABEL(label)
+/* use double colon (param always has its own colon) to make label visible outside proc */
+# define ADDRTAKEN_LABEL(label) label:
 # define BYTE byte ptr
 # define WORD word ptr
 # define DWORD dword ptr
@@ -157,7 +163,7 @@ ASSUME fs:_DATA @N@\
 # define END_PROLOG /* nothing */
 /****************************************************/
 #else
-# error Unknown assembler
+# error Unknown assembler: set one of the ASSEMBLE_WITH_{GAS,MASM,NASM} defines
 #endif
 
 /****************************************************/
@@ -221,6 +227,20 @@ ASSUME fs:_DATA @N@\
 # define ARG5 DWORD [20 + esp]
 # define ARG6 DWORD [24 + esp]
 # define ARG7 DWORD [28 + esp]
+#endif
+
+/* Keep in sync with arch_exports.h. */
+#define FRAME_ALIGNMENT 16
+
+/* From globals_shared.h, but we can't include that into asm code. */
+#ifdef X64
+# define IF_X64(x) x
+# define IF_X64_ELSE(x, y) x
+# define IF_NOT_X64(x)
+#else
+# define IF_X64(x)
+# define IF_X64_ELSE(x, y) y
+# define IF_NOT_X64(x) x
 #endif
 
 #ifdef X64

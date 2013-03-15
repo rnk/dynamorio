@@ -1,5 +1,5 @@
 # **********************************************************
-# Copyright (c) 2010-2012 Google, Inc.    All rights reserved.
+# Copyright (c) 2010-2013 Google, Inc.    All rights reserved.
 # Copyright (c) 2009-2010 VMware, Inc.    All rights reserved.
 # **********************************************************
 
@@ -66,9 +66,16 @@ if ("${CMAKE_GENERATOR}" MATCHES "Visual Studio")
   endforeach ()
 endif ()
 
+if (BUILD_TESTS)
+  # For automated sanity tests we can't have msgboxes or output
+  set(SHOW_RESULTS_DEFAULT OFF)
+else (BUILD_TESTS)
+  set(SHOW_RESULTS_DEFAULT ON)
+endif (BUILD_TESTS)
+
 option(SHOW_RESULTS
   "Display client results in pop-up (Windows) or console message (Linux)"
-  ON)
+  ${SHOW_RESULTS_DEFAULT})
 if (SHOW_RESULTS)
   add_definitions(-DSHOW_RESULTS)
 endif (SHOW_RESULTS)
@@ -81,6 +88,25 @@ if (NOT DEFINED GENERATE_PDBS)
   # support running tests over ssh where pdb building is problematic
   set(GENERATE_PDBS ON)
 endif (NOT DEFINED GENERATE_PDBS)
+
+if (STATIC_LIBRARY)
+  set(libtype STATIC)
+else()
+  set(libtype SHARED)
+endif ()
+
+# i#379: We usually want to build the samples with optimizations to improve the
+# chances of inlining, but it's nice to be able to turn that off easily.  A
+# release build should already have optimizations, so this should only really
+# affect debug builds.
+option(OPTIMIZE_SAMPLES
+  "Build samples with optimizations to increase the chances of clean call inlining (overrides debug flags)"
+  ON)
+if (WIN32)
+  set(OPT_CFLAGS "/O2")
+else (WIN32)
+  set(OPT_CFLAGS "-O2")
+endif (WIN32)
 
 if (NOT DEFINED DynamoRIO_DIR)
   set(DynamoRIO_DIR "${PROJECT_SOURCE_DIR}/../cmake" CACHE PATH
@@ -103,76 +129,112 @@ if (WIN32)
   add_definitions(-D_CRT_SECURE_NO_WARNINGS)
 endif (WIN32)
 
-file(GLOB srcs *.c *.cpp)
-# Not all clients are supported on all plaforms
-string(REGEX REPLACE "[^;]*MF_moduledb.c" "" srcs "${srcs}")
-if (UNIX OR CMAKE_C_SIZEOF_DATA_PTR EQUAL 8)
-  string(REGEX REPLACE "[^;]*stats.c" "" srcs "${srcs}")
-endif (UNIX OR CMAKE_C_SIZEOF_DATA_PTR EQUAL 8)
+if (OPTIMIZE_SAMPLES)
+  set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} ${OPT_CFLAGS}")
+  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${OPT_CFLAGS}")
+endif ()
 
-foreach (src ${srcs})
-  get_filename_component(tgt ${src} NAME_WE)
-  
-  if ("${tgt}" STREQUAL "tracedump")
-    # standalone app
-    add_executable(${tgt} ${src})
-    # We don't want an rpath as it makes it hard to switch
-    # between debug and release at runtime (rpath is removed
-    # on "make install"; here we avoid in build dir).
-    # DynamoRIOConfig.cmake sets for standalone but not lib.
-    set(DynamoRIO_RPATH OFF)
-    configure_DynamoRIO_standalone(${tgt})
+function (add_sample_client name source_file_list extension_list)
+  add_library(${name} ${libtype} ${source_file_list})
+  configure_DynamoRIO_client(${name})
+  foreach (ext ${extension_list})
+    use_DynamoRIO_extension(${name} ${ext})
+  endforeach (ext)
 
-    get_target_property(tgtnm ${tgt} LOCATION)
+  # Provide a hint for how to use the client
+  if (NOT DynamoRIO_INTERNAL OR NOT "${CMAKE_GENERATOR}" MATCHES "Ninja")
+    get_target_property(path ${name} LOCATION${location_suffix})
+    add_custom_command(TARGET ${name}
+      POST_BUILD
+      COMMAND ${CMAKE_COMMAND}
+      ARGS -E echo "Usage: pass to drconfig or drrun: -c ${path}"
+      VERBATIM)
+  endif ()
+
+  get_property(sample_list GLOBAL PROPERTY DynamoRIO_sample_list) # NON-PUBLIC
+  set_property(GLOBAL PROPERTY DynamoRIO_sample_list              # NON-PUBLIC
+    "${sample_list};${name}")                                     # NON-PUBLIC
+  set(srcs ${srcs} ${source_file_list} PARENT_SCOPE)              # NON-PUBLIC
+  set(tgts ${tgts} ${name} PARENT_SCOPE)                          # NON-PUBLIC
+endfunction (add_sample_client)
+
+function (add_sample_standalone name source_file_list)
+  add_executable(${name} ${source_file_list})
+
+  # We don't want an rpath as it makes it hard to switch
+  # between debug and release at runtime (rpath is removed
+  # on "make install"; here we avoid in build dir).
+  # DynamoRIOConfig.cmake sets for standalone but not lib.
+  set(DynamoRIO_RPATH OFF)
+  configure_DynamoRIO_standalone(${name})
+
+  # Provide a hint for running
+  if (NOT DynamoRIO_INTERNAL OR NOT "${CMAKE_GENERATOR}" MATCHES "Ninja")
     if (UNIX)
       set(FIND_MSG "(set LD_LIBRARY_PATH)")
     else (UNIX)
       set(FIND_MSG "(set PATH or copy to same directory)")
     endif (UNIX)
-    add_custom_command(TARGET ${tgt}
+    add_custom_command(TARGET ${name}
       POST_BUILD
       COMMAND ${CMAKE_COMMAND}
       ARGS -E echo "Make sure the loader finds the dynamorio library ${FIND_MSG}"
       VERBATIM)
-  else ("${tgt}" STREQUAL "tracedump")
-    add_library(${tgt} SHARED ${src})
-    if (SHOW_SYMBOLS AND "${tgt}" STREQUAL "instrcalls" AND DR_EXT_DRSYMS_STATIC)
-      # required for using drsyms built as a static library
-      set(DynamoRIO_USE_LIBC ON)
-    endif ()
-    configure_DynamoRIO_client(${tgt})
+  endif ()
+  set(srcs ${srcs} ${source_file_list} PARENT_SCOPE)              # NON-PUBLIC
+  set(tgts ${tgts} ${name} PARENT_SCOPE)                          # NON-PUBLIC
+endfunction (add_sample_standalone)
 
-    if (SHOW_SYMBOLS AND "${tgt}" STREQUAL "instrcalls")
-      use_DynamoRIO_extension(${tgt} drsyms)
-      if (DR_EXT_DRSYMS_STATIC)
-        set(DynamoRIO_USE_LIBC OFF) # reset
-      endif ()
-    endif ()
-    if ("${tgt}" STREQUAL "strace")
-      use_DynamoRIO_extension(${tgt} drmgr)
-    endif ()
-    if ("${tgt}" STREQUAL "wrap")
-      use_DynamoRIO_extension(${tgt} drwrap)
-    endif ()
-    if ("${tgt}" STREQUAL "memtrace")
-      use_DynamoRIO_extension(${tgt} drmgr)
-      use_DynamoRIO_extension(${tgt} drutil)
-    endif ()
+###########################################################################
 
-    get_target_property(tgtnm ${tgt} LOCATION${location_suffix})
-    add_custom_command(TARGET ${tgt}
-      POST_BUILD
-      COMMAND ${CMAKE_COMMAND}
-      ARGS -E echo "Usage: pass to drconfig or drrun: -client ${tgtnm} 0 \"\""
-      VERBATIM)
-  endif ("${tgt}" STREQUAL "tracedump")
+# As we'll be calling configure_DynamoRIO_{client,standalone} from within
+# a function scope, we must set the global vars ahead of time:
+configure_DynamoRIO_global(OFF ON)
 
-  set(tgts ${tgts} ${tgt})
-endforeach (src)
+# Use ;-separated lists for source files and extensions.
 
-# Strip out everything past this point for the user-exposed file
+add_sample_client(bbbuf       "bbbuf.c"         "")
+add_sample_client(bbcount     "bbcount.c"       "")
+add_sample_client(bbcov       "bbcov.c"         "drmgr;drcontainers")
+add_sample_client(bbsize      "bbsize.c"        "")
+add_sample_client(cbr         "cbr.c"           "")
+add_sample_client(countcalls  "countcalls.c"    "")
+add_sample_client(div         "div.c"           "")
+add_sample_client(empty       "empty.c"         "")
+add_sample_client(inc2add     "inc2add.c"       "")
+add_sample_client(inline      "inline.c"        "")
+add_sample_client(inscount    "inscount.c"      "")
+add_sample_client(memtrace    "memtrace.c"      "drmgr;drutil")
+add_sample_client(prefetch    "prefetch.c"      "")
+add_sample_client(signal      "signal.c"        "")
+add_sample_client(stl_test    "stl_test.cpp"    "")
+add_sample_client(strace      "strace.c"        "drmgr")
+add_sample_client(wrap        "wrap.c"          "drwrap")
+
+if (SHOW_SYMBOLS AND DR_EXT_DRSYMS_STATIC)
+  # required for using drsyms built as a static library
+  set(DynamoRIO_USE_LIBC ON)
+endif ()
+add_sample_client(instrcalls  "instrcalls.c"    "drsyms")
+if (SHOW_SYMBOLS AND DR_EXT_DRSYMS_STATIC)
+  set(DynamoRIO_USE_LIBC OFF) # reset
+endif ()
+
+if (WIN32)
+  # This client is Windows-only.
+  add_sample_client(stats     "stats.c"         "")
+
+  # XXX i#893: drwrap's asm isn't SEH compliant.
+  append_property_string(TARGET wrap LINK_FLAGS "/safeseh:no")
+endif ()
+
+add_sample_standalone(tracedump   "tracedump.c")
+
+# Strip out everything past this point for the user-exposed file.
+# We also remove any lines above marked "NON_PUBLIC".
 # Should we add some install targets for users?
 file(READ "${CMAKE_CURRENT_SOURCE_DIR}/CMakeLists.txt" string)
+string(REGEX REPLACE "[^\n]*NON-PUBLIC[^\n]*\n" "" string "${string}")
 string(REGEX REPLACE "# Strip out everything.*$" "" string "${string}")
 string(REGEX REPLACE "\\$\\{(VERSION_NUMBER[^\\}]*)\\}" "@\\1@" string "${string}")
 file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/CMakeLists-public.txt.in" "${string}")
@@ -187,6 +249,9 @@ foreach (tgt ${tgts})
     # I believe it's the lack of CMAKE_BUILD_TYPE that's eliminating this?
     # In any case we make sure to add it:
     get_target_property(cur_flags ${tgt} LINK_FLAGS)
+    if (NOT cur_flags)
+      set(cur_flags "") # XXX: if we require cmake 2.8.6 we can simply use APPEND_STRING
+    endif (NOT cur_flags)
     set_target_properties(${tgt} PROPERTIES LINK_FLAGS "${cur_flags} /debug")
   endif (WIN32 AND GENERATE_PDBS)
 endforeach (tgt)

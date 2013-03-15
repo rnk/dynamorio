@@ -443,7 +443,7 @@ parse_liststring_t(liststring_t *var, void *value) {
 
 /* PR 330860: the for_this_process bool is read in OPTION_COMMAND statements */
 static int
-set_dynamo_options_common(options_t *options, char *optstr, bool for_this_process)
+set_dynamo_options_common(options_t *options, const char *optstr, bool for_this_process)
 {
     char *opt;
     const char *pos = optstr;
@@ -502,14 +502,14 @@ set_dynamo_options_common(options_t *options, char *optstr, bool for_this_proces
 #undef OPTION_COMMAND
 
 CORE_STATIC int
-set_dynamo_options(options_t *options, char *optstr)
+set_dynamo_options(options_t *options, const char *optstr)
 {
     return set_dynamo_options_common(options, optstr, true);
 }
 
 #if !defined(NOT_DYNAMORIO_CORE) && defined(WINDOWS)
 static int
-set_dynamo_options_other_process(options_t *options, char *optstr)
+set_dynamo_options_other_process(options_t *options, const char *optstr)
 {
     return set_dynamo_options_common(options, optstr, false);
 }
@@ -521,7 +521,7 @@ set_dynamo_options_other_process(options_t *options, char *optstr)
  * option value 
  */
 bool
-check_param_bounds(uint *val, uint min, uint max, char *name)
+check_param_bounds(uint *val, uint min, uint max, const char *name)
 {
     bool ret = false;
     uint new_val;
@@ -1581,6 +1581,14 @@ check_option_compatibility_helper(int recurse_count)
     }
 #endif
 
+#if defined(LINUX) && defined(CLIENT_INTERFACE)
+    if (DYNAMO_OPTION(early_inject) && !DYNAMO_OPTION(private_loader)) {
+        USAGE_ERROR("-early_inject requires -private_loader, turning on -private_loader");
+        dynamo_options.private_loader = true;
+        changed_options = true;
+    }
+#endif /* LINUX && CLIENT_INTERFACE */
+
 #ifdef WINDOWS
     if (DYNAMO_OPTION(inject_at_create_process) && !DYNAMO_OPTION(early_inject)) {
         USAGE_ERROR("-inject_at_create_process requires -early_inject, setting to defaults");
@@ -1638,14 +1646,12 @@ check_option_compatibility_helper(int recurse_count)
     if ((DYNAMO_OPTION(follow_children) || DYNAMO_OPTION(follow_systemwide) ||
          DYNAMO_OPTION(follow_explicit_children)) &&
         get_os_version() >= WINDOWS_VERSION_VISTA &&
-        (!DYNAMO_OPTION(early_inject) || 
-         (!DYNAMO_OPTION(inject_at_create_process) &&
-          !DYNAMO_OPTION(vista_inject_at_create_process)))) {
+        !DYNAMO_OPTION(inject_at_create_process) &&
+        !DYNAMO_OPTION(vista_inject_at_create_process)) {
         /* We won't follow into child processes.  Won't affect the current
          * proccess so only a warning. */
-        SYSLOG_INTERNAL_WARNING("Vista+ requires -early_inject and -vista_"
-                                "inject_at_create_process options to follow "
-                                "into child processes"); 
+        SYSLOG_INTERNAL_WARNING("Vista+ requires -vista_inject_at_create_process "
+                                "to follow into child processes"); 
     }
 #ifdef PROCESS_CONTROL
     if (IS_PROCESS_CONTROL_ON() && !DYNAMO_OPTION(follow_systemwide)) {
@@ -2076,15 +2082,68 @@ get_process_options(HANDLE process_handle)
 }
 # endif /* WINDOWS */
 
+# ifdef CLIENT_INTERFACE
+/* i#771: Allow the client to query all DR runtime options. */
+DR_API
+bool
+dr_get_string_option(const char *option_name, char *buf OUT, size_t len)
+{
+    bool found = false;
+    CLIENT_ASSERT(buf != NULL, "invalid parameter");
+    string_option_read_lock();
+#define OPTION_COMMAND(type, name, default_value, command_line_option,      \
+                       statement, description, flag, pcache)                \
+    if (IS_OPTION_STRING(name) && !found &&                                 \
+        strcmp(option_name, #name) == 0) {                                  \
+        strncpy(buf, (const char*)&dynamo_options.name, len);               \
+        found = true;                                                       \
+    }
+#include "optionsx.h"
+#undef OPTION_COMMAND
+    string_option_read_unlock();
+    if (len > 0)
+        buf[len-1] = '\0';
+    return found;
+}
+
+DR_API
+bool
+dr_get_integer_option(const char *option_name, uint64 *val OUT)
+{
+    bool found = false;
+    CLIENT_ASSERT(val != NULL, "invalid parameter");
+    *val = 0;
+    /* gcc warns about casting strings to uint64 because uint64 isn't
+     * pointer-sized, so we cast to ptr_uint_t.  We don't have any uint64
+     * options in 32-bit, so this will never truncate.
+     * XXX: If we ever have signed integer options we'll need to sign extend
+     * here instead of zero extending.
+     */
+#define OPTION_COMMAND(type, name, default_value, command_line_option,      \
+                       statement, description, flag, pcache)                \
+    if (!IS_OPTION_STRING(name) && !found &&                                \
+        strcmp(option_name, #name) == 0) {                                  \
+        *val = (ptr_uint_t)dynamo_options.name;                             \
+        found = true;                                                       \
+    }
+#include "optionsx.h"
+#undef OPTION_COMMAND
+    return found;
+}
+# endif /* CLIENT_INTERFACE */
+
 #endif /* NOT_DYNAMORIO_CORE */
 
 
-#ifdef OPTIONS_UNIT_TEST
+#ifdef STANDALONE_UNIT_TEST
 
 static void
 show_dynamo_options(bool minimal)
 {
-    char opstring[MAX_OPTIONS_STRING];
+    /* Printing all options requires a large buffer.  This is test code, so we
+     * can still put this on the stack.
+     */
+    char opstring[8*MAX_OPTIONS_STRING];
 
     get_dynamo_options_string(&dynamo_options, opstring,
                               sizeof(opstring), minimal);
@@ -2106,13 +2165,13 @@ show_dynamo_option_descriptions()
 #undef OPTION_COMMAND
 }
 
-int
-main() {
+void
+unit_test_options(void)
+{
     char buf[MAX_OPTIONS_STRING];
     options_t new_options;
     int updated;
 
-    standalone_init();
     write_lock(&options_lock); /* simplicity: just grab whole time */
     SELF_UNPROTECT_OPTIONS();
 
@@ -2124,11 +2183,12 @@ main() {
 
     print_file(STDERR, "default---\n");
     show_dynamo_options(false);
-    print_file(STDERR, "after---\n");
+    print_file(STDERR, "\nbefore first set---\n");
     set_dynamo_options(&dynamo_options,
                        "-loglevel 1 -logmask 0x10 -block_mod_load_list 'mylib.dll;evilbad.dll;really_long_name_for_a_dll.dll' -stderr_mask 12");
     show_dynamo_options(true);
 
+    print_file(STDERR, "\nbefore second set---\n");
     set_dynamo_options(&dynamo_options,
                        "-logmask 17 -cache_bb_max 20 -cache_trace_max 20M -svchost_timeout 3m");
     show_dynamo_options(true);
@@ -2153,8 +2213,6 @@ main() {
     print_file(STDERR, "default ops string: %s\n", buf);
     SELF_PROTECT_OPTIONS();
     write_unlock(&options_lock);
-
-    return 0;
 }
 
-#endif /* OPTIONS_UNIT_TEST */
+#endif /* STANDALONE_UNIT_TEST */

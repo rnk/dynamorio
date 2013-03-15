@@ -43,6 +43,7 @@ Windows PECOFF files with DWARF2 line information.
  - \ref sec_drsyms_setup
  - \ref sec_drsyms_exports
  - \ref sec_drsyms_api
+ - \ref sec_drsyms_mem
 
 \section sec_drsyms_setup Setup
 
@@ -57,7 +58,10 @@ The \p drsyms library on Windows relies on the \p dbghelp.dll library from
 Microsoft.  You will need to download the Debugging Tools for Windows
 package from http://www.microsoft.com/whdc/devtools/debugging/default.mspx
 and place the \p dbghelp.dll in the same directory as either \p drsyms.dll
-or as your client library.
+or as your client library.  Version 6.0 or higher of \p dbghelp.dll is
+required, and 6.3 or higher is recommended.  Recent versions of Windows do
+have these versions of \p dbghelp.dll in their system directories, but be
+aware that those versions are not redistributable.
 
 More recent versions of \p dbghelp.dll on Windows can use significant
 amounts of stack space.  We have observed usage of 36KB.  This is within
@@ -94,6 +98,14 @@ routines, as the latter must locate, load, and parse debug information.
 Furthermore, the core API routines operate regardless of whether debug
 information is available.  However, for internal non-exported symbols, \p
 drsyms must be used.
+
+On Linux, \p drsyms searches both \p .dynsym and \p .symtab, while
+dr_get_proc_address() only searches \p .dynsym.  Global symbols in an
+executable (i.e., a non-library) are only present in \p .symtab by
+default.  If the executable is built with the \p -rdynamic flag to \p gcc,
+its global symbols will be placed in \p .dynsym and thus
+dr_get_proc_address() will find them.  Regardless of how it was built, if
+it's not stripped, \p drsyms will find the global symbols.
 
 \section sec_drsyms_api API
 
@@ -137,5 +149,17 @@ For an example of usage see the \p instrcalls sample client distributed with
 DynamoRIO.
 
 When finished with the library, call drsym_exit().
+
+\subsection sec_drsyms_mem Memory Usage
+
+When running large applications, loading debug information for all of their
+modules can occupy a lot of memory, from hundreds of megabytes into the
+gigabyte range.  Use the drsym_free_resources() routine when finished with
+a module to unload its debug information.  Normally, a client will query
+for symbols in the module load event, and then won't need symbols again
+until perhaps a callstack walk later on.  Thus, we recommend that a client
+call drsym_free_resources() at the end of its module load event.  Due to
+fragmentation concerns, it is not easy for drsyms itself to perform
+internal garbage collection at any high frequency.
 
 */

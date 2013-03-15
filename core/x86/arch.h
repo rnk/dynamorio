@@ -1,5 +1,5 @@
 /* **********************************************************
- * Copyright (c) 2010-2012 Google, Inc.  All rights reserved.
+ * Copyright (c) 2010-2013 Google, Inc.  All rights reserved.
  * Copyright (c) 2000-2010 VMware, Inc.  All rights reserved.
  * **********************************************************/
 
@@ -46,12 +46,31 @@
 
 #include <stddef.h> /* for offsetof */
 #include "instr.h" /* for reg_id_t */
+#include "decode.h" /* for X64_CACHE_MODE_DC */
+#include "arch_exports.h" /* for FRAG_IS_32 and FRAG_IS_X86_TO_X64 */
 
 /* FIXME: check on all platforms: these are for Fedora 8 and XP SP2
- * Keep in synch w/ defines in pre_inject_asm.asm
+ * Keep in synch w/ defines in x86.asm
  */
 #define CS32_SELECTOR 0x23
 #define CS64_SELECTOR 0x33
+
+#ifdef X64
+static inline bool
+mixed_mode_enabled(void)
+{
+    /* XXX i#49: currently only supporting WOW64 and thus only
+     * creating x86 versions of gencode for WOW64.  Eventually we'll
+     * have to either always create for every x64 process, or lazily
+     * create on first appearance of 32-bit code.
+     */
+# ifdef WINDOWS
+    return is_wow64_process(NT_CURRENT_PROCESS);
+# else
+    return false;
+# endif
+}
+#endif
 
 /* dcontext_t field offsets 
  * N.B.: DO NOT USE offsetof(dcontext_t) anywhere else if passing to the
@@ -97,8 +116,6 @@
 #define NEXT_TAG_OFFSET        ((PROT_OFFS)+offsetof(dcontext_t, next_tag))
 #define LAST_EXIT_OFFSET       ((PROT_OFFS)+offsetof(dcontext_t, last_exit))
 #define DSTACK_OFFSET          ((PROT_OFFS)+offsetof(dcontext_t, dstack))
-#define NATIVE_EXEC_RETVAL_OFFSET ((PROT_OFFS)+offsetof(dcontext_t, native_exec_retval))
-#define NATIVE_EXEC_RETLOC_OFFSET ((PROT_OFFS)+offsetof(dcontext_t, native_exec_retloc))
 #ifdef RETURN_STACK
 # define RSTACK_OFFSET         ((PROT_OFFS)+offsetof(dcontext_t, rstack))
 # define TOP_OF_RSTACK_OFFSET  ((PROT_OFFS)+offsetof(dcontext_t, top_of_rstack))
@@ -114,6 +131,9 @@
 #  define PRIV_FLS_OFFSET       ((PROT_OFFS)+offsetof(dcontext_t, priv_fls_data))
 #  define APP_RPC_OFFSET        ((PROT_OFFS)+offsetof(dcontext_t, app_nt_rpc))
 #  define PRIV_RPC_OFFSET       ((PROT_OFFS)+offsetof(dcontext_t, priv_nt_rpc))
+#  define APP_NLS_CACHE_OFFSET  ((PROT_OFFS)+offsetof(dcontext_t, app_nls_cache))
+#  define PRIV_NLS_CACHE_OFFSET ((PROT_OFFS)+offsetof(dcontext_t, priv_nls_cache))
+#  define APP_STACK_LIMIT_OFFSET ((PROT_OFFS)+offsetof(dcontext_t, app_stack_limit))
 # endif
 # define NONSWAPPED_SCRATCH_OFFSET  ((PROT_OFFS)+offsetof(dcontext_t, nonswapped_scratch))
 #endif
@@ -163,6 +183,9 @@ preserve_xmm_caller_saved(void)
 typedef enum {
     IBL_UNLINKED,
     IBL_DELETE,
+    /* Pre-ibl routines for far ctis */
+    IBL_FAR,
+    IBL_FAR_UNLINKED,
 #ifdef X64
     /* PR 257963: trace inline cmp has separate entries b/c it saves flags */
     IBL_TRACE_CMP,
@@ -196,12 +219,27 @@ typedef enum {
 #define IS_IBL_TRACE(ibltype) \
     ((ibltype) == IBL_TRACE_PRIVATE || (ibltype) == IBL_TRACE_SHARED)
 #define IS_IBL_LINKED(ibltype) \
-    ((ibltype) == IBL_LINKED IF_X64(|| (ibltype) == IBL_TRACE_CMP))
+    ((ibltype) == IBL_LINKED || (ibltype) == IBL_FAR \
+     IF_X64(|| (ibltype) == IBL_TRACE_CMP))
 #define IS_IBL_UNLINKED(ibltype) \
-    ((ibltype) == IBL_UNLINKED IF_X64(|| (ibltype) == IBL_TRACE_CMP_UNLINKED))
+    ((ibltype) == IBL_UNLINKED || (ibltype) == IBL_FAR_UNLINKED \
+     IF_X64(|| (ibltype) == IBL_TRACE_CMP_UNLINKED))
 
 #define IBL_FRAG_FLAGS(ibl_code) \
     (IS_IBL_TRACE((ibl_code)->source_fragment_type) ? FRAG_IS_TRACE : 0)
+
+static inline ibl_entry_point_type_t
+get_ibl_entry_type(uint link_or_instr_flags)
+{
+#ifdef X64
+    if (TEST(LINK_TRACE_CMP, link_or_instr_flags))
+        return IBL_TRACE_CMP;
+#endif
+    if (TEST(LINK_FAR, link_or_instr_flags))
+        return IBL_FAR;
+    else
+        return IBL_LINKED;
+}
 
 typedef struct
 {
@@ -219,13 +257,18 @@ typedef struct
 typedef enum {
     GENCODE_X64 = 0,
     GENCODE_X86,
+    GENCODE_X86_TO_X64,
     GENCODE_FROM_DCONTEXT,
 } gencode_mode_t;
-# define MODE_OVERRIDE(x86_mode) ((x86_mode) ? GENCODE_X86 : GENCODE_X64)
-# define SHARED_GENCODE(x86_mode) \
-    get_shared_gencode(GLOBAL_DCONTEXT, MODE_OVERRIDE(x86_mode))
+# define FRAGMENT_GENCODE_MODE(fragment_flags) \
+    (FRAG_IS_32(fragment_flags) ? GENCODE_X86 : \
+     (FRAG_IS_X86_TO_X64(fragment_flags) ? GENCODE_X86_TO_X64 : GENCODE_X64))
+# define SHARED_GENCODE(gencode_mode) get_shared_gencode(GLOBAL_DCONTEXT, gencode_mode)
 # define SHARED_GENCODE_MATCH_THREAD(dc) get_shared_gencode(dc, GENCODE_FROM_DCONTEXT)
 # define THREAD_GENCODE(dc) get_emitted_routines_code(dc, GENCODE_FROM_DCONTEXT)
+# define GENCODE_IS_X64(gencode_mode) ((gencode_mode) == GENCODE_X64)
+# define GENCODE_IS_X86(gencode_mode) ((gencode_mode) == GENCODE_X86)
+# define GENCODE_IS_X86_TO_X64(gencode_mode) ((gencode_mode) == GENCODE_X86_TO_X64)
 #else
 # define SHARED_GENCODE(b) get_shared_gencode(GLOBAL_DCONTEXT)
 # define THREAD_GENCODE(dc) get_emitted_routines_code(dc)
@@ -370,7 +413,10 @@ enum {
      */
     MANGLE_NEXT_TAG_SLOT        = TLS_XAX_SLOT,
     DIRECT_STUB_SPILL_SLOT      = TLS_XAX_SLOT,
+    MANGLE_RIPREL_SPILL_SLOT    = TLS_XAX_SLOT,
+    /* ok for far cti mangling/far ibl and stub/ibl xbx slot usage to overlap */
     INDIRECT_STUB_SPILL_SLOT    = TLS_XBX_SLOT,
+    MANGLE_FAR_SPILL_SLOT       = TLS_XBX_SLOT,
     MANGLE_XCX_SPILL_SLOT       = TLS_XCX_SLOT,
     /* FIXME: edi is used as the base, yet I labeled this slot for edx
      * since it's next in the progression -- change one or the other?
@@ -446,17 +492,33 @@ int
 encode_with_patch_list(dcontext_t *dcontext, patch_list_t *patch, 
                        instrlist_t *ilist, cache_pc start_pc);
 
+#ifdef X64
+/* Shouldn't need to mark as packed.  We order for 6-byte little-endian selector:pc. */
+typedef struct _far_ref_t {
+    /* We target WOW64 and cross-plaform so no 8-byte Intel-only pc */
+    uint pc;
+    ushort selector;
+} far_ref_t;
+#endif
+
 /* Defines book-keeping structures needed for an indirect branch lookup routine */
 typedef struct ibl_code_t {
     bool initialized:1; /* currently only used for ibl routines */
     bool thread_shared_routine:1;
     bool ibl_head_is_inlined:1;
     byte *indirect_branch_lookup_routine;
+    /* for far ctis (i#823) */
+    byte *far_ibl;
+    byte *far_ibl_unlinked;
 #ifdef X64
     /* PR 257963: trace inline cmp has already saved eflags */
     byte *trace_cmp_entry;
     byte *trace_cmp_unlinked;
     bool x86_mode; /* Is this code for 32-bit (x86 mode)? */
+    bool x86_to_x64_mode; /* Does this code use r8-r10 as scratch (for x86_to_x64)? */
+    /* for far ctis (i#823) in mixed-mode (i#49) and x86_to_x64 mode (i#751) */
+    far_ref_t far_jmp_opnd;
+    far_ref_t far_jmp_unlinked_opnd;
 #endif
     byte *unlinked_ibl_entry;
     byte *target_delete_entry;
@@ -574,10 +636,16 @@ typedef struct _generated_code_t {
     /* FIXME: these two return routines are only needed in the global struct */
     byte *fcache_return_coarse;
     byte *trace_head_return_coarse;
+#ifdef CLIENT_INTERFACE
+    /* i#849: low-overhead xfer for clients */
+    byte *client_ibl_xfer;
+    uint client_ibl_unlink_offs;
+#endif
 
+    bool thread_shared;
     bool writable;
 #ifdef X64
-    bool x86_mode; /* Is this code for 32-bit (x86 mode)? */
+    gencode_mode_t gencode_mode; /* mode of this code (x64, x86, x86_to_x64) */
 #endif
 
     /* We store the start of the generated code for simplicity even
@@ -617,6 +685,7 @@ void protect_generated_code(generated_code_t *code, bool writable);
 extern generated_code_t *shared_code;
 #ifdef X64
 extern generated_code_t *shared_code_x86;
+extern generated_code_t *shared_code_x86_to_x64;
 #endif
 
 static inline bool
@@ -625,7 +694,8 @@ is_shared_gencode(generated_code_t *code)
     if (code == NULL) /* since shared_code_x86 in particular can be NULL */
         return false;
 #ifdef X64
-    return code == shared_code_x86 || code == shared_code;
+    return code == shared_code_x86 || code == shared_code ||
+           code == shared_code_x86_to_x64;
 #else
     return code == shared_code;
 #endif
@@ -639,12 +709,21 @@ get_shared_gencode(dcontext_t *dcontext _IF_X64(gencode_mode_t mode))
            IF_INTERNAL(IF_CLIENT_INTERFACE(|| dynamo_exited)));
 # if defined(INTERNAL) || defined(CLIENT_INTERFACE)
     /* PR 302344: this is here only for tracedump_origins */
-    if (dynamo_exited && mode == GENCODE_FROM_DCONTEXT && dcontext == GLOBAL_DCONTEXT)
-        return (get_x86_mode(dcontext) ? shared_code_x86 : shared_code);
+    if (dynamo_exited && mode == GENCODE_FROM_DCONTEXT && dcontext == GLOBAL_DCONTEXT) {
+        if (get_x86_mode(dcontext))
+            return X64_CACHE_MODE_DC(dcontext) ? shared_code_x86_to_x64 : shared_code_x86;
+        else
+            return shared_code;
+    }
 # endif
-    return (mode == GENCODE_X86 ||
-            (mode == GENCODE_FROM_DCONTEXT && dcontext->x86_mode)) ?
-        shared_code_x86 : shared_code;
+    if (mode == GENCODE_X86)
+        return shared_code_x86;
+    else if (mode == GENCODE_X86_TO_X64)
+        return shared_code_x86_to_x64;
+    else if (mode == GENCODE_FROM_DCONTEXT && dcontext->x86_mode)
+        return X64_CACHE_MODE_DC(dcontext) ? shared_code_x86_to_x64 : shared_code_x86;
+    else
+        return shared_code;
 #else
     return shared_code;
 #endif
@@ -658,6 +737,13 @@ get_shared_gencode(dcontext_t *dcontext _IF_X64(gencode_mode_t mode))
 #define USE_SHARED_GENCODE()                                         \
     (USE_SHARED_GENCODE_ALWAYS() || IF_LINUX(IF_HAVE_TLS_ELSE(true, false) ||) \
      SHARED_FRAGMENTS_ENABLED() || DYNAMO_OPTION(shared_trace_ibl_routine))
+
+#define USE_SHARED_BB_IBL() \
+    (USE_SHARED_GENCODE_ALWAYS() || DYNAMO_OPTION(shared_bbs))
+
+#define USE_SHARED_TRACE_IBL() \
+    (USE_SHARED_GENCODE_ALWAYS() || DYNAMO_OPTION(shared_traces) || \
+     DYNAMO_OPTION(shared_trace_ibl_routine))
 
 /* returns the thread private code or GLOBAL thread shared code */
 static inline generated_code_t*
@@ -698,6 +784,10 @@ byte * emit_indirect_branch_lookup(dcontext_t *dcontext, generated_code_t *code,
                                    bool inline_ibl_head,
                                    ibl_code_t *ibl_code);
 void update_indirect_branch_lookup(dcontext_t *dcontext);
+
+byte *emit_far_ibl(dcontext_t *dcontext, byte *pc, ibl_code_t *ibl_code, cache_pc ibl_tgt
+                   _IF_X64(far_ref_t *far_jmp_opnd));
+
 #ifdef RETURN_STACK
 byte * emit_return_lookup(dcontext_t *dcontext, byte *pc,
                           byte *indirect_branch_lookup_pc,
@@ -781,12 +871,17 @@ byte *
 emit_trace_head_incr_shared(dcontext_t *dcontext, byte *pc, byte *fcache_return_pc);
 #endif
 
+#ifdef CLIENT_INTERFACE
+byte *
+emit_client_ibl_xfer(dcontext_t *dcontext, byte *pc, generated_code_t *code);
+#endif
+
 void
 insert_save_eflags(dcontext_t *dcontext, instrlist_t *ilist, instr_t *where,
-                   uint flags, bool tls, bool absolute);
+                   uint flags, bool tls, bool absolute _IF_X64(bool x86_to_x64));
 void
 insert_restore_eflags(dcontext_t *dcontext, instrlist_t *ilist, instr_t *where,
-                      uint flags, bool tls, bool absolute);
+                      uint flags, bool tls, bool absolute _IF_X64(bool x86_to_x64));
 
 instr_t * create_syscall_instr(dcontext_t *dcontext);
 
@@ -828,16 +923,24 @@ void check_return_ra_mangled(dcontext_t *dcontext,
                              volatile reg_t reg_ecx, volatile reg_t reg_eax);
 #endif
 
-/* experimental native execution feature */
-/* in x86_code.c */
-void entering_native(void);
-
 #ifdef LINUX
 void new_thread_setup(priv_mcontext_t *mc);
 #endif
 
 void
 get_xmm_vals(priv_mcontext_t *mc);
+
+/* i#350: Fast safe_read without dcontext.  On success or failure, returns the
+ * current source pointer.  Requires fault handling to be set up.
+ */
+void *safe_read_asm(void *dst, const void *src, size_t size);
+/* These are labels, not function pointers.  We declare them as functions to
+ * prevent loads and stores to these globals from compiling.
+ */
+void safe_read_asm_pre(void);
+void safe_read_asm_mid(void);
+void safe_read_asm_post(void);
+void safe_read_asm_recover(void);
 
 /* from x86.asm */
 /* Note these have specialized calling conventions and shouldn't be called from
@@ -858,13 +961,28 @@ void get_ymm_caller_saved(dr_ymm_t *ymm_caller_saved_buf);
 
 /* in encode.c */
 byte *instr_encode_ignore_reachability(dcontext_t *dcontext_t, instr_t *instr, byte *pc);
-byte *instr_encode_check_reachability(dcontext_t *dcontext_t, instr_t *instr, byte *pc);
+byte *instr_encode_check_reachability(dcontext_t *dcontext_t, instr_t *instr, byte *pc,
+                                      bool *has_instr_opnds/*OUT OPTIONAL*/);
 byte *copy_and_re_relativize_raw_instr(dcontext_t *dcontext, instr_t *instr,
                                        byte *dst_pc, byte *final_pc);
 
 /* in instr.c */
 uint
 move_mm_reg_opcode(bool aligned16, bool aligned32);
+
+/* in mangle.c */
+void
+insert_push_retaddr(dcontext_t *dcontext, instrlist_t *ilist, instr_t *instr,
+                    ptr_int_t retaddr, opnd_size_t opsize);
+
+ptr_uint_t
+get_call_return_address(dcontext_t *dcontext, instrlist_t *ilist, instr_t *instr);
+
+#ifdef X64
+/* in x86_to_x64.c */
+void
+translate_x86_to_x64(dcontext_t *dcontext, instrlist_t *ilist, INOUT instr_t **instr);
+#endif
 
 #endif /* X86_ARCH_H */
 

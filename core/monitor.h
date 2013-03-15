@@ -1,4 +1,5 @@
 /* **********************************************************
+ * Copyright (c) 2012 Google, Inc.  All rights reserved.
  * Copyright (c) 2000-2010 VMware, Inc.  All rights reserved.
  * **********************************************************/
 
@@ -94,8 +95,17 @@ void * cur_trace_vmlist(dcontext_t *dcontext);
  */
 void trace_abort(dcontext_t *dcontext);
 
+/* Equivalent to trace_abort, except that lazily deleted fragments are cleaned
+ * up eagerly.  Can only be called at safe points when we know the app is not
+ * executing in the fragment, such as thread termination or reset events.
+ */
+void trace_abort_and_delete(dcontext_t *dcontext);
+
 void
 thcounter_range_remove(dcontext_t *dcontext, app_pc start, app_pc end);
+
+bool
+mangle_trace_at_end(void);
 
 /* trace head counters are thread-private and must be kept in a
  * separate table and not in the fragment_t structure.
@@ -130,10 +140,13 @@ typedef struct _trace_bb_build_t {
     /* PR 299808: we need to check bb bounds at emit time.  Also used
      * for trace state translation.
      */
-    union {
-        app_pc end_pc;
-        instr_t *end_instr;
-    } bounds;
+    void *vmlist;
+    instr_t *end_instr;
+    /* i#806: to support elision, we need to know whether each block ends
+     * in a control transfer or not, so we can find the between-bb ctis
+     * that need to be mangled.
+     */
+    bool final_cti;
 } trace_bb_build_t;
 
 typedef struct _monitor_data_t {

@@ -1,4 +1,5 @@
 /* **********************************************************
+ * Copyright (c) 2012 Google, Inc.  All rights reserved.
  * Copyright (c) 2003-2009 VMware, Inc.  All rights reserved.
  * **********************************************************/
 
@@ -100,6 +101,15 @@ enum {
     HOOKED_TRAMPOLINE_MAX = 3,
 };
 
+/* for options.appfault_mask */
+enum {
+    /* XXX: we don't raise on handled signals b/c nobody would want notification
+     * on timer signals.  Should we raise on other handled signals?
+     */
+    APPFAULT_FAULT    = 0x0001, /* Unhandled signal, or any Windows exception */
+    APPFAULT_CRASH    = 0x0002, /* Unhandled signal or exception (NYI on Windows) */
+};
+
 /* for all option uses */
 /* N.B.: for 64-bit should we make the uint_size options be size_t?
  * For now we're ok with all such options maxing out at 4GB, and in fact
@@ -109,6 +119,9 @@ enum {
 #define uint_time uint
 /* So far all addr_t are external so we don't have a 64-bit problem */
 #define uint_addr ptr_uint_t
+/* XXX: For signed integer options, we'll need to correctly sign-extend in
+ * dr_get_integer_option.
+ */
 
 /* to dispatch on string default values, kept in struct not enum */
 #define ISSTRING_bool 0
@@ -242,7 +255,7 @@ extern const internal_options_t default_internal_options;
  * option value 
  */
 bool
-check_param_bounds(uint *val, uint min, uint max, char *name);
+check_param_bounds(uint *val, uint min, uint max, const char *name);
 
 int 
 options_init(void);
@@ -288,7 +301,7 @@ has_pcache_dynamo_options(options_t *options, op_pcache_t pcache_effect);
 void
 set_dynamo_options_defaults(options_t *options);
 int
-set_dynamo_options(options_t *options, char *optstr);
+set_dynamo_options(options_t *options, const char *optstr);
 #else /* !NOT_DYNAMORIO_CORE */
 
 #include "utils.h"
@@ -340,6 +353,13 @@ set_dynamo_options(options_t *options, char *optstr);
 
 #define RUNNING_WITHOUT_CODE_CACHE()        \
     (IF_HOTP(DYNAMO_OPTION(hotp_only) ||) DYNAMO_OPTION(thin_client))
+
+#if defined(CLIENT_INTERFACE) && !defined(NOT_DYNAMORIO_CORE_PROPER)
+# define CLIENT_OR_STANDALONE() \
+    (standalone_library || !IS_INTERNAL_STRING_OPTION_EMPTY(client_lib))
+#else
+# define CLIENT_OR_STANDALONE() false
+#endif
 
 extern char option_string[];
 extern options_t dynamo_options;

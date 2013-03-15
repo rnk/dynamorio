@@ -68,6 +68,7 @@
 #include "decode.h"
 #include "decode_fast.h"
 #include "disassemble.h"
+#include "../module_shared.h"
 #include <string.h>
 
 /* these are only needed for symbolic address lookup: */
@@ -255,7 +256,7 @@ internal_opnd_disassemble(char *buf, size_t bufsz, size_t *sofar INOUT,
             /* need to save floating state around float printing */
             PRESERVE_FLOATING_POINT_STATE({
                 uint top; uint bottom;
-                char *sign;
+                const char *sign;
                 double_print(opnd_get_immed_float(opnd), 6, 
                              &top, &bottom, &sign);
                 print_to_buffer(buf, bufsz, sofar, "%s%s%u.%.6u%s",
@@ -459,7 +460,7 @@ internal_opnd_disassemble(char *buf, size_t bufsz, size_t *sofar INOUT,
             break;
         }
     case FAR_PC_kind:
-        /* constant is selector and not a SEG_constant */
+        /* constant is selector and not a SEG_ constant */
         print_to_buffer(buf, bufsz, sofar, "0x%04x:"PFX"%s",
                         (ushort)opnd_get_segment_selector(opnd), opnd_get_pc(opnd),
                         postop_suffix());
@@ -469,11 +470,14 @@ internal_opnd_disassemble(char *buf, size_t bufsz, size_t *sofar INOUT,
                         postop_suffix());
         break;
     case FAR_INSTR_kind:
-        /* constant is selector and not a SEG_constant */
-        print_to_buffer(buf, bufsz, sofar, "0x%04x:"PFX"%s",
-                        (ushort)opnd_get_segment_selector(opnd), opnd_get_pc(opnd),
+        /* constant is selector and not a SEG_ constant */
+        print_to_buffer(buf, bufsz, sofar, "0x%04x:@"PFX"%s",
+                        (ushort)opnd_get_segment_selector(opnd), opnd_get_instr(opnd),
                         postop_suffix());
-        print_to_buffer(buf, bufsz, sofar, "@"PFX"%s", opnd_get_instr(opnd),
+        break;
+    case MEM_INSTR_kind:
+        print_to_buffer(buf, bufsz, sofar, IF_X64("<re> ")"@"PFX"+%d%s",
+                        opnd_get_instr(opnd), opnd_get_mem_instr_disp(opnd),
                         postop_suffix());
         break;
     case REG_kind:
@@ -1152,13 +1156,13 @@ instr_disassemble_to_buffer(dcontext_t *dcontext, instr_t *instr,
 }
 
 #ifndef STANDALONE_DECODER
-static inline char*
+static inline const char*
 exit_stub_type_desc(dcontext_t *dcontext, fragment_t *f, linkstub_t *l)
 {
     if (LINKSTUB_DIRECT(l->flags)) {
-        if (TEST(LINK_CALL, l->flags))
+        if (EXIT_IS_CALL(l->flags))
             return "call";
-        if (TEST(LINK_JMP, l->flags))
+        if (EXIT_IS_JMP(l->flags))
             return "jmp/jcc";
         return "fall-through/speculated/IAT";
         /* FIXME: mark these appropriately */
@@ -1166,9 +1170,9 @@ exit_stub_type_desc(dcontext_t *dcontext, fragment_t *f, linkstub_t *l)
         CLIENT_ASSERT(LINKSTUB_INDIRECT(l->flags), "invalid exit stub");
         if (TEST(LINK_RETURN, l->flags))
             return "ret";
-        if (TEST(LINK_CALL, l->flags))
+        if (EXIT_IS_CALL(l->flags))
             return "indcall";
-        if (TEST(LINK_JMP, l->flags))
+        if (TEST(LINK_JMP, l->flags)) /* JMP or IND_JMP_PLT */
             return "indjmp";
 #ifdef WINDOWS
         if (is_shared_syscall_routine(dcontext, EXIT_TARGET_TAG(dcontext, f, l)))
@@ -1200,12 +1204,13 @@ common_disassemble_fragment(dcontext_t *dcontext,
 
     if (header) {
 #ifdef DEBUG
-        print_file(outfile, "Fragment %d, tag "PFX", flags 0x%x, %s%s%ssize %d%s%s:\n",
+        print_file(outfile, "Fragment %d, tag "PFX", flags 0x%x, %s%s%s%ssize %d%s%s:\n",
                    f->id,
 #else
-        print_file(outfile, "Fragment tag "PFX", flags 0x%x, %s%s%ssize %d%s%s:\n",
+        print_file(outfile, "Fragment tag "PFX", flags 0x%x, %s%s%s%ssize %d%s%s:\n",
 #endif
                    f->tag, f->flags,
+                   IF_X64_ELSE(FRAG_IS_32(f->flags) ? "32-bit, " : "", ""),
                    TEST(FRAG_COARSE_GRAIN, f->flags) ? "coarse, " : "",
                    (TEST(FRAG_SHARED, f->flags) ? "shared, " : 
                     (SHARED_FRAGMENTS_ENABLED() ?
@@ -1504,22 +1509,50 @@ instrlist_disassemble(dcontext_t *dcontext,
 #ifndef STANDALONE_DECODER
 
 static void
-internal_dump_callstack(app_pc cur_pc, app_pc ebp, file_t outfile, bool dump_xml)
+callstack_dump_module_info(char *buf, size_t bufsz, size_t *sofar,
+                           app_pc pc, uint flags)
+{
+    if (TEST(CALLSTACK_MODULE_INFO, flags)) {
+        module_area_t *ma;
+        os_get_module_info_lock();
+        ma = module_pc_lookup(pc);
+        if (ma != NULL) {
+            print_to_buffer(buf, bufsz, sofar, TEST(CALLSTACK_USE_XML, flags) ?
+                            "mod=\""PFX"\" offs=\""PFX"\" " : " <%s+"PIFX">",
+                            TEST(CALLSTACK_MODULE_PATH, flags) ? ma->full_path :
+                            GET_MODULE_NAME(&ma->names), pc - ma->start);
+        }
+        os_get_module_info_unlock();
+    }
+}
+
+static void
+internal_dump_callstack_to_buffer(char *buf, size_t bufsz, size_t *sofar,
+                                  app_pc cur_pc, app_pc ebp, uint flags)
 {
     ptr_uint_t *pc = (ptr_uint_t *) ebp;
     int num = 0;
     LOG_DECLARE(char symbolbuf[MAXIMUM_SYMBOL_LENGTH];)
-    char *symbol_name = "";
+    const char *symbol_name = "";
+
+    if (TEST(CALLSTACK_ADD_HEADER, flags)) {
+        print_to_buffer(buf, bufsz, sofar,
+                        TEST(CALLSTACK_USE_XML, flags) ?
+                        "\t<call-stack>\n" : "Call stack:\n");
+    }
 
     if (cur_pc != NULL) {
         DOLOG(1, LOG_SYMBOLS, {
             print_symbolic_address(cur_pc, symbolbuf, sizeof(symbolbuf), false);
             symbol_name = symbolbuf;
         });
-        print_file(outfile, dump_xml ? 
-                   "\t<current_pc=\""PFX"\" name=\"%s\" />\n" : 
-                   "\tcurrent pc = "PFX"   %s\n",
-                   cur_pc, symbol_name);
+        print_to_buffer(buf, bufsz, sofar, TEST(CALLSTACK_USE_XML, flags) ?
+                        "\t<current_pc=\""PFX"\" name=\"%s\" " :
+                        "\t"PFX" %s ",
+                        cur_pc, symbol_name);
+        callstack_dump_module_info(buf, bufsz, sofar, cur_pc, flags);
+        print_to_buffer(buf, bufsz, sofar, TEST(CALLSTACK_USE_XML, flags) ?
+                        "/>\n" : "\n");
     }
 
     while (pc != NULL &&
@@ -1528,26 +1561,59 @@ internal_dump_callstack(app_pc cur_pc, app_pc ebp, file_t outfile, bool dump_xml
             print_symbolic_address((app_pc)*(pc+1), symbolbuf, sizeof(symbolbuf), false);
             symbol_name = symbolbuf;
         });
-        print_file(outfile, dump_xml ?
-                   "\t\t<frame ptr=\""PFX"\" parent=\""PFX"\" "
-                   "ret=\""PFX"\" name=\"%s\" />\n" :
-                   "\tframe ptr "PFX" => parent "PFX", ret = "PFX"   %s\n",
-                   pc, *pc, *(pc+1), symbol_name);
+        
+        print_to_buffer(buf, bufsz, sofar, TEST(CALLSTACK_USE_XML, flags) ?
+                        "\t\t" : "\t");
+        if (TEST(CALLSTACK_FRAME_PTR, flags)) {
+            print_to_buffer(buf, bufsz, sofar, TEST(CALLSTACK_USE_XML, flags) ?
+                            "<frame ptr=\""PFX"\" parent=\""PFX"\" " :
+                            "frame ptr "PFX" => parent "PFX", ",
+                            pc, *pc);
+        }
+        print_to_buffer(buf, bufsz, sofar, TEST(CALLSTACK_USE_XML, flags) ?
+                        "ret=\""PFX"\" name=\"%s\" " : PFX" %s ",
+                        *(pc+1), symbol_name);
+        callstack_dump_module_info(buf, bufsz, sofar, (app_pc) *(pc+1), flags);
+        print_to_buffer(buf, bufsz, sofar, TEST(CALLSTACK_USE_XML, flags) ?
+                        "/>\n" : "\n");
+
         num++;
         /* yes I've seen weird recursive cases before */
         if (pc == (ptr_uint_t *) *pc || num > 100)
             break;
         pc = (ptr_uint_t *) *pc;
     }
+
+    if (TESTALL(CALLSTACK_USE_XML | CALLSTACK_ADD_HEADER, flags))
+        print_to_buffer(buf, bufsz, sofar, "\t</call-stack>\n");
+}
+
+static void
+internal_dump_callstack(app_pc cur_pc, app_pc ebp, file_t outfile, bool dump_xml,
+                        bool header)
+{
+    char buf[MAX_LOG_LENGTH];
+    size_t sofar = 0;
+    internal_dump_callstack_to_buffer(buf, BUFFER_SIZE_ELEMENTS(buf), &sofar,
+                                      cur_pc, ebp,
+                                      CALLSTACK_ADD_HEADER |
+                                      CALLSTACK_FRAME_PTR |
+                                      (dump_xml ? CALLSTACK_USE_XML : 0));
+    print_file(outfile, "%s", buf);
 }
 
 void
 dump_callstack(app_pc pc, app_pc ebp, file_t outfile, bool dump_xml)
 {
-    print_file(outfile, dump_xml ? "\t<call-stack>\n" : "Call stack:\n");
-    internal_dump_callstack(pc, ebp, outfile, dump_xml);
-    if (dump_xml)
-        print_file(outfile, "\t</call-stack>\n");
+    internal_dump_callstack(pc, ebp, outfile, dump_xml, true/*header*/);
+}
+
+void
+dump_callstack_to_buffer(char *buf, size_t bufsz, size_t *sofar,
+                         app_pc pc, app_pc ebp, uint flags)
+{
+    internal_dump_callstack_to_buffer(buf, bufsz, sofar,
+                                      pc, ebp, flags);
 }
 
 #ifdef DEBUG
@@ -1557,7 +1623,7 @@ dump_mcontext_callstack(dcontext_t *dcontext)
     LOG(THREAD, LOG_ALL, 1, "Call stack:\n");
     internal_dump_callstack((app_pc)get_mcontext(dcontext)->pc,
                             (app_pc)get_mcontext(dcontext)->xbp, THREAD,
-                            DUMP_NOT_XML);
+                            DUMP_NOT_XML, false/*!header*/);
 }
 #endif
 
@@ -1571,7 +1637,7 @@ dump_dr_callstack(file_t outfile)
     GET_FRAME_PTR(our_ebp);
     LOG(outfile, LOG_ALL, 1, "DynamoRIO call stack:\n");
     internal_dump_callstack(NULL /* don't care about cur pc */, our_ebp,
-                            outfile, DUMP_NOT_XML);
+                            outfile, DUMP_NOT_XML, false/*!header*/);
 }
 
 #endif /* !STANDALONE_DECODER */

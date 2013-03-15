@@ -1,5 +1,5 @@
 /* **********************************************************
- * Copyright (c) 2011 Google, Inc.  All rights reserved.
+ * Copyright (c) 2011-2013 Google, Inc.  All rights reserved.
  * Copyright (c) 2009-2010 VMware, Inc.  All rights reserved.
  * **********************************************************/
 
@@ -103,7 +103,7 @@ dr_init(client_id_t id)
     write_sysnum = get_write_sysnum();
     dr_register_filter_syscall_event(event_filter_syscall);
     drmgr_register_pre_syscall_event(event_pre_syscall);
-    dr_register_post_syscall_event(event_post_syscall);
+    drmgr_register_post_syscall_event(event_post_syscall);
     dr_register_exit_event(event_exit);
     tcls_idx = drmgr_register_cls_field(event_thread_context_init,
                                         event_thread_context_exit);
@@ -186,6 +186,7 @@ event_filter_syscall(void *drcontext, int sysnum)
 static bool
 event_pre_syscall(void *drcontext, int sysnum)
 {
+    bool modify_write = (sysnum == write_sysnum);
     ATOMIC_INC(num_syscalls);
 #ifdef LINUX
     if (sysnum == SYS_execve) {
@@ -202,8 +203,11 @@ event_pre_syscall(void *drcontext, int sysnum)
                dr_syscall_get_param(drcontext, 0),
                dr_syscall_get_param(drcontext, 1),
                dr_syscall_get_param(drcontext, 2));
+#else
+    /* for sanity tests that don't show results we don't change the app's output */
+    modify_write = false;
 #endif
-    if (sysnum == write_sysnum) {
+    if (modify_write) {
         /* store params for access post-syscall */
         int i;
         per_thread_t *data = (per_thread_t *) drmgr_get_cls_field(drcontext, tcls_idx);

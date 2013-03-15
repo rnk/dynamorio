@@ -1,5 +1,5 @@
 /* **********************************************************
- * Copyright (c) 2011 Google, Inc.  All rights reserved.
+ * Copyright (c) 2011-2013 Google, Inc.  All rights reserved.
  * Copyright (c) 2008-2010 VMware, Inc.  All rights reserved.
  * **********************************************************/
 
@@ -194,6 +194,9 @@ enum {
 #ifdef WINDOWS
     /* do not created a persistent cache from this module */
     MODULE_DO_NOT_PERSIST  = 0x00000040,
+#endif
+#ifdef CLIENT_INTERFACE
+    MODULE_NULL_INSTRUMENT = 0x00000080,
 #endif
 };
 
@@ -430,6 +433,9 @@ typedef struct _privmod_t {
     char path[MAXIMUM_PATH];
     uint ref_count;
     bool externally_loaded;
+#ifdef CLIENT_INTERFACE
+    bool is_client; /* or Extension */
+#endif
     struct _privmod_t *next;
     struct _privmod_t *prev;
     void *os_privmod_data;
@@ -451,17 +457,24 @@ typedef struct _privmod_t {
 
 /* We need to load client libs prior to having heap */
 #define PRIVMOD_STATIC_NUM 8
-/* It should has more entries than the PRIVMOD_STATIC_NUM,
+/* It should have more entries than the PRIVMOD_STATIC_NUM,
  * as it may also contains the extension libraries and 
- * externally loaded libraries. 
- * Currently, we set it twice of PRIVMOD_STATIC_NUM
+ * externally loaded libraries, as well as our rpath-file search paths.
  */
-#define SEARCH_PATHS_NUM   (2*PRIVMOD_STATIC_NUM)
+#define SEARCH_PATHS_NUM   (3*PRIVMOD_STATIC_NUM)
 
 extern recursive_lock_t privload_lock;
 extern char search_paths[SEARCH_PATHS_NUM][MAXIMUM_PATH];
 extern uint search_paths_idx;
 extern vm_area_vector_t *modlist_areas; 
+
+/***************************************************************************
+ * Public functions
+ */
+
+/* returns whether they all fit */
+bool
+privload_print_modules(bool path, bool lock, char *buf, size_t bufsz, size_t *sofar);
 
 /* ************************************************************************* *
  * os independent functions in loader_shared.c, can be called from loader.c  *
@@ -483,17 +496,24 @@ privload_lookup_by_base(app_pc modbase);
  */
 privmod_t *
 privload_insert(privmod_t *after, app_pc base, size_t size, const char *name,
-                const char *path, void *os_privmod_data);
+                const char *path);
 
 /* ************************************************************************* *
  * os specific functions in loader.c, can be called from loader_shared.c     *
  * ************************************************************************* */
+
+/* searches in standard paths instead of requiring abs path */
+app_pc
+privload_load_private_library(const char *name);
+
 void
 privload_redirect_setup(privmod_t *mod);
 
+void
+privload_os_finalize(privmod_t *privmod_t);
+
 app_pc
-privload_map_and_relocate(const char *filename, size_t *size OUT,
-                          void **os_privmod_data OUT);
+privload_map_and_relocate(const char *filename, size_t *size OUT);
 
 bool
 privload_call_entry(privmod_t *privmod, uint reason);
@@ -554,5 +574,8 @@ get_shared_lib_name(app_pc map);
 
 app_pc
 get_image_entry(void);
+
+void
+privload_load_finalized(privmod_t *mod);
 
 #endif /* MODULE_LIST_H */

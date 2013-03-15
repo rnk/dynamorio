@@ -1,5 +1,5 @@
 /* **********************************************************
- * Copyright (c) 2011 Google, Inc.  All rights reserved.
+ * Copyright (c) 2011-2012 Google, Inc.  All rights reserved.
  * Copyright (c) 2000-2010 VMware, Inc.  All rights reserved.
  * **********************************************************/
 
@@ -301,8 +301,9 @@ typedef struct decode_info_t {
     opnd_size_t size_immed2;
     ptr_int_t immed;
     ptr_int_t immed2; /* this additional field could be 32-bit on all platforms */
-    /* These two fields are only used when decoding rip-relative data refs */
+    /* These fields are only used when decoding rip-relative data refs */
     byte *start_pc;
+    byte *final_pc;
     uint len;
     /* This field is only used when encoding rip-relative data refs.
      * To save space we could make it a union with disp.
@@ -324,6 +325,9 @@ typedef struct decode_info_t {
     bool repne_prefix;
     byte vex_vvvv; /* vvvv bits for extra operand */
     bool vex_encoded;
+    /* for instr_t* target encoding */
+    ptr_int_t cur_note;
+    bool has_instr_opnds;
 } decode_info_t;
 
 
@@ -590,6 +594,7 @@ enum {
     OPSZ_8_of_16_vex32, /* 64 bits, but can be half of XMM register; if
                          * vex.L then is 256 bits (YMM or memory)
                          */
+    OPSZ_16_of_32, /* 128 bits: half of YMM */
     OPSZ_LAST_ENUM, /* note last is NOT inclusive */
 };
 
@@ -633,6 +638,10 @@ extern const instr_info_t invalid_instr;
 #define X64_MODE(di) IF_X64_ELSE(!(di)->x86_mode, false)
 /* for dcontext_t */
 #define X64_MODE_DC(dc) IF_X64_ELSE(!get_x86_mode(dc), false)
+/* Currently we assume that code caches are always 64-bit in x86_to_x64.
+ * Later, if needed, we can introduce a new field in dcontext_t (xref i#862).
+ */
+#define X64_CACHE_MODE_DC(dc) (X64_MODE_DC(dc) IF_X64(|| DYNAMO_OPTION(x86_to_x64)))
 
 
 DR_API

@@ -323,6 +323,9 @@ static int get_special_heap_header_size(void);
 
 vm_area_vector_t *landing_pad_areas;    /* PR 250294 */
 #ifdef WINDOWS
+/* i#939: we steal space from ntdll's +rx segment */
+static app_pc lpad_temp_writable_start;
+static size_t lpad_temp_writable_size;
 static void release_landing_pad_mem(void);
 #endif
 
@@ -419,7 +422,7 @@ DECLARE_NEVERPROT_VAR(static thread_units_t global_racy_units, {0});
 typedef byte *vm_addr_t;
 
 #ifdef X64
-/* designates the boundaries within which we must allocate DR heap space */
+/* designates the closed interval within which we must allocate DR heap space */
 static byte *heap_allowable_region_start = (byte *)PTR_UINT_0;
 static byte *heap_allowable_region_end = (byte *)POINTER_MAX;
 
@@ -438,7 +441,7 @@ request_region_be_heap_reachable(byte *start, size_t size)
     /* initialize so will be overridden on first call; protected by the
      * request_region_be_heap_reachable_lock */
     static byte *must_reach_region_start = (byte *)POINTER_MAX;
-    static byte *must_reach_region_end = (byte *)PTR_UINT_0;
+    static byte *must_reach_region_end = (byte *)PTR_UINT_0;  /* closed */
 
     LOG(GLOBAL, LOG_HEAP, 2,
         "Adding must-be-reachable-from-heap region "PFX"-"PFX"\n"
@@ -447,6 +450,7 @@ request_region_be_heap_reachable(byte *start, size_t size)
         start, start+size, must_reach_region_start, must_reach_region_end,
         heap_allowable_region_start, heap_allowable_region_end);
     ASSERT(!POINTER_OVERFLOW_ON_ADD(start, size));
+    ASSERT(size > 0);
 
     mutex_lock(&request_region_be_heap_reachable_lock);
     if (start < must_reach_region_start) {
@@ -465,9 +469,9 @@ request_region_be_heap_reachable(byte *start, size_t size)
         heap_allowable_region_end = allowable_end_tmp;
         SELF_PROTECT_DATASEC(DATASEC_RARELY_PROT);
     } 
-    if (start + size > must_reach_region_end) {
+    if (start + size - 1 > must_reach_region_end) {
         SELF_UNPROTECT_DATASEC(DATASEC_RARELY_PROT);
-        must_reach_region_end = start + size;
+        must_reach_region_end = start + size - 1;  /* closed */
         /* Write assumed to be atomic so we don't have to hold a lock to use
          * heap_allowable_region_start. */
         heap_allowable_region_start = REACHABLE_32BIT_START(must_reach_region_start,
@@ -916,7 +920,7 @@ rel32_reachable_from_heap(byte *tgt)
     ptr_int_t new_offs;
     /* FIXME: also check if we're now allocating memory beyond the vmm heap */
     get_vmm_heap_bounds(&heap_start, &heap_end);
-    new_offs = (tgt > heap_start) ? (tgt - heap_end) : (heap_start - tgt);
+    new_offs = (tgt > heap_start) ? (tgt - heap_start) : (heap_end - tgt);
     return REL32_REACHABLE_OFFS(new_offs);
 }
 
@@ -1295,10 +1299,9 @@ vmm_heap_init()
 #ifdef X64
     /* add reachable regions before we allocate the heap, xref PR 215395 */
 # ifdef WINDOWS
-    request_region_be_heap_reachable(get_ntdll_base(),
-                                     get_allocation_size(get_ntdll_base(), NULL));
     request_region_be_heap_reachable(get_dynamorio_dll_start(),
                                      get_allocation_size(get_dynamorio_dll_start(), NULL));
+    /* i#774, i#901: we do not need to be near ntdll.dll */
 # else /* LINUX */
     /* FIXME - On Linux we compile core with -fpic and samples Makefile uses it as
      * well (comments suggest problems if we don't).  But without our own loader
@@ -1651,13 +1654,13 @@ heap_low_on_memory()
      */
 }
 
-static char*
+static const char*
 get_oom_source_name(oom_source_t source)
 {
     /* currently only single character codenames, 
      * (still as a string though) 
      */
-    char *code_name = "?";
+    const char *code_name = "?";
 
     switch (source) {
     case OOM_INIT     : code_name = "I"; break;
@@ -1706,7 +1709,7 @@ report_low_on_memory(oom_source_t source, heap_error_code_t os_error_code)
         if (TEST(DUMPCORE_OUT_OF_MEM_SILENT, DYNAMO_OPTION(dumpcore_mask)))
             os_dump_core("Out of memory, silently aborting program.");
     } else {
-        char *oom_source_code = get_oom_source_name(source);
+        const char *oom_source_code = get_oom_source_name(source);
         char status_hex[19]; /* FIXME: for 64bit hex need 16+NULL */
         /* note 0x prefix added by the syslog */
         snprintf(status_hex, 
@@ -1737,7 +1740,7 @@ report_low_on_memory(oom_source_t source, heap_error_code_t os_error_code)
 /* update statistics for committed memory, and add to vm_areas */
 static inline void
 account_for_memory(void *p, size_t size, uint prot, bool add_vm, bool image
-                   _IF_DEBUG(char *comment))
+                   _IF_DEBUG(const char *comment))
 {
     STATS_ADD_PEAK(memory_capacity, size);
 
@@ -1804,7 +1807,7 @@ lockwise_safe_to_allocate_memory()
  * add_vm MUST be false iff this is heap memory, which is updated separately.
  */
 static void *
-get_real_memory(size_t size, uint prot, bool add_vm _IF_DEBUG(char *comment))
+get_real_memory(size_t size, uint prot, bool add_vm _IF_DEBUG(const char *comment))
 {
     void *p;
     heap_error_code_t error_code;
@@ -1910,7 +1913,7 @@ extend_commitment(vm_addr_t p, size_t size, uint prot,
  */
 static vm_addr_t
 get_guarded_real_memory(size_t reserve_size, size_t commit_size, uint prot,
-                        bool add_vm, bool guarded _IF_DEBUG(char *comment))
+                        bool add_vm, bool guarded _IF_DEBUG(const char *comment))
 {
     vm_addr_t p;
     uint guard_size = PAGE_SIZE;
@@ -2353,12 +2356,18 @@ bool
 unmap_file(byte *map, size_t size)
 {
     bool success;
-    ASSERT(map != NULL);
+    ASSERT(map != NULL && ALIGNED(map, PAGE_SIZE));
+    size = ALIGN_FORWARD(size, PAGE_SIZE);
     /* memory alloc/dealloc and updating DR list must be atomic */
     dynamo_vm_areas_lock(); /* if already hold lock this is a nop */
-    update_dynamo_areas_on_release(map, map+size, true/*remove now*/);
-    STATS_SUB(file_map_capacity, size);
     success = os_unmap_file(map, size);
+    if (success) {
+        /* Only update the all_memory_areas on success.
+         * It should still be atomic to the outside observers.
+         */
+        update_dynamo_areas_on_release(map, map+size, true/*remove now*/);
+        STATS_SUB(file_map_capacity, size);
+    }
     dynamo_vm_areas_unlock();
     return success;
 }
@@ -2830,7 +2839,7 @@ threadunits_init(dcontext_t *dcontext, thread_units_t *tu, size_t size)
 #ifdef HEAP_ACCOUNTING
 #define MAX_5_DIGIT 99999
 static void
-print_tu_heap_statistics(thread_units_t *tu, file_t logfile, char *prefix)
+print_tu_heap_statistics(thread_units_t *tu, file_t logfile, const char *prefix)
 {
     int i;
     size_t total = 0, cur = 0;
@@ -3157,6 +3166,10 @@ common_heap_alloc(thread_units_t *tu, size_t size HEAPACCT(which_heap_t which))
 #if defined(DEBUG_MEMORY) && defined(DEBUG)
     size_t check_alloc_size;
     dcontext_t *dcontext = tu->dcontext;
+    /* DrMem i#999: private libs can be heap-intensive and our checks here
+     * can have a prohibitive perf cost!
+     */
+    uint chklvl = CHKLVL_MEMFILL + (IF_HEAPACCT_ELSE(which == ACCT_LIBDUP ? 1 : 0, 0));
     ASSERT_CURIOSITY(which != ACCT_TOMBSTONE && 
                      "Do you really need to use ACCT_TOMBSTONE? (potentially dangerous)");
 #endif
@@ -3266,7 +3279,9 @@ common_heap_alloc(thread_units_t *tu, size_t size HEAPACCT(which_heap_t which))
                     "Variable-size block: allocating "PFX" (%d bytes [%d aligned] in "
                     "%d block)\n", p, size, aligned_size, sz);
                 /* ensure memory we got from the free list is in a heap unit */
-                ASSERT(find_heap_unit(tu, p, sz) != NULL);
+                DOCHECK(CHKLVL_DEFAULT, {  /* expensive check */
+                   ASSERT(find_heap_unit(tu, p, sz) != NULL);
+                });
 #endif
                 ASSERT(ALIGNED(sz, HEAP_ALIGNMENT));
                 alloc_size = sz + HEADER_SIZE;
@@ -3282,7 +3297,9 @@ common_heap_alloc(thread_units_t *tu, size_t size HEAPACCT(which_heap_t which))
             ASSERT(ALIGNED(tu->free_list[bucket], HEAP_ALIGNMENT));
 #ifdef DEBUG_MEMORY
             /* ensure memory we got from the free list is in a heap unit */
-            ASSERT(find_heap_unit(tu, p, alloc_size) != NULL);
+            DOCHECK(CHKLVL_DEFAULT, {  /* expensive check */
+                ASSERT(find_heap_unit(tu, p, alloc_size) != NULL);
+            });
 #endif
             ACCOUNT_FOR_ALLOC(alloc_reuse, tu, which, alloc_size, aligned_size);
         }
@@ -3420,7 +3437,7 @@ common_heap_alloc(thread_units_t *tu, size_t size HEAPACCT(which_heap_t which))
 #ifdef DEBUG_MEMORY
     if (bucket == BLOCK_TYPES-1 && check_alloc_size <= MAXROOM) {
         /* verify is unallocated memory, skip possible free list next pointer */
-        DOCHECK(CHKLVL_MEMFILL, {
+        DOCHECK(chklvl, {
             CLIENT_ASSERT(is_region_memset_to_char
                           (p+sizeof(heap_pc *), (alloc_size-HEADER_SIZE)-sizeof(heap_pc *),
                            HEAP_UNALLOCATED_BYTE), "memory corruption detected");
@@ -3429,11 +3446,10 @@ common_heap_alloc(thread_units_t *tu, size_t size HEAPACCT(which_heap_t which))
             "\nalloc var "PFX"-"PFX" %d bytes, ret "PFX"-"PFX" %d bytes\n",
             p-HEADER_SIZE, p-HEADER_SIZE+alloc_size, alloc_size, p, p+size, size);
         /* there can only be extra padding if we took off of the free list */
-        DOCHECK(CHKLVL_MEMFILL,
-                memset(p+size, HEAP_PAD_BYTE, (alloc_size-HEADER_SIZE)-size););
+        DOCHECK(chklvl, memset(p+size, HEAP_PAD_BYTE, (alloc_size-HEADER_SIZE)-size););
     } else {
         /* verify is unallocated memory, skip possible free list next pointer */
-        DOCHECK(CHKLVL_MEMFILL, {
+        DOCHECK(chklvl, {
             CLIENT_ASSERT(is_region_memset_to_char
                           (p+sizeof(heap_pc *), alloc_size-sizeof(heap_pc *), 
                            HEAP_UNALLOCATED_BYTE), "memory corruption detected");
@@ -3441,9 +3457,9 @@ common_heap_alloc(thread_units_t *tu, size_t size HEAPACCT(which_heap_t which))
         LOG(THREAD, LOG_HEAP, 6,
             "\nalloc fix or oversize "PFX"-"PFX" %d bytes, ret "PFX"-"PFX" %d bytes\n",
             p, p+alloc_size, alloc_size, p, p+size, size);
-        DOCHECK(CHKLVL_MEMFILL, memset(p+size, HEAP_PAD_BYTE, alloc_size-size););
+        DOCHECK(chklvl, memset(p+size, HEAP_PAD_BYTE, alloc_size-size););
     }
-    DOCHECK(CHKLVL_MEMFILL, memset(p, HEAP_ALLOCATED_BYTE, size););
+    DOCHECK(chklvl, memset(p, HEAP_ALLOCATED_BYTE, size););
 # ifdef HEAP_ACCOUNTING
     LOG(THREAD, LOG_HEAP, 6, "\t%s\n", whichheap_name[which]);
 # endif
@@ -3487,8 +3503,16 @@ common_heap_free(thread_units_t *tu, void *p_void, size_t size HEAPACCT(which_he
 {
     int bucket = 0;
     heap_pc p = (heap_pc) p_void;
-#if defined(DEBUG_MEMORY) || defined(HEAP_ACCOUNTING)
-    DEBUG_DECLARE(dcontext_t *dcontext = tu->dcontext;)
+#if defined(DEBUG) && (defined(DEBUG_MEMORY) || defined(HEAP_ACCOUNTING))
+    dcontext_t *dcontext = tu->dcontext;
+    /* DrMem i#999: private libs can be heap-intensive and our checks here
+     * can have a prohibitive perf cost!
+     * XXX: b/c of re-use we have to memset on free.  Perhaps we should
+     * have a separate heap pool for private libs.  But, the overhead
+     * from that final memset is small compared to what we've already
+     * saved, so maybe not worth it.
+     */
+    uint chklvl = CHKLVL_MEMFILL + (IF_HEAPACCT_ELSE(which == ACCT_LIBDUP ? 1 : 0, 0));
 #endif
     size_t alloc_size, aligned_size;
     ASSERT(size > 0); /* we don't want to pay check cost in release */
@@ -3513,7 +3537,7 @@ common_heap_free(thread_units_t *tu, void *p_void, size_t size HEAPACCT(which_he
      * to perform this check.  We accept objects that start with 0xcdcdcdcd so
      * long as the second four bytes are not also 0xcdcdcdcd.
      */
-    DOCHECK(CHKLVL_MEMFILL, {
+    DOCHECK(chklvl, {
         ASSERT_CURIOSITY(
             (*(uint *)p != HEAP_UNALLOCATED_UINT ||
              (size >= 2*sizeof(uint) && *(((uint *)p)+1) != HEAP_UNALLOCATED_UINT)) &&
@@ -3542,7 +3566,9 @@ common_heap_free(thread_units_t *tu, void *p_void, size_t size HEAPACCT(which_he
 
 #ifdef DEBUG_MEMORY
         /* ensure we are freeing memory in a proper unit */
-        ASSERT(find_heap_unit(tu, p, size) != NULL);
+        DOCHECK(CHKLVL_DEFAULT, {  /* expensive check */
+            ASSERT(find_heap_unit(tu, p, size) != NULL);
+        });
 #endif
 
         if (!safe_to_allocate_or_free_heap_units()) {
@@ -3590,15 +3616,16 @@ common_heap_free(thread_units_t *tu, void *p_void, size_t size HEAPACCT(which_he
             "\nfree var "PFX"-"PFX" %d bytes, asked "PFX"-"PFX" %d bytes\n",
             p-HEADER_SIZE, p-HEADER_SIZE+alloc_size, alloc_size, p, p+size, size);
 #  ifndef HEAP_LEAKSTACKS  /* Leak stacks are stored in the padding. */
-        ASSERT_MESSAGE(CHKLVL_MEMFILL, "heap overflow",
+        ASSERT_MESSAGE(chklvl, "heap overflow",
                        is_region_memset_to_char(p+size, (alloc_size-HEADER_SIZE)-size,
                                                 HEAP_PAD_BYTE));
 #  endif
         /* ensure we are freeing memory in a proper unit */
-        ASSERT(find_heap_unit(tu, p, alloc_size - HEADER_SIZE) != NULL);
+        DOCHECK(CHKLVL_DEFAULT, {  /* expensive check */
+            ASSERT(find_heap_unit(tu, p, alloc_size - HEADER_SIZE) != NULL);
+        });
         /* set used and padding memory back to unallocated */
-        DOCHECK(CHKLVL_MEMFILL,
-                memset(p, HEAP_UNALLOCATED_BYTE, alloc_size-HEADER_SIZE););
+        DOCHECK(CHKLVL_MEMFILL, memset(p, HEAP_UNALLOCATED_BYTE, alloc_size-HEADER_SIZE););
 # endif
         STATS_SUB(heap_headers, HEADER_SIZE);
     } else {
@@ -3607,11 +3634,13 @@ common_heap_free(thread_units_t *tu, void *p_void, size_t size HEAPACCT(which_he
             "\nfree fix "PFX"-"PFX" %d bytes, asked "PFX"-"PFX" %d bytes\n",
             p, p+alloc_size, alloc_size, p, p+size, size);
 #  ifndef HEAP_LEAKSTACKS  /* Leak stacks are stored in the padding. */
-        ASSERT_MESSAGE(CHKLVL_MEMFILL, "heap overflow",
+        ASSERT_MESSAGE(chklvl, "heap overflow",
                        is_region_memset_to_char(p+size, alloc_size-size, HEAP_PAD_BYTE));
 #  endif
         /* ensure we are freeing memory in a proper unit */
-        ASSERT(find_heap_unit(tu, p, alloc_size) != NULL);
+        DOCHECK(CHKLVL_DEFAULT, {  /* expensive check */
+            ASSERT(find_heap_unit(tu, p, alloc_size) != NULL);
+        });
         /* set used and padding memory back to unallocated */
         DOCHECK(CHKLVL_MEMFILL, memset(p, HEAP_UNALLOCATED_BYTE, alloc_size););
 # endif
@@ -4514,7 +4543,7 @@ special_heap_delete_lock(void *special)
  *
  * A landing pad will have nothing more than a jump (5-byte rel for 32-bit DR
  * and 64-bit abs ind jmp for 64-bit DR) to the trampoline and a 5-byte rel jmp
- * back to the next instruction after the hook.
+ * back to the next instruction after the hook, plus the displaced app instrs.
  *
  * To handle hook chaining landing pads won't be released till process exit
  * (not on a detach), their first jump will just be nop'ed.  As landing pads
@@ -4536,6 +4565,7 @@ typedef struct {
     byte *end;          /* end of reserved region */
     byte *commit_end;   /* end of committed memory in the reserved region */
     byte *cur_ptr;      /* pointer to next allocatable landing pad memory */
+    bool allocated;     /* allocated, or stolen from an app dll? */
 } landing_pad_area_t;
 
 /* Allocates a landing pad so that a hook inserted at addr_to_hook can reach
@@ -4543,6 +4573,9 @@ typedef struct {
  * 32-bit relative jmp from addr_to_hook.
  * Note: we may want to generalize this at some point such that the size of the
  *       landing pad is passed as an argument.
+ *
+ * For Windows we assume that landing_pads_to_executable_areas(true) will be
+ * called once landing pads are finished being created.
  */
 byte *
 alloc_landing_pad(app_pc addr_to_hook)
@@ -4621,6 +4654,7 @@ alloc_landing_pad(app_pc addr_to_hook)
                   */
                  if ((lpad_area->cur_ptr + LANDING_PAD_SIZE) >=
                      lpad_area->commit_end) {
+                     ASSERT(lpad_area->allocated);
                      extend_commitment(lpad_area->commit_end, PAGE_SIZE,
                                        MEMPROT_READ|MEMPROT_EXEC,
                                        false /* not initial commit */);
@@ -4644,7 +4678,9 @@ alloc_landing_pad(app_pc addr_to_hook)
      * landing pad in it.
      */
     if (lpad == NULL) {
+        bool allocated = true;
         heap_error_code_t heap_error;
+        lpad_area_end = NULL;
         lpad_area_start = os_heap_reserve_in_region(alloc_region_start,
                                                     alloc_region_end,
                                                     LANDING_PAD_AREA_SIZE,
@@ -4659,9 +4695,32 @@ alloc_landing_pad(app_pc addr_to_hook)
                                   (void *)ALIGN_FORWARD(addr_to_hook,
                                                         LANDING_PAD_AREA_SIZE),
                                   LANDING_PAD_AREA_SIZE, &heap_error, true/*+x*/);
+#ifdef WINDOWS
+            if (lpad_area_start == NULL &&
+                /* We can only do this once w/ current interface.
+                 * XXX: support multiple "allocs" inside libs.
+                 */
+                vmvector_empty(landing_pad_areas) &&
+                os_find_free_code_space_in_libs(&lpad_area_start, &lpad_area_end)) {
+                if (lpad_area_end - lpad_area_start >= LANDING_PAD_SIZE &&
+                    /* Mark writable until we're done creating landing pads */
+                    make_hookable(lpad_area_start, lpad_area_end - lpad_area_start,
+                                  NULL)) {
+                    /* Let's take it */
+                    allocated = false;
+                    /* We assume that landing_pads_to_executable_areas(true) will be
+                     * called once landing pads are finished being created and we
+                     * can restore to +rx there.
+                     */
+                    lpad_temp_writable_start = lpad_area_start;
+                    lpad_temp_writable_size = lpad_area_end - lpad_area_start;
+                } else
+                    lpad_area_start = NULL; /* not big enough */
+            }
+#endif
             if (lpad_area_start == NULL) {
                 /* Even at startup when there will be enough memory,
-                 * theoritically 2 GB of dlls might get packed together before
+                 * theoretically 2 GB of dlls might get packed together before
                  * we get control (very unlikely), so we can fail.  If it does,
                  * then say 'oom' and exit.
                  */ 
@@ -4675,15 +4734,19 @@ alloc_landing_pad(app_pc addr_to_hook)
          * initially even though we reserve 64k (LANDING_PAD_AREA_SIZE), to
          * avoid wastage.
          */
-        extend_commitment(lpad_area_start, PAGE_SIZE, MEMPROT_READ|MEMPROT_EXEC,
-                          true /* initial commit */);
+        if (allocated) {
+            extend_commitment(lpad_area_start, PAGE_SIZE, MEMPROT_READ|MEMPROT_EXEC,
+                              true /* initial commit */);
+        }
 
         lpad_area = HEAP_TYPE_ALLOC(GLOBAL_DCONTEXT, landing_pad_area_t,
                                     ACCT_VMAREAS, PROTECTED);
         lpad_area->start = lpad_area_start;
-        lpad_area->end = lpad_area_start + LANDING_PAD_AREA_SIZE;
+        lpad_area->end = (lpad_area_end == NULL ?
+                          lpad_area_start + LANDING_PAD_AREA_SIZE : lpad_area_end);
         lpad_area->commit_end = lpad_area_start + PAGE_SIZE;
         lpad_area->cur_ptr = lpad_area_start;
+        lpad_area->allocated = allocated;
         lpad = lpad_area->cur_ptr;
         lpad_area->cur_ptr += LANDING_PAD_SIZE;
 
@@ -4701,10 +4764,35 @@ alloc_landing_pad(app_pc addr_to_hook)
      * pads aren't added to executable_areas here, at the point of allocation.
      */
 
+    LOG(GLOBAL, LOG_ALL, 1/*NOCHECKIN 3*/, "%s: used "PIFX" bytes in "PFX"-"PFX"\n", __FUNCTION__,
+        lpad_area->cur_ptr - lpad_area->start, lpad_area->start, lpad_area->end);
+
     /* Boundary check to make sure the allocation is within the landing pad area. */
-    ASSERT(lpad_area->cur_ptr <= lpad_area->start + LANDING_PAD_AREA_SIZE);
+    ASSERT(lpad_area->cur_ptr <= lpad_area->end);
     write_unlock(&landing_pad_areas->lock);
     return lpad;
+}
+
+/* Attempts to save space in the landing pad region by trimming the most
+ * recently allocated landing pad to the actual space used.
+ * Will fail if another landing pad was allocated between lpad_start
+ * being allocated and this routine being called.
+ */
+bool
+trim_landing_pad(byte *lpad_start, size_t space_used)
+{
+    landing_pad_area_t *lpad_area = NULL;
+    bool res = false;
+    write_lock(&landing_pad_areas->lock);
+    if (vmvector_lookup_data(landing_pad_areas, lpad_start, NULL,
+                             NULL, &lpad_area)) {
+        if (lpad_start == lpad_area->cur_ptr - LANDING_PAD_SIZE) {
+            lpad_area->cur_ptr -= (LANDING_PAD_SIZE - space_used);
+            res = true;
+        }
+    }
+    write_unlock(&landing_pad_areas->lock);
+    return res;
 }
 
 /* Adds or removes all landing pads from executable_areas by adding whole
@@ -4723,6 +4811,13 @@ landing_pads_to_executable_areas(bool add)
     if (RUNNING_WITHOUT_CODE_CACHE())
         return;
 
+#ifdef WINDOWS
+    if (add && lpad_temp_writable_start != NULL) {
+        make_unhookable(lpad_temp_writable_start, lpad_temp_writable_size, true);
+        lpad_temp_writable_start = NULL;
+    }
+#endif
+
     /* With code cache, there should be only one landing pad area, just for
      * dr hooks in ntdll.  For 64-bit, the image entry hook will result in a
      * new landing pad.
@@ -4737,7 +4832,7 @@ landing_pads_to_executable_areas(bool add)
             vmvector_iterator_next(&lpad_area_iter, &lpad_area_start,
                                    &lpad_area_end);
         lpad_area_size = (uint)(lpad_area_end - lpad_area_start);
-        ASSERT(lpad_area_size == LANDING_PAD_AREA_SIZE);
+        ASSERT(lpad_area_size <= LANDING_PAD_AREA_SIZE);
         /* Current ptr should be within area. */
         ASSERT(lpad_area->cur_ptr < lpad_area_end);
         if (add) {
@@ -4766,11 +4861,14 @@ release_landing_pad_mem(void)
 
     vmvector_iterator_start(landing_pad_areas, &lpad_area_iter);
     while (vmvector_iterator_hasnext(&lpad_area_iter)) {
+        bool allocated;
         lpad_area = vmvector_iterator_next(&lpad_area_iter, &lpad_area_start,
                                            &lpad_area_end);
+        allocated = lpad_area->allocated;
         HEAP_TYPE_FREE(GLOBAL_DCONTEXT, lpad_area, landing_pad_area_t,
                        ACCT_VMAREAS, PROTECTED); 
-        if (!doing_detach)  /* On normal exit release the landing pads. */
+        if (!doing_detach && /* On normal exit release the landing pads. */
+            allocated)
             os_heap_free(lpad_area_start, LANDING_PAD_AREA_SIZE, &heap_error);
     }
     vmvector_iterator_stop(&lpad_area_iter);

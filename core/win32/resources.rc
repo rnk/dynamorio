@@ -38,7 +38,7 @@
 // externally to this file 
 
 #include "configure.h"
-#include "winres.h"
+#include "winresrc.h"  // avoiding winres.h from MFC
 
 #ifdef INCLUDE_EVENTS
 # include "events.rc"
@@ -145,6 +145,10 @@
 #elif defined(RC_IS_drdel)
 # define FILE_NAME "drdel.exe"
 # define FILE_DESCRIPTION PRODUCT_NAME "delete from file cache"
+# define FILE_TYPE VFT_APP
+#elif defined(RC_IS_create_process)
+# define FILE_NAME "create_process.exe"
+# define FILE_DESCRIPTION PRODUCT_NAME "process creation utilitiy"
 # define FILE_TYPE VFT_APP
 // tests
 #elif defined(RC_IS_TEST)

@@ -1,5 +1,5 @@
 /* **********************************************************
- * Copyright (c) 2011-2012 Google, Inc.   All rights reserved.
+ * Copyright (c) 2011-2013 Google, Inc.   All rights reserved.
  * Copyright (c) 2009-2010 Derek Bruening   All rights reserved.
  * **********************************************************/
 
@@ -59,6 +59,7 @@
  * i#249: TLS/TEB/PEB isolation for private dll copies
  * - -private_peb uses a private PEB copy, but is limited in several respects:
  *   * uses a shallow copy
+ *     (we should look at the fiber API to see the full list of fields to copy)
  *   * does not intercept private libs/client using NtQueryInformationProcess
  *     but kernel seems to just use TEB pointer anyway!
  *   * added dr_get_app_PEB() for client to get app PEB
@@ -72,13 +73,13 @@
 #include "arch.h"
 #include "instr.h"
 #include "decode.h"
+#include "drwinapi/drwinapi.h"
 
 #ifdef X64
 # define IMAGE_ORDINAL_FLAG IMAGE_ORDINAL_FLAG64
 #else
 # define IMAGE_ORDINAL_FLAG IMAGE_ORDINAL_FLAG32
 #endif
-
 
 /* Not persistent across code cache execution, so not protected.
  * Synchronized by privload_lock.
@@ -88,6 +89,8 @@ DECLARE_NEVERPROT_VAR(static char forwmodpath[MAXIMUM_PATH], {0});
 
 /* Written during initialization only */
 static char systemroot[MAXIMUM_PATH];
+
+static bool windbg_cmds_initialized;
 
 /* PE entry points take 3 args */
 typedef BOOL (WINAPI *dllmain_t)(HANDLE, DWORD, LPVOID);
@@ -111,239 +114,25 @@ privload_map_name(const char *impname, privmod_t *immed_dep);
 static privmod_t *
 privload_locate_and_load(const char *impname, privmod_t *dependent);
 
-/* Redirection of ntdll routines that for transparency reasons we can't
- * point at the real ntdll.  If we get a lot of these should switch to
- * a hashtable.
- */
-typedef struct _redirect_import_t {
-    const char *name;
-    app_pc func;
-} redirect_import_t;
-
+static void
+privload_add_windbg_cmds_post_init(privmod_t *mod);
 
 static app_pc
 privload_redirect_imports(privmod_t *impmod, const char *name, privmod_t *importer);
 
-static BOOL WINAPI
-redirect_ignore_arg0(void);
-
-static BOOL WINAPI
-redirect_ignore_arg4(void *arg1);
-
-static BOOL WINAPI
-redirect_ignore_arg8(void *arg1, void *arg2);
-
-static BOOL WINAPI
-redirect_ignore_arg12(void *arg1, void *arg2, void *arg3);
-
-static HANDLE WINAPI
-redirect_RtlCreateHeap(ULONG flags, void *base, size_t reserve_sz,
-                       size_t commit_sz, void *lock, void *params);
-
-static BOOL WINAPI
-redirect_RtlDestroyHeap(HANDLE base);
-
-static void * WINAPI
-redirect_RtlAllocateHeap(HANDLE heap, ULONG flags, SIZE_T size);
-
-static void * WINAPI
-redirect_RtlReAllocateHeap(HANDLE heap, ULONG flags, PVOID ptr, SIZE_T size);
-
-static BOOL WINAPI
-redirect_RtlFreeHeap(HANDLE heap, ULONG flags, PVOID ptr);
-
-static SIZE_T WINAPI
-redirect_RtlSizeHeap(HANDLE heap, ULONG flags, PVOID ptr);
-
-static BOOL WINAPI
-redirect_RtlValidateHeap(HANDLE heap, DWORD flags, void *ptr);
-
-static BOOL WINAPI
-redirect_RtlLockHeap(HANDLE heap);
-
-static BOOL WINAPI
-redirect_RtlUnlockHeap(HANDLE heap);
-
-static BOOL WINAPI
-redirect_RtlSetHeapInformation(HANDLE HeapHandle,
-                               HEAP_INFORMATION_CLASS HeapInformationClass,
-                               PVOID HeapInformation, SIZE_T HeapInformationLength);
-
-static void WINAPI
-redirect_RtlFreeUnicodeString(UNICODE_STRING *string);
-
-static void WINAPI
-redirect_RtlFreeAnsiString(ANSI_STRING *string);
-
-static void WINAPI
-redirect_RtlFreeOemString(OEM_STRING *string);
-
-static DWORD WINAPI
-redirect_FlsAlloc(PFLS_CALLBACK_FUNCTION cb);
-
-static HMODULE WINAPI
-redirect_GetModuleHandleA(const char *name);
-
-static HMODULE WINAPI
-redirect_GetModuleHandleW(const wchar_t *name);
-
-static FARPROC WINAPI
-redirect_GetProcAddress(app_pc modbase, const char *name);
-
-static HMODULE WINAPI
-redirect_LoadLibraryA(const char *name);
-
-static HMODULE WINAPI
-redirect_LoadLibraryW(const wchar_t *name);
-
-static DWORD WINAPI
-redirect_GetModuleFileNameA(HMODULE mod, char *buf, DWORD bufcnt);
-
-static DWORD WINAPI
-redirect_GetModuleFileNameW(HMODULE mod, wchar_t *buf, DWORD bufcnt);
-
-static NTSTATUS WINAPI
-redirect_InitializeCriticalSection(RTL_CRITICAL_SECTION* crit);
-
-static NTSTATUS WINAPI
-redirect_InitializeCriticalSectionAndSpinCount(RTL_CRITICAL_SECTION* crit,
-                                               ULONG                 spincount);
-
-static NTSTATUS WINAPI
-redirect_InitializeCriticalSectionEx(RTL_CRITICAL_SECTION* crit,
-                                     ULONG                 spincount,
-                                     ULONG                 flags);
-
-static NTSTATUS WINAPI
-redirect_DeleteCriticalSection(RTL_CRITICAL_SECTION *crit);
-
-/* Since we can't easily have a 2nd copy of ntdll, our 2nd copy of kernel32,
- * etc. use the same ntdll as the app.  We then have to redirect ntdll imports
- * that use shared resources and could interfere with the app.  There is a LOT
- * of stuff to emulate to really be transparent: we're going to add it
- * incrementally as needed, now that we have the infrastructure.
- *
- * FIXME i#235: redirect the Ldr* routines, incl LdrGetProcedureAddress.  For
- * GetModuleHandle: why does kernel32 seem to do a lot of work?
- * BasepGetModuleHandleExW => RtlPcToFileHeader, RtlComputePrivatizedDllName_U
- * where should we intercept?  why isn't it calling LdrGetDllHandle{,Ex}?
- */
-static const redirect_import_t redirect_ntdll[] = {
-    /* kernel32 passes some of its routines to ntdll where they are
-     * stored in function pointers.  xref PR 215408 where on x64 we had
-     * issues w/ these not showing up b/c no longer in relocs.
-     * kernel32!_BaseDllInitialize calls certain ntdll routines to
-     * set up these callbacks:
-     */
-    /* LdrSetDllManifestProber has more args on win7: see redirect_ntdll_win7 */
-    {"LdrSetDllManifestProber",           (app_pc)redirect_ignore_arg4},
-    {"RtlSetThreadPoolStartFunc",         (app_pc)redirect_ignore_arg8},
-    {"RtlSetUnhandledExceptionFilter",    (app_pc)redirect_ignore_arg4},
-    /* avoid attempts to free on private heap allocs made earlier on app heap: */
-    {"RtlCleanUpTEBLangLists",            (app_pc)redirect_ignore_arg0},
-    /* Rtl*Heap routines:
-     * We turn new Heap creation into essentially nops, and we redirect allocs
-     * from PEB.ProcessHeap or a Heap whose creation we saw.
-     * For now we'll leave the query, walk, enum, etc.  of
-     * PEB.ProcessHeap pointing at the app's and focus on allocation.
-     * There are many corner cases where we won't be transparent but we'll
-     * incrementally add more redirection (i#235) and more transparency: have to
-     * start somehwere.  Our biggest problems are ntdll routines that internally
-     * allocate or free, esp when combined with the other of the pair from outside.
-     */
-    {"RtlCreateHeap",                  (app_pc)redirect_RtlCreateHeap},
-    {"RtlDestroyHeap",                 (app_pc)redirect_RtlDestroyHeap},
-    {"RtlAllocateHeap",                (app_pc)redirect_RtlAllocateHeap},
-    {"RtlReAllocateHeap",              (app_pc)redirect_RtlReAllocateHeap},
-    {"RtlFreeHeap",                    (app_pc)redirect_RtlFreeHeap},
-    {"RtlSizeHeap",                    (app_pc)redirect_RtlSizeHeap},
-    {"RtlValidateHeap",                (app_pc)redirect_RtlValidateHeap},
-    {"RtlSetHeapInformation",          (app_pc)redirect_RtlSetHeapInformation},
-    /* kernel32!LocalFree calls these */
-    {"RtlLockHeap",                    (app_pc)redirect_RtlLockHeap},
-    {"RtlUnlockHeap",                  (app_pc)redirect_RtlUnlockHeap},
-    /* We redirect these to our implementations to avoid their internal
-     * heap allocs that can end up mixing app and priv heap
-     */
-    {"RtlInitializeCriticalSection",   (app_pc)redirect_InitializeCriticalSection},
-    {"RtlInitializeCriticalSectionAndSpinCount",
-                                (app_pc)redirect_InitializeCriticalSectionAndSpinCount},
-    {"RtlInitializeCriticalSectionEx", (app_pc)redirect_InitializeCriticalSectionEx},
-    {"RtlDeleteCriticalSection",       (app_pc)redirect_DeleteCriticalSection},
-    /* We don't redirect the creation but we avoid DR pointers being passed
-     * to RtlFreeHeap and subsequent heap corruption by redirecting the frees,
-     * since sometimes creation is by direct RtlAllocateHeap.
-     */
-    {"RtlFreeUnicodeString",           (app_pc)redirect_RtlFreeUnicodeString},
-    {"RtlFreeAnsiString",              (app_pc)redirect_RtlFreeAnsiString},
-    {"RtlFreeOemString",               (app_pc)redirect_RtlFreeOemString},
-#if 0 /* FIXME i#235: redirect these: */
-    {"RtlSetUserValueHeap",            (app_pc)redirect_RtlSetUserValueHeap},
-    {"RtlGetUserInfoHeap",             (app_pc)redirect_RtlGetUserInfoHeap},
-#endif
-};
-#define REDIRECT_NTDLL_NUM (sizeof(redirect_ntdll)/sizeof(redirect_ntdll[0]))
-
-/* For ntdll redirections that differ on Windows 7.  Takes precedence over
- * redirect_ntdll[].
- */
-static const redirect_import_t redirect_ntdll_win7[] = {
-    /* win7 increases the #args */
-    {"LdrSetDllManifestProber",           (app_pc)redirect_ignore_arg12},
-};
-#define REDIRECT_NTDLL_WIN7_NUM \
-    (sizeof(redirect_ntdll_win7)/sizeof(redirect_ntdll_win7[0]))
-
-static const redirect_import_t redirect_kernel32[] = {
-    /* To avoid the FlsCallback being interpreted */
-    {"FlsAlloc",                       (app_pc)redirect_FlsAlloc},
-    /* As an initial interception of loader queries, but simpler than
-     * intercepting Ldr*: plus, needed to intercept FlsAlloc called by msvcrt
-     * init routine.
-     * XXX i#235: redirect GetModuleHandle{ExA,ExW} as well
-     */
-    {"GetModuleHandleA",               (app_pc)redirect_GetModuleHandleA},
-    {"GetModuleHandleW",               (app_pc)redirect_GetModuleHandleW},
-    {"GetProcAddress",                 (app_pc)redirect_GetProcAddress},
-    {"LoadLibraryA",                   (app_pc)redirect_LoadLibraryA},
-    {"LoadLibraryW",                   (app_pc)redirect_LoadLibraryW},
-    {"GetModuleFileNameA",             (app_pc)redirect_GetModuleFileNameA},
-    {"GetModuleFileNameW",             (app_pc)redirect_GetModuleFileNameW},
-};
-#define REDIRECT_KERNEL32_NUM (sizeof(redirect_kernel32)/sizeof(redirect_kernel32[0]))
-
-/* Support for running private FlsCallback routines natively */
-typedef struct _fls_cb_t {
-    PFLS_CALLBACK_FUNCTION cb;
-    struct _fls_cb_t *next;
-} fls_cb_t;
-
-static fls_cb_t *fls_cb_list; /* in .data, so we have a permanent head node */
-DECLARE_CXTSWPROT_VAR(static mutex_t privload_fls_lock,
-                      INIT_LOCK_FREE(privload_fls_lock));
-
-/* Rather than statically linking to real kernel32 we want to invoke
- * routines in the private kernel32
- */
-static void (WINAPI *priv_SetLastError)(DWORD val); /* kernel32 or ntdll */
-static DWORD (WINAPI *priv_kernel32_FlsAlloc)(PFLS_CALLBACK_FUNCTION);
-static HMODULE (WINAPI *priv_kernel32_GetModuleHandleA)(const char *);
-static HMODULE (WINAPI *priv_kernel32_GetModuleHandleW)(const wchar_t *);
-static FARPROC (WINAPI *priv_kernel32_GetProcAddress)(HMODULE, const char *);
-static HMODULE (WINAPI *priv_kernel32_LoadLibraryA)(const char *);
-static HMODULE (WINAPI *priv_kernel32_LoadLibraryW)(const wchar_t *);
-
 #ifdef CLIENT_INTERFACE
 /* Isolate the app's PEB by making a copy for use by private libs (i#249) */
 static PEB *private_peb;
+static bool private_peb_initialized = false;
 /* Isolate TEB->FlsData: for first thread we need to copy before have dcontext */
-static void *priv_fls_data;
+static void *pre_fls_data;
 /* Isolate TEB->ReservedForNtRpc: for first thread we need to copy before have dcontext */
-static void *priv_nt_rpc;
-/* Only swap peb and teb fields if we've loaded WinAPI libraries */
-static bool loaded_windows_lib;
+static void *pre_nt_rpc;
+/* Isolate TEB->NlsCache: for first thread we need to copy before have dcontext */
+static void *pre_nls_cache;
 /* Used to handle loading windows lib later during init */
 static bool swapped_to_app_peb;
+/* FIXME i#875: we do not have ntdll!RtlpFlsLock isolated.  Living w/ it for now. */
 #endif
 
 /***************************************************************************/
@@ -359,8 +148,12 @@ os_loader_init_prologue(void)
 {
     app_pc ntdll = get_ntdll_base();
     app_pc drdll = get_dynamorio_dll_start();
-    app_pc user32 = (app_pc) get_module_handle(L"user32.dll");
+    app_pc user32 = NULL;
     privmod_t *mod;
+    /* FIXME i#812: need to delay this for earliest injection */
+    if (!dr_earliest_injected IF_CLIENT_INTERFACE(&& !standalone_library)) {
+        user32 = (app_pc) get_module_handle(L"user32.dll");
+    }
 
 #ifdef CLIENT_INTERFACE
     if (INTERNAL_OPTION(private_peb)) {
@@ -385,7 +178,8 @@ os_loader_init_prologue(void)
          */
         private_peb->FastPebLock = HEAP_TYPE_ALLOC
             (GLOBAL_DCONTEXT, RTL_CRITICAL_SECTION, ACCT_OTHER, UNPROTECTED);
-        RtlInitializeCriticalSection(private_peb->FastPebLock);
+        if (!dr_earliest_injected) /* FIXME i#812: need to delay this */
+            RtlInitializeCriticalSection(private_peb->FastPebLock);
         
         /* Start with empty values, regardless of what app libs did prior to us
          * taking over.  FIXME: if we ever have attach will have to verify this:
@@ -394,7 +188,7 @@ os_loader_init_prologue(void)
         private_peb->FlsListHead.Flink = (LIST_ENTRY *) &private_peb->FlsListHead;
         private_peb->FlsListHead.Blink = (LIST_ENTRY *) &private_peb->FlsListHead;
         private_peb->FlsCallback = NULL;
-
+        private_peb_initialized = true;
         swap_peb_pointer(NULL, true/*to priv*/);
         LOG(GLOBAL, LOG_LOADER, 2, "app peb="PFX"\n", own_peb);
         LOG(GLOBAL, LOG_LOADER, 2, "private peb="PFX"\n", private_peb);
@@ -404,26 +198,40 @@ os_loader_init_prologue(void)
          * We do this after the swap in case it affects some other peb field,
          * in which case it will match the RtlDestroyHeap.
          */
-        private_peb->ProcessHeap = RtlCreateHeap(0, NULL, 0, 0, NULL, NULL);
-        if (private_peb->ProcessHeap == NULL) {
-            SYSLOG_INTERNAL_ERROR("private default heap creation failed");
-            /* fallback */
+        if (dr_earliest_injected) { /* FIXME i#812: need to delay RtlCreateHeap */
             private_peb->ProcessHeap = own_peb->ProcessHeap;
+        } else {
+            private_peb->ProcessHeap = RtlCreateHeap(HEAP_GROWABLE | HEAP_CLASS_PRIVATE,
+                                                     NULL, 0, 0, NULL, NULL);
+            if (private_peb->ProcessHeap == NULL) {
+                SYSLOG_INTERNAL_ERROR("private default heap creation failed");
+                /* fallback */
+                private_peb->ProcessHeap = own_peb->ProcessHeap;
+            }
         }
 
-        priv_fls_data = get_tls(FLS_DATA_TIB_OFFSET);
-        priv_nt_rpc = get_tls(NT_RPC_TIB_OFFSET);
-        LOG(GLOBAL, LOG_LOADER, 2, "initial thread TEB->FlsData="PFX"\n", priv_fls_data);
+        pre_nls_cache = get_tls(NLS_CACHE_TIB_OFFSET);
+        pre_fls_data = get_tls(FLS_DATA_TIB_OFFSET);
+        pre_nt_rpc = get_tls(NT_RPC_TIB_OFFSET);
+        /* Clear state to separate priv from app.
+         * XXX: if we attach or something it seems possible that ntdll or user32
+         * or some other shared resource might set these and we want to share
+         * the value between app and priv.  In that case we should not clear here
+         * and should relax the asserts in dispatch and is_using_app_peb to
+         * allow app==priv if both ==pre.
+         */
+        set_tls(NLS_CACHE_TIB_OFFSET, NULL);
+        set_tls(FLS_DATA_TIB_OFFSET, NULL);
+        set_tls(NT_RPC_TIB_OFFSET, NULL);
+        LOG(GLOBAL, LOG_LOADER, 2, "initial thread TEB->NlsCache="PFX"\n",
+            pre_nls_cache);
+        LOG(GLOBAL, LOG_LOADER, 2, "initial thread TEB->FlsData="PFX"\n", pre_fls_data);
         LOG(GLOBAL, LOG_LOADER, 2, "initial thread TEB->ReservedForNtRpc="PFX"\n",
-            priv_nt_rpc);
+            pre_nt_rpc);
     }
 #endif
 
-    /* use permanent head node to avoid .data unprot */
-    ASSERT(fls_cb_list == NULL);
-    fls_cb_list = HEAP_TYPE_ALLOC(GLOBAL_DCONTEXT, fls_cb_t, ACCT_OTHER, PROTECTED);
-    fls_cb_list->cb = NULL;
-    fls_cb_list->next = NULL;
+    drwinapi_init();
 
     ASSERT_OWN_RECURSIVE_LOCK(true, &privload_lock);
     privload_init_search_paths();
@@ -434,14 +242,13 @@ os_loader_init_prologue(void)
              systemroot, "ntdll.dll");
     NULL_TERMINATE_BUFFER(modpath);
     mod = privload_insert(NULL, ntdll, get_allocation_size(ntdll, NULL),
-                          "ntdll.dll", modpath, NULL);
+                          "ntdll.dll", modpath);
     mod->externally_loaded = true;
-    /* Once we have earliest injection and load DR via this private loader
+    /* FIXME i#234: Once we have earliest injection and load DR via this private loader
      * (i#234/PR 204587) we can remove this
      */
     mod = privload_insert(NULL, drdll, get_allocation_size(drdll, NULL),
-                          DYNAMORIO_LIBRARY_NAME, get_dynamorio_library_path(),
-                          NULL);
+                          DYNAMORIO_LIBRARY_NAME, get_dynamorio_library_path());
     mod->externally_loaded = true;
 
     /* FIXME i#235: loading a private user32.dll is problematic: it registers
@@ -457,7 +264,7 @@ os_loader_init_prologue(void)
                  systemroot, "user32.dll");
         NULL_TERMINATE_BUFFER(modpath);
         mod = privload_insert(NULL, user32, get_allocation_size(user32, NULL),
-                              "user32.dll", modpath, NULL);
+                              "user32.dll", modpath);
         mod->externally_loaded = true;
     }
 }
@@ -477,14 +284,7 @@ os_loader_init_epilogue(void)
 void
 os_loader_exit(void)
 {
-    mutex_lock(&privload_fls_lock);
-    while (fls_cb_list != NULL) {
-        fls_cb_t *cb = fls_cb_list;
-        fls_cb_list = fls_cb_list->next;
-        HEAP_TYPE_FREE(GLOBAL_DCONTEXT, cb, fls_cb_t, ACCT_OTHER, PROTECTED);
-    }
-    mutex_unlock(&privload_fls_lock);
-    DELETE_LOCK(privload_fls_lock);
+    drwinapi_exit();
 
 #ifdef CLIENT_INTERFACE
     if (INTERNAL_OPTION(private_peb)) {
@@ -520,20 +320,32 @@ os_loader_thread_init_prologue(dcontext_t *dcontext)
             /* For first thread use cached pre-priv-lib value for app and
              * whatever value priv libs have set for priv
              */
+            dcontext->priv_nls_cache = get_tls(NLS_CACHE_TIB_OFFSET);
             dcontext->priv_fls_data = get_tls(FLS_DATA_TIB_OFFSET);
             dcontext->priv_nt_rpc = get_tls(NT_RPC_TIB_OFFSET);
-            dcontext->app_fls_data = NULL;
-            dcontext->app_nt_rpc = NULL;
+            IF_X64(dcontext->app_stack_limit = get_tls(BASE_STACK_TIB_OFFSET));
+            dcontext->app_nls_cache = pre_nls_cache;
+            dcontext->app_fls_data = pre_fls_data;
+            dcontext->app_nt_rpc = pre_nt_rpc;
+            set_tls(NLS_CACHE_TIB_OFFSET, dcontext->app_nls_cache);
             set_tls(FLS_DATA_TIB_OFFSET, dcontext->app_fls_data);
             set_tls(NT_RPC_TIB_OFFSET, dcontext->app_nt_rpc);
         } else {
             /* The real value will be set by swap_peb_pointer */
+            IF_X64(dcontext->app_stack_limit = NULL);
+            dcontext->app_nls_cache = NULL;
             dcontext->app_fls_data = NULL;
             dcontext->app_nt_rpc = NULL;
             /* We assume clearing out any non-NULL value for priv is safe */
+            dcontext->priv_nls_cache = NULL;
             dcontext->priv_fls_data = NULL;
             dcontext->priv_nt_rpc = NULL;
         }
+#ifdef X64
+        LOG(THREAD, LOG_LOADER, 2, "app stack limit="PFX"\n", dcontext->app_stack_limit);
+#endif
+        LOG(THREAD, LOG_LOADER, 2, "app nls_cache="PFX", priv nls_cache="PFX"\n",
+            dcontext->app_nls_cache, dcontext->priv_nls_cache);
         LOG(THREAD, LOG_LOADER, 2, "app fls="PFX", priv fls="PFX"\n",
             dcontext->app_fls_data, dcontext->priv_fls_data);
         LOG(THREAD, LOG_LOADER, 2, "app rpc="PFX", priv rpc="PFX"\n",
@@ -578,42 +390,19 @@ get_private_peb(void)
     return private_peb;
 }
 
-/* For performance reasons we avoid the swap if there are no private WinAPI libs:
- * we assume libs not in the system dir will not write to PEB or TEB fields we
- * care about (mainly Fls ones).
+/* For performance reasons we avoid the swap if there's no client.
+ * We'd like to do so if there are no private WinAPI libs
+ * (we assume libs not in the system dir will not write to PEB or TEB fields we
+ * care about (mainly Fls ones)), but kernel32 can be loaded in dr_init()
+ * (which is after arch_init()) via dr_enable_console_printing(); plus,
+ * a client could load kernel32 via dr_load_aux_library(), or a 3rd-party
+ * priv lib could load anything at any time.  Xref i#984.
  */
 bool
 should_swap_peb_pointer(void)
 {
-    return INTERNAL_OPTION(private_peb) && loaded_windows_lib;
-}
-
-static void
-set_loaded_windows_lib(void)
-{
-    if (!loaded_windows_lib) {
-        if (!dynamo_initialized) {
-            loaded_windows_lib = true;
-            LOG(GLOBAL, LOG_LOADER, 1,
-                "loaded a Windows system library => isolating PEB+TEB\n");
-#ifdef CLIENT_INTERFACE
-            if (INTERNAL_OPTION(private_peb) && swapped_to_app_peb &&
-                should_swap_peb_pointer()) {
-                /* os_loader_init_epilogue() already swapped to app */
-                swap_peb_pointer(NULL, true/*to priv*/);
-            }
-#endif
-            /* attempt to catch init re-ordering (see comment below and i#338) */
-#ifndef CLIENT_INTERFACE /* dr_enable_console_printing() loads kernel32.dll */
-            ASSERT(get_thread_private_dcontext() == NULL);
-#endif
-        } else {
-            /* We've already emitted context switch code that does not swap peb/teb.
-             * Basically we don't support this.  (Should really check for post-emit.)
-             */
-            ASSERT_NOT_REACHED();
-        }
-    }
+    return (INTERNAL_OPTION(private_peb) &&
+            !IS_INTERNAL_STRING_OPTION_EMPTY(client_lib));
 }
 
 static void *
@@ -636,6 +425,7 @@ set_teb_field(dcontext_t *dcontext, ushort offs, void *value)
         set_tls(offs, value);
     } else {
         byte *teb = dcontext->teb_base;
+        ASSERT(dcontext->teb_base != NULL);
         *((void **)(teb + offs)) = value;
     }
 }
@@ -645,23 +435,44 @@ is_using_app_peb(dcontext_t *dcontext)
 {
     /* don't use get_own_peb() as we want what's actually pointed at by TEB */
     PEB *cur_peb = get_teb_field(dcontext, PEB_TIB_OFFSET);
+    IF_X64(void *cur_stack_limit;)
+    void *cur_nls_cache;
     void *cur_fls;
     void *cur_rpc;
     ASSERT(dcontext != NULL && dcontext != GLOBAL_DCONTEXT);
     if (!INTERNAL_OPTION(private_peb) ||
-        !dynamo_initialized ||
+        !private_peb_initialized ||
         !should_swap_peb_pointer())
         return true;
     ASSERT(cur_peb != NULL);
+    IF_X64(cur_stack_limit = get_teb_field(dcontext, BASE_STACK_TIB_OFFSET));
+    cur_nls_cache = get_teb_field(dcontext, NLS_CACHE_TIB_OFFSET);
     cur_fls = get_teb_field(dcontext, FLS_DATA_TIB_OFFSET);
     cur_rpc = get_teb_field(dcontext, NT_RPC_TIB_OFFSET);
     if (cur_peb == get_private_peb()) {
-        ASSERT(cur_fls == dcontext->priv_fls_data);
-        ASSERT(cur_rpc == dcontext->priv_nt_rpc);
+        /* won't nec equal the priv_ value since could have changed: but should
+         * not have the app value!
+         */
+        IF_X64(ASSERT(!is_dynamo_address(dcontext->app_stack_limit) ||
+                      IS_CLIENT_THREAD(dcontext)));
+        ASSERT(cur_nls_cache == NULL ||
+               cur_nls_cache != dcontext->app_nls_cache);
+        ASSERT(cur_fls == NULL ||
+               cur_fls != dcontext->app_fls_data);
+        ASSERT(cur_rpc == NULL ||
+               cur_rpc != dcontext->app_nt_rpc);
         return false;
     } else {
-        ASSERT(cur_fls == dcontext->app_fls_data);
-        ASSERT(cur_rpc == dcontext->app_nt_rpc);
+        /* won't nec equal the app_ value since could have changed: but should
+         * not have the priv value!
+         */
+        IF_X64(ASSERT(!is_dynamo_address(cur_stack_limit)));
+        ASSERT(cur_nls_cache == NULL ||
+               cur_nls_cache != dcontext->priv_nls_cache);
+        ASSERT(cur_fls == NULL ||
+               cur_fls != dcontext->priv_fls_data);
+        ASSERT(cur_rpc == NULL ||
+               cur_rpc != dcontext->priv_nt_rpc);
         return true;
     }
 }
@@ -672,21 +483,34 @@ swap_peb_pointer(dcontext_t *dcontext, bool to_priv)
 {
     PEB *tgt_peb = to_priv ? get_private_peb() : get_own_peb();
     ASSERT(INTERNAL_OPTION(private_peb));
-    ASSERT(!dynamo_initialized || should_swap_peb_pointer());
+    ASSERT(private_peb_initialized || should_swap_peb_pointer());
     ASSERT(tgt_peb != NULL);
     set_teb_field(dcontext, PEB_TIB_OFFSET, (void *) tgt_peb);
     LOG(THREAD, LOG_LOADER, 2, "set teb->peb to "PFX"\n", tgt_peb);
     if (dcontext != NULL && dcontext != GLOBAL_DCONTEXT) {
-        /* We preserve TEB->LastErrorValue and we swap TEB->FlsData and
-         * TEB->ReservedForNtRpc
+        /* We preserve TEB->LastErrorValue and we swap TEB->FlsData,
+         * TEB->ReservedForNtRpc, and TEB->NlsCache.
          */
+        IF_X64(void *cur_stack_limit = get_teb_field(dcontext, BASE_STACK_TIB_OFFSET);)
+        void *cur_nls_cache = get_teb_field(dcontext, NLS_CACHE_TIB_OFFSET);
         void *cur_fls = get_teb_field(dcontext, FLS_DATA_TIB_OFFSET);
         void *cur_rpc = get_teb_field(dcontext, NT_RPC_TIB_OFFSET);
         if (to_priv) {
             /* note: two calls in a row will clobber app_errno w/ wrong value! */
             dcontext->app_errno = (int)(ptr_int_t)
                 get_teb_field(dcontext, ERRNO_TIB_OFFSET);
-
+#ifdef X64
+            if (dynamo_initialized /* on app stack until init finished */ &&
+                !is_dynamo_address(cur_stack_limit)) { /* handle two in a row */
+                dcontext->app_stack_limit = cur_stack_limit;
+                set_teb_field(dcontext, BASE_STACK_TIB_OFFSET,
+                              dcontext->dstack - DYNAMORIO_STACK_SIZE);
+            }
+#endif
+            if (dcontext->priv_nls_cache != cur_nls_cache) { /* handle two in a row */
+                dcontext->app_nls_cache = cur_nls_cache;
+                set_teb_field(dcontext, NLS_CACHE_TIB_OFFSET, dcontext->priv_nls_cache);
+            }
             if (dcontext->priv_fls_data != cur_fls) { /* handle two calls in a row */
                 dcontext->app_fls_data = cur_fls;
                 set_teb_field(dcontext, FLS_DATA_TIB_OFFSET, dcontext->priv_fls_data);
@@ -699,7 +523,16 @@ swap_peb_pointer(dcontext_t *dcontext, bool to_priv)
             /* two calls in a row should be fine */
             set_teb_field(dcontext, ERRNO_TIB_OFFSET,
                           (void *)(ptr_int_t)dcontext->app_errno);
-
+#ifdef X64
+            if (is_dynamo_address(cur_stack_limit)) { /* handle two in a row */
+                set_teb_field(dcontext, BASE_STACK_TIB_OFFSET,
+                              dcontext->app_stack_limit);
+            }
+#endif
+            if (dcontext->app_nls_cache != cur_nls_cache) { /* handle two in a row */
+                dcontext->priv_nls_cache = cur_nls_cache;
+                set_teb_field(dcontext, NLS_CACHE_TIB_OFFSET, dcontext->app_nls_cache);
+            }
             if (dcontext->app_fls_data != cur_fls) { /* handle two calls in a row */
                 dcontext->priv_fls_data = cur_fls;
                 set_teb_field(dcontext, FLS_DATA_TIB_OFFSET, dcontext->app_fls_data);
@@ -709,12 +542,22 @@ swap_peb_pointer(dcontext_t *dcontext, bool to_priv)
                 set_teb_field(dcontext, NT_RPC_TIB_OFFSET, dcontext->app_nt_rpc);
             }
         }
+        IF_X64(ASSERT(!is_dynamo_address(dcontext->app_stack_limit) ||
+                      IS_CLIENT_THREAD(dcontext)));
+        ASSERT(!is_dynamo_address(dcontext->app_nls_cache));
         ASSERT(!is_dynamo_address(dcontext->app_fls_data));
         ASSERT(!is_dynamo_address(dcontext->app_nt_rpc));
         /* Once we have earier injection we should be able to assert
          * that priv_fls_data is either NULL or a DR address: but on
          * notepad w/ drinject it's neither: need to investigate.
          */
+#ifdef X64
+        LOG(THREAD, LOG_LOADER, 3, "cur stack_limit="PFX", app stack_limit="PFX"\n",
+            cur_stack_limit, dcontext->app_stack_limit);
+#endif
+        LOG(THREAD, LOG_LOADER, 3,
+            "cur nls_cache="PFX", app nls_cache="PFX", priv nls_cache="PFX"\n",
+            cur_nls_cache, dcontext->app_nls_cache, dcontext->priv_nls_cache);
         LOG(THREAD, LOG_LOADER, 3, "cur fls="PFX", app fls="PFX", priv fls="PFX"\n",
             cur_fls, dcontext->app_fls_data, dcontext->priv_fls_data);
         LOG(THREAD, LOG_LOADER, 3, "cur rpc="PFX", app rpc="PFX", priv rpc="PFX"\n",
@@ -731,7 +574,7 @@ restore_peb_pointer_for_thread(dcontext_t *dcontext)
     PEB *tgt_peb = get_own_peb();
     ASSERT_NOT_TESTED();
     ASSERT(INTERNAL_OPTION(private_peb));
-    ASSERT(!dynamo_initialized || should_swap_peb_pointer());
+    ASSERT(private_peb_initialized || should_swap_peb_pointer());
     ASSERT(tgt_peb != NULL);
     ASSERT(dcontext != NULL && dcontext->teb_base != NULL);
     set_teb_field(dcontext, PEB_TIB_OFFSET, (void *) tgt_peb);
@@ -739,12 +582,21 @@ restore_peb_pointer_for_thread(dcontext_t *dcontext)
     set_teb_field(dcontext, ERRNO_TIB_OFFSET, (void *)(ptr_int_t) dcontext->app_errno);
     LOG(THREAD, LOG_LOADER, 3, "restored app errno to "PIFX"\n", dcontext->app_errno);
     /* We also swap TEB->FlsData and TEB->ReservedForNtRpc */
+    set_teb_field(dcontext, NLS_CACHE_TIB_OFFSET, dcontext->app_nls_cache);
+    LOG(THREAD, LOG_LOADER, 3, "restored app nls_cache to "PFX"\n",
+        dcontext->app_nls_cache);
     set_teb_field(dcontext, FLS_DATA_TIB_OFFSET, dcontext->app_fls_data);
     LOG(THREAD, LOG_LOADER, 3, "restored app fls to "PFX"\n", dcontext->app_fls_data);
     set_teb_field(dcontext, NT_RPC_TIB_OFFSET, dcontext->app_nt_rpc);
     LOG(THREAD, LOG_LOADER, 3, "restored app fls to "PFX"\n", dcontext->app_nt_rpc);
 }
 #endif /* CLIENT_INTERFACE */
+
+bool
+os_should_swap_state(void)
+{
+    return IF_CLIENT_INTERFACE_ELSE(should_swap_peb_pointer(), false);
+}
 
 bool
 os_using_app_state(dcontext_t *dcontext)
@@ -824,19 +676,15 @@ privload_unload_imports(privmod_t *mod)
 
 /* if anything fails, undoes the mapping and returns NULL */
 app_pc
-privload_map_and_relocate(const char *filename, size_t *size OUT,
-                          void **os_privmod_data OUT)
+privload_map_and_relocate(const char *filename, size_t *size OUT)
 {
     file_t fd;
     app_pc map;
     app_pc pref;
     byte *(*map_func)(file_t, size_t *, uint64, app_pc, uint, bool, bool, bool);
     bool (*unmap_func)(file_t, size_t);
-    ASSERT(size != NULL && os_privmod_data != NULL);
+    ASSERT(size != NULL);
     ASSERT_OWN_RECURSIVE_LOCK(true, &privload_lock);
-
-    /* os_privmod_data is unused on Windows. */
-    *os_privmod_data = NULL;
 
     /* On win32 OS_EXECUTE is required to create a section w/ rwx
      * permissions, which is in turn required to map a view w/ rwx
@@ -944,7 +792,7 @@ privload_map_and_relocate(const char *filename, size_t *size OUT,
     return map;
 }
 
-privmod_t *
+static privmod_t *
 privload_lookup_locate_and_load(const char *name, privmod_t *name_dependent,
                                 privmod_t *load_dependent, bool inc_refcnt)
 {
@@ -974,6 +822,13 @@ privload_load_private_library(const char *name)
         res = newmod->base;
     release_recursive_lock(&privload_lock);
     return res;
+}
+
+void
+privload_load_finalized(privmod_t *mod)
+{
+    if (windbg_cmds_initialized) /* we added libs loaded at init time already */
+        privload_add_windbg_cmds_post_init(mod);
 }
 
 bool
@@ -1025,6 +880,11 @@ privload_process_imports(privmod_t *mod)
                 __FUNCTION__, impname);
             return false;
         }
+#ifdef CLIENT_INTERFACE
+        /* i#852: identify all libs that import from DR as client libs */
+        if (impmod->base == get_dynamorio_dll_start())
+            mod->is_client = true;
+#endif
 
         /* walk the lookup table and address table in lockstep */
         /* FIXME: should check readability: if had no-dcontext try (i#350) could just
@@ -1140,6 +1000,15 @@ privload_process_one_import(privmod_t *mod, privmod_t *impmod,
     /* loop to handle sequence of forwarders */
     while (func == NULL) {
         if (forwarder == NULL) {
+#ifdef CLIENT_INTERFACE
+            /* there's a syslog in loader_init() but we want to provide the symbol */
+            char msg[MAXIMUM_PATH*2];
+            snprintf(msg, BUFFER_SIZE_ELEMENTS(msg),
+                     "import %s not found in ", impfunc); /* name is subsequent arg */
+            NULL_TERMINATE_BUFFER(msg);
+            SYSLOG(SYSLOG_ERROR, CLIENT_LIBRARY_UNLOADABLE, 4,
+                   get_application_name(), get_application_pid(), msg, impmod->name);
+#endif
             LOG(GLOBAL, LOG_LOADER, 1, "%s: import %s not found in %s\n",
                 __FUNCTION__, impfunc, impmod->name);
             return false;
@@ -1189,6 +1058,10 @@ privload_process_one_import(privmod_t *mod, privmod_t *impmod,
     if (forwfunc != NULL) {
         /* XXX i#233: support redirecting when imported by ordinal */
         dst = privload_redirect_imports(forwmod, forwfunc, mod);
+        DOLOG(2, LOG_LOADER, {
+            if (dst != NULL)
+                LOG(GLOBAL, LOG_LOADER, 2, "\tredirect => "PFX"\n", dst);
+        });
     }
     if (dst == NULL)
         dst = (app_pc) func;
@@ -1200,16 +1073,39 @@ bool
 privload_call_entry(privmod_t *privmod, uint reason)
 {
     app_pc entry = get_module_entry(privmod->base);
+    dcontext_t *dcontext = get_thread_private_dcontext();
     ASSERT_OWN_RECURSIVE_LOCK(true, &privload_lock);
     /* get_module_entry adds base => returns base instead of NULL */
     if (entry != NULL && entry != privmod->base) {
         dllmain_t func = (dllmain_t) convert_data_to_function(entry);
-        BOOL res;
+        BOOL res = FALSE;
         LOG(GLOBAL, LOG_LOADER, 2, "%s: calling %s entry "PFX" for %d\n",
             __FUNCTION__, privmod->name, entry, reason);
-        res = (*func)((HANDLE)privmod->base, reason, NULL);
+
+        if (get_os_version() >= WINDOWS_VERSION_8 &&
+            str_case_prefix(privmod->name, "kernelbase")) {
+            /* XXX i#915: win8 kernelbase entry fails on initial csrss setup.
+             * Xref i#364, i#440.
+             * We can ignore and continue for at least small apps.
+             * Once larger ones seem ok we can remove the warning.
+             */
+            DO_ONCE({
+                SYSLOG(SYSLOG_WARNING,
+                       WIN8_PRIVATE_KERNELBASE_NYI, 2,
+                       get_application_name(), get_application_pid());
+            });
+        }
+
+        TRY_EXCEPT_ALLOW_NO_DCONTEXT(dcontext, {
+            res = (*func)((HANDLE)privmod->base, reason, NULL);
+        }, { /* EXCEPT */
+            LOG(GLOBAL, LOG_LOADER, 1,
+                "%s: %s entry routine crashed!\n", __FUNCTION__, privmod->name);
+            res = FALSE;
+        });
+
         if (!res && get_os_version() >= WINDOWS_VERSION_7 &&
-            str_case_prefix(privmod->name, "kernel32")) {
+            str_case_prefix(privmod->name, "kernel")) {
             /* i#364: win7 _BaseDllInitialize fails to initialize a new console
              * (0xc0000041 (3221225537) - The NtConnectPort request is refused)
              * which we ignore for now.  DR always had trouble writing to the
@@ -1242,7 +1138,9 @@ map_api_set_dll(const char *name, privmod_t *dependent)
      * But this is simpler than trying to parse that dll's table.
      * We ignore the version suffix ("-1-0", e.g.).
      */
-    if (str_case_prefix(name, "API-MS-Win-Core-Console-L1"))
+    if (str_case_prefix(name, "API-MS-Win-Core-APIQuery-L1"))
+        return "ntdll.dll";
+    else if (str_case_prefix(name, "API-MS-Win-Core-Console-L1"))
         return "kernel32.dll";
     else if (str_case_prefix(name, "API-MS-Win-Core-DateTime-L1"))
         return "kernel32.dll";
@@ -1298,9 +1196,12 @@ map_api_set_dll(const char *name, privmod_t *dependent)
             return "kernel32.dll";
     } else if (str_case_prefix(name, "API-MS-Win-Core-Profile-L1"))
         return "kernelbase.dll";
-    else if (str_case_prefix(name, "API-MS-Win-Core-RTLSupport-L1"))
-        return "kernel32.dll";
-    else if (str_case_prefix(name, "API-MS-Win-Core-String-L1"))
+    else if (str_case_prefix(name, "API-MS-Win-Core-RTLSupport-L1")) {
+        if (get_os_version() >= WINDOWS_VERSION_8)
+            return "ntdll.dll";
+        else
+            return "kernel32.dll";
+    } else if (str_case_prefix(name, "API-MS-Win-Core-String-L1"))
         return "kernelbase.dll";
     else if (str_case_prefix(name, "API-MS-Win-Core-Synch-L1"))
         return "kernelbase.dll";
@@ -1325,6 +1226,54 @@ map_api_set_dll(const char *name, privmod_t *dependent)
     else if (str_case_prefix(name, "API-MS-Win-Service-Management-L2"))
         return "sechost.dll";
     else if (str_case_prefix(name, "API-MS-Win-Service-Winsvc-L1"))
+        return "sechost.dll";
+    /**************************************************/
+    /* Added in Win8 */
+    else if (str_case_prefix(name, "API-MS-Win-Core-Kernel32-Legacy-L1"))
+        return "kernel32.dll";
+    else if (str_case_prefix(name, "API-MS-Win-Core-Registry-L1-1") ||
+             str_case_prefix(name, "API-MS-Win-Core-Job-L1-1") ||
+             str_case_prefix(name, "API-MS-Win-Core-Threadpool-Legacy-L1-1") ||
+             str_case_prefix(name, "API-MS-Win-Core-Threadpool-Private-L1-1") ||
+             str_case_prefix(name, "API-MS-Win-Core-Timezone-L1-1") ||
+             str_case_prefix(name, "API-MS-Win-Core-Localization-Private-L1-1") ||
+             str_case_prefix(name, "API-MS-Win-Core-Comm-L1-1") ||
+             str_case_prefix(name, "API-MS-Win-Core-WOW64-L1-1") ||
+             str_case_prefix(name, "API-MS-Win-Core-Realtime-L1-1") ||
+             str_case_prefix(name, "API-MS-Win-Core-SystemTopology-L1-1") ||
+             str_case_prefix(name, "API-MS-Win-Core-ProcessTopology-L1-1") ||
+             str_case_prefix(name, "API-MS-Win-Core-Namespace-L1-1") ||
+             str_case_prefix(name, "API-MS-Win-Core-File-L2-1") ||
+             str_case_prefix(name, "API-MS-Win-Core-Localization-L2-1") ||
+             str_case_prefix(name, "API-MS-Win-Core-Normalization-L1-1") ||
+             str_case_prefix(name, "API-MS-Win-Core-SideBySide-L1-1") ||
+             str_case_prefix(name, "API-MS-Win-Core-Appcompat-L1-1") ||
+             str_case_prefix(name, "API-MS-Win-Core-WindowsErrorReporting-L1-1") ||
+             str_case_prefix(name, "API-MS-Win-Core-Console-L2-1") ||
+             str_case_prefix(name, "API-MS-Win-Core-Psapi-L1-1") ||
+             str_case_prefix(name, "API-MS-Win-Core-Psapi-Ansi-L1-1") ||
+             str_case_prefix(name, "API-MS-Win-Core-Psapi-Obsolete-L1-1") ||
+             str_case_prefix(name, "API-MS-Win-Security-Appcontainer-L1-1") ||
+             str_case_prefix(name, "API-MS-Win-Eventing-Controller-L1-1") ||
+             str_case_prefix(name, "API-MS-Win-Eventing-Consumer-L1-1") ||
+             str_case_prefix(name, "API-MS-Win-Core-Registry-L1-1") ||
+             str_case_prefix(name, "API-MS-Win-Core-String-Obsolete-L1-1") ||
+             str_case_prefix(name, "API-MS-Win-Core-Heap-Obsolete-L1-1") ||
+             str_case_prefix(name, "API-MS-Win-Core-Timezone-L1-1") ||
+             str_case_prefix(name, "API-MS-Win-Core-Threadpool-Legacy-L1-1") ||
+             str_case_prefix(name, "API-MS-Win-Core-Registry-L1-1") ||
+             str_case_prefix(name, "API-MS-Win-Core-String-Obsolete-L1-1") ||
+             str_case_prefix(name, "API-MS-Win-Core-Heap-Obsolete-L1-1") ||
+             str_case_prefix(name, "API-MS-Win-Core-Timezone-L1-1") ||
+             str_case_prefix(name, "API-MS-Win-Core-Threadpool-Legacy-L1-1") ||
+             str_case_prefix(name, "API-MS-Win-Core-BEM-L1-1") ||
+             str_case_prefix(name, "API-MS-Win-Security-Base-Private-L1-1"))
+        return "kernelbase.dll";
+    else if (str_case_prefix(name, "API-MS-Win-Core-CRT-L1-1") ||
+             str_case_prefix(name, "API-MS-Win-Core-CRT-L2-1"))
+        return "msvcrt.dll";
+    else if (str_case_prefix(name, "API-MS-Win-Service-Private-L1-1") ||
+             str_case_prefix(name, "API-MS-Win-Security-Audit-L1-1"))
         return "sechost.dll";
     else {
         SYSLOG_INTERNAL_WARNING("unknown API-MS-Win pseudo-dll %s", name);
@@ -1373,6 +1322,12 @@ privload_locate_and_load(const char *impname, privmod_t *dependent)
      * (i#277/PR 540817, added to search_paths in privload_init_search_paths()).
      */
 
+    /* We may be passed a full path. */
+    if (os_file_exists(impname, false/*!is_dir*/)) {
+        mod = privload_load(impname, dependent);
+        return mod; /* if fails to load, don't keep searching */
+    }
+
     /* 1) client lib dir(s) and Extensions dir */
     for (i = 0; i < search_paths_idx; i++) {
         snprintf(modpath, BUFFER_SIZE_ELEMENTS(modpath), "%s/%s",
@@ -1397,9 +1352,6 @@ privload_locate_and_load(const char *impname, privmod_t *dependent)
         NULL_TERMINATE_BUFFER(modpath);
         LOG(GLOBAL, LOG_LOADER, 2, "%s: looking for %s\n", __FUNCTION__, modpath);
         if (os_file_exists(modpath, false/*!is_dir*/)) {
-#ifdef CLIENT_INTERFACE
-            set_loaded_windows_lib();
-#endif
             mod = privload_load(modpath, dependent);
             return mod; /* if fails to load, don't keep searching */
         }
@@ -1409,9 +1361,6 @@ privload_locate_and_load(const char *impname, privmod_t *dependent)
         NULL_TERMINATE_BUFFER(modpath);
         LOG(GLOBAL, LOG_LOADER, 2, "%s: looking for %s\n", __FUNCTION__, modpath);
         if (os_file_exists(modpath, false/*!is_dir*/)) {
-#ifdef CLIENT_INTERFACE
-            set_loaded_windows_lib();
-#endif
             mod = privload_load(modpath, dependent);
             return mod; /* if fails to load, don't keep searching */
         }
@@ -1472,7 +1421,8 @@ privload_disable_console_init(privmod_t *mod)
 
     ASSERT(mod != NULL);
     ASSERT(strcasecmp(mod->name, "kernel32.dll") == 0);
-    if (get_os_version() < WINDOWS_VERSION_7)
+    /* win8 does not need this fix (i#911) */
+    if (get_os_version() != WINDOWS_VERSION_7)
         return true; /* nothing to do */
 
     /* We want to turn the call to ConnectConsoleInternal from ConDllInitialize,
@@ -1620,39 +1570,9 @@ privload_disable_console_init(privmod_t *mod)
 void
 privload_redirect_setup(privmod_t *mod)
 {
+    drwinapi_onload(mod);
+
     if (strcasecmp(mod->name, "kernel32.dll") == 0) {
-        if (!dynamo_initialized)
-            SELF_UNPROTECT_DATASEC(DATASEC_RARELY_PROT);
-
-        /* XP's kernel32!SetLastError is forwarded on xp64, and our
-         * get_proc_address_ex can't handle forwarded exports, so we directly
-         * invoke the Rtl version that it forwards to.  On win7 it's not
-         * forwarded but just calls the Rtl directly.  On 2K or earlier though
-         * there is no Rtl version (so we can't statically link).
-         */
-        priv_SetLastError = (void (WINAPI *)(DWORD))
-            get_proc_address_ex(get_ntdll_base(), "RtlSetLastWin32Error", NULL);
-        if (priv_SetLastError == NULL) {
-            priv_SetLastError = (void (WINAPI *)(DWORD))
-                get_proc_address_ex(mod->base, "SetLastError", NULL);
-            ASSERT(priv_SetLastError != NULL);
-        }
-
-        priv_kernel32_FlsAlloc = (DWORD (WINAPI *)(PFLS_CALLBACK_FUNCTION))
-            get_proc_address_ex(mod->base, "FlsAlloc", NULL);
-        priv_kernel32_GetModuleHandleA = (HMODULE (WINAPI *)(const char *))
-            get_proc_address_ex(mod->base, "GetModuleHandleA", NULL);
-        priv_kernel32_GetModuleHandleW = (HMODULE (WINAPI *)(const wchar_t *))
-            get_proc_address_ex(mod->base, "GetModuleHandleW", NULL);
-        priv_kernel32_GetProcAddress = (FARPROC (WINAPI *)(HMODULE, const char *))
-            get_proc_address_ex(mod->base, "GetProcAddress", NULL);
-        priv_kernel32_LoadLibraryA = (HMODULE (WINAPI *)(const char *))
-            get_proc_address_ex(mod->base, "LoadLibraryA", NULL);
-        priv_kernel32_LoadLibraryW = (HMODULE (WINAPI *)(const wchar_t *))
-            get_proc_address_ex(mod->base, "LoadLibraryW", NULL);
-        if (!dynamo_initialized)
-            SELF_PROTECT_DATASEC(DATASEC_RARELY_PROT);
-
         if (privload_disable_console_init(mod))
             LOG(GLOBAL, LOG_LOADER, 2, "%s: fixed console setup\n", __FUNCTION__);
         else /* we want to know about it: may well happen in future version of dll */
@@ -1663,656 +1583,119 @@ privload_redirect_setup(privmod_t *mod)
 static app_pc
 privload_redirect_imports(privmod_t *impmod, const char *name, privmod_t *importer)
 {
-    uint i;
-    if (strcasecmp(impmod->name, "ntdll.dll") == 0) {
-        if (get_os_version() >= WINDOWS_VERSION_7) {
-            for (i = 0; i < REDIRECT_NTDLL_WIN7_NUM; i++) {
-                if (strcasecmp(name, redirect_ntdll_win7[i].name) == 0) {
-                    return redirect_ntdll_win7[i].func;
-                }
-            }
-        }
-        for (i = 0; i < REDIRECT_NTDLL_NUM; i++) {
-            if (strcasecmp(name, redirect_ntdll[i].name) == 0) {
-                return redirect_ntdll[i].func;
-            }
-        }
-    } else if (strcasecmp(impmod->name, "kernel32.dll") == 0 ||
-               /* we don't want to redirect kernel32.dll's calls to kernelbase */
-               ((importer == NULL ||
-                 strcasecmp(importer->name, "kernel32.dll") != 0) &&
-                strcasecmp(impmod->name, "kernelbase.dll") == 0)) {
-        for (i = 0; i < REDIRECT_KERNEL32_NUM; i++) {
-            if (strcasecmp(name, redirect_kernel32[i].name) == 0) {
-                return redirect_kernel32[i].func;
-            }
-        }
-    }
-    return NULL;
-}
-
-static BOOL WINAPI
-redirect_ignore_arg0(void)
-{
-    return TRUE;
-}
-
-static BOOL WINAPI
-redirect_ignore_arg4(void *arg1)
-{
-    return TRUE;
-}
-
-static BOOL WINAPI
-redirect_ignore_arg8(void *arg1, void *arg2)
-{
-    return TRUE;
-}
-
-static BOOL WINAPI
-redirect_ignore_arg12(void *arg1, void *arg2, void *arg3)
-{
-    return TRUE;
-}
-
-/****************************************************************************
- * Rtl*Heap redirection
- *
- * We only redirect for PEB.ProcessHeap or heaps whose creation we saw
- * (e.g., private kernel32!_crtheap).
- * See comments at top of file and i#235 for adding further redirection.
- */
-
-static HANDLE WINAPI
-redirect_RtlCreateHeap(ULONG flags, void *base, size_t reserve_sz,
-                       size_t commit_sz, void *lock, void *params)
-{
-    if (IF_CLIENT_INTERFACE_ELSE(INTERNAL_OPTION(privlib_privheap), true)) {
-        /* We don't want to waste space by letting a Heap be created
-         * and not used so we nop this.  We need to return something
-         * here, and distinguish a nop-ed from real in Destroy, so we
-         * allocate a token block.
-         */
-        LOG(GLOBAL, LOG_LOADER, 2, "%s "PFX"\n", __FUNCTION__, base);
-        return (HANDLE) global_heap_alloc(1 HEAPACCT(ACCT_LIBDUP));
-    } else
-        return RtlCreateHeap(flags, base, reserve_sz, commit_sz, lock, params);
-}
-
-static bool
-redirect_heap_call(HANDLE heap)
-{
-#ifdef CLIENT_INTERFACE
-    if (!INTERNAL_OPTION(privlib_privheap))
-        return false;
-#endif
-    /* either default heap, or one whose creation we intercepted */
-    return (
-#ifdef CLIENT_INTERFACE
-            /* check both current and private: should be same, but
-             * handle case where didn't swap
-             */
-            heap == private_peb->ProcessHeap ||
-#endif
-            get_peb(NT_CURRENT_PROCESS)->ProcessHeap ||
-            is_dynamo_address((byte*)heap));
-}
-
-static BOOL WINAPI
-redirect_RtlDestroyHeap(HANDLE base)
-{
-    if (redirect_heap_call(base)) {
-        /* XXX i#: need to iterate over all blocks in the heap and free them:
-         * would have to keep a list of blocks.
-         * For now assume all private heaps practice individual dealloc
-         * instead of whole-pool-free.
-         */
-        LOG(GLOBAL, LOG_LOADER, 2, "%s "PFX"\n", __FUNCTION__, base);
-        global_heap_free((byte *)base, 1 HEAPACCT(ACCT_LIBDUP));
-        return TRUE;
-    } else
-        return RtlDestroyHeap(base);
-}
-
-void * WINAPI RtlAllocateHeap(HANDLE heap, ULONG flags, SIZE_T size);
-
-static void *
-wrapped_dr_alloc(ULONG flags, SIZE_T size)
-{
-    byte *mem;
-    ASSERT(sizeof(size_t) >= HEAP_ALIGNMENT);
-    size += sizeof(size_t);
-    mem = global_heap_alloc(size HEAPACCT(ACCT_LIBDUP));
-    if (mem == NULL) {
-        /* FIXME: support HEAP_GENERATE_EXCEPTIONS (xref PR 406742) */
-        ASSERT_NOT_REACHED();
-        return NULL;
-    }
-    *((size_t *)mem) = size;
-    if (TEST(HEAP_ZERO_MEMORY, flags))
-        memset(mem + sizeof(size_t), 0, size - sizeof(size_t));
-    return (void *) (mem + sizeof(size_t));
-}
-
-static void
-wrapped_dr_free(byte *ptr)
-{
-    ptr -= sizeof(size_t);
-    global_heap_free(ptr, *((size_t *)ptr) HEAPACCT(ACCT_LIBDUP));
-}
-
-static void * WINAPI
-redirect_RtlAllocateHeap(HANDLE heap, ULONG flags, SIZE_T size)
-{
-    if (redirect_heap_call(heap)) {
-        void *mem = wrapped_dr_alloc(flags, size);
-        LOG(GLOBAL, LOG_LOADER, 2, "%s "PFX" "PIFX"\n", __FUNCTION__, mem, size);
-        return mem;
-    } else {
-        void *res = RtlAllocateHeap(heap, flags, size);
-        LOG(GLOBAL, LOG_LOADER, 2, "native %s "PFX" "PIFX"\n", __FUNCTION__,
-            res, size);
-        return res;
-    }
-}
-
-void * WINAPI RtlReAllocateHeap(HANDLE heap, ULONG flags, PVOID ptr, SIZE_T size);
-
-static void * WINAPI
-redirect_RtlReAllocateHeap(HANDLE heap, ULONG flags, byte *ptr, SIZE_T size)
-{
-    /* FIXME i#235: on x64 using dbghelp, SymLoadModule64 calls
-     * kernel32!CreateFileW which calls
-     * ntdll!RtlDosPathNameToRelativeNtPathName_U_WithStatus which calls
-     * ntdll!RtlpDosPathNameToRelativeNtPathName_Ustr which directly calls
-     * RtlAllocateHeap and passes peb->ProcessHeap: but then it's
-     * kernel32!CreateFileW that calls RtlFreeHeap, so we end up seeing just a
-     * free with no corresponding alloc.  For now we handle by letting non-DR
-     * addresses go natively.  Xref the opposite problem with
-     * RtlFreeUnicodeString, handled below.
-     */
-    if (redirect_heap_call(heap) && (is_dynamo_address(ptr) || ptr == NULL)) {
-        byte *buf = NULL;
-        /* RtlReAllocateHeap does re-alloc 0-sized */
-        LOG(GLOBAL, LOG_LOADER, 2, "%s "PFX" "PIFX"\n", __FUNCTION__, ptr, size);
-        buf = redirect_RtlAllocateHeap(heap, flags, size);
-        if (buf != NULL) {
-            size_t old_size = *((size_t *)(ptr - sizeof(size_t)));
-            size_t min_size = MIN(old_size, size);
-            memcpy(buf, ptr, min_size);
-        }
-        redirect_RtlFreeHeap(heap, flags, ptr);
-        return (void *) buf;
-    } else {
-        void *res = RtlReAllocateHeap(heap, flags, ptr, size);
-        LOG(GLOBAL, LOG_LOADER, 2, "native %s "PFX" "PIFX"\n", __FUNCTION__,
-            res, size);
-        return res;
-    }
-}
-
-BOOL WINAPI RtlFreeHeap(HANDLE heap, ULONG flags, PVOID ptr);
-
-SIZE_T WINAPI RtlSizeHeap(HANDLE heap, ULONG flags, PVOID ptr);
-
-BOOL WINAPI RtlValidateHeap(HANDLE heap, DWORD flags, void *ptr);
-
-BOOL WINAPI RtlLockHeap(HANDLE heap);
-
-BOOL WINAPI RtlUnlockHeap(HANDLE heap);
-
-static BOOL WINAPI
-redirect_RtlFreeHeap(HANDLE heap, ULONG flags, byte *ptr)
-{
-    if (redirect_heap_call(heap) && is_dynamo_address(ptr)/*see above*/) {
-        ASSERT(IF_CLIENT_INTERFACE_ELSE(INTERNAL_OPTION(privlib_privheap), true));
-        if (ptr != NULL) {
-            LOG(GLOBAL, LOG_LOADER, 2, "%s "PFX"\n", __FUNCTION__, ptr);
-            wrapped_dr_free(ptr);
-            return TRUE;
-        } else
-            return FALSE;
-    } else {
-        LOG(GLOBAL, LOG_LOADER, 2, "native %s "PFX" "PIFX"\n", __FUNCTION__,
-            ptr, (ptr == NULL ? 0 : RtlSizeHeap(heap, flags, ptr)));
-        return RtlFreeHeap(heap, flags, ptr);
-    }
-}
-
-static SIZE_T WINAPI
-redirect_RtlSizeHeap(HANDLE heap, ULONG flags, byte *ptr)
-{
-    if (redirect_heap_call(heap) && is_dynamo_address(ptr)/*see above*/) {
-        ASSERT(IF_CLIENT_INTERFACE_ELSE(INTERNAL_OPTION(privlib_privheap), true));
-        if (ptr != NULL)
-            return *((size_t *)(ptr - sizeof(size_t)));
-        else
-            return 0;
-    } else {
-        return RtlSizeHeap(heap, flags, ptr);
-    }
-}
-
-static BOOL WINAPI
-redirect_RtlValidateHeap(HANDLE heap, DWORD flags, void *ptr)
-{
-    if (redirect_heap_call(heap)) {
-        /* nop: we assume no caller expects false */
-        return TRUE;
-    } else {
-        return RtlValidateHeap(heap, flags, ptr);
-    }
-}
-
-/* These are called by LocalFree, passing kernel32!BaseHeap == peb->ProcessHeap */
-static BOOL WINAPI
-redirect_RtlLockHeap(HANDLE heap)
-{
-    /* If the main heap, we assume any subsequent alloc/free will be through
-     * DR heap, so we nop this
-     */
-    if (redirect_heap_call(heap)) {
-        /* nop */
-        return TRUE;
-    } else {
-        return RtlLockHeap(heap);
-    }
-}
-
-static BOOL WINAPI
-redirect_RtlUnlockHeap(HANDLE heap)
-{
-    /* If the main heap, we assume any prior alloc/free was through
-     * DR heap, so we nop this
-     */
-    if (redirect_heap_call(heap)) {
-        /* nop */
-        return TRUE;
-    } else {
-        return RtlUnlockHeap(heap);
-    }
-}
-
-static BOOL WINAPI
-redirect_RtlSetHeapInformation(HANDLE HeapHandle,
-                               HEAP_INFORMATION_CLASS HeapInformationClass,
-                               PVOID HeapInformation, SIZE_T HeapInformationLength)
-{
-    /* xref DrMem i#280.
-     * The only options are HeapEnableTerminationOnCorruption and
-     * HeapCompatibilityInformation LFH, neither of which we want.
-     * Running this routine causes problems on Win7 (i#709).
-     */
-    return TRUE;
-}
-
-void WINAPI RtlFreeUnicodeString(UNICODE_STRING *string);
-
-static void WINAPI
-redirect_RtlFreeUnicodeString(UNICODE_STRING *string)
-{
-    if (is_dynamo_address((app_pc)string->Buffer)) {
-        PEB *peb = get_peb(NT_CURRENT_PROCESS);
-        redirect_RtlFreeHeap(peb->ProcessHeap, 0, (byte *)string->Buffer);
-        memset(string, 0, sizeof(*string));
-    } else
-        RtlFreeUnicodeString(string);
-}
-
-void WINAPI RtlFreeAnsiString(ANSI_STRING *string);
-
-static void WINAPI
-redirect_RtlFreeAnsiString(ANSI_STRING *string)
-{
-    if (is_dynamo_address((app_pc)string->Buffer)) {
-        PEB *peb = get_peb(NT_CURRENT_PROCESS);
-        redirect_RtlFreeHeap(peb->ProcessHeap, 0, (byte *)string->Buffer);
-        memset(string, 0, sizeof(*string));
-    } else
-        RtlFreeAnsiString(string);
-}
-
-void WINAPI RtlFreeOemString(OEM_STRING *string);
-
-static void WINAPI
-redirect_RtlFreeOemString(OEM_STRING *string)
-{
-    if (is_dynamo_address((app_pc)string->Buffer)) {
-        PEB *peb = get_peb(NT_CURRENT_PROCESS);
-        redirect_RtlFreeHeap(peb->ProcessHeap, 0, (byte *)string->Buffer);
-        memset(string, 0, sizeof(*string));
-    } else
-        RtlFreeOemString(string);
+    return drwinapi_redirect_imports(impmod, name, importer);
 }
 
 /* Handles a private-library FLS callback called from interpreted app code */
 bool
 private_lib_handle_cb(dcontext_t *dcontext, app_pc pc)
 {
-    fls_cb_t *e, *prev;
-    bool redirected = false;
-    mutex_lock(&privload_fls_lock);
-    for (e = fls_cb_list, prev = NULL; e != NULL; prev = e, e = e->next) {
-        LOG(GLOBAL, LOG_LOADER, 2,
-            "%s: comparing cb "PFX" to pc "PFX"\n",
-            __FUNCTION__, e->cb, pc);
-        if (e->cb != NULL/*head node*/ && (app_pc)e->cb == pc) {
-            priv_mcontext_t *mc = get_mcontext(dcontext);
-            void *arg = NULL;
-            app_pc retaddr;
-            redirected = true;
-            /* Extract the retaddr and the arg to the callback */
-            if (!safe_read((app_pc)mc->xsp, sizeof(retaddr), &retaddr)) {
-                /* in debug we'd assert in vmareas anyway */
-                ASSERT_NOT_REACHED();
-                redirected = false; /* in release we'll interpret the routine I guess */
-            }
+    return kernel32_redir_fls_cb(dcontext, pc);
+}
+
+/***************************************************************************
+ * SECURITY COOKIE
+ */
+
 #ifdef X64
-            arg = (void *) mc->xcx;
+# define SECURITY_COOKIE_INITIAL 0x00002B992DDFA232
 #else
-            if (!safe_read((app_pc)mc->xsp + XSP_SZ, sizeof(arg), &arg))
-                ASSERT_NOT_REACHED(); /* we'll still redirect and call w/ NULL */
+# define SECURITY_COOKIE_INITIAL 0xBB40E64E
 #endif
-            if (redirected) {
-                LOG(GLOBAL, LOG_LOADER, 2,
-                    "%s: native call to FLS cb "PFX", redirect to "PFX"\n",
-                    __FUNCTION__, pc, retaddr);
-                (*e->cb)(arg);
-                /* This is stdcall so clean up the retaddr + param */
-                mc->xsp += XSP_SZ IF_NOT_X64(+ sizeof(arg));
-                /* Now we interpret from the retaddr */
-                dcontext->next_tag = retaddr;
-            }
-            /* If we knew the reason for this call we would know whether to remove
-             * from the list: for thread exit, leave entry, but for FlsExit, remove.
-             * Since we don't know we just leave it.
-             */
-            break;
-        }
-    }
-    mutex_unlock(&privload_fls_lock);
-    return redirected;
-}
+#define SECURITY_COOKIE_16BIT_INITIAL 0xBB40
 
-static DWORD WINAPI
-redirect_FlsAlloc(PFLS_CALLBACK_FUNCTION cb)
+static bool
+privload_set_security_cookie(privmod_t *mod)
 {
-    ASSERT(priv_kernel32_FlsAlloc != NULL);
-    if (IF_CLIENT_INTERFACE_ELSE(INTERNAL_OPTION(privlib_privheap), true) &&
-        in_private_library((app_pc)cb)) {
-        fls_cb_t *entry = HEAP_TYPE_ALLOC(GLOBAL_DCONTEXT, fls_cb_t,
-                                          ACCT_OTHER, PROTECTED);
-        mutex_lock(&privload_fls_lock);
-        entry->cb = cb;
-        /* we have a permanent head node to avoid .data unprot */
-        entry->next = fls_cb_list->next;
-        fls_cb_list->next = entry;
-        mutex_unlock(&privload_fls_lock);
-        /* ensure on DR areas list: won't already be only for client lib */
-        dynamo_vm_areas_lock();
-        if (!is_dynamo_address((app_pc)cb)) {
-            add_dynamo_vm_area((app_pc)cb, ((app_pc)cb)+1, MEMPROT_READ|MEMPROT_EXEC,
-                               true _IF_DEBUG("fls cb in private lib"));
-            /* we do not ever remove: not worth refcount effort, and probably
-             * good to catch future executions
-             */
-        }
-        dynamo_vm_areas_unlock();
-        LOG(GLOBAL, LOG_LOADER, 2, "%s: cb="PFX"\n", __FUNCTION__, cb);
-    }
-    return (*priv_kernel32_FlsAlloc)(cb);
-}
+    IMAGE_DOS_HEADER *dos = (IMAGE_DOS_HEADER *) mod->base;
+    IMAGE_NT_HEADERS *nt = (IMAGE_NT_HEADERS *) (mod->base + dos->e_lfanew);
+    IMAGE_DATA_DIRECTORY *dir;
+    IMAGE_LOAD_CONFIG_DIRECTORY *config;
+    ptr_uint_t *cookie_ptr;
+    ptr_uint_t cookie;
+    uint64 time100ns;
+    LARGE_INTEGER perfctr;
 
-/* Eventually we should intercept at the Ldr level but that takes more work
- * so we initially just intercept here.  This is also needed to intercept
- * FlsAlloc located dynamically by msvcrt init.
- */
-static HMODULE WINAPI
-redirect_GetModuleHandleA(const char *name)
-{
-    privmod_t *mod;
-    app_pc res = NULL;
-    ASSERT(priv_kernel32_GetModuleHandleA != NULL);
-    acquire_recursive_lock(&privload_lock);
-    mod = privload_lookup(name);
-    if (mod != NULL) {
-        res = mod->base;
-        LOG(GLOBAL, LOG_LOADER, 2, "%s: %s => "PFX"\n", __FUNCTION__, name, res);
-    }
-    release_recursive_lock(&privload_lock);
-    if (mod == NULL)
-        return (*priv_kernel32_GetModuleHandleA)(name);
-    else
-        return (HMODULE) res;
-}
+    ASSERT(is_readable_pe_base(mod->base));
+    ASSERT(dos->e_magic == IMAGE_DOS_SIGNATURE);
+    ASSERT(nt != NULL && nt->Signature == IMAGE_NT_SIGNATURE);
+    ASSERT_OWN_RECURSIVE_LOCK(true, &privload_lock);
 
-static HMODULE WINAPI
-redirect_GetModuleHandleW(const wchar_t *name)
-{
-    privmod_t *mod;
-    app_pc res = NULL;
-    char buf[MAXIMUM_PATH];
-    ASSERT(priv_kernel32_GetModuleHandleW != NULL);
-    if (_snprintf(buf, BUFFER_SIZE_ELEMENTS(buf), "%S", name) < 0)
-        return (*priv_kernel32_GetModuleHandleW)(name);
-    NULL_TERMINATE_BUFFER(buf);
-    acquire_recursive_lock(&privload_lock);
-    mod = privload_lookup(buf);
-    if (mod != NULL) {
-        res = mod->base;
-        LOG(GLOBAL, LOG_LOADER, 2, "%s: %s => "PFX"\n", __FUNCTION__, buf, res);
+    dir = OPT_HDR(nt, DataDirectory) + IMAGE_DIRECTORY_ENTRY_LOAD_CONFIG;
+    if (dir == NULL || dir->Size <= 0)
+        return false;
+    config = (IMAGE_LOAD_CONFIG_DIRECTORY *) RVA_TO_VA(mod->base, dir->VirtualAddress);
+    if (dir->Size < offsetof(IMAGE_LOAD_CONFIG_DIRECTORY, SecurityCookie) +
+        sizeof(config->SecurityCookie)) {
+        ASSERT_CURIOSITY(false && "IMAGE_LOAD_CONFIG_DIRECTORY too small");
+        return false;
     }
-    release_recursive_lock(&privload_lock);
-    if (mod == NULL)
-        return (*priv_kernel32_GetModuleHandleW)(name);
-    else
-        return (HMODULE) res;
-}
-
-static FARPROC WINAPI
-redirect_GetProcAddress(app_pc modbase, const char *name)
-{
-    privmod_t *mod;
-    app_pc res = NULL;
-    ASSERT(priv_kernel32_GetProcAddress != NULL);
-    LOG(GLOBAL, LOG_LOADER, 2, "%s: "PFX"%s\n", __FUNCTION__, modbase, name);
-    acquire_recursive_lock(&privload_lock);
-    mod = privload_lookup_by_base(modbase);
-    if (mod != NULL) {
-        const char *forwarder;
-        res = privload_redirect_imports(mod, name, NULL);
-        /* I assume GetProcAddress returns NULL for forwarded exports? */
-        if (res == NULL)
-            res = (app_pc) get_proc_address_ex(modbase, name, &forwarder);
-        LOG(GLOBAL, LOG_LOADER, 2, "%s: %s => "PFX"\n", __FUNCTION__, name, res);
+    cookie_ptr = (ptr_uint_t *) config->SecurityCookie;
+    if ((byte *)cookie_ptr < mod->base || (byte *)cookie_ptr >= mod->base + mod->size) {
+        LOG(GLOBAL, LOG_LOADER, 2, "%s: %s has out-of-bounds cookie @"PFX"\n",
+            __FUNCTION__, mod->name, cookie_ptr);
+        return false;
     }
-    release_recursive_lock(&privload_lock);
-    if (mod == NULL)
-        return (*priv_kernel32_GetProcAddress)((HMODULE)modbase, name);
-    else
-        return (FARPROC) convert_data_to_function(res);
-}
-
-static HMODULE WINAPI
-redirect_LoadLibraryA(const char *name)
-{
-    app_pc res = NULL;
-    ASSERT(priv_kernel32_LoadLibraryA != NULL);
-    res = privload_load_private_library(name);
-    if (res == NULL) {
-        /* XXX: if private loader can't handle some feature (delay-load dll,
-         * bound imports, etc.), we could have the private kernel32 call the
-         * shared ntdll which will load the lib and put it in the private PEB's
-         * loader list.  there may be some loader data in ntdll itself which is
-         * shared though so there's a transparency risk: so better to just fail
-         * and if it's important add the feature to our loader.
+    LOG(GLOBAL, LOG_LOADER, 2, "%s: %s dirsz="PIFX" configsz="PIFX" init cookie="PFX"\n",
+        __FUNCTION__, mod->name, dir->Size, config->Size, *cookie_ptr);
+    if (*cookie_ptr != SECURITY_COOKIE_INITIAL &&
+        *cookie_ptr != SECURITY_COOKIE_16BIT_INITIAL) {
+        /* I'm assuming a cookie should either be the magic value, or zero if
+         * no cookie is desired?  Let's have a curiosity to find if there are
+         * any other values:
          */
-        /* XXX: should set more appropriate error code */
-        (*priv_SetLastError)(ERROR_DLL_NOT_FOUND);
-        return NULL;
-    } else
-        return (HMODULE) res;
-}
-
-static HMODULE WINAPI
-redirect_LoadLibraryW(const wchar_t *name)
-{
-    app_pc res = NULL;
-    char buf[MAXIMUM_PATH];
-    ASSERT(priv_kernel32_LoadLibraryW != NULL);
-    if (_snprintf(buf, BUFFER_SIZE_ELEMENTS(buf), "%S", name) < 0)
-        return (*priv_kernel32_LoadLibraryW)(name);
-    NULL_TERMINATE_BUFFER(buf);
-    res = privload_load_private_library(buf);
-    if (res == NULL) {
-        /* XXX: should set more appropriate error code */
-        (*priv_SetLastError)(ERROR_DLL_NOT_FOUND);
-        return NULL;
-    } else
-        return (HMODULE) res;
-}
-
-static DWORD WINAPI
-redirect_GetModuleFileNameA(HMODULE modbase, char *buf, DWORD bufcnt)
-{
-    privmod_t *mod;
-    DWORD cnt = 0;
-    acquire_recursive_lock(&privload_lock);
-    mod = privload_lookup_by_base((app_pc)modbase);
-    if (mod != NULL) {
-        cnt = (DWORD) strlen(mod->path);
-        if (cnt >= bufcnt) {
-            cnt = bufcnt;
-            (*priv_SetLastError)(ERROR_INSUFFICIENT_BUFFER);
-        }
-        strncpy(buf, mod->path, bufcnt);
-        buf[bufcnt-1] = '\0';
-        LOG(GLOBAL, LOG_LOADER, 2, "%s: "PFX" => %s\n", __FUNCTION__, mod, mod->path);
+        ASSERT_CURIOSITY(*cookie_ptr == 0);
+        return true;
     }
-    release_recursive_lock(&privload_lock);
-    if (mod == NULL) {
-        /* XXX: should set more appropriate error code */
-        (*priv_SetLastError)(ERROR_DLL_NOT_FOUND);
-        return NULL;
-    } else
-        return cnt;
-}
-
-static DWORD WINAPI
-redirect_GetModuleFileNameW(HMODULE modbase, wchar_t *buf, DWORD bufcnt)
-{
-    privmod_t *mod;
-    DWORD cnt = 0;
-    acquire_recursive_lock(&privload_lock);
-    mod = privload_lookup_by_base((app_pc)modbase);
-    if (mod != NULL) {
-        cnt = (DWORD) strlen(mod->path);
-        if (cnt >= bufcnt) {
-            cnt = bufcnt;
-            (*priv_SetLastError)(ERROR_INSUFFICIENT_BUFFER);
-        }
-        _snwprintf(buf, bufcnt, L"%s", mod->path);
-        buf[bufcnt-1] = L'\0';
-        LOG(GLOBAL, LOG_LOADER, 2, "%s: "PFX" => %s\n", __FUNCTION__, mod, mod->path);
-    }
-    release_recursive_lock(&privload_lock);
-    if (mod == NULL) {
-        /* XXX: should set more appropriate error code */
-        (*priv_SetLastError)(ERROR_DLL_NOT_FOUND);
-        return NULL;
-    } else
-        return cnt;
-}
-
-/****************************************************************************
- * Rtl*CriticalSection redirection
- */
-
-#ifndef RTL_CRITICAL_SECTION_FLAG_NO_DEBUG_INFO
-# define RTL_CRITICAL_SECTION_FLAG_NO_DEBUG_INFO 0x1000000
-#endif
-#ifndef RTL_CRITICAL_SECTION_FLAG_STATIC_INIT
-# define RTL_CRITICAL_SECTION_FLAG_STATIC_INIT    0x4000000
-#endif
-
-static NTSTATUS WINAPI
-redirect_InitializeCriticalSection(RTL_CRITICAL_SECTION* crit)
-{
-    return redirect_InitializeCriticalSectionEx(crit, 0, 0);
-}
-
-static NTSTATUS WINAPI
-redirect_InitializeCriticalSectionAndSpinCount(RTL_CRITICAL_SECTION* crit,
-                                               ULONG                 spincount)
-{
-    return redirect_InitializeCriticalSectionEx(crit, spincount, 0);
-}
-
-static NTSTATUS WINAPI
-redirect_InitializeCriticalSectionEx(RTL_CRITICAL_SECTION* crit,
-                                     ULONG                 spincount,
-                                     ULONG                 flags)
-{
-    /* We cannot allow ntdll!RtlpAllocateDebugInfo to be called as it
-     * uses its own free list RtlCriticalSectionDebugSList which is
-     * shared w/ the app and can result in mixing app and private heap
-     * objects but with the wrong Heap handle, leading to crashes
-     * (xref Dr. Memory i#333).
+    
+    /* Generate a new cookie using:
+     *   SystemTimeHigh ^ SystemTimeLow ^ ProcessId ^ ThreadId ^ TickCount ^
+     *   PerformanceCounterHigh ^ PerformanceCounterLow
      */
-    LOG(GLOBAL, LOG_LOADER, 2, "%s: "PFX"\n", __FUNCTION__, crit);
-    IF_CLIENT_INTERFACE(ASSERT(get_own_teb()->ProcessEnvironmentBlock == private_peb));
-    if (crit == NULL)
-        return ERROR_INVALID_PARAMETER;
-    if (TEST(RTL_CRITICAL_SECTION_FLAG_STATIC_INIT, flags)) {
-        /* We're supposed to use a static memory pool but it's not
-         * clear whether it really matters so we ignore this flag.
-         */
-        LOG(GLOBAL, LOG_LOADER, 2, "%s: ignoring static-init flag\n", __FUNCTION__);
-    }
+    time100ns = query_time_100ns();
+    /* 64-bit seems to sign-extend so we use ptr_int_t */
+    cookie = (ptr_int_t)(time100ns >> 32) ^ (ptr_int_t)time100ns;
+    cookie ^= get_process_id();
+    cookie ^= get_thread_id();
+    cookie ^= NtGetTickCount();
+    nt_query_performance_counter(&perfctr, NULL);
+#ifdef X64
+    cookie ^= perfctr.QuadPart;
+#else
+    cookie ^= perfctr.LowPart;
+    cookie ^= perfctr.HighPart;
+#endif
 
-    memset(crit, 0, sizeof(*crit));
-    crit->LockCount = -1;
-    if (get_own_peb()->NumberOfProcessors < 2)
-        crit->SpinCount = 0;
-    else
-        crit->SpinCount = (spincount & ~0x80000000);
-
-    if (TEST(RTL_CRITICAL_SECTION_FLAG_NO_DEBUG_INFO, flags))
-        crit->DebugInfo = NULL;
-    else {
-        crit->DebugInfo = wrapped_dr_alloc(0, sizeof(*crit->DebugInfo));
+    if (*cookie_ptr == SECURITY_COOKIE_16BIT_INITIAL)
+        cookie &= 0xffff; /* only want low 16 bits */
+    if (cookie == SECURITY_COOKIE_INITIAL ||
+        cookie == SECURITY_COOKIE_16BIT_INITIAL) {
+        /* If it happens to match, make it not match */
+        cookie--;
     }
-    if (crit->DebugInfo != NULL) {
-        memset(crit->DebugInfo, 0, sizeof(*crit->DebugInfo));
-        crit->DebugInfo->CriticalSection = crit;
-        crit->DebugInfo->ProcessLocksList.Blink = &(crit->DebugInfo->ProcessLocksList);
-        crit->DebugInfo->ProcessLocksList.Flink = &(crit->DebugInfo->ProcessLocksList);
-    }
+#ifdef X64
+    /* Apparently the top 16 bits should always be 0.
+     * XXX: is my algorithm wrong for x64 above?
+     */
+    cookie &= 0x0000ffffffffffff;
+#endif
+    LOG(GLOBAL, LOG_LOADER, 2, "  new cookie value: "PFX"\n", cookie);
 
-    return STATUS_SUCCESS;
+    *cookie_ptr = cookie;
+    return true;
 }
-
-static NTSTATUS WINAPI
-redirect_DeleteCriticalSection(RTL_CRITICAL_SECTION* crit)
+    
+void
+privload_os_finalize(privmod_t *mod)
 {
-    GET_NTDLL(RtlDeleteCriticalSection, (RTL_CRITICAL_SECTION *crit));
-    LOG(GLOBAL, LOG_LOADER, 2, "%s: "PFX"\n", __FUNCTION__, crit);
-    IF_CLIENT_INTERFACE(ASSERT(get_own_teb()->ProcessEnvironmentBlock == private_peb));
-    if (crit == NULL)
-        return ERROR_INVALID_PARAMETER;
-    if (crit->DebugInfo != NULL) {
-        if (is_dynamo_address((byte *)crit->DebugInfo))
-            wrapped_dr_free((byte *)crit->DebugInfo);
-        else {
-            /* somehow a critsec created elsewhere is being destroyed here! */
-            ASSERT_NOT_REACHED();
-            return RtlDeleteCriticalSection(crit);
-        }
-    }
-    close_handle(crit->LockSemaphore);
-    memset(crit, 0, sizeof(*crit));
-    crit->LockCount = -1;
-    return STATUS_SUCCESS;
+    /* Libraries built with /GS require us to set
+     * IMAGE_LOAD_CONFIG_DIRECTORY.SecurityCookie (i#1093)
+     */
+    privload_set_security_cookie(mod);
+
+    /* FIXME: not supporting TLS today in Windows: 
+     * covered by i#233, but we don't expect to see it for dlls, only exes
+     */
 }
 
 /***************************************************************************/
@@ -2370,8 +1753,9 @@ privload_add_windbg_cmds(void)
      * and marker->dr_base_addr
      */
 
-    /* XXX: currently only adding those on the list at init time: ignoring
-     * later load or unload
+    /* XXX: currently only adding those on the list at init time here
+     * and later loaded in privload_add_windbg_cmds_post_init(): ignoring
+     * unloaded modules.
      */
 
     acquire_recursive_lock(&privload_lock);
@@ -2383,6 +1767,20 @@ privload_add_windbg_cmds(void)
                 break;
         }
     }
+    windbg_cmds_initialized = true;
+    release_recursive_lock(&privload_lock);
+}
+
+static void
+privload_add_windbg_cmds_post_init(privmod_t *mod)
+{
+    /* i#522: print windbg commands to locate DR and priv libs */
+    dr_marker_t *marker = get_drmarker();
+    size_t sofar;
+    acquire_recursive_lock(&privload_lock);
+    /* privload_lock is our synch mechanism for drmarker windbg field */
+    sofar = strlen(marker->windbg_cmds);
+    add_mod_to_drmarker(marker, mod->path, mod->name, mod->base, &sofar);
     release_recursive_lock(&privload_lock);
 }
 

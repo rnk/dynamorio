@@ -1,5 +1,5 @@
 /* **********************************************************
- * Copyright (c) 2011-2012 Google, Inc.  All rights reserved.
+ * Copyright (c) 2011-2013 Google, Inc.  All rights reserved.
  * Copyright (c) 2000-2010 VMware, Inc.  All rights reserved.
  * **********************************************************/
 
@@ -59,12 +59,13 @@
 #define XMM_SAVED_REG_SIZE  YMM_REG_SIZE /* space in priv_mcontext_t for xmm/ymm */
 #define XMM_SLOTS_SIZE  (NUM_XMM_SLOTS*XMM_SAVED_REG_SIZE)
 #define XMM_SAVED_SIZE  (NUM_XMM_SAVED*XMM_SAVED_REG_SIZE)
-#define YMM_ENABLED() (proc_has_feature(FEATURE_AVX))
+/* OS has to enable AVX (=> OSXSAVE): else AVX instrs will raise #UD (i#1030) */
+#define YMM_ENABLED() (proc_has_feature(FEATURE_AVX) && proc_has_feature(FEATURE_OSXSAVE))
 #define YMMH_REG_SIZE (YMM_REG_SIZE/2) /* upper half */
 #define YMMH_SAVED_SIZE (NUM_XMM_SLOTS*YMMH_REG_SIZE)
 
 /* Number of slots for spills from inlined clean calls. */
-#define CLEANCALL_NUM_INLINE_SLOTS 4
+#define CLEANCALL_NUM_INLINE_SLOTS 5
 
 typedef enum {
     IBL_NONE = -1,
@@ -230,33 +231,33 @@ emit_detach_callback_final_jmp(dcontext_t *dcontext,
 #define PAD_JMPS_ALIGNMENT \
     (INTERNAL_OPTION(pad_jmps_set_alignment) != 0 ? \
      INTERNAL_OPTION(pad_jmps_set_alignment) : proc_get_cache_line_size())
+#ifdef DEBUG
+# define CHECK_JMP_TARGET_ALIGNMENT(target, size, hot_patch) do {           \
+    if (hot_patch && CROSSES_ALIGNMENT(target, size, PAD_JMPS_ALIGNMENT)) { \
+        STATS_INC(unaligned_patches);                                       \
+        ASSERT(!DYNAMO_OPTION(pad_jmps));                                   \
+    }                                                                       \
+  } while (0)
+#else
+# define CHECK_JMP_TARGET_ALIGNMENT(target, size, hot_patch)
+#endif
 #ifdef WINDOWS
 /* note that the microsoft compiler will not enregister variables across asm
  * blocks that touch those registers, so don't need to worry about clobbering
  * eax and ebx */
 # define ATOMIC_4BYTE_WRITE(target, value, hot_patch) do {          \
+    ASSERT(sizeof(value) == 4);                                     \
     /* test that we aren't crossing a cache line boundary */        \
-    DODEBUG({                                                       \
-        ASSERT(sizeof(value) == 4);                                 \
-        if (hot_patch && CROSSES_ALIGNMENT(target, 4, PAD_JMPS_ALIGNMENT)) { \
-            STATS_INC(unaligned_patches);                           \
-            ASSERT(!DYNAMO_OPTION(pad_jmps));                       \
-        }                                                           \
-    });                                                             \
+    CHECK_JMP_TARGET_ALIGNMENT(target, 4, hot_patch);               \
     _InterlockedExchange((volatile LONG *)target, value);           \
   } while (0)
 # ifdef X64
 #  define ATOMIC_8BYTE_WRITE(target, value, hot_patch) do {         \
+    ASSERT(sizeof(value) == 8);                                     \
+    /* Not currently used to write code */                          \
+    ASSERT_CURIOSITY(!hot_patch);                                   \
     /* test that we aren't crossing a cache line boundary */        \
-    DODEBUG({                                                       \
-        ASSERT(sizeof(value) == 8);                                 \
-        /* Not currently used to write code */                      \
-        ASSERT_CURIOSITY(!hot_patch);                               \
-        if (hot_patch && CROSSES_ALIGNMENT(target, 8, PAD_JMPS_ALIGNMENT)) { \
-            STATS_INC(unaligned_patches);                           \
-            ASSERT(!DYNAMO_OPTION(pad_jmps));                       \
-        }                                                           \
-    });                                                             \
+    CHECK_JMP_TARGET_ALIGNMENT(target, 8, hot_patch);               \
     _InterlockedExchange64((volatile __int64 *)target, (__int64)value); \
   } while (0)
 # endif
@@ -344,28 +345,18 @@ static inline int64 atomic_add_exchange_int64(volatile int64 *var, int64 value) 
 
 #else /* LINUX */
 # define ATOMIC_4BYTE_WRITE(target, value, hot_patch) do {           \
+    ASSERT(sizeof(value) == 4);                                      \
     /* test that we aren't crossing a cache line boundary */         \
-    DODEBUG({                                                        \
-        ASSERT(sizeof(value) == 4);                                  \
-        if (hot_patch && CROSSES_ALIGNMENT(target, 4, proc_get_cache_line_size())) { \
-            STATS_INC(unaligned_patches);                            \
-            ASSERT(!DYNAMO_OPTION(pad_jmps));                        \
-        }                                                            \
-    });                                                              \
+    CHECK_JMP_TARGET_ALIGNMENT(target, 4, hot_patch);                \
     __asm__ __volatile__("xchgl (%0), %1" : : "r" (target), "r" (value) : "memory"); \
   } while (0)
 # ifdef X64
 #  define ATOMIC_8BYTE_WRITE(target, value, hot_patch) do {         \
-    /* test that we aren't crossing a cache line boundary */         \
-    DODEBUG({                                                        \
-        ASSERT(sizeof(value) == 8);                                  \
-        /* Not currently used to write code */                      \
-        ASSERT_CURIOSITY(!hot_patch);                               \
-        if (hot_patch && CROSSES_ALIGNMENT(target, 8, proc_get_cache_line_size())) { \
-            STATS_INC(unaligned_patches);                            \
-            ASSERT(!DYNAMO_OPTION(pad_jmps));                        \
-        }                                                            \
-    });                                                              \
+    ASSERT(sizeof(value) == 8);                                     \
+    /* Not currently used to write code */                          \
+    ASSERT_CURIOSITY(!hot_patch);                                   \
+    /* test that we aren't crossing a cache line boundary */        \
+    CHECK_JMP_TARGET_ALIGNMENT(target, 8, hot_patch);               \
     __asm__ __volatile__("xchgq (%0), %1" : : "r" (target), "r" (value) : "memory"); \
   } while (0)
 # endif
@@ -507,6 +498,7 @@ atomic_exchange_int(volatile int *var, int newval)
     return result;
 }
 
+#ifdef X64
 /* returns true if var was equal to compare, and now is equal to exchange, 
    otherwise returns false
  */ 
@@ -523,6 +515,7 @@ static inline bool atomic_compare_exchange_int64(volatile int64 *var,
        although we could put the return value in EAX ourselves */
     return c == 0;
 }
+#endif
 
 /* atomically adds value to memory location var and returns the sum */
 static inline int atomic_add_exchange_int(volatile int *var, int value)
@@ -815,6 +808,10 @@ ret_tgt_cache_to_app(dcontext_t *dcontext, app_pc pc);
 /* in x86.asm */
 void call_switch_stack(dcontext_t *dcontext, byte *stack, void (*func) (dcontext_t *),
                        bool free_initstack, bool return_on_return);
+# if defined (WINDOWS) && !defined(X64)
+DYNAMORIO_EXPORT int64
+dr_invoke_x64_routine(dr_auxlib64_routine_ptr_t func64, uint num_params, ...);
+# endif
 void unexpected_return(void);
 void clone_and_swap_stack(byte *stack, byte *tos);
 void go_native(dcontext_t *dcontext);
@@ -831,6 +828,9 @@ int dynamorio_syscall_sygate_sysenter(int sysnum, ...);
 int dynamorio_syscall_syscall(int sysnum, ...);
 # endif
 int dynamorio_syscall_wow64(int sysnum, ...);
+/* Use this version if !syscall_uses_edx_param_base() */
+int dynamorio_syscall_wow64_noedx(int sysnum, ...);
+void get_segments_cs_ss(cxt_seg_t *cs, cxt_seg_t *ss);
 void get_segments_defg(cxt_seg_t *ds, cxt_seg_t *es, cxt_seg_t *fs, cxt_seg_t *gs);
 void get_own_context_helper(CONTEXT *cxt);
 void dr_fxsave(byte *buf_aligned);
@@ -858,8 +858,31 @@ thread_id_t dynamorio_clone(uint flags, byte *newsp, void *ptid, void *tls,
                             void *ctid, void (*func)(void));
 #endif
 void back_from_native(void);
+/* These two are labels, not functions. */
+void back_from_native_retstubs(void);
+void back_from_native_retstubs_end(void);
+/* Each stub should be 4 bytes: push imm8 + jmp rel8 */
+enum { BACK_FROM_NATIVE_RETSTUB_SIZE = 4 };
+#ifdef LINUX
+void native_plt_call(void);
+#endif
 DEBUG_DECLARE(void debug_infinite_loop(void); /* handy cpu eating infinite loop */)
 void hashlookup_null_handler(void);
+
+/* Keep in synch with x86.asm.  This is the difference between the SP saved in
+ * the mcontext and the SP of the caller of dr_app_start() and
+ * dynamorio_app_take_over().
+ */
+#define DYNAMO_START_XSP_ADJUST 16
+
+/* x86_code.c */
+void dynamo_start(priv_mcontext_t *mc);
+
+/* Gets the retstack index saved in x86.asm and restores the mcontext to the
+ * original app state.
+ */
+int
+native_get_retstack_idx(priv_mcontext_t *mc);
 
 /* in proc.c -- everything in proc.h is exported so just include it here */
 #include "proc.h"
@@ -871,26 +894,32 @@ void disassemble_app_bb(dcontext_t *dcontext, app_pc tag, file_t outfile);
 /* dumps callstack for ebp stored in mcontext */
 void dump_mcontext_callstack(dcontext_t *dcontext);
 #endif
+
+/* flags for dump_callstack_to_buffer */
+enum {
+    CALLSTACK_USE_XML         = 0x00000001,
+    CALLSTACK_ADD_HEADER      = 0x00000002,
+    CALLSTACK_MODULE_INFO     = 0x00000004,
+    CALLSTACK_MODULE_PATH     = 0x00000008,
+    CALLSTACK_FRAME_PTR       = 0x00000010,
+};
+
 /* dumps callstack for current pc and ebp */
-void dump_dr_callstack(file_t outfile);
+void
+dump_dr_callstack(file_t outfile);
+
 /* user-specified ebp */
-void dump_callstack(app_pc pc, app_pc ebp, file_t outfile, bool dump_xml);
+void
+dump_callstack(app_pc pc, app_pc ebp, file_t outfile, bool dump_xml);
+
+void
+dump_callstack_to_buffer(char *buf, size_t bufsz, size_t *sofar,
+                         app_pc pc, app_pc ebp, uint flags /*CALLSTACK_ bitmask*/);
 
 #if defined(INTERNAL) || defined(DEBUG) || defined(CLIENT_INTERFACE)
 void disassemble_fragment_header(dcontext_t *dcontext, fragment_t *f, file_t outfile);
 void disassemble_fragment_body(dcontext_t *dcontext, fragment_t *f, file_t outfile);
 void disassemble_app_bb(dcontext_t *dcontext, app_pc tag, file_t outfile);
-
-/* DR_API EXPORT TOFILE dr_ir_instrlist.h */
-DR_API
-/**
- * Prints each instruction in \p ilist in sequence to \p outfile.
- * The default is to use AT&T-style syntax, unless the \ref op_syntax_intel
- * "-syntax_intel" runtime option is specified.
- */
-void 
-instrlist_disassemble(dcontext_t *dcontext, app_pc tag,
-                      instrlist_t *ilist, file_t outfile);
 #endif /* INTERNAL || DEBUG || CLIENT_INTERFACE */
 
 /* in emit_utils.c */
@@ -942,6 +971,8 @@ use_addr_prefix_on_short_disp(void)
 #define SIZE64_MOV_XBX_TO_TLS         9
 #define SIZE64_MOV_PTR_IMM_TO_XAX    10
 #define SIZE64_MOV_PTR_IMM_TO_TLS   (12*2) /* high and low 32 bits separately */
+#define SIZE64_MOV_R8_TO_XAX          3
+#define SIZE64_MOV_R9_TO_XCX          3
 #define SIZE32_MOV_XAX_TO_TLS         5
 #define SIZE32_MOV_XBX_TO_TLS         6
 #define SIZE32_MOV_XAX_TO_TLS_DISP32  6
@@ -953,8 +984,10 @@ use_addr_prefix_on_short_disp(void)
 
 #ifdef X64
 # define FRAG_IS_32(flags) (TEST(FRAG_32_BIT, (flags)))
+# define FRAG_IS_X86_TO_X64(flags) (TEST(FRAG_X86_TO_X64, (flags)))
 #else
 # define FRAG_IS_32(flags) true
+# define FRAG_IS_X86_TO_X64(flags) false
 #endif
 
 #define SIZE_MOV_XAX_TO_TLS(flags, require_addr16) \
@@ -973,7 +1006,8 @@ use_addr_prefix_on_short_disp(void)
 /* size of restore ecx prefix */
 #define XCX_IN_TLS(flags) (DYNAMO_OPTION(private_ib_in_tls) || TEST(FRAG_SHARED, (flags)))
 #define FRAGMENT_BASE_PREFIX_SIZE(flags) \
-    (XCX_IN_TLS(flags) ? SIZE_MOV_XBX_TO_TLS(flags, false) : SIZE32_MOV_XBX_TO_ABS)
+    (FRAG_IS_X86_TO_X64(flags) ? SIZE64_MOV_R9_TO_XCX : \
+     (XCX_IN_TLS(flags) ? SIZE_MOV_XBX_TO_TLS(flags, false) : SIZE32_MOV_XBX_TO_ABS))
 
 /* exported for DYNAMO_OPTION(separate_private_stubs)
  * FIXME: find better way to export -- would use global var accessed
@@ -1168,6 +1202,20 @@ emit_coarse_exit_prefix(dcontext_t *dcontext, byte *pc, coarse_info_t *info);
 void
 patch_coarse_exit_prefix(dcontext_t *dcontext, coarse_info_t *info);
 
+#ifdef CLIENT_INTERFACE
+cache_pc
+get_client_ibl_xfer_entry(dcontext_t *dcontext);
+
+bool
+client_ibl_xfer_is_thread_private(void);
+
+void
+link_client_ibl_xfer(dcontext_t *dcontext);
+
+void
+unlink_client_ibl_xfer(dcontext_t *dcontext);
+#endif
+
 enum {
     MAX_INSTR_LENGTH = 17,
     /* size of 32-bit-offset jcc instr, assuming it has no
@@ -1313,9 +1361,9 @@ bb_build_abort(dcontext_t *dcontext, bool clean_vmarea);
  *   follow ubrs to the limit.  Currently used for
  *   record_translation_info() (case 3559).
  */
-instrlist_t * recreate_bb_ilist(dcontext_t *dcontext, byte *pc,  uint flags,
-                                uint *res_flags, uint *res_exit_type,
-                                bool check_vm_area, bool mangle
+instrlist_t * recreate_bb_ilist(dcontext_t *dcontext, byte *pc, byte *pretend_pc,
+                                uint flags, uint *res_flags, uint *res_exit_type,
+                                bool check_vm_area, bool mangle, void **vmlist
                                 _IF_CLIENT(bool call_client)
                                 _IF_CLIENT(bool for_trace));
 
@@ -1327,10 +1375,6 @@ recreate_fragment_ilist(dcontext_t *dcontext, byte *pc,
 app_pc find_app_bb_end(dcontext_t *dcontext, byte *start_pc, uint flags);
 bool app_bb_overlaps(dcontext_t *dcontext, byte *start_pc, uint flags,
                        byte *region_start, byte *region_end, overlap_info_t *info_res);
-
-/* pass in name if you already have it, else this routine looks it up from modbase */
-bool
-on_native_exec_list(app_pc modbase, const char *name);
 
 bool
 reached_image_entry_yet(void);
@@ -1369,292 +1413,6 @@ get_x86_mode(dcontext_t *dcontext);
 /* DR_API EXPORT BEGIN */
 #endif
 /* DR_API EXPORT END */
-
-/* in instr.c */
-/* DR_API EXPORT TOFILE dr_ir_instr.h */
-
-/* DR_API EXPORT BEGIN */
-/****************************************************************************
- * INSTR ROUTINES
- */
-/**
- * @file dr_ir_instr.h
- * @brief Functions to create and manipulate instructions.
- */
-
-/* DR_API EXPORT END */
-
-DR_API
-/**
- * Returns an initialized instr_t allocated on the thread-local heap. 
- * Sets the x86/x64 mode of the returned instr_t to the mode of dcontext.
- */
-instr_t*
-instr_create(dcontext_t *dcontext);
-
-DR_API
-/** Initializes \p instr.
- * Sets the x86/x64 mode of \p instr to the mode of dcontext.
- */
-void 
-instr_init(dcontext_t *dcontext, instr_t *instr);
-
-DR_API
-/** 
- * Deallocates all memory that was allocated by \p instr.  This
- * includes raw bytes allocated by instr_allocate_raw_bits() and
- * operands allocated by instr_set_num_opnds().  Does not deallocate
- * the storage for \p instr itself.
- */
-void 
-instr_free(dcontext_t *dcontext, instr_t *instr);
-
-DR_API
-/** 
- * Performs both instr_free() and instr_init().
- * \p instr must have been initialized.
- */
-void 
-instr_reset(dcontext_t *dcontext, instr_t *instr);
-
-DR_API
-/** 
- * Frees all dynamically allocated storage that was allocated by \p instr,
- * except for allocated bits.
- * Also zeroes out \p instr's fields, except for raw bit fields,
- * whether \p instr is instr_ok_to_mangle(), and the x86 mode of \p instr.
- * \p instr must have been initialized.
- */
-void 
-instr_reuse(dcontext_t *dcontext, instr_t *instr);
-
-DR_API
-/** 
- * Performs instr_free() and then deallocates the thread-local heap
- * storage for \p instr.
- */
-void 
-instr_destroy(dcontext_t *dcontext, instr_t *instr);
-
-DR_API
-/** 
- * Returns the next instr_t in the instrlist_t that contains \p instr.
- * \note The next pointer for an instr_t is inside the instr_t data
- * structure itself, making it impossible to have on instr_t in 
- * two different InstrLists (but removing the need for an extra data
- * structure for each element of the instrlist_t).
- */
-instr_t*
-instr_get_next(instr_t *instr);
-
-DR_API
-/** Returns the previous instr_t in the instrlist_t that contains \p instr. */
-instr_t*
-instr_get_prev(instr_t *instr);
-
-DR_API
-/** Sets the next field of \p instr to point to \p next. */
-void 
-instr_set_next(instr_t *instr, instr_t *next);
-
-DR_API
-/** Sets the prev field of \p instr to point to \p prev. */
-void 
-instr_set_prev(instr_t *instr, instr_t *prev);
-
-DR_API
-/** 
- * Gets the value of the user-controlled note field in \p instr.
- * \note Important: is also used when emitting for targets that are other
- * instructions.  Thus it will be overwritten when calling instrlist_encode()
- * or instrlist_encode_to_copy() with \p has_instr_jmp_targets set to true.
- * \note The note field is copied (shallowly) by instr_clone().
- */
-void *
-instr_get_note(instr_t *instr);
-
-DR_API
-/** Sets the user-controlled note field in \p instr to \p value. */
-void 
-instr_set_note(instr_t *instr, void *value);
-
-DR_API
-/** Return the taken target pc of the (direct branch) instruction. */
-app_pc 
-instr_get_branch_target_pc(instr_t *cti_instr);
-
-DR_API
-/** Set the taken target pc of the (direct branch) instruction. */
-void 
-instr_set_branch_target_pc(instr_t *cti_instr, app_pc pc);
-
-DR_API
-/**
- * Returns true iff \p instr is a conditional branch, unconditional branch,
- * or indirect branch with a program address target (NOT an instr_t address target)
- * and \p instr is ok to mangle.
- */
-#ifdef UNSUPPORTED_API
-/**
- * This routine does NOT try to decode an opcode in a Level 1 or Level
- * 0 routine, and can thus be called on Level 0 routines.  
- */
-#endif
-bool 
-instr_is_exit_cti(instr_t *instr);
-
-DR_API
-/** Return true iff \p instr's opcode is OP_int, OP_into, or OP_int3. */
-bool 
-instr_is_interrupt(instr_t *instr);
-
-#ifdef UNSUPPORTED_API
-DR_API
-/**
- * Returns true iff \p instr has been marked as targeting the prefix of its
- * target fragment.
- *
- * Some code manipulations need to store a target address in a
- * register and then jump there, but need the register to be restored
- * as well.  DR provides a single-instruction prefix that is
- * placed on all fragments (basic blocks as well as traces) that
- * restores ecx.  It is on traces for internal DR use.  To have
- * it added to basic blocks as well, call
- * dr_add_prefixes_to_basic_blocks() during initialization.
- */
-bool
-instr_branch_targets_prefix(instr_t *instr);
-
-DR_API
-/**
- * If \p val is true, indicates that \p instr's target fragment should be
- *   entered through its prefix, which restores ecx.
- * If \p val is false, indicates that \p instr should target the normal entry
- *   point and not the prefix.
- *
- * Some code manipulations need to store a target address in a
- * register and then jump there, but need the register to be restored
- * as well.  DR provides a single-instruction prefix that is
- * placed on all fragments (basic blocks as well as traces) that
- * restores ecx.  It is on traces for internal DR use.  To have
- * it added to basic blocks as well, call
- * dr_add_prefixes_to_basic_blocks() during initialization.
- */
-void
-instr_branch_set_prefix_target(instr_t *instr, bool val);
-#endif /* UNSUPPORTED_API */
-
-DR_UNS_API
-/** 
- * Returns true iff \p instr has been marked as a selfmod check failure
- * exit.
- */
-bool
-instr_branch_selfmod_exit(instr_t *instr);
-
-DR_UNS_API
-/**
- * If \p val is true, indicates that \p instr is a selfmod check failure exit.
- * If \p val is false, indicates otherwise.
- */
-void
-instr_branch_set_selfmod_exit(instr_t *instr, bool val);
-
-DR_API
-/**
- * Return true iff \p instr is not a meta-instruction
- * (see instr_set_ok_to_mangle() for more information).
- */
-bool 
-instr_ok_to_mangle(instr_t *instr);
-
-DR_API
-/**
- * Sets \p instr to "ok to mangle" if \p val is true and "not ok to
- * mangle" if \p val is false.  An instruction that is "not ok to
- * mangle" is treated by DR as a "meta-instruction", distinct from
- * normal application instructions, and is not mangled in any way.
- * This is necessary to have DR not create an exit stub for a direct
- * jump.  All non-meta instructions that are added to basic blocks or
- * traces should have their translation fields set (via
- * #instr_set_translation(), or the convenience routine
- * #instr_set_meta_no_translation()) when recreating state at a fault;
- * meta instructions should not fault (unless such faults are handled
- * by the client) and are not considered
- * application instructions but rather added instrumentation code (see
- * #dr_register_bb_event() for further information on recreating).
- */
-void 
-instr_set_ok_to_mangle(instr_t *instr, bool val);
-
-DR_API
-/**
- * A convenience routine that calls both
- * #instr_set_ok_to_mangle (instr, false) and
- * #instr_set_translation (instr, NULL).
- */
-void 
-instr_set_meta_no_translation(instr_t *instr);
-
-DR_API
-/** Return true iff \p instr is to be emitted into the cache. */
-bool 
-instr_ok_to_emit(instr_t *instr);
-
-DR_API
-/**
- * Set \p instr to "ok to emit" if \p val is true and "not ok to emit"
- * if \p val is false.  An instruction that should not be emitted is
- * treated normally by DR for purposes of exits but is not placed into
- * the cache.  It is used for final jumps that are to be elided.
- */
-void 
-instr_set_ok_to_emit(instr_t *instr, bool val);
-
-#ifdef CUSTOM_EXIT_STUBS
-DR_API
-/**
- * If \p instr is not an exit cti, does nothing.
- * If \p instr is an exit cti, sets \p stub to be custom exit stub code
- * that will be inserted in the exit stub prior to the normal exit
- * stub code.  If \p instr already has custom exit stub code, that
- * existing instrlist_t is cleared and destroyed (using current thread's
- * context).  (If \p stub is NULL, any existing stub code is NOT destroyed.)
- * The creator of the instrlist_t containing \p instr is
- * responsible for destroying stub.
- * \note Custom exit stubs containing control transfer instructions to
- * other instructions inside a fragment besides the custom stub itself
- * are not fully supported in that they will not be decoded from the
- * cache properly as having instr_t targets.
- */
-void
-instr_set_exit_stub_code(instr_t *instr, instrlist_t *stub);
-
-DR_API
-/**
- * Returns the custom exit stub code instruction list that has been
- * set for this instruction.  If none exists, returns NULL.
- */
-instrlist_t *
-instr_exit_stub_code(instr_t *instr);
-#endif
-
-DR_API
-/**
- * Returns the length of \p instr.
- * As a side effect, if instr_ok_to_mangle(instr) and \p instr's raw bits
- * are invalid, encodes \p instr into bytes allocated with
- * instr_allocate_raw_bits(), after which instr is marked as having
- * valid raw bits.
- */
-int 
-instr_length(dcontext_t *dcontext, instr_t *instr);
-
-/* also in instr.c, but not exported */
-void instr_shift_raw_bits(instr_t *instr, ssize_t offs);
-uint instr_branch_type(instr_t *cti_instr);
-int instr_exit_branch_type(instr_t *instr);
-void instr_exit_branch_set_type(instr_t *instr, uint type);
 
 /* in encode.c */
 /* DR_API EXPORT TOFILE dr_ir_instr.h */
@@ -1749,8 +1507,12 @@ instrlist_encode_to_copy(dcontext_t *dcontext, instrlist_t *ilist, byte *copy_pc
 void insert_clean_call_with_arg_jmp_if_ret_true(dcontext_t *dcontext, instrlist_t *ilist,
         instr_t *instr, void *callee, int arg, app_pc jmp_tag, instr_t *jmp_instr);
 void
+insert_mov_immed_ptrsz(dcontext_t *dcontext, ptr_int_t val, opnd_t dst,
+                       instrlist_t *ilist, instr_t *instr,
+                       instr_t **first OUT, instr_t **second OUT);
+void
 insert_push_immed_ptrsz(dcontext_t *dcontext, instrlist_t *ilist, instr_t *instr,
-                        ptr_int_t val);
+                        ptr_int_t val, instr_t **first OUT, instr_t **second OUT);
 #ifdef LINUX
 void mangle_clone_code(dcontext_t *dcontext, byte *pc, bool skip);
 bool mangle_syscall_code(dcontext_t *dcontext, fragment_t *f, byte *pc, bool skip);
@@ -1785,9 +1547,9 @@ extract_branchtype(ushort linkstub_flags)
 {
     if (TEST(LINK_RETURN, linkstub_flags))
         return IBL_RETURN;
-    if (TEST(LINK_CALL, linkstub_flags))
+    if (EXIT_IS_CALL(linkstub_flags))
         return IBL_INDCALL;
-    if (TEST(LINK_JMP, linkstub_flags))
+    if (TEST(LINK_JMP, linkstub_flags)) /* plain JMP or IND_JMP_PLT */
         return IBL_INDJMP;
     ASSERT_NOT_REACHED();
     return IBL_GENERIC;
@@ -1868,6 +1630,23 @@ dr_longjmp(dr_jmp_buf_t *buf, int val);
 int 
 dr_setjmp(dr_jmp_buf_t *buf);
 
+/* Fast asm-based safe read, but requires fault handling to be set up */
+bool safe_read_fast(const void *base, size_t size, void *out_buf, size_t *bytes_read);
+/* For os-specific fault recovery */
+bool is_safe_read_pc(app_pc pc);
+app_pc safe_read_resume_pc(void);
+
+#ifdef LINUX
+/* i#46: Private string routines for libc isolation. */
+void *memcpy(void *dst, const void *src, size_t n);
+void *memset(void *dst, int val, size_t n);
+#endif /* LINUX */
+
+#ifdef LINUX
+/* Private replacement for _dl_runtime_resolve() for native_exec. */
+void *_dynamorio_runtime_resolve(void);
+#endif
+
 #define DR_SETJMP(buf) (dr_setjmp(buf))
 
 #define DR_LONGJMP(buf, val)          \
@@ -1917,6 +1696,5 @@ dr_setjmp(dr_jmp_buf_t *buf);
 /* only takes integer literals */
 # define APP_PARAM(mc, offs) (*(((reg_t *)((mc)->xsp)) + (offs) + 1))
 #endif
-
 
 #endif /* _ARCH_EXPORTS_H_ */

@@ -1,5 +1,5 @@
 # **********************************************************
-# Copyright (c) 2010-2012 Google, Inc.    All rights reserved.
+# Copyright (c) 2010-2013 Google, Inc.    All rights reserved.
 # Copyright (c) 2009-2010 VMware, Inc.    All rights reserved.
 # **********************************************************
 
@@ -32,12 +32,9 @@
 ###########################################################################
 # Missing features:
 # i#77: make DRgui a subproject to support with different compiler from libutil 
-# i#73: provide automatic suport for locating ml64.exe when using Vista SDK+WDK
-# i#79: custom build number or label for non-release builds
 # i#84: nmake adds space before 1st / in 1st arg to a command invoked with quotes
 # i#74: create source tarball via 'make package_source' 
 # i#68: replace perl with cmake scripts and CTest
-# i#69: re-add support for core unit tests and standalone build rules
 # i#70: symbol store support in core/Makefile and tools/Makefile
 # i#75: convert clients/standalone/Makefile to CMake 
 # i#72: RHEL3 linker script has no __executable_start
@@ -48,11 +45,14 @@
 #   HowToBuild.wiki
 ###########################################################################
 
-if ("${CMAKE_GENERATOR}" MATCHES "Visual Studio")
+if ("${CMAKE_GENERATOR}" MATCHES "Visual Studio 10")
+  # for i#801 workaround
+  cmake_minimum_required(VERSION 2.8.8)
+elseif ("${CMAKE_GENERATOR}" MATCHES "Visual Studio")
   # for output dir name control
   cmake_minimum_required(VERSION 2.8.2)
 else ()
-  cmake_minimum_required(VERSION 2.6)
+  cmake_minimum_required(VERSION 2.6.4) # VERSION_LESS
 endif ()
 
 # for non-makefile-based generators (i.e., Visual Studio) there is no
@@ -78,7 +78,7 @@ endif ("${CMAKE_GENERATOR}" MATCHES "Visual Studio")
 
 set(cmake_ver_string
   "${CMAKE_MAJOR_VERSION}.${CMAKE_MINOR_VERSION}.${CMAKE_RELEASE_VERSION}")
-if ("${cmake_ver_string}" STRLESS "2.6.4")
+if ("${cmake_ver_string}" VERSION_LESS "2.6.4")
   # Workaround for cmake bug #8639 where CMAKE_ASM_SOURCE_FILE_EXTENSIONS
   # is not set and our asm files are not built (should be fixed in 2.6.4).
   # We can simply set the var ahead of time, luckily, since noone clears it:
@@ -87,7 +87,7 @@ if ("${cmake_ver_string}" STRLESS "2.6.4")
   # - I tried puting a patched CMakeASMInformation.cmake ahead of share/Modules
   #   but enable_language() seems to not use the CMAKE_MODULE_PATH
   set(CMAKE_ASM_SOURCE_FILE_EXTENSIONS s;S;asm)
-endif ("${cmake_ver_string}" STRLESS "2.6.4")
+endif ("${cmake_ver_string}" VERSION_LESS "2.6.4")
 
 # I want to override the default CMAKE_INSTALL_PREFIX, but allow it to
 # be set (as the same var name, so CPack and other standard tools
@@ -108,6 +108,8 @@ if (NOT DEFINED ENV{CXXFLAGS})
   set(ENV{CXXFLAGS} "$ENV{CFLAGS}")
 endif (NOT DEFINED ENV{CXXFLAGS})
 
+# Don't use the default-Debug build type set for the try-compiles
+set(specified_build_type "${CMAKE_BUILD_TYPE}")
 project(DynamoRIO NONE)
 if (DEFINED GENERATE_PDBS AND NOT GENERATE_PDBS)
   # i#310: support building over cygwin ssh where we cannot build pdbs.
@@ -118,8 +120,20 @@ if (DEFINED GENERATE_PDBS AND NOT GENERATE_PDBS)
 endif ()
 enable_language(C)
 enable_language(CXX)
+if ("${CMAKE_GENERATOR}" MATCHES "Ninja")
+  # i#1040: Ninja sets the type to Debug if it's not in the cache
+  set(CMAKE_BUILD_TYPE "${specified_build_type}" CACHE STRING
+    "Choose the type of build: Debug or Release" FORCE)
+else ()
+  set(CMAKE_BUILD_TYPE "${specified_build_type}")
+endif ()
 
 include(CheckCCompilerFlag)
+
+###########################################################################
+# utility functions
+
+include(make/utils.cmake)
 
 ###########################################################################
 # configuration options
@@ -127,8 +141,22 @@ include(CheckCCompilerFlag)
 # many are core-specific
 
 # configurations that also have defines
-option(DEBUG "build with asserts and logging enabled")
 option(DRGUI_DEMO "build DRgui without the no-longer-supported Run, etc. controls" ON)
+
+# we honor CMAKE_BUILD_TYPE since many cmake users are used to it
+if ("${CMAKE_BUILD_TYPE}" MATCHES "Debug")
+  set(DEBUG_DEFAULT ON)
+else ()
+  set(DEBUG_DEFAULT OFF)
+endif ()
+set(DEBUG_DESCR "Build with asserts and logging enabled (also controlled by CMAKE_BUILD_TYPE=Debug)")
+option(DEBUG ${DEBUG_DESCR} ${DEBUG_DEFAULT})
+# support later changes
+if ("${CMAKE_BUILD_TYPE}" MATCHES "Debug")
+  set(DEBUG ON CACHE BOOL ${DEBUG_DESCR} FORCE)
+elseif (NOT "${CMAKE_BUILD_TYPE}" STREQUAL "")
+  set(DEBUG OFF CACHE BOOL ${DEBUG_DESCR} FORCE)
+endif ()
 
 # INTERNAL option now matches DEBUG
 if (DEBUG)
@@ -189,6 +217,13 @@ if (VPS)
   endif (WIN32)
 endif (VPS)
 
+option(STATIC_LIBRARY "build DR statically (not supported yet)")
+if (STATIC_LIBRARY)
+  set(SHARED_OR_STATIC STATIC)
+else ()
+  set(SHARED_OR_STATIC SHARED)
+endif ()
+
 # temporary: once build+support issues fixed, remove and add HOT_PATCHING_INTERFACE
 # to VMAP by default
 option(PROBE "enable not-yet-supported Probe API")
@@ -208,18 +243,6 @@ else (INTERNAL OR DEBUG)
   set(KSTATS_DEFAULT 0FF)
 endif (INTERNAL OR DEBUG)
 
-# PR 403006 - We want to keep symbols to get glibc backtrace for DR errors, but
-# that causes a collision of app and dr symbols on visor (DR's crc32() was
-# linked to imports of crc32() in libz.so in hostd).  So, we just keep symbol
-# support for glibc backtrace only on linux - hope we don't run into any
-# collisions on linux!  Longer term we do our own backtrace with symbols.
-#
-if (INTERNAL AND DEBUG AND NOT VMKERNEL)
-  # Now that INTERNAL is the exported debug build, turning off by default
-  set(KEEP_SYMBOLS_DEFAULT OFF)
-else (INTERNAL AND DEBUG AND NOT VMKERNEL)
-  set(KEEP_SYMBOLS_DEFAULT OFF)
-endif (INTERNAL AND DEBUG AND NOT VMKERNEL)
 # no KSTATS for caller profiling: we want to be as close to release
 # build as we can, but w/o optimizations
 if (CALLPROF)
@@ -233,16 +256,10 @@ set(KSTATS "" CACHE STRING "internal kstat profiling: ON or OFF overrides defaul
 if ("${KSTATS}" STREQUAL "")
     set(KSTATS ${KSTATS_DEFAULT})
 endif()
-set(KEEP_SYMBOLS_FOR_LIBC_BACKTRACE "" CACHE STRING
-  "keep internal symbols exported: ON or OFF overrides default")
-# FIXME i#170: ditto
-if ("${KEEP_SYMBOLS_FOR_LIBC_BACKTRACE}" STREQUAL "")
-  set(KEEP_SYMBOLS_FOR_LIBC_BACKTRACE ${KEEP_SYMBOLS_DEFAULT})
-endif ()
 
 option(CALLPROF "internal caller profiling support")
 option(LINKCOUNT "internal linkcount profiling")
-option(STANDALONE_UNIT_TEST "internal unit tests")
+option(PROFILE "profiling build: disables FPO and tweaks other flags" OFF)
 if (WIN32)
   # xref PR 192750 - runregression uses this to avoid over-ssh pdb issues
   option(GENERATE_PDBS "generate Windows debug information" ON)
@@ -258,15 +275,22 @@ option(SET_PREFERRED_BASE "set a preferred library base address")
 if (WIN32 AND DEBUG)
   # apparently no numeric type so we use STRING
   set(preferred_base "0x15000000" CACHE STRING "Preferred library base address")
-else (WIN32 AND DEBUG)
+elseif (UNIX AND NOT X64)
+  # put dynamorio at top of address space, little chance of conflict
+  set(preferred_base "0xf7000000" CACHE STRING "Preferred library base address")
+else (UNIX AND NOT X64)
   set(preferred_base "0x71000000" CACHE STRING "Preferred library base address")
 endif (WIN32 AND DEBUG)
-if (WIN32 OR X64)
-  # for x64: PR 253624: we need our library to be next to our heap
-  # for win32: not PIC so need a base
-  # we studied existing exe + dll bases and tried to pick non-conflicting addresses
-  set(SET_PREFERRED_BASE 1)
-endif (WIN32 OR X64)
+
+# for x64: PR 253624: we need our library to be next to our heap
+# for win32: not PIC so need a base
+# we studied existing exe + dll bases and tried to pick non-conflicting addresses
+# for 32-bit Linux: we put dynamorio at top of address space so little chance
+# of conflict with app for early injection.
+# there should be no noticeable perf hit from this (b/c no relocations for DR lib)
+# so it's ok to be on for non-early injection
+set(SET_PREFERRED_BASE 1)
+
 if (VMKERNEL)
   # we end up with the default executable base (0x08*) so go back to 0 base
   # (else we fail to load on esx)
@@ -284,20 +308,26 @@ mark_as_advanced(
   KSTATS
   CALLPROF
   LINKCOUNT
-  STANDALONE_UNIT_TEST
-  KEEP_SYMBOLS_FOR_LIBC_BACKTRACE
+  PROFILE
   SET_PREFERRED_BASE
   preferred_base
   GENERATE_PDBS
   DRGUI_DEMO
   )
 
-# we ignore CMAKE_BUILD_TYPE (replaced by our own DEBUG, INTERNAL, etc.)
 # we clear both base and build-type cflags and then use just base.
-# XXX: or should we support build type and auto-map to ours?
-# if we do support we'll need to remove flags like /MD coming from
-# the CMAKE_C_FLAGS_*, which are added to the base CMAKE_C_FLAGS.
 # XXX: could use CMAKE_USER_MAKE_RULES_OVERRIDE to set these but not any cleaner
+#
+# i#919: Ninja generator does not leave CMAKE_BUILD_TYPE blank, and that affects
+# the exported target files, so we set it here.  This shouldn't hurt containing
+# tools as they should set our DEBUG to match the incoming CMAKE_BUILD_TYPE.
+if ("${CMAKE_BUILD_TYPE}" STREQUAL "")
+  if (DEBUG)
+    set(CMAKE_BUILD_TYPE "Debug")
+  else (DEBUG)
+    set(CMAKE_BUILD_TYPE "Release")
+  endif (DEBUG)
+endif ()
 string(TOUPPER "${CMAKE_BUILD_TYPE}" CMAKE_BUILD_TYPE_UPPER)
 foreach (config ${CMAKE_BUILD_TYPE} ${CMAKE_CONFIGURATION_TYPES})
   string(TOUPPER "${config}" config_upper)
@@ -372,9 +402,10 @@ else (EXISTS "${PROJECT_SOURCE_DIR}/.svn")
   endif (EXISTS "${PROJECT_SOURCE_DIR}/.git")
 endif (EXISTS "${PROJECT_SOURCE_DIR}/.svn")
 
-# N.B.: once VERSION_NUMBER crosses 4.x we'll need to add another
+# N.B.: if VERSION_NUMBER's major number is incremented without also
+# incrementing OLDEST_COMPATIBLE_VERSION we'll need to add another
 # symlink loop in core/CMakeLists.txt
-set(VERSION_NUMBER_DEFAULT "3.2.${VERSION_NUMBER_PATCHLEVEL}")
+set(VERSION_NUMBER_DEFAULT "4.0.${VERSION_NUMBER_PATCHLEVEL}")
 # do not store the default VERSION_NUMBER in the cache to prevent a stale one
 # from preventing future version updates in a pre-existing build dir
 set(VERSION_NUMBER "" CACHE STRING "Version number: leave empty for default")
@@ -408,8 +439,25 @@ set(INSTALL_PREFIX "${CMAKE_INSTALL_PREFIX}")
 ###########################################################################
 # toolchain
 
+# Set up assembly support and CMAKE_CPP.
+# Note that in cmake < 2.6.4, I had to fix a bug in
+# /usr/share/cmake/Modules/CMakeASMInformation.cmake
+# where @VAR@ expansion was used, which only works for configure_file()
+#   now fixed in CMake/Modules/CMakeASMInformation.cmake:1.5
+# See top of top-level CMakeLists.txt for our workaround.
+set(cpp2asm_newline_script_path "${PROJECT_SOURCE_DIR}/make/CMake_asm.cmake")
+include(make/cpp2asm_support.cmake)
 if (UNIX)
+  # We require gas >= 2.18.50 for --32, --64, and the new -msyntax=intel, etc.
+  # Since this is pretty recent we include a copy (built vs as old a glibc
+  # as was convenient)
+  if (NOT CMAKE_ASM_SUPPORTS_INTEL_SYNTAX)
+    message("${CMAKE_ASM_COMPILER} too old: using ${PROJECT_SOURCE_DIR}/make/as-2.18.50")
+    set(CMAKE_ASM_COMPILER "${PROJECT_SOURCE_DIR}/make/as-2.18.50")
+  endif (NOT CMAKE_ASM_SUPPORTS_INTEL_SYNTAX)
+endif (UNIX)
 
+if (UNIX)
   # Assume clang behaves like gcc.  CMake 2.6 won't detect clang and will set
   # CMAKE_COMPILER_IS_GNUCC to TRUE, but 2.8 does not.  We prefer the 2.6
   # behavior.
@@ -425,20 +473,8 @@ if (UNIX)
     # we use gcc extensions
     message(FATAL_ERROR "gcc is required to build")
   endif (NOT CMAKE_COMPILER_IS_GNUCC)
-  # "gcc -E" on a non-.c-extension file gives message:
-  #   "linker input file unused because linking not done"
-  # and doesn't produce any output, so we must use cpp for our .asm files.
-  # we assume it's in the same dir.
-  get_filename_component(compiler_path ${CMAKE_C_COMPILER} PATH)
-  find_program(CMAKE_CPP cpp HINTS "${compiler_path}" DOC "path to C preprocessor")
-  if (NOT CMAKE_CPP)
-    message(FATAL_ERROR "cpp is required to build")
-  endif (NOT CMAKE_CPP)
-  mark_as_advanced(CMAKE_CPP)
 
-  # Detect clang, which masquerades as gcc.  CMake 2.6 doesn't know how to
-  # detect it.
-  string(REGEX MATCH "clang" CMAKE_COMPILER_IS_CLANG "${CMAKE_C_COMPILER}")
+  check_if_linker_is_gnu_gold(LINKER_IS_GNU_GOLD)
 
 else (UNIX)
 
@@ -470,16 +506,6 @@ else (UNIX)
   else ()
     get_filename_component(cl_path ${CMAKE_C_COMPILER} PATH)
   endif ()
-  if (X64)
-    find_program(CMAKE_ASM_COMPILER ml64.exe HINTS "${cl_path}" DOC "path to assembler")
-  else (X64)
-    find_program(CMAKE_ASM_COMPILER ml.exe HINTS "${cl_path}" DOC "path to assembler")
-  endif (X64)
-  if (NOT CMAKE_ASM_COMPILER)
-    message(FATAL_ERROR "assembler not found: required to build")
-  endif (NOT CMAKE_ASM_COMPILER)
-
-  set(CMAKE_CPP ${CMAKE_C_COMPILER})
 
   # cmake has CMAKE_RC_COMPILER, but no message compiler
   if ("${CMAKE_GENERATOR}" MATCHES "Visual Studio")
@@ -499,41 +525,6 @@ else (UNIX)
   endif (NOT CMAKE_MC_COMPILER)
   message(STATUS "Found message compiler: ${CMAKE_MC_COMPILER}")
   mark_as_advanced(CMAKE_MC_COMPILER)
-
-  # DDKROOT env var is recommended method in our docs
-  if (NOT "$ENV{DDKROOT}" STREQUAL "")
-    set(DDK_ROOT "$ENV{DDKROOT}")
-  # Check default install path
-  elseif (EXISTS "$ENV{SYSTEMDRIVE}/WINDDK/3790.1830/")
-    set(DDK_ROOT "$ENV{SYSTEMDRIVE}/WINDDK/3790.1830/")
-  elseif (EXISTS "$ENV{SYSTEMDRIVE}/WINDDK/6000/")
-    set(DDK_ROOT "$ENV{SYSTEMDRIVE}/WINDDK/6000/")
-  elseif (EXISTS "$ENV{SYSTEMDRIVE}/WINDDK/7600.16385.1/")
-    set(DDK_ROOT "$ENV{SYSTEMDRIVE}/WINDDK/7600.16385.1/")
-  endif (NOT "$ENV{DDKROOT}" STREQUAL "")
-  # Note that we want the oldest ntdll.lib for maximum compatibility.
-  # The 2003 DDK (3790.1830) or Vista WDK (6000) both have these paths:
-  if (X64)
-    set(NTDLL_LIB_SUBPATH lib/wnet/amd64)
-  else (X64)
-    # Newer WDK (7600.16385.1) does not have w2k so use wxp: if using
-    # that WDK, won't be able to run on 2K or NT.
-    if (EXISTS "${DDK_ROOT}/lib/w2k/i386")
-      set(NTDLL_LIB_SUBPATH lib/w2k/i386)
-    else (EXISTS "${DDK_ROOT}/lib/w2k/i386")
-      message(STATUS "DDK/WDK is too recent: no support for Windows 2000 or earlier")
-      set(NTDLL_LIB_SUBPATH lib/wxp/i386)
-    endif (EXISTS "${DDK_ROOT}/lib/w2k/i386")
-  endif (X64)
-  # Use find_library() and not find_path() in case on LIB env var or sthg
-  find_library(NTDLL_LIBPATH ntdll.lib HINTS "${DDK_ROOT}/${NTDLL_LIB_SUBPATH}"
-    DOC "Path to ntdll.lib from either 2003 DDK (3790.1830) or Vista WDK (6000)")
-  if (NOT NTDLL_LIBPATH)
-    message(FATAL_ERROR "ntdll.lib not found: required to build")
-  endif (NOT NTDLL_LIBPATH)
-  message(STATUS "Found ntdll.lib: ${NTDLL_LIBPATH}")
-  get_filename_component(NTDLL_LIBPATH "${NTDLL_LIBPATH}" PATH)
-  link_directories(${NTDLL_LIBPATH})
 
 endif (UNIX)
 
@@ -590,25 +581,18 @@ if (UNIX)
   if (no_stack_protector_avail)
     set(BASE_CFLAGS "${BASE_CFLAGS} -fno-stack-protector")
   endif (no_stack_protector_avail)
-  set(ASM_FLAGS "-mmnemonic=intel -msyntax=intel -mnaked-reg --noexecstack")
   # now that the user must set non-default -mNN we don't nec. need these:
   if (X64)
     set(BASE_CFLAGS "-m64 ${BASE_CFLAGS}")
     set(BASE_CXXFLAGS "-m64")
-    set(ASM_FLAGS "${ASM_FLAGS} --64")
     set(LD_FLAGS "-melf_x86_64")
   else (X64)
     set(BASE_CFLAGS "-m32 ${BASE_CFLAGS}")
     set(BASE_CXXFLAGS "-m32")
-    # putting --32 last so we fail on -mmnemonic=intel on older as, not --32
-    set(ASM_FLAGS "${ASM_FLAGS} --32")
     set(LD_FLAGS "-melf_i386")
   endif (X64)
-  if (DEBUG)
-    set(ASM_FLAGS "${ASM_FLAGS} -g")
-  endif (DEBUG)
   # there's no cmake warning control so we hardcode it
-  set(WARN "-Wall -Werror")
+  set(WARN "-Wall -Werror -Wwrite-strings")
   if (NOT CMAKE_COMPILER_IS_CLANG)
     # Old gcc's ignore unknown -W flags, but -Wall -Werror causes clang to
     # complain that it doesn't recognize it.
@@ -617,10 +601,24 @@ if (UNIX)
     if (nounused_avail)
       set(WARN "${WARN} -Wno-unused-but-set-variable")
     endif (nounused_avail)
-  endif ()
+  else (NOT CMAKE_COMPILER_IS_CLANG)
+    # clang turns off color when it's writing to a pipe, but the user may still
+    # wish to force color if it eventually goes to a terminal.
+    option(CLANG_COLOR_DIAGNOSTICS "force colored clang diagnostics" OFF)
+    set(clang_args "")
+    if (CLANG_COLOR_DIAGNOSTICS)
+      set(clang_args "-fcolor-diagnostics ${clang_args}")
+    endif (CLANG_COLOR_DIAGNOSTICS)
+    # Apply to both C and C++.
+    set(BASE_CFLAGS "${clang_args} ${BASE_CFLAGS}")
+    set(BASE_CXXFLAGS "${clang_args} ${BASE_CXXFLAGS}")
+  endif (NOT CMAKE_COMPILER_IS_CLANG)
   set(DBG "-g3")
   # gcc doesn't change its optimizations based on -g
   set(OPT "-O3 ${DBG}")
+  if (PROFILE)
+    set(OPT "${OPT} -fno-omit-frame-pointer")
+  endif ()
 
   # XXX: core-specific: move to core/CMakeLists.txt?
   #
@@ -634,15 +632,12 @@ if (UNIX)
   # overflows now anyway).  If we hit the overflows again, we should
   # use -O0 and optimize attributes on the few funcs that need higher
   # opt.
-  #
+  set(DBG_OPT "-fno-omit-frame-pointer")
   # We disable strcmp intrinsic to avoid stack overflow in
   # set_dynamo_options(): case 7853.
-  set(DBG_OPT "-fno-omit-frame-pointer -fno-builtin-strcmp")
-
-  set(CPP_KEEP_COMMENTS -C)
-  set(CPP_NO_LINENUM -P)
-  set(CPP_KEEP_WHITESPACE -traditional-cpp)
-  set(CMAKE_CPP_FLAGS "")
+  if (NOT CMAKE_COMPILER_IS_CLANG)
+    set(DBG_OPT "${DBG_OPT} -fno-builtin-strcmp")
+  endif ()
 else (UNIX)
   # FIXME: why isn't ${CMAKE_CL_NOLOGO} set?
   set(BASE_CFLAGS "/nologo")
@@ -656,6 +651,9 @@ else (UNIX)
   # FIXME case 191729: we should try to enable this.
   # Currently we get "unresolved external symbol ___security_cookie"
   set(BASE_CFLAGS "${BASE_CFLAGS} /GS-")
+  # VS2010 has /MD as the default (and does declspec(dllimport) for
+  # libc routines) so make sure we explicitly request /MT
+  set(BASE_CFLAGS "${BASE_CFLAGS} /MT")
   set(WARN "/W4 /WX")
   # Default from cmake has /W3 so remove to avoid warning about overriding
   string(REGEX REPLACE "/W[0-9]" "" CMAKE_C_FLAGS "${CMAKE_C_FLAGS}")
@@ -684,95 +682,17 @@ else (UNIX)
   # explicitly request /Od even though it's cl's default b/c VS has /O2 as default
   # and cl 14.00 hangs compiling core/fragment.c with /Od and DEBUG.
   set(DBG_OPT "/Od")
-  set(CPP_KEEP_COMMENTS /C)
-  set(CPP_NO_LINENUM /EP)
-  set(CPP_KEEP_WHITESPACE "")
-  set(CMAKE_CPP_FLAGS "/nologo")
   set(ASM_FLAGS "/nologo ${ASM_DBG}")
   set(BASE_CXXFLAGS "${BASE_CFLAGS}")
+  if (CMAKE_RC_FLAGS)
+    set(CMAKE_RC_FLAGS "${CMAKE_RC_FLAGS} /nologo")
+  else ()
+    set(CMAKE_RC_FLAGS "/nologo")
+  endif ()
 endif (UNIX)
+string(REPLACE " " ";" ASM_FLAGS_LIST "${ASM_FLAGS}")
 
 if (UNIX)
- # i#646: cmake 2.8.5 requires ASM-ATT to find as: but we don't want to change
- # all our vars to have -ATT suffix so we set the search list instead
- set(CMAKE_ASM_COMPILER_INIT gas as)
-endif (UNIX)
-enable_language(ASM)
-# note that I had to fix a bug in /usr/share/cmake/Modules/CMakeASMInformation.cmake
-# where @VAR@ expansion was used, which only works for configure_file()
-#   now fixed in CMake/Modules/CMakeASMInformation.cmake:1.5
-# see above for our workaround
-if (UNIX)
-  # we used to have ".ifdef FOO" and to not have it turn into ".ifdef 1" we'd say
-  # "-DFOO=FOO", but we now use exclusively preprocessor defines, which is good
-  # since our defines are mostly in configure.h where we can't as easily tweak them
-  # (update: I do have top-level defines gathered up in ${defines}.
-  # so, we don't bother transforming -DFOO into -DFOO=FOO, nor with setting
-  # up the --defsym args.
-  set(CMAKE_ASM_COMPILE_OBJECT
-    "${CMAKE_CPP} ${CMAKE_CPP_FLAGS} <FLAGS> <DEFINES> -E <SOURCE> -o <OBJECT>.s"
-    "<CMAKE_COMMAND> -Dfile=<OBJECT>.s -P \"${PROJECT_SOURCE_DIR}/make/CMake_asm.cmake\""
-    # not using <FLAGS> b/c of cmake bug #8107 where -Ddynamorio_EXPORTS
-    # is passed in: we don't need the include dirs b/c of the cpp step.
-    # update: Brad fixed bug #8107: moved -Ddynamorio_EXPORTS from <FLAGS> to <DEFINES> 
-    # in CMake/Source/cmMakefileTargetGenerator.cxx:1.115 (will be in 2.6.4).
-    #
-    # we also aren't passing any <DEFINES> since for one thing
-    # there's no way to transform to --defsym: luckily we don't need them
-    # since using cpp now (see above).
-    # FIXME: I tried setting CMAKE_ASM_DEFINE_FLAG to "--defsym " (not clear
-    # how to get =1 in there :should verify it's needed) but <DEFINES>
-    # comes up empty for me.
-    "<CMAKE_ASM_COMPILER> ${ASM_FLAGS} -o <OBJECT> <OBJECT>.s"
-    )
-else (UNIX)
-  # Even if we didn't preprocess we'd need our own rule since cmake doesn't
-  # support ml.
-  set(CMAKE_ASM_COMPILE_OBJECT
-    # There's no way to specify a non-default name with /P: writes to
-    # cwd/sourcebase.i.  Could copy with "cmake -E copy" but no way to
-    # run get_filename_component on a tag var.  So going with
-    # redirection operator which should work in all supported shells.
-    #
-    # ml can't handle line number markers so using ${CPP_NO_LINENUM}.
-    "<CMAKE_C_COMPILER> ${CMAKE_CPP_FLAGS} <FLAGS> <DEFINES> -E ${CPP_NO_LINENUM} <SOURCE> > <OBJECT>.s"
-    # cmake does add quotes in custom commands, etc. but not in this rule so we add
-    # them to handle paths with spaces:
-    "<CMAKE_COMMAND> -Dfile=<OBJECT>.s -P \"${PROJECT_SOURCE_DIR}/make/CMake_asm.cmake\""
-    "<CMAKE_ASM_COMPILER> ${ASM_FLAGS} /c /Fo<OBJECT> <OBJECT>.s"
-    )
-endif (UNIX)
-
-if (UNIX)
-  # We require gas >= 2.18.50 for --32, --64, and the new -msyntax=intel, etc.
-  # Since this is pretty recent we include a copy (built vs as old a glibc
-  # as was convenient)
-  execute_process(COMMAND
-    ${CMAKE_ASM_COMPILER} --help
-    RESULT_VARIABLE asm_result
-    ERROR_VARIABLE asm_error
-    OUTPUT_VARIABLE asm_out)
-  if (asm_result OR asm_error)
-    message(FATAL_ERROR "*** ${CMAKE_ASM_COMPILER} failed: ***\n${asm_error}")
-  endif (asm_result OR asm_error)
-  # turn the flags into a vector
-  string(REGEX REPLACE " " ";" flags_needed "${ASM_FLAGS}")
-  # we want "-mmnemonic=intel" to match "-mmnemonic=[att|intel]"
-  string(REGEX REPLACE "=" ".*" flags_needed "${flags_needed}")
-  set(flag_present 1)
-  foreach (flag ${flags_needed})
-    if (flag_present)
-      string(REGEX MATCH "${flag}" flag_present "${asm_out}")
-      if (NOT flag_present)
-        message("${CMAKE_ASM_COMPILER} missing flag \"${flag}\"")
-      endif (NOT flag_present)
-    endif (flag_present)
-  endforeach (flag)
-  if (NOT flag_present)
-    message("${CMAKE_ASM_COMPILER} too old: using ${PROJECT_SOURCE_DIR}/make/as-2.18.50")
-    set(CMAKE_ASM_COMPILER "${PROJECT_SOURCE_DIR}/make/as-2.18.50")
-  endif (NOT flag_present)
-
   # Check for -fvisibility
   # PR 262458: for gcc >= 3.4 we can use -fvisibility instead of a
   # linker version script.  Note that we're still using a linker
@@ -783,52 +703,58 @@ if (UNIX)
   # (For older gcc we use an ugly linker script and an auto-generated export list)
   # Using "internal" instead of "hidden" b/c we don't need any indirect
   # calls to our non-exported functions
-  # For INTERNAL builds we keep our symbols visible, for better libc backtraces
-  if (NOT KEEP_SYMBOLS_FOR_LIBC_BACKTRACE)
-    CHECK_C_COMPILER_FLAG("-fvisibility=internal" HAVE_FVISIBILITY_INTERNAL)
-    CHECK_C_COMPILER_FLAG("-fvisibility=hidden" HAVE_FVISIBILITY_HIDDEN)
+  CHECK_C_COMPILER_FLAG("-fvisibility=internal" HAVE_FVISIBILITY_INTERNAL)
+  CHECK_C_COMPILER_FLAG("-fvisibility=hidden" HAVE_FVISIBILITY_HIDDEN)
 
-    if (HAVE_FVISIBILITY_INTERNAL)
-      set(VISIBILITY "internal")
-    elseif (HAVE_FVISIBILITY_HIDDEN)
-      set(VISIBILITY "hidden")
-    else (HAVE_FVISIBILITY_INTERNAL)
-      message("${CMAKE_C_COMPILER} missing flag -fvisibility, using linker "
-              "script instead")
-      set(VISIBILITY " ")
-    endif (HAVE_FVISIBILITY_INTERNAL)
+  if (HAVE_FVISIBILITY_INTERNAL)
+    set(VISIBILITY "internal")
+  elseif (HAVE_FVISIBILITY_HIDDEN)
+    set(VISIBILITY "hidden")
+  else (HAVE_FVISIBILITY_INTERNAL)
+    message("${CMAKE_C_COMPILER} missing flag -fvisibility, using linker "
+            "script instead")
+    set(VISIBILITY " ")
+  endif (HAVE_FVISIBILITY_INTERNAL)
 
-    if (VISIBILITY)
-      set(BASE_CFLAGS "${BASE_CFLAGS} -fvisibility=${VISIBILITY}")
-      set(BASE_CXXFLAGS "${BASE_CXXFLAGS} -fvisibility=${VISIBILITY}")
-      set(HAVE_FVISIBILITY ON)
-    endif (VISIBILITY)
-  endif (NOT KEEP_SYMBOLS_FOR_LIBC_BACKTRACE)
+  if (VISIBILITY)
+    set(BASE_CFLAGS "${BASE_CFLAGS} -fvisibility=${VISIBILITY}")
+    set(BASE_CXXFLAGS "${BASE_CXXFLAGS} -fvisibility=${VISIBILITY}")
+    set(HAVE_FVISIBILITY ON)
+  endif (VISIBILITY)
 
-  # Better to use -dT when passing linker options through gcc, but ld
-  # prior to 2.18 only supports -T
-  # FIXME: should we duplicate this in DynamoRIOConfig.cmake?
-  execute_process(COMMAND
-    ${CMAKE_LINKER} --help
-    RESULT_VARIABLE ld_result
-    ERROR_VARIABLE ld_error
-    OUTPUT_VARIABLE ld_out)
-  if (ld_result OR ld_error)
-    message(FATAL_ERROR "*** ${CMAKE_LINKER} failed: ***\n${ld_error}")
-  endif (ld_result OR ld_error)
-  string(REGEX MATCH "dT" flag_present "${ld_out}")
-  if (NOT flag_present)
-    message("${CMAKE_LINKER} missing flag -dT, using -T instead")
-    set(ld_script_option "-T")
-  else (NOT flag_present)
-    set(ld_script_option "-dT")
-  endif (NOT flag_present)
+  if (NOT LINKER_IS_GNU_GOLD)
+    # Better to use -dT when passing linker options through gcc, but ld
+    # prior to 2.18 only supports -T
+    # FIXME: should we duplicate this in DynamoRIOConfig.cmake?
+    execute_process(COMMAND
+      ${CMAKE_LINKER} --help
+      RESULT_VARIABLE ld_result
+      ERROR_VARIABLE ld_error
+      OUTPUT_VARIABLE ld_out)
+    if (ld_result OR ld_error)
+      message(FATAL_ERROR "*** ${CMAKE_LINKER} failed: ***\n${ld_error}")
+    endif (ld_result OR ld_error)
+    string(REGEX MATCH "dT" flag_present "${ld_out}")
+    if (NOT flag_present)
+      message("${CMAKE_LINKER} missing flag -dT, using -T instead")
+      set(ld_script_option "-T")
+    else (NOT flag_present)
+      set(ld_script_option "-dT")
+    endif (NOT flag_present)
+  endif (NOT LINKER_IS_GNU_GOLD)
+
+  # In the past, there have been tools on Linux that don't know how to follow
+  # .gnu_debuglink.  While we aren't aware of any major tools with this bug
+  # today, it's useful to be able to turn this off while experimenting with new
+  # tools.
+  option(SPLIT_SYMBOLS "whether to split debug symbols from binaries" ON)
+  mark_as_advanced(SPLIT_SYMBOLS)
 
   # We want separate .debug files for all shared libraries
-  if (NOT DEFINED CMAKE_OBJCOPY)
+  if (SPLIT_SYMBOLS AND NOT DEFINED CMAKE_OBJCOPY)
     find_package(BinUtils)
-  endif (NOT DEFINED CMAKE_OBJCOPY)
-  if (EXISTS ${CMAKE_OBJCOPY} AND EXISTS ${CMAKE_STRIP})
+  endif ()
+  if (SPLIT_SYMBOLS AND EXISTS ${CMAKE_OBJCOPY} AND EXISTS ${CMAKE_STRIP})
     # Check for --only-keep-debug support: added ~2.15
     execute_process(COMMAND
       ${CMAKE_OBJCOPY} --help
@@ -838,6 +764,12 @@ if (UNIX)
     if (objcopy_result)
       message(FATAL_ERROR "*** ${CMAKE_OBJCOPY} failed to run ***\n")
     endif (objcopy_result)
+    set(strip_local "-x")  # Strip local (non-exported) symbols from .symtab.
+    if (PROFILE)
+      # Keep .symtab for tools (objdump) that don't always handle split debug
+      # info gracefully.
+      set(strip_local "")
+    endif ()
     string(REGEX MATCH "only-keep-debug" flag_present "${objcopy_out}")
     if (NOT flag_present)
       message("${CMAKE_OBJCOPY} missing flag --only-keep-debug: leaving debug info in .so files")
@@ -853,13 +785,13 @@ if (UNIX)
         # We can't strip everything since a client's _USES_DR_VERSION_ will be
         # removed, so we only strip debug (-g) and local (-x):
         # i#572: We used to pass -p here, but that floors the mtime.
-        "${CMAKE_STRIP} -g -x <TARGET>"
+        "${CMAKE_STRIP} -g ${strip_local} <TARGET>"
         )
       SET(CMAKE_C_LINK_EXECUTABLE
         "<CMAKE_C_COMPILER> <FLAGS> <CMAKE_C_LINK_FLAGS> <LINK_FLAGS> <OBJECTS>  -o <TARGET> <LINK_LIBRARIES>"
         "${CMAKE_OBJCOPY} --only-keep-debug <TARGET> <TARGET>.debug"
         "${CMAKE_OBJCOPY} --add-gnu-debuglink=<TARGET>.debug <TARGET>"
-        "${CMAKE_STRIP} -g -x <TARGET>"
+        "${CMAKE_STRIP} -g ${strip_local} <TARGET>"
         )
       set(CMAKE_CXX_CREATE_SHARED_LIBRARY
         # standard rule
@@ -872,16 +804,16 @@ if (UNIX)
         # We can't strip everything since a client's _USES_DR_VERSION_ will be
         # removed, so we only strip debug (-g) and local (-x):
         # i#572: We used to pass -p here, but that floors the mtime.
-        "${CMAKE_STRIP} -g -x <TARGET>"
+        "${CMAKE_STRIP} -g ${strip_local} <TARGET>"
         )
       SET(CMAKE_CXX_LINK_EXECUTABLE
         "<CMAKE_CXX_COMPILER> <FLAGS> <CMAKE_CXX_LINK_FLAGS> <LINK_FLAGS> <OBJECTS>  -o <TARGET> <LINK_LIBRARIES>"
         "${CMAKE_OBJCOPY} --only-keep-debug <TARGET> <TARGET>.debug"
         "${CMAKE_OBJCOPY} --add-gnu-debuglink=<TARGET>.debug <TARGET>"
-        "${CMAKE_STRIP} -g -x <TARGET>"
+        "${CMAKE_STRIP} -g ${strip_local} <TARGET>"
         )
     endif (NOT flag_present)
-  endif (EXISTS ${CMAKE_OBJCOPY} AND EXISTS ${CMAKE_STRIP})
+  endif (SPLIT_SYMBOLS AND EXISTS ${CMAKE_OBJCOPY} AND EXISTS ${CMAKE_STRIP})
 
 endif (UNIX)
 
@@ -929,6 +861,7 @@ set(INSTALL_DOCS docs)
 # samples are installed via api/samples/ separate CMake project
 set(INSTALL_CMAKE cmake)
 set(BUILD_INCLUDE "${PROJECT_BINARY_DIR}/${INSTALL_INCLUDE}")
+set(BUILD_CMAKE "${PROJECT_BINARY_DIR}/${INSTALL_CMAKE}")
 
 # support DynamoRIO being included as a subdir inside a tool's project,
 # where the tool will likely want to suppress DR's install rules.
@@ -940,6 +873,30 @@ macro(DR_install)
     install(${ARGV})
   endif (DO_DR_INSTALL)
 endmacro(DR_install)
+# To support an including project exporting its own targets we need
+# to export dynamorio, our extensions, and our exports file, but
+# we want the includer to be able to stick the actual binaries
+# in one place.  So we have both a bool DO_DR_INSTALL_TARGETS
+# and a path DR_INSTALL_TARGETS_DEST:
+if (DO_DR_INSTALL OR NOT DEFINED DO_DR_INSTALL_TARGETS)
+  set(DO_DR_INSTALL_TARGETS ON)
+endif ()
+macro(DR_target_install)
+  if (DO_DR_INSTALL_TARGETS)
+    install(${ARGV})
+  endif (DO_DR_INSTALL_TARGETS)
+endmacro(DR_target_install)
+function (install_exported_target target dest)
+  if (DO_DR_INSTALL_TARGETS)
+    if (DEFINED DR_INSTALL_TARGETS_DEST)
+      set(inst_dst ${DR_INSTALL_TARGETS_DEST})
+    else ()
+      set(inst_dst ${dest})
+    endif ()
+    install(TARGETS ${target} EXPORT ${exported_targets_name}
+      DESTINATION ${inst_dst} ${ARGN})
+  endif (DO_DR_INSTALL_TARGETS)
+endfunction (install_exported_target)
 
 # mirror install path for easier use from build dir
 # most libs go in base; DR and preload go in {debug,release} subdir
@@ -977,8 +934,11 @@ string(REGEX REPLACE
   "^[0-9]+\\.([0-9]+)\\..*" "\\1" VERSION_NUMBER_MINOR "${VERSION_NUMBER}")
 math(EXPR VERSION_NUMBER_INTEGER
   "${VERSION_NUMBER_MAJOR}*100 + ${VERSION_NUMBER_MINOR}")
-# 3.0 broke backcompat and 3.1 was first release so it's now the oldest compat
-set(OLDEST_COMPATIBLE_VERSION "301")
+# 4.0 broke backcompat in drmgr, drsyms, drinjectlib, and dr_get_milliseconds()
+set(OLDEST_COMPATIBLE_VERSION "400")
+
+# i#955: a Windows version of ELF DT_RPATH where a local file stores lib paths
+set(DR_RPATH_SUFFIX "drpath")
 
 # This does a copy-if-different, so it won't trigger recompilation of
 # every single source file if no changes
@@ -1047,16 +1007,37 @@ include_directories(BEFORE
 # We include DynamoRIO and all Extensions in the same file for simplicity,
 # since the Extensions depend on DynamoRIO and in some cases each other
 # and so need to be locatable as a group.
-# To support packaging both together we need different names
-# FIXME: should we also append Debug, and have an optional param
-# to DynamoRIOConfig.cmake to link to it (only really makes sense
-# if using rpath)?  If we did that we'd need to set the debug
-# param for our internal builds.
+# To support packaging both together we need different names.
+# Debug vs release is automatically added as a suffix.
 if (X64)
   set(exported_targets_name "DynamoRIOTarget64")
 else (X64)
   set(exported_targets_name "DynamoRIOTarget32")
 endif (X64)
+
+# i#948: we need to map RelWithDebInfo and RelMinSize to Release so importing
+# projects don't end up with Debug instead, yet Release for static libs
+# set in DynamoRIOConfig.cmake.
+# We do this with the MAP_IMPORTED_CONFIG_<CONFIG> target property.
+# If we pass APPEND to the first one, subsequent configs keep growing the file,
+# so we remove it up front.
+file(WRITE ${PROJECT_BINARY_DIR}/cmake/${exported_targets_name}.cmake "")
+set(exported_targets_append "")
+macro(DR_export_target target)
+  export(TARGETS ${ARGV} FILE ${PROJECT_BINARY_DIR}/cmake/${exported_targets_name}.cmake
+    APPEND)
+  set(toadd "
+SET_PROPERTY(TARGET ${ARGV} PROPERTY MAP_IMPORTED_CONFIG_RELWITHDEBINFO Release)
+SET_PROPERTY(TARGET ${ARGV} PROPERTY MAP_IMPORTED_CONFIG_RELMINSIZE Release)
+")
+  if (NOT DEBUG)
+    file(APPEND ${PROJECT_BINARY_DIR}/cmake/${exported_targets_name}.cmake ${toadd})
+  endif (NOT DEBUG)
+  # We append to the installed file even in debug build so the ordering of
+  # release vs debug doesn't matter in the final package.
+  set(exported_targets_append "${exported_targets_append}${toadd}")
+  set(exported_targets_append "${exported_targets_append}" PARENT_SCOPE)
+endmacro(DR_export_target)
 
 ###########################################################################
 
@@ -1070,10 +1051,9 @@ else (WIN32)
   option(BUILD_CORE "build core library" ON)
 endif (WIN32)
 option(BUILD_TOOLS "build tools" ON)
-if (WIN32 AND NOT X64)
-  # FIXME i#62: port DRgui to 64-bit
+if (WIN32)
   option(BUILD_DRGUI "build DRgui statistics viewer (requires MFC)" ON)
-endif (WIN32 AND NOT X64)
+endif (WIN32)
 option(BUILD_EXT "build Extension libraries" ON)
 option(BUILD_DOCS "build documentation" ON)
 
@@ -1101,22 +1081,17 @@ if (BUILD_TESTS)
   # Tests require tools
   # FIXME i#65 NOT YET COMPLETED: what about x64 Windows: we need 32-bit drdeploy.exe!
   set(BUILD_TOOLS ON)
+  enable_testing()
+  # add Dashboard support
+  include(CTest)
 endif (BUILD_TESTS)
 
 if (BUILD_CORE)
-  if (STANDALONE_UNIT_TEST)
-    enable_testing()
-  endif (STANDALONE_UNIT_TEST)
   add_subdirectory(core)
-  if (STANDALONE_UNIT_TEST)
-    include(CTest)
-  endif (STANDALONE_UNIT_TEST)
 endif (BUILD_CORE)
 
 if (BUILD_TOOLS OR BUILD_DRGUI)
-  if (WIN32)
-    add_subdirectory(libutil)
-  endif (WIN32)
+  add_subdirectory(libutil)
 endif (BUILD_TOOLS OR BUILD_DRGUI)
   
 if (BUILD_TOOLS)
@@ -1124,11 +1099,38 @@ if (BUILD_TOOLS)
 endif (BUILD_TOOLS)
 
 if (BUILD_DRGUI)
-  add_subdirectory(tools/DRgui)
+  find_package(MFC)
+  if (NOT MFC_FOUND)
+    message(STATUS "MFC not found: disabling DRgui")
+    set(BUILD_DRGUI OFF)
+  endif ()
+
+  if (BUILD_DRGUI)
+    add_subdirectory(tools/DRgui)
+  endif ()
 endif (BUILD_DRGUI)
 
 # create empty logs dir for running out of build dir
 file(MAKE_DIRECTORY "${PROJECT_BINARY_DIR}/logs")
+
+# export cpp2asm files just like full install, for using from build dir
+# with projects that include DR sources
+configure_file(${PROJECT_SOURCE_DIR}/make/cpp2asm_support.cmake
+  ${BUILD_CMAKE}/cpp2asm_support.cmake COPYONLY)
+configure_file(${PROJECT_SOURCE_DIR}/make/CMake_asm.cmake
+  ${BUILD_CMAKE}/cpp2asm_add_newlines.cmake COPYONLY)
+# we need to strip out the #include of configure.h
+file(READ "${PROJECT_SOURCE_DIR}/core/x86/asm_defines.asm" str)
+string(REPLACE "#include \"configure.h\"" "" str "${str}")
+file(WRITE "${BUILD_CMAKE}/cpp2asm_defines.h" "${str}")
+
+# Export docs files just like full install, for using from build dir
+# with projects that include DR sources.  Do this even if not BUILD_DOCS,
+# for containing projects.
+configure_file(${PROJECT_SOURCE_DIR}/api/docs/CMake_rundoxygen.cmake
+  ${BUILD_CMAKE}/docs_rundoxygen.cmake COPYONLY)
+configure_file(${PROJECT_SOURCE_DIR}/api/docs/CMake_doxyutils.cmake
+  ${BUILD_CMAKE}/docs_doxyutils.cmake COPYONLY)
 
 ###########################################################################
 
@@ -1142,7 +1144,7 @@ if (CLIENT_INTERFACE OR APP_EXPORTS)
             ${BUILD_INCLUDE}/dr_api.h)
   file(MAKE_DIRECTORY ${BUILD_INCLUDE})
   # technically only the headers in the genapi.pl list
-  file(GLOB header_files core/*.h core/*/*.h libutil/*.h core/hotpatch.c)
+  file(GLOB header_files core/*.h core/*/*.h libutil/*.h core/hotpatch.c ext/*/*.h)
   add_custom_command(
     OUTPUT ${BUILD_INCLUDE}/dr_app.h # among other files
     DEPENDS ${PROJECT_SOURCE_DIR}/core/lib/genapi.pl
@@ -1266,6 +1268,7 @@ if (BUILD_TOOLS OR WIN32)
     PATTERN "*.pdb"
     PATTERN "runstats.debug" EXCLUDE # since not installing tool
     PATTERN "run_in_bg.debug" EXCLUDE # since not installing tool
+    PATTERN "*_exe.debug" EXCLUDE # since not installing tool
     )
 endif (BUILD_TOOLS OR WIN32)
 
@@ -1289,6 +1292,19 @@ configure_file(
   ${PROJECT_SOURCE_DIR}/make/DynamoRIOConfig.cmake.in
   ${PROJECT_BINARY_DIR}/cmake/DynamoRIOConfig.cmake
   @ONLY)
+
+# INCLUDEFILE feature
+file(READ ${PROJECT_BINARY_DIR}/cmake/DynamoRIOConfig.cmake contents)
+string(REGEX MATCHALL "\nINCLUDEFILE [^ \r\n]*" includes "${contents}")
+foreach (inc ${includes})
+  string(REGEX REPLACE "\nINCLUDEFILE " "" incfile "${inc}")
+  file(READ "${incfile}" subst)
+  # strip out copyright header, which we prefixed with "##"
+  string(REGEX REPLACE "(^|\n)##[^\n]*" "" subst "${subst}")
+  string(REGEX REPLACE "${inc}" "\n${subst}" contents "${contents}")
+endforeach (inc)
+file(WRITE ${PROJECT_BINARY_DIR}/cmake/DynamoRIOConfig.cmake "${contents}")
+
 configure_file(
   ${PROJECT_SOURCE_DIR}/make/DynamoRIOConfigVersion.cmake.in
   ${PROJECT_BINARY_DIR}/cmake/DynamoRIOConfigVersion.cmake
@@ -1303,6 +1319,26 @@ DR_install(FILES
   ${PROJECT_SOURCE_DIR}/suite/runsuite_common_pre.cmake
   ${PROJECT_SOURCE_DIR}/suite/runsuite_common_post.cmake
   DESTINATION ${INSTALL_CMAKE}
+)
+
+# export cpp2asm support, with consistent names
+DR_install(FILES ${PROJECT_SOURCE_DIR}/make/cpp2asm_support.cmake
+  DESTINATION ${INSTALL_CMAKE}
+)
+DR_install(FILES ${PROJECT_SOURCE_DIR}/make/CMake_asm.cmake
+  DESTINATION ${INSTALL_CMAKE} RENAME cpp2asm_add_newlines.cmake
+)
+# we need to strip out the #include of configure.h
+DR_install(CODE "file(READ \"\${PROJECT_SOURCE_DIR}/core/x86/asm_defines.asm\" str)
+  string(REPLACE \"#include \\\\\"configure.h\\\\\"\" \"\" str \"\\\${str}\")
+  file(WRITE \"\${CMAKE_INSTALL_PREFIX}/\${INSTALL_CMAKE}/cpp2asm_defines.h\" \"\\\${str}\")")
+
+# export docs support, with consistent names
+DR_install(FILES ${PROJECT_SOURCE_DIR}/api/docs/CMake_rundoxygen.cmake
+  DESTINATION ${INSTALL_CMAKE} RENAME docs_rundoxygen.cmake
+)
+DR_install(FILES ${PROJECT_SOURCE_DIR}/api/docs/CMake_doxyutils.cmake
+  DESTINATION ${INSTALL_CMAKE} RENAME docs_doxyutils.cmake
 )
 
 # Extensions (i#277/PR 540817)
@@ -1323,15 +1359,16 @@ if (BUILD_SAMPLES)
 endif (BUILD_SAMPLES)
 
 if (BUILD_TESTS)
-  enable_testing()
   add_subdirectory(suite/tests)
-  # add Dashboard support
-  include(CTest)
 endif (BUILD_TESTS)
 
+# We must append to this file to avoid cmake_install.cmake's diff from thinking
+# the exports have changed and thus clobbering the other config's files.
+# This is what is copied to ${CMAKE_INSTALL_PREFIX}/${INSTALL_CMAKE}.
+DR_target_install(CODE "file(APPEND \"${PROJECT_BINARY_DIR}/CMakeFiles/Export/cmake/${exported_targets_name}.cmake\" \"${exported_targets_append}\")")
 # Create the exported targets file.  This will include all targets added
 # in subdirectories via DR_install(TARGETS ... EXPORT ${exported_targets_name}).
-DR_install(EXPORT ${exported_targets_name} DESTINATION ${INSTALL_CMAKE})
+DR_target_install(EXPORT ${exported_targets_name} DESTINATION ${INSTALL_CMAKE})
 
 ###########################################################################
 # packaging

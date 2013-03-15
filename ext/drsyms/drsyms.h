@@ -1,5 +1,5 @@
 /* **********************************************************
- * Copyright (c) 2011-2012 Google, Inc.  All rights reserved.
+ * Copyright (c) 2011-2013 Google, Inc.  All rights reserved.
  * Copyright (c) 2009-2010 VMware, Inc.  All rights reserved.
  * **********************************************************/
 
@@ -83,6 +83,7 @@ typedef enum {
     DRSYM_ERROR_NOT_IMPLEMENTED,    /**< Operation failed: not yet implemented */
     DRSYM_ERROR_FEATURE_NOT_AVAILABLE, /**< Operation failed: not available */
     DRSYM_ERROR_NOMEM,              /**< Operation failed: not enough memory */
+    DRSYM_ERROR_RECURSIVE,          /**< Operation failed: unavailable when recursive */
 } drsym_error_t;
 
 /** Bitfield of options to each DRSyms operation. */
@@ -117,37 +118,21 @@ typedef enum {
     DRSYM_PECOFF_SYMTAB = (1 <<  11), /**< PE COFF (Cygwin or MinGW) symbol table names.*/
 } drsym_debug_kind_t;
 
+/* Legacy version of drsym_info_t */
+typedef struct _drsym_info_legacy_t {
+#include "drsyms_infox.h"
+    /** Output: symbol name */
+    char name[1];
+} drsym_info_legacy_t;
+
 /** Data structure that holds symbol information */
 typedef struct _drsym_info_t {
-    /* INPUTS */
-    /** Input: should be set by caller to sizeof(drsym_info_t) */
-    size_t struct_size;
-    /** Input: should be set by caller to the size of the name[] buffer, in bytes */
-    size_t name_size;
-
-    /* OUTPUTS */
-    /** Output: file and line number */
-    const char *file;
-    uint64 line;
-    /** Output: offset from address that starts at line */
-    size_t line_offs;
-    /** Output: offset from module base of start of symbol */
-    size_t start_offs;
-    /**
-     * Output: offset from module base of end of symbol.
-     * \note For DRSYM_PECOFF_SYMTAB (Cygwin or MinGW) symbols, the end offset
-     * is not known precisely.
-     * The start address of the subsequent symbol will be stored here.
-     **/
-    size_t end_offs;
-    /** Output: type of the debug info available for this module */
-    drsym_debug_kind_t debug_kind;
-
-    /**
-     * Output: size of data available for name.  Only name_size bytes will be
-     * copied to name.
-     */
-    size_t name_available_size;
+#include "drsyms_infox.h"
+    /** Output: type id for passing to drsym_expand_type() */
+    uint type_id;
+#ifdef X64
+    uint padding; /* so struct_size distinguishes from legacy */
+#endif
     /** Output: symbol name */
     char name[1];
 } drsym_info_t;
@@ -161,8 +146,12 @@ typedef struct _drsym_info_t {
 DR_EXPORT
 /**
  * Initialize the symbol access library.
+ * Can be called multiple times (by separate components, normally) but
+ * each call must be paired with a corresponding call to
+ * drsym_exit(), and only the symbol server parameter of the first
+ * call will be honored.
  * 
-* @param[in] shmid Identifies the symbol server for sideline operation.
+ * @param[in] shmid Identifies the symbol server for sideline operation.
  * \note Sideline operation is not yet implemented.
  */
 drsym_error_t
@@ -196,6 +185,8 @@ enum {
     DRSYM_TYPE_INT,    /**< Integer, cast to drsym_int_type_t. */
     DRSYM_TYPE_PTR,    /**< Pointer, cast to drsym_ptr_type_t. */
     DRSYM_TYPE_FUNC,   /**< Function, cast to drsym_func_type_t. */
+    DRSYM_TYPE_VOID,   /**< Void.  No further information. */
+    DRSYM_TYPE_COMPOUND, /**< Struct, union, or class; cast to drsym_compound_type_t. */
     /* Additional type kinds will be added as needed. */
 };
 
@@ -206,36 +197,77 @@ enum {
 typedef struct _drsym_type_t {
     uint kind;      /**< Type kind, i.e. DRSYM_TYPE_INT or DRSYM_TYPE_PTR. */
     size_t size;    /**< Type size. */
+    uint id;        /**< Unique identifier to pass to drsym_expand_type(). */
 } drsym_type_t;
 
-#ifdef _MSC_VER
-# pragma warning(push)
-# pragma warning(disable : 4200)
-#endif
-
+/** Type information for a function. */
 typedef struct _drsym_func_type_t {
     drsym_type_t type;
     drsym_type_t *ret_type;
-    int num_args;
-    /* We want to maintain C89 compat for exported headers so we avoid [0] and
-     * waste the space on a zero-arg func type
-     */
-    drsym_type_t *arg_types[1];  /**< Flexible array of size num_args. */
+    int num_args; /**< Number of arguments. */
+    /** Separate array of size num_args.  May be NULL if the data was not requested. */
+    drsym_type_t **arg_types;
 } drsym_func_type_t;
 
-#ifdef _MSC_VER
-# pragma warning(pop)
-#endif
+/** Type information for a user-defined type: a struct, union, or class. */
+typedef struct _drsym_compound_type_t {
+    drsym_type_t type;
+    char *name; /**< Name of the type. */
+    int num_fields; /**< Number of fields. */
+    /** Separate array of size num_fields.  May be NULL if the data was not requested. */
+    drsym_type_t **field_types;
+} drsym_compound_type_t;
 
+/** Type information for an integer base type. */
 typedef struct _drsym_int_type_t {
     drsym_type_t type;
     bool is_signed;
 } drsym_int_type_t;
 
+/** Type information for a pointer type. */
 typedef struct _drsym_ptr_type_t {
     drsym_type_t type;
     drsym_type_t *elt_type;
 } drsym_ptr_type_t;
+
+DR_EXPORT
+/**
+ * Retrieves symbol type information for a given module offset.  After a
+ * successful execution, \p *type points to the function type.  All memory
+ * used to represent the types comes from \p buf, so the caller only needs to
+ * dispose \p buf to free them.  Returns DRSYM_ERROR_NOMEM if the buffer is not
+ * big enough.
+ *
+ * This routine expands arguments of function or fields compound types into
+ * their child types as far as \p levels_to_expand levels deep.
+ * The resulting expanded type tree may be recursive, so the caller should take
+ * care when traversing it.  Any already-referenced type is guaranteed to have
+ * a smaller pointer value than its parent.  This allows safe traversing without
+ * recording the already-seen types.
+ *
+ * When querying type information for a symbol that has already been located
+ * via drsym_lookup_address() or via enumeration or searching, it is better
+ * to invoke drsym_expand_type() using the \p type_id parameter of #drsym_info_t
+ * to properly handle cases where multiple symbols map to the same module offset.
+ *
+ * \note This function is currently implemented only for Windows PDB
+ * symbols (DRSYM_PDB).
+ *
+ * @param[in] modpath    The full path to the module to be queried.
+ * @param[in] modoffs    The offset from the base of the module specifying
+ *                       the start address of the function.
+ * @param[in] levels_to_expand  The maximum levels of sub-types to expand.
+ *                       Set to UINT_MAX for unlimited expansion.
+ *                       Further expansion can be performed by calling
+ *                       drsym_expand_type().
+ * @param[out] buf       Memory used for the types.
+ * @param[in] buf_sz     Number of bytes in \p buf.
+ * @param[out] type      Pointer to the type of the function.
+ */
+drsym_error_t
+drsym_get_type(const char *modpath, size_t modoffs, uint levels_to_expand,
+               char *buf, size_t buf_sz,
+               drsym_type_t **type /*OUT*/);
 
 DR_EXPORT
 /**
@@ -245,8 +277,17 @@ DR_EXPORT
  * dispose \p buf to free them.  Returns DRSYM_ERROR_NOMEM if the buffer is not
  * big enough.
  *
+ * This routine does not expand arguments of function or compound types into
+ * their child types.
+ *
  * \note This function is currently implemented only for Windows PDB
  * symbols (DRSYM_PDB).
+ *
+ * \note The public Windows symbol files typically do not contain type
+ * information for function parameters.
+ *
+ * \note Despite the name, this routine will retrieve type information
+ * for non-functions as well.
  *
  * @param[in] modpath    The full path to the module to be queried.
  * @param[in] modoffs    The offset from the base of the module specifying
@@ -259,6 +300,43 @@ drsym_error_t
 drsym_get_func_type(const char *modpath, size_t modoffs,
                     char *buf, size_t buf_sz,
                     drsym_func_type_t **func_type /*OUT*/);
+
+DR_EXPORT
+/**
+ * Retrieves symbol type information for all sub-types of the type
+ * referenced by \p type_id.  After a
+ * successful execution, \p *expanded_type points to the expanded type.  All memory
+ * used to represent the types comes from \p buf, so the caller only needs to
+ * dispose \p buf to free them.  Returns DRSYM_ERROR_NOMEM if the buffer is not
+ * big enough.
+ *
+ * The initial type index to pass as \p type_id can be retrieved by
+ * calling drsym_get_type() or drsym_get_func_type().
+ *
+ * The resulting expanded type tree may be recursive, so the caller should take
+ * care when traversing it.  Any already-referenced type is guaranteed to have
+ * a smaller pointer value than its parent.  This allows safe traversing without
+ * recording the already-seen types.
+ *
+ * \note This function is currently implemented only for Windows PDB
+ * symbols (DRSYM_PDB).
+ *
+ * \note The public Windows symbol files typically do not contain type
+ * information for function parameters.
+ *
+ * @param[in] modpath    The full path to the module to be queried.
+ * @param[in] type_id    The type index, acquired from a prior call to
+ *                       drsym_get_type() or drsym_get_func_type().
+ * @param[in] levels_to_expand  The maximum levels of sub-types to expand.
+ *                       Set to UINT_MAX for unlimited expansion.
+ * @param[out] buf       Memory used for the types.
+ * @param[in] buf_sz     Number of bytes in \p buf.
+ * @param[out] expanded_type Pointer to the expanded type tree for the symbol.
+ */
+drsym_error_t
+drsym_expand_type(const char *modpath, uint type_id, uint levels_to_expand,
+                  char *buf, size_t buf_sz,
+                  drsym_type_t **expanded_type /*OUT*/);
 
 DR_EXPORT
 /**
@@ -280,16 +358,33 @@ drsym_error_t
 drsym_lookup_symbol(const char *modpath, const char *symbol, size_t *modoffs /*OUT*/,
                     uint flags);
 
-/** 
+/**
  * Type for drsym_enumerate_symbols and drsym_search_symbols callback function.
  * Returns whether to continue the enumeration or search.
  *
  * @param[in]  name    Name of the symbol.
- * @param[out] modoffs Offset of the symbol from the module base.
+ * @param[in]  modoffs Offset of the symbol from the module base.
  * @param[in]  data    User parameter passed to drsym_enumerate_symbols() or
  *                     drsym_search_symbols().
  */
 typedef bool (*drsym_enumerate_cb)(const char *name, size_t modoffs, void *data);
+
+/**
+ * Type for drsym_enumerate_symbols_ex and drsym_search_symbols_ex callback function.
+ * Returns whether to continue the enumeration or search.
+ *
+ * @param[in]  info    Information about the symbol.
+ * @param[in]  status  Status of \p info: either DRSYM_SUCCESS to indicate that all
+ *                     fields are filled in, or DRSYM_ERROR_LINE_NOT_AVAILABLE to
+ *                     indicate that line number information was not obtained.  Line
+ *                     information is currently not available for any debug type when
+ *                     iterating.  This has no bearing on whether line information is
+ *                     available when calling drsym_lookup_address().
+ * @param[in]  data    User parameter passed to drsym_enumerate_symbols() or
+ *                     drsym_search_symbols().
+ */
+typedef bool (*drsym_enumerate_ex_cb)(drsym_info_t *info, drsym_error_t status,
+                                      void *data);
 
 DR_EXPORT
 /**
@@ -305,6 +400,25 @@ DR_EXPORT
 drsym_error_t
 drsym_enumerate_symbols(const char *modpath, drsym_enumerate_cb callback, void *data,
                         uint flags);
+
+DR_EXPORT
+/**
+ * Enumerates all symbol information for a given module.
+ * Calls the given callback function for each symbol, returning full information
+ * about the symbol (as opposed to selected information returned by
+ * drsym_enumerate_symbols()).
+ * If the callback returns false, the enumeration will end.
+ *
+ * @param[in] modpath   The full path to the module to be queried.
+ * @param[in] callback  Function to call for each symbol found.
+ * @param[in] info_size The size of the drsym_info_t struct to pass to \p callback.
+ *                      Enough space for each name will be allocated automatically.
+ * @param[in] data      User parameter passed to callback.
+ * @param[in] flags     Options for the operation.  Ignored for Windows PDB (DRSYM_PDB).
+ */
+drsym_error_t
+drsym_enumerate_symbols_ex(const char *modpath, drsym_enumerate_ex_cb callback,
+                           size_t info_size, void *data, uint flags);
 
 DR_EXPORT
 /**
@@ -348,6 +462,18 @@ drsym_error_t
 drsym_get_module_debug_kind(const char *modpath,
                             drsym_debug_kind_t *kind /*OUT*/);
 
+DR_EXPORT
+/**
+ * Returns whether debug information is available for the module \p modpath.
+ * This can be faster than calling drsym_get_module_debug_kind(), but it
+ * should be equivalent to calling drsym_get_module_debug_kind() and
+ * looking for DRSYM_SYMBOLS in the output.
+ *
+ * @param[in]  modpath   The full path to the module to be queried.
+ */
+drsym_error_t
+drsym_module_has_symbols(const char *modpath);
+
 #ifdef WINDOWS
 DR_EXPORT
 /**
@@ -379,7 +505,104 @@ DR_EXPORT
 drsym_error_t
 drsym_search_symbols(const char *modpath, const char *match, bool full,
                      drsym_enumerate_cb callback, void *data);
+
+DR_EXPORT
+/**
+ * Enumerates all symbol information matching a pattern for a given module.
+ * Calls the given callback function for each symbol, returning full information
+ * about the symbol (as opposed to selected information returned by
+ * drsym_search_symbols()).
+ * If the callback returns false, the enumeration will end.
+ *
+ * This routine is only supported for PDB symbols (DRSYM_PDB).
+ *
+ * \note The performance note for drsym_search_symbols() applies here
+ * as well.
+ *
+ * @param[in] modpath   The full path to the module to be queried.
+ * @param[in] match     Regular expression describing the names of the symbols
+ *                      to be enumerated.  To specify a target module, use the
+ *                      "module_pattern!symbol_pattern" format.
+ * @param[in] full      Whether to search all symbols or (the default) just
+ *                      functions.  A full search takes significantly
+ *                      more time and memory and eliminates the
+ *                      performance advantage over other lookup
+ *                      methods.  A full search requires dbghelp.dll
+ *                      version 6.6 or higher.
+ * @param[in] callback  Function to call for each matching symbol found.
+ * @param[in] info_size The size of the drsym_info_t struct to pass to \p callback.
+ *                      Enough space for each name will be allocated automatically.
+ * @param[in] data      User parameter passed to callback.
+ */
+drsym_error_t
+drsym_search_symbols_ex(const char *modpath, const char *match, bool full,
+                        drsym_enumerate_ex_cb callback, size_t info_size, void *data);
 #endif
+
+DR_EXPORT
+/**
+ * Indicates that no further symbol queries will be performed and that
+ * this module's debug information can be de-allocated.
+ * A later query will result in a new load.
+ * The typical usage is to call this after a series of queries at module
+ * load.  For large applications with many libraries, calling this
+ * can save hundreds of MB of memory.
+ *
+ * @param[in] modpath   The full path to the module to be unloaded.
+ *
+ * \note When called from within a callback for drsym_enumerate_symbols()
+ * or drsym_search_symbols(), will fail with DRSYM_ERROR_RECURSIVE as it
+ * is not safe to free resources while iterating.
+ */
+drsym_error_t
+drsym_free_resources(const char *modpath);
+
+/***************************************************************************
+ * Line iteration
+ */
+
+/**
+ * Line information returned by drsym_enumerate_lines().
+ * This information should not be relied upon to be accessible
+ * beyond the return of the callback routine to which it is passed.
+ */
+typedef struct _drsym_line_info_t {
+    /** Compilation unit (object file) name */
+    const char *cu_name;
+    /** Source file name */
+    const char *file;
+    /** Line number */
+    uint64 line;
+    /** Offset from module base of the first instruction of the line */
+    size_t line_addr;
+} drsym_line_info_t;
+
+/**
+ * Type for drsym_enumerate_lines callback function.
+ * Returns whether to continue the enumeration.
+ *
+ * @param[in]  info    Information about the line.
+ * @param[in]  data    User parameter passed to drsym_enumerate_lines().
+ */
+typedef bool (*drsym_enumerate_lines_cb)(drsym_line_info_t *info, void *data);
+
+DR_EXPORT
+/**
+ * Enumerates all source lines for a given module.
+ * Calls the given callback function for each line.
+ * If the callback returns false, the enumeration will end.
+ *
+ * If an individual compilation unit is missing line number information,
+ * the callback will still be called once for that unit, with the fields other
+ * than \p cu_name set to NULL or 0.
+ *
+ * @param[in] modpath   The full path to the module to be queried.
+ * @param[in] callback  Function to call for each line.
+ * @param[in] data      User parameter passed to callback.
+ */
+drsym_error_t
+drsym_enumerate_lines(const char *modpath, drsym_enumerate_lines_cb callback, void *data);
+
 
 /*@}*/ /* end doxygen group */
 

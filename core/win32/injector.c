@@ -1,5 +1,5 @@
 /* **********************************************************
- * Copyright (c) 2011 Google, Inc.  All rights reserved.
+ * Copyright (c) 2011-2013 Google, Inc.  All rights reserved.
  * Copyright (c) 2002-2010 VMware, Inc.  All rights reserved.
  * **********************************************************/
 
@@ -64,6 +64,7 @@
 #include "ntdll.h"
 #include "inject_shared.h"
 #include "os_private.h"
+#include "dr_inject.h"
 
 #ifdef UNICODE
 # error dr_inject.h and drdeploy.c not set up for unicde
@@ -110,7 +111,7 @@ static double wallclock; /* in seconds */
 #endif
 /* avoid mistake of lower-case assert */
 #define assert assert_no_good_use_ASSERT_instead
-void internal_error(char *file, int line, char *msg);
+void internal_error(const char *file, int line, const char *msg);
 #undef ASSERT
 #ifdef DEBUG
 void display_error(char *msg);
@@ -149,7 +150,7 @@ display_error_helper(wchar_t *msg)
 }
 
 void
-internal_error(char *file, int line, char *expr)
+internal_error(const char *file, int line, const char *expr)
 {
 #ifdef INTERNAL
 # define FILENAME_LENGTH L""
@@ -580,6 +581,9 @@ void restore_debugger_key_injection(int id, BOOL started)
 
 /***************************** end debug key injection ********************/
 
+/* CreateProcess will take a string up to 36K. */
+enum { MAX_CMDLINE = 36 * 1024 };
+
 static const TCHAR *
 get_image_name(const TCHAR *app_name)
 {
@@ -591,22 +595,84 @@ get_image_name(const TCHAR *app_name)
     return name_start;
 }
 
+/* FIXME i#803: Until we have i#803 and support targeting cross-arch
+ * children, we require the child to match our bitwidth.
+ * module_is_64bit() takes in a base, but there's no need to map the
+ * whole thing in.  Thus we have our own impl.
+ * Once we fix i#803, remove the ERROR_IMAGE_MACHINE_TYPE_MISMATCH_EXE
+ * comment in the docs for dr_inject_process_create.
+ */
+static bool
+exe_is_right_bitwidth(const char *exe, int *errcode)
+{
+    bool res = false;
+    HANDLE f;
+    DWORD offs;
+    DWORD read;
+    IMAGE_DOS_HEADER dos;
+    IMAGE_NT_HEADERS nt;
+    f = CreateFile(exe, GENERIC_READ, FILE_SHARE_READ,
+                   NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (f == INVALID_HANDLE_VALUE)
+        goto read_nt_headers_error;
+    if (!ReadFile(f, &dos, sizeof(dos), &read, NULL) ||
+        read != sizeof(dos) ||
+        dos.e_magic != IMAGE_DOS_SIGNATURE)
+        goto read_nt_headers_error;
+    offs = SetFilePointer(f, dos.e_lfanew, NULL, FILE_BEGIN);
+    if (offs == INVALID_SET_FILE_POINTER)
+        goto read_nt_headers_error;
+    if (!ReadFile(f, &nt, sizeof(nt), &read, NULL) ||
+        read != sizeof(nt) ||
+        nt.Signature != IMAGE_NT_SIGNATURE)
+        goto read_nt_headers_error;
+    res = (nt.OptionalHeader.Magic ==
+           IF_X64_ELSE(IMAGE_NT_OPTIONAL_HDR64_MAGIC, IMAGE_NT_OPTIONAL_HDR_MAGIC));
+    CloseHandle(f);
+    if (!res)
+        *errcode = ERROR_IMAGE_MACHINE_TYPE_MISMATCH_EXE;
+    return res;
+ read_nt_headers_error:
+    *errcode = ERROR_FILE_NOT_FOUND;
+    if (f != INVALID_HANDLE_VALUE)
+        CloseHandle(f);
+    return false;
+}
 
 /* Returns 0 on success.
  * On failure, returns a Windows API error code.
  */
 DYNAMORIO_EXPORT
 int
-dr_inject_process_create(const char *app_name, const char *app_cmdline,
+dr_inject_process_create(const char *app_name, const char **argv,
                          void **data OUT)
 {
     dr_inject_info_t *info = HeapAlloc(GetProcessHeap(), 0, sizeof(*info));
     STARTUPINFO si;
     int errcode = 0;
     BOOL res;
+    char *app_cmdline;
+    size_t sofar = 0;
+    int i;
+
     if (data == NULL)
         return ERROR_INVALID_PARAMETER;
-    
+
+    if (!exe_is_right_bitwidth(app_name, &errcode) &&
+        /* don't return here if couldn't find app: get appropriate errcode below */
+        errcode == ERROR_IMAGE_MACHINE_TYPE_MISMATCH_EXE)
+        return ERROR_IMAGE_MACHINE_TYPE_MISMATCH_EXE;
+
+    /* Quote and concatenate the array of strings to pass to CreateProcess. */
+    app_cmdline = malloc(MAX_CMDLINE);
+    if (!app_cmdline)
+        return GetLastError();
+    /* FIXME: Need to escape quotes in args. */
+    for (i = 0; argv[i] != NULL; i++) {
+        print_to_buffer(app_cmdline, MAX_CMDLINE, &sofar, "\"%s\" ", argv[i]);
+    }
+    app_cmdline[sofar-1] = '\0'; /* Trim the trailing space. */
+
     /* Launch the application process. */
     ZeroMemory(&si, sizeof(si));
     si.cb = sizeof(si);
@@ -629,13 +695,14 @@ dr_inject_process_create(const char *app_name, const char *app_cmdline,
     }
 
     /* Must specify TRUE for bInheritHandles so child inherits stdin! */
-    res = CreateProcess(app_name, (char *)app_cmdline, NULL, NULL, TRUE,
+    res = CreateProcess(app_name, app_cmdline, NULL, NULL, TRUE,
                         CREATE_SUSPENDED |
                         ((debug_stop_function && info->using_debugger_injection) ?
                          DEBUG_PROCESS | DEBUG_ONLY_THIS_PROCESS : 0),
                         NULL, NULL, &si, &info->pi);
     if (!res)
         errcode = GetLastError();
+    free(app_cmdline);
 
     if (info->using_debugger_injection) {
         restore_debugger_key_injection(info->pi.dwProcessId, res);
@@ -736,6 +803,19 @@ dr_inject_process_run(void *data)
     close_handle(info->pi.hThread);
 
     return true;
+}
+
+DYNAMORIO_EXPORT
+bool
+dr_inject_wait_for_child(void *data, uint64 timeout_millis)
+{
+    dr_inject_info_t *info = (dr_inject_info_t *) data;
+    wait_status_t wait_result;
+    if (timeout_millis == 0)
+        timeout_millis = INFINITE;
+    /* We use the Nt version to avoid loss of precision. */
+    wait_result = os_wait_handle(info->pi.hProcess, timeout_millis);
+    return (wait_result == WAIT_SIGNALED);
 }
 
 DYNAMORIO_EXPORT

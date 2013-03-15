@@ -1,5 +1,5 @@
 /* **********************************************************
- * Copyright (c) 2011 Google, Inc.  All rights reserved.
+ * Copyright (c) 2011-2012 Google, Inc.  All rights reserved.
  * Copyright (c) 2008-2010 VMware, Inc.  All rights reserved.
  * **********************************************************/
 
@@ -34,6 +34,7 @@
 /*
  * API regression test that registers for all supported event callbacks
  * (except the nudge and security violation callback)
+ * as a C++ application.
  */
 
 #include "tools.h"
@@ -55,9 +56,6 @@
 
 
 #ifdef LINUX
-/* handler with SA_SIGINFO flag set gets three arguments: */
-typedef void (*handler_t)(int, struct siginfo *, void *);
-
 static void
 signal_handler(int sig, siginfo_t *siginfo, ucontext_t *ucxt)
 {
@@ -67,21 +65,6 @@ signal_handler(int sig, siginfo_t *siginfo, ucontext_t *ucxt)
 	print("Got SIGUSR2\n");
     else if (sig == SIGURG)
 	print("Got SIGURG\n");
-}
-
-/* set up signal_handler as the handler for signal "sig" */
-static void
-intercept_signal(int sig, handler_t handler)
-{
-    int rc;
-    struct sigaction act;
-    act.sa_sigaction = handler;
-    rc = sigfillset(&act.sa_mask); /* block all signals within handler */
-    assert(rc == 0);
-    act.sa_flags = SA_SIGINFO | SA_ONSTACK; /* send 3 args to handler */
-    /* arm the signal */
-    rc = sigaction(sig, &act, NULL);
-    assert(rc == 0);
 }
 #endif /* LINUX */
 
@@ -105,7 +88,10 @@ main(int argc, char** argv)
     /* 
      * Load and unload a module to cause a module unload event
      */
-    hmod = LoadLibrary("shell32.dll");
+    hmod = LoadLibrary(argv[1]);
+    if (hmod == NULL) {
+        print("LoadLibrary failed: %x\n", GetLastError());
+    }
     FreeLibrary(hmod);
 #endif
 
@@ -114,64 +100,29 @@ main(int argc, char** argv)
     char buf[1000];
     size_t len = 0;
     char *end_path = NULL;
-    /* 
+    /*
      * Load and unload a module to cause a module unload event
      */
-#if 1
-    if (argc != 2)
-        exit(1);
-    strncpy(buf, argv[1], sizeof(buf));
-    buf[sizeof(buf)-1] = '\0';
-    end_path = strrchr(buf, '/');
-    if (end_path == NULL)
-        len = 0;
-    else
-        len = (end_path - buf) + 1;
-#else
-    getcwd(buf, sizeof(buf));
-    buf[sizeof(buf)-1] = '\0';
-    len = strlen(buf);
-    strncpy(buf+len, "/../client-interface/", sizeof(buf)-len);
-    buf[sizeof(buf)-1] = '\0';
-    len = strlen(buf);
-#endif
 
-      /* small .bss */
-#ifdef X64
-    strncpy(buf+len, "events64_dummy1.so", sizeof(buf)-len); 
-#else
-    strncpy(buf+len, "events_dummy1.so", sizeof(buf)-len);
-#endif
-    buf[sizeof(buf)-1] = '\0';
-    hmod = dlopen(buf, RTLD_LAZY|RTLD_LOCAL);
+    /* FIXME: We used to test a module with a large .bss here.  Try to do that
+     * again.
+     */
+    hmod = dlopen(argv[1], RTLD_LAZY|RTLD_LOCAL);
     if (hmod != NULL)
-	dlclose(hmod);
+        dlclose(hmod);
     else
-	print("module load of %s failed\n", buf);
-    
-    /* large .bss */
-#ifdef X64
-    strncpy(buf+len, "events64_dummy2.so", sizeof(buf)-len); 
-#else
-    strncpy(buf+len, "events_dummy2.so", sizeof(buf)-len);
-#endif
-    buf[sizeof(buf)-1] = '\0';
-    hmod = dlopen(buf, RTLD_LAZY|RTLD_LOCAL);
-    if (hmod != NULL)
-	dlclose(hmod);
-    else
-	print("module load of %s failed\n", buf);
+        print("module load failed: %s\n", dlerror());
 
     /* test load of non-existent file */
     hmod = dlopen("foo_bar_no_exist.so", RTLD_LAZY|RTLD_LOCAL);
     if (hmod != NULL) {
-	print("ERROR - module load of %s succeeded\n", buf);
-	dlclose(hmod);
+        print("ERROR - module load of %s succeeded\n", buf);
+        dlclose(hmod);
     }
 
-    intercept_signal(SIGUSR1, (handler_t) signal_handler);
-    intercept_signal(SIGUSR2, (handler_t) signal_handler);
-    intercept_signal(SIGURG, (handler_t) signal_handler);
+    intercept_signal(SIGUSR1, signal_handler, false);
+    intercept_signal(SIGUSR2, signal_handler, false);
+    intercept_signal(SIGURG, signal_handler, false);
     print("Sending SIGUSR1\n");
     kill(getpid(), SIGUSR1);
     print("Sending SIGUSR2\n");
@@ -208,11 +159,16 @@ main(int argc, char** argv)
     print("Shouldn't be reached\n");
 }
 
+#ifdef __cplusplus
+extern "C"
+#endif
 #ifdef WINDOWS
-__declspec(dllexport) 
+__declspec(dllexport)
+#else
+__attribute__((visibility("default")))
 #endif
 void
-redirect()
+redirect(void)
 {
     print("Redirect success!\n");
     exit(0);

@@ -66,12 +66,27 @@ static uint verbose = 0;
 # define NOTIFY(...) /* nothing */
 #endif
 
+#define ALIGNED(x, alignment) ((((ptr_uint_t)x) & ((alignment)-1)) == 0)
+
 /* protected by wrap_lock */
 static drwrap_global_flags_t global_flags;
 
 #ifdef WINDOWS
 static int sysnum_NtContinue = -1;
 #endif
+
+/* in drwrap_asm.asm */
+void
+replace_native_xfer(void);
+
+void
+replace_native_rets(void);
+
+void
+replace_native_ret_imms(void);
+
+void
+replace_native_ret_imms_end(void);
 
 /***************************************************************************
  * REQUEST TRACKING
@@ -81,10 +96,12 @@ static int sysnum_NtContinue = -1;
 #define REPLACE_TABLE_HASH_BITS 6
 static hashtable_t replace_table;
 
-/* Native replacements need to store the stack adjust */
+/* Native replacements need to store the stack adjust and user data */
 typedef struct _replace_native_t {
     app_pc replacement;
+    bool at_entry;
     uint stack_adjust;
+    void *user_data;
 } replace_native_t;
 
 #define REPLACE_NATIVE_TABLE_HASH_BITS 6
@@ -712,11 +729,14 @@ bool
 drwrap_event_exception(void *drcontext, dr_exception_t *excpt);
 #endif
 
+static void
+drwrap_replace_init(void);
+
 /***************************************************************************
  * INIT
  */
 
-static void *exit_lock;
+static int drwrap_init_count;
 
 DR_EXPORT
 bool
@@ -728,14 +748,18 @@ drwrap_init(void)
     drmgr_priority_t pri_insert = {sizeof(pri_insert), DRMGR_PRIORITY_NAME_DRWRAP,
                                    NULL, NULL, DRMGR_PRIORITY_INSERT_DRWRAP};
 #ifdef WINDOWS
+    /* DrMem i#1098: We use a late priority so we don't unwind if the client
+     * handles the fault.
+     */
+    drmgr_priority_t pri_fault = {sizeof(pri_fault), DRMGR_PRIORITY_NAME_DRWRAP,
+                                  NULL, NULL, DRMGR_PRIORITY_FAULT_DRWRAP};
     module_data_t *ntdll;
 #endif
 
-    static bool initialized;
-    if (initialized)
+    /* handle multiple sets of init/exit calls */
+    int count = dr_atomic_add32_return_sum(&drwrap_init_count, 1);
+    if (count > 1)
         return true;
-    initialized = true;
-    exit_lock = dr_mutex_create();
 
     drmgr_init();
     if (!drmgr_register_bb_app2app_event(drwrap_event_bb_app2app, &pri_replace))
@@ -760,7 +784,7 @@ drwrap_init(void)
                       NULL, NULL);
     post_call_rwlock = dr_rwlock_create();
     wrap_lock = dr_recurlock_create();
-    dr_register_module_unload_event(drwrap_event_module_unload);
+    drmgr_register_module_unload_event(drwrap_event_module_unload);
     dr_register_delete_event(drwrap_fragment_delete);
 
     tls_idx = drmgr_register_tls_field();
@@ -785,8 +809,11 @@ drwrap_init(void)
         }
         dr_free_module_data(ntdll);
     }
-    dr_register_exception_event(drwrap_event_exception);
+    drmgr_register_exception_event_ex(drwrap_event_exception, &pri_fault);
 #endif
+
+    drwrap_replace_init();
+
     return true;
 }
 
@@ -794,13 +821,10 @@ DR_EXPORT
 void
 drwrap_exit(void)
 {
-    static bool exited;
-    /* try to handle multiple calls to exit.  still possible to crash
-     * trying to lock a destroyed lock.
-     */
-    if (exited || !dr_mutex_trylock(exit_lock) || exited)
+    /* handle multiple sets of init/exit calls */
+    int count = dr_atomic_add32_return_sum(&drwrap_init_count, -1);
+    if (count != 0)
         return;
-    exited = true;
 
     hashtable_delete(&replace_table);
     hashtable_delete(&replace_native_table);
@@ -816,9 +840,6 @@ drwrap_exit(void)
         dr_global_free(post_call_notify_list, sizeof(*post_call_notify_list));
         post_call_notify_list = tmp;
     }
-
-    dr_mutex_unlock(exit_lock);
-    dr_mutex_destroy(exit_lock);
 }
 
 static void
@@ -885,6 +906,82 @@ drwrap_set_global_flags(drwrap_global_flags_t flags)
  * FUNCTION REPLACING
  */
 
+#define RET_IMM_LEN 3
+
+static uint max_stack_adjust;
+
+static byte *
+get_func_entry(byte *addr)
+{
+    /* On Windows with /debug the ILT is used.  There may be a link flag to
+     * avoid that (the core seems to do so for its safe_read_asm_* labels,
+     * although the relevant flags /incremental and /ZI don't seem to be
+     * there for drwrap so further investigation is needed)
+     * but we may as well be robust to how it's built.
+     */
+    if (*addr == 0xe9/*jmp*/)
+        return addr + 5 + *(int*)(addr+1); /* resolve jmp target */
+    else
+        return addr;
+}
+
+static void
+drwrap_replace_init(void)
+{
+#ifdef DEBUG
+    void *drcontext;
+    instr_t inst;
+    byte *next_pc;
+    uint max_immed = 0;
+#endif
+
+    byte *pc = get_func_entry((byte *)replace_native_ret_imms);
+    byte *end_pc = get_func_entry((byte *)replace_native_ret_imms_end);
+    max_stack_adjust = (uint) ((end_pc - pc) / RET_IMM_LEN) * sizeof(void*);
+
+#ifdef DEBUG
+    drcontext = dr_get_current_drcontext();
+    instr_init(drcontext, &inst);
+    while (pc < end_pc) {
+        next_pc = decode(drcontext, pc, &inst);
+        ASSERT(next_pc != NULL, "invalid ret asm");
+        if (next_pc == NULL)
+            break; /* at least don't inf loop */
+        ASSERT(instr_get_opcode(&inst) == OP_ret, "invalid ret asm");
+        ASSERT(next_pc - pc == RET_IMM_LEN, "invalid ret len");
+        ASSERT(opnd_is_immed_int(instr_get_src(&inst, 0)), "invalid ret opnd");
+        max_immed = (uint) opnd_get_immed_int(instr_get_src(&inst, 0));
+        instr_reset(drcontext, &inst);
+        pc = next_pc;
+    }
+    ASSERT(max_immed == max_stack_adjust, "invalid max imm");
+
+    pc = get_func_entry((byte *)replace_native_rets);
+    decode(drcontext, pc, &inst);
+    ASSERT(instr_get_opcode(&inst) == OP_ret, "invalid ret asm");
+    instr_free(drcontext, &inst);
+#endif
+
+    ASSERT(DRWRAP_REPLACE_NATIVE_DATA_SLOT != SPILL_SLOT_REDIRECT_NATIVE_TGT,
+           "TLS slot conflict");
+    ASSERT(DRWRAP_REPLACE_NATIVE_SP_SLOT != SPILL_SLOT_REDIRECT_NATIVE_TGT,
+           "TLS slot conflict");
+}
+
+static byte *
+replace_native_ret_stub(uint stack_adjust)
+{
+    if (stack_adjust > max_stack_adjust ||
+        !ALIGNED(stack_adjust, sizeof(void*)))
+        return NULL;
+    if (stack_adjust == 0)
+        return (byte *) replace_native_rets;
+    else {
+        return ((byte *)replace_native_ret_imms) +
+            ((stack_adjust / sizeof(void*)) - 1/*skip 0*/) * RET_IMM_LEN;
+    }
+}
+
 DR_EXPORT
 bool
 drwrap_is_replaced(app_pc func)
@@ -948,19 +1045,22 @@ drwrap_replace(app_pc original, app_pc replacement, bool override)
 
 DR_EXPORT
 bool
-drwrap_replace_native(app_pc original, app_pc replacement, uint stack_adjust,
-                      bool override)
+drwrap_replace_native(app_pc original, app_pc replacement, bool at_entry,
+                      uint stack_adjust, void *user_data, bool override)
 {
     bool res = false;
     replace_native_t *rn;
-    if (stack_adjust > USHRT_MAX)
-        return false; /* too big for ret imm */
+    if (stack_adjust > max_stack_adjust ||
+        !ALIGNED(stack_adjust, sizeof(void*)))
+        return false;
     if (replacement == NULL)
         rn = NULL;
     else {
         rn = dr_global_alloc(sizeof(*rn));
         rn->replacement = replacement;
+        rn->at_entry = at_entry;
         rn->stack_adjust = stack_adjust;
+        rn->user_data = user_data;
     }
     hashtable_lock(&replace_native_table);
     res = drwrap_replace_common(&replace_native_table, original, rn, override);
@@ -996,15 +1096,15 @@ drwrap_replace_bb(void *drcontext, instrlist_t *bb, instr_t *inst,
      * Jumping through DR memory doesn't work well (meta instrs in app2app,
      * ind jmp mangled w/ i#107).
      * Probably best to add DR API to set exit cti target of bb
-     * which is i#429.  For now we clobber xax, which is scratch
-     * in most calling conventions.
+     * which is i#429.  For now we clobber r11, which is scratch
+     * and unused for parameter transfer in most calling conventions.
      */
     instrlist_append(bb, INSTR_XL8(INSTR_CREATE_mov_imm
-                                   (drcontext, opnd_create_reg(DR_REG_XAX),
+                                   (drcontext, opnd_create_reg(DR_REG_R11),
                                     OPND_CREATE_INT64(replace)), pc));
     instrlist_append(bb, INSTR_XL8
                      (INSTR_CREATE_jmp_ind
-                      (drcontext, opnd_create_reg(DR_REG_XAX)), pc));
+                      (drcontext, opnd_create_reg(DR_REG_R11)), pc));
 #else
     instrlist_append(bb, INSTR_XL8(INSTR_CREATE_jmp
                                    (drcontext, opnd_create_pc(replace)), pc));
@@ -1012,60 +1112,150 @@ drwrap_replace_bb(void *drcontext, instrlist_t *bb, instr_t *inst,
 }
 
 static void
+drwrap_replace_native_push_retaddr(void *drcontext, instrlist_t *bb, app_pc pc,
+                                   ptr_int_t pushval, opnd_size_t stacksz
+                                   _IF_X64(bool x86))
+{
+    if (stacksz == OPSZ_4 IF_X64(&& x86)) {
+        instrlist_append
+            (bb, INSTR_XL8(INSTR_CREATE_push_imm
+                           (drcontext, OPND_CREATE_INT32(pushval)), pc)); 
+    }
+#ifdef X64
+    else if (!x86 && stacksz == OPSZ_8) {
+        /* needs 2 steps */
+        instrlist_append
+            (bb, INSTR_XL8(INSTR_CREATE_push_imm
+                           (drcontext, OPND_CREATE_INT32((int)pushval)), pc)); 
+        /* first push sign-extended so may not need 2nd */
+        if ((ptr_uint_t)pushval >= 0x80000000) {
+            instrlist_append
+                (bb, INSTR_XL8(INSTR_CREATE_mov_st
+                               (drcontext, OPND_CREATE_MEM32(DR_REG_XSP, 4),
+                                OPND_CREATE_INT32((int)((ptr_int_t)pushval >> 32))), pc));
+        }
+    }
+#endif
+    else {
+        int sz = opnd_size_in_bytes(stacksz);
+        ptr_int_t val = 0;
+        if (stacksz == OPSZ_2)
+            val = pushval & (ptr_int_t) 0x0000ffff;
+#ifdef X64
+        else {
+            ASSERT(stacksz == OPSZ_4 && !x86, "illegal stack size for call");
+            val = (ptr_int_t)pushval & (ptr_int_t) 0xffffffff;
+        }
+#endif
+        /* can't do a non-default operand size with a push immed so we emulate */
+        instrlist_append
+            (bb, INSTR_XL8(INSTR_CREATE_lea
+                           (drcontext, opnd_create_reg(DR_REG_XSP),
+                            opnd_create_base_disp(DR_REG_XSP, DR_REG_NULL, 0,
+                                                  -sz, OPSZ_lea)), pc));
+        instrlist_append
+            (bb, INSTR_XL8(INSTR_CREATE_mov_st
+                           (drcontext, opnd_create_base_disp(DR_REG_XSP, DR_REG_NULL,
+                                                             0, 0, stacksz),
+                            opnd_create_immed_int(val, stacksz)), pc));
+    }
+}
+
+static void
 drwrap_replace_native_bb(void *drcontext, instrlist_t *bb, instr_t *inst,
-                         app_pc pc, replace_native_t *rn)
+                         app_pc pc, replace_native_t *rn, app_pc topush)
 {
     /* we're in the callee to handle indirect transfers, so the retaddr
-     * is already in place.  we need to remove it before we execute our
-     * call so that the args are accessible with normal offsets.
-     * but, on return we need to continue on at the original retaddr,
-     * so we store it in a scratch slot and read it back as a meta instr
-     * (to avoid the far ref being mangled).
-     * we re-do the stack adjust of stdcall if asked to so client sees
-     * it (the real adjust in replacement routine is native: i#778).
+     * is already in place.  We can't push a new retaddr on top of it b/c
+     * we need the args to be accessible with normal offsets.
+     * and we don't want to replace the retaddr w/ a code cache retaddr
+     * b/c that causes issues w/ callstacks (see
+     * http://code.google.com/p/drmemory/issues/detail?id=935).
+     * We end up going with a continuation-based approach, which avoids
+     * a return point in the cache and thus simplifies issues w/
+     * the replacement code using app resources (see
+     * http://code.google.com/p/drmemory/issues/detail?id=900).
      *
-     *    meta pop retaddr to scratch slot
-     *    meta call to replace routine
-     *    meta push scratch slot
-     *  if stack_adjust > 0 {
-     *      meta sub stack_adjust
-     *      ret stack_adjust
-     *  } else {
-     *      ret
+     * It's much easier to get the app xsp here so we store it in a
+     * tls slot.  We also store the stack adjust for use later.
+     *
+     *  if (topush != NULL) {
+     *      push app retaddr
      *  }
+     *    meta mov xsp to scratch slot
+     *  if (user_data != NULL) {
+     *      meta mov $user_data to scratch slot 2
+     *  }
+     *    meta jmp to replace routine
+     *    <never reached>
+     *    nop (to avoid non-empty bb)
      */
+    /* get data from inst before we destroy it */
+#ifdef DEBUG
+    uint opc = instr_get_opcode(inst);
+#endif
+#ifdef X64
+    bool x86 = instr_get_x86_mode(inst);
+#endif
+    opnd_size_t stacksz = OPSZ_NA;
+    if (topush != NULL) {
+        ASSERT(instr_num_dsts(inst) > 1 &&
+               opnd_is_base_disp(instr_get_dst(inst, 1)), "expected call");
+        stacksz = opnd_get_size(instr_get_dst(inst, 1));
+    }
+
     instrlist_truncate(drcontext, bb, inst);
-    instrlist_meta_append(bb, INSTR_CREATE_pop
-                          (drcontext, dr_reg_spill_slot_opnd(drcontext, SPILL_SLOT_1)));
+
+    ASSERT(DRWRAP_REPLACE_NATIVE_DATA_SLOT <= dr_max_opnd_accessible_spill_slot(),
+           "assuming TLS direct access");
+    ASSERT(DRWRAP_REPLACE_NATIVE_SP_SLOT <= dr_max_opnd_accessible_spill_slot(),
+           "assuming TLS direct access");
+
+    if (topush != NULL) {
+        ASSERT(opc == OP_call || opc == OP_call_ind, "unsuppored call type");
+        drwrap_replace_native_push_retaddr(drcontext, bb, pc, (ptr_int_t) topush,
+                                           stacksz _IF_X64(x86));
+    }
+    instrlist_meta_append(bb, INSTR_CREATE_mov_st
+                          (drcontext, dr_reg_spill_slot_opnd
+                           (drcontext, DRWRAP_REPLACE_NATIVE_SP_SLOT),
+                           opnd_create_reg(DR_REG_XSP)));
+    /* We go ahead and use the 3rd fast spill slot for storage */
+    instrlist_meta_append(bb, INSTR_CREATE_mov_st
+                          (drcontext, dr_reg_spill_slot_opnd
+                           (drcontext, SPILL_SLOT_REDIRECT_NATIVE_TGT),
+                            OPND_CREATE_INT32(rn->stack_adjust)));
+    if (rn->user_data != NULL) {
+#ifdef X64
+        /* We clobber r11, which is scratch in most calling conventions */
+        instrlist_meta_append(bb, INSTR_CREATE_mov_imm
+                              (drcontext, opnd_create_reg(DR_REG_R11),
+                               OPND_CREATE_INT64((ptr_uint_t)rn->user_data)));
+        instrlist_meta_append(bb, INSTR_CREATE_mov_st
+                              (drcontext, dr_reg_spill_slot_opnd
+                               (drcontext, DRWRAP_REPLACE_NATIVE_DATA_SLOT),
+                               opnd_create_reg(DR_REG_R11)));
+#else
+        instrlist_meta_append(bb, INSTR_CREATE_mov_st
+                              (drcontext, dr_reg_spill_slot_opnd
+                               (drcontext, DRWRAP_REPLACE_NATIVE_DATA_SLOT),
+                               OPND_CREATE_INTPTR((ptr_int_t)rn->user_data)));
+#endif
+    }
 #ifdef X64
     /* XXX: simple call has reachability issues.   For now we clobber
-     * xax, which is scratch in most calling conventions.
+     * r11, which is scratch in most calling conventions.
      */
     instrlist_meta_append(bb, INSTR_CREATE_mov_imm
-                          (drcontext, opnd_create_reg(DR_REG_XAX),
+                          (drcontext, opnd_create_reg(DR_REG_R11),
                            OPND_CREATE_INT64(rn->replacement)));
-    instrlist_meta_append(bb, INSTR_CREATE_call_ind
-                          (drcontext, opnd_create_reg(DR_REG_XAX)));
+    instrlist_meta_append(bb, INSTR_CREATE_jmp_ind
+                          (drcontext, opnd_create_reg(DR_REG_R11)));
 #else
-    instrlist_meta_append(bb, INSTR_CREATE_call(drcontext,
-                                                opnd_create_pc(rn->replacement)));
+    instrlist_meta_append(bb, INSTR_CREATE_jmp(drcontext,
+                                               opnd_create_pc(rn->replacement)));
 #endif
-    if (rn->stack_adjust > 0) {
-        /* re-do the arg adjust (i#778) */
-        instrlist_meta_append(bb, INSTR_CREATE_sub
-                              (drcontext, opnd_create_reg(DR_REG_XSP),
-                               OPND_CREATE_INT32(rn->stack_adjust)));
-    }
-    instrlist_meta_append(bb, INSTR_CREATE_push
-                          (drcontext, dr_reg_spill_slot_opnd(drcontext, SPILL_SLOT_1)));
-    if (rn->stack_adjust > 0) {
-        /* re-do the arg adjust (i#778) */
-        instrlist_append(bb, INSTR_XL8
-                         (INSTR_CREATE_ret_imm(drcontext,
-                                               OPND_CREATE_INT16(rn->stack_adjust)), pc));
-    } else {
-        instrlist_append(bb, INSTR_XL8(INSTR_CREATE_ret(drcontext), pc));
-    }
+    instrlist_append(bb, INSTR_XL8(INSTR_CREATE_nop(drcontext), pc));
 }
 
 /* event for function replacing */
@@ -1095,7 +1285,15 @@ drwrap_event_bb_app2app(void *drcontext, void *tag, instrlist_t *bb,
             hashtable_lock(&replace_native_table);
             rn = hashtable_lookup(&replace_native_table, pc);
             if (rn != NULL) {
-                drwrap_replace_native_bb(drcontext, bb, inst, pc, rn);
+                app_pc topush = NULL;
+                if (!rn->at_entry) {
+                    if (instr_is_call(inst)) {
+                        topush = pc + instr_length(drcontext, inst);
+                    } else if (!instr_is_ubr(inst)) {
+                        /* usage error?  no, we'll trust user knows what they're doing */
+                    }
+                }
+                drwrap_replace_native_bb(drcontext, bb, inst, pc, rn, topush);
                 hashtable_unlock(&replace_native_table);
                 break;
             }
@@ -1105,6 +1303,70 @@ drwrap_event_bb_app2app(void *drcontext, void *tag, instrlist_t *bb,
     return DR_EMIT_DEFAULT;
 }
 
+app_pc
+replace_native_xfer_app_retaddr(void)
+{
+    /* Return the app retaddr stored by drwrap_replace_native_fini().
+     * Note that we can't just leave it in this slot to add in bb event
+     * for ret gencode b/c the client ibl xfer will clobber spill slots.
+     */
+    /* XXX: avoid calling dr_get_current_drcontext() 3x!  See comment below. */
+    void *drcontext = dr_get_current_drcontext();
+    return (app_pc) dr_read_saved_reg(drcontext, DRWRAP_REPLACE_NATIVE_SP_SLOT);
+}
+
+uint
+replace_native_xfer_stack_adjust(void)
+{
+    void *drcontext = dr_get_current_drcontext();
+    return (uint) dr_read_saved_reg(drcontext, SPILL_SLOT_REDIRECT_NATIVE_TGT);
+}
+
+byte *
+replace_native_xfer_target(void)
+{
+    /* Retrieve the data stored in the bb and in fini */
+    void *drcontext = dr_get_current_drcontext();
+    uint stack_adjust = (uint)
+        dr_read_saved_reg(drcontext, SPILL_SLOT_REDIRECT_NATIVE_TGT);
+    byte *target = replace_native_ret_stub(stack_adjust);
+
+    /* Set up for gencode.  We want to re-do the stdcall arg and retaddr teardown,
+     * but we don't want the app to see it.  We can't easily do it in
+     * replace_native_xfer asm code b/c we don't have enough registers, so
+     * we have our bb event recognize our gencode and add meta instrs.
+     */
+
+    /* Set up for ibl xfer */
+    dr_write_saved_reg(drcontext, SPILL_SLOT_REDIRECT_NATIVE_TGT, (reg_t)target);
+
+    /* XXX: should DR export client_ibl_xfer_is_thread_private()?  Then we could
+     * accept NULL drcontext for thread-shared (well we'd be skirting the API by
+     * passing GLOBAL_DCONTEXT to dr_{read,write}_saved_reg above)
+     */
+    return dr_redirect_native_target(drcontext);
+}
+
+DR_EXPORT
+void
+drwrap_replace_native_fini(void *drcontext)
+{
+    /* We change the retaddr from the original app retaddr (if left
+     * there, we'd lose control: but we wanted it original for
+     * callstack walk, etc. transparency) to our own routine that will
+     * then do a continuation to our gencode which will run in the code
+     * cache and duplicate the stdcall + retaddr teardown.
+     */
+    app_pc app_retaddr;
+    byte *xsp = (byte *) dr_read_saved_reg(drcontext, DRWRAP_REPLACE_NATIVE_SP_SLOT);
+    ASSERT(xsp != NULL, "did client clobber TLS slot?");
+    app_retaddr = *(app_pc *)xsp;
+    /* Store data for replace_native_xfer_helper */
+    dr_write_saved_reg(drcontext, DRWRAP_REPLACE_NATIVE_SP_SLOT, (reg_t)app_retaddr);
+
+    /* Redirect */
+    *(app_pc *)xsp = (app_pc) replace_native_xfer;
+}
 
 /***************************************************************************
  * FUNCTION WRAPPING

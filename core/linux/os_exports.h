@@ -45,7 +45,9 @@
 #include <stdarg.h>
 #include "../os_shared.h"
 
-#define getpid getpid_forbidden_use_get_process_id
+#ifndef NOT_DYNAMORIO_CORE_PROPER
+# define getpid getpid_forbidden_use_get_process_id
+#endif
 
 #define DYNAMORIO_LIBRARY_NAME "libdynamorio.so"
 #define DYNAMORIO_PRELOAD_NAME "libdrpreload.so"
@@ -92,7 +94,6 @@ ushort os_get_app_seg_base_offset(unsigned char seg);
 ushort os_get_app_seg_offset(unsigned char seg);
 void *os_get_dr_seg_base(dcontext_t *dcontext, unsigned char seg);
 void *os_get_app_seg_base(dcontext_t *dcontext, unsigned char seg);
-bool  os_set_tls_seg_base(unsigned char seg, app_pc base);
 bool os_file_has_elf_so_header(const char *filename);
 
 /* We do NOT want our libc routines wrapped by pthreads, so we use
@@ -114,10 +115,14 @@ process_id_t get_parent_id(void);
 int get_libc_errno(void);
 void set_libc_errno(int val);
 
+/* i#46: Our env manipulation routines. */
+extern char **our_environ;
+void dynamorio_set_envp(char **envp);
+char *getenv(const char *name);
+
 /* to avoid unsetenv problems we have our own unsetenv */
 #define unsetenv our_unsetenv
 int our_unsetenv(const char *name);
-
 
 /* new segment support
  * name is a string
@@ -272,6 +277,7 @@ void glibc_stackdump(int fd);
 void *privload_tls_init(void *app_tp);
 void  privload_tls_exit(void *dr_tp);
 void  privload_switch_lib_tls(dcontext_t *dcontext, bool to_app);
+void  privload_setup_app_mc(priv_mcontext_t *mc);
 
 /* nudgesig.c */
 bool

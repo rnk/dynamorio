@@ -65,10 +65,11 @@
 #endif
 /* avoid mistake of lower-case assert */
 #define assert assert_no_good_use_ASSERT_instead
-extern void internal_error(char *file, int line, char *msg);
+extern void internal_error(const char *file, int line, const char *msg);
 #ifdef DEBUG
 extern void display_error(char *msg);
 # ifdef NOT_DYNAMORIO_CORE_PROPER   /* Part of case 9252 fix. */
+#  define display_warning display_error
 #  ifdef ASSERT
 #   undef ASSERT
 #  endif
@@ -77,10 +78,13 @@ extern void display_error(char *msg);
 #  else 
 #   define ASSERT(x)         if (!(x)) internal_error(__FILE__, __LINE__, "")
 #  endif /* INTERNAL */
+# elif !defined(NOT_DYNAMORIO_CORE)
+#  define display_warning SYSLOG_INTERNAL_WARNING
 # endif  /* !NOT_DYNAMORIO_CORE_PROPER */
 #else
 # define ASSERT(x)         ((void) 0)
 # define display_error(msg)
+# define display_warning(msg)
 #endif
 
 #define MAX_RUNVALUE_LENGTH 12  /* 1 for sign, 10 digits and a \0 */
@@ -382,7 +386,7 @@ get_remote_process_ldr_status(HANDLE process_handle)
     }
 }
 
-static bool is_windows_version_vista(void); /* forward decl */
+static bool is_windows_version_vista_plus(void); /* forward decl */
 
 /* 
  * this assumes it will be called on process initialization, when
@@ -431,7 +435,7 @@ get_process_imgname_cmdline(HANDLE process_handle,
      * process init on os versions prior to Vista */
     
     if (image_name) {
-        if (is_windows_version_vista()) {
+        if (is_windows_version_vista_plus()) {
             param_location = process_parameters.ImagePathName.Buffer;
         } else {
             param_location = (void *)
@@ -448,13 +452,13 @@ get_process_imgname_cmdline(HANDLE process_handle,
                                      image_name, len, &nbytes);
         if (!res) {
             len = 0;
-            display_error("Warning: could not read image name from PEB");
+            display_warning("Warning: could not read image name from PEB");
         }
         image_name[len/2] = 0;
     }
 
     if (command_line) {
-        if (is_windows_version_vista()) {
+        if (is_windows_version_vista_plus()) {
             param_location = process_parameters.CommandLine.Buffer;
         } else {
             param_location = (void*)((ptr_uint_t)process_parameters.CommandLine.Buffer 
@@ -470,7 +474,7 @@ get_process_imgname_cmdline(HANDLE process_handle,
                                      command_line, len, &nbytes);
         if (!res) {
             len = 0;
-            display_error("Warning: could not read cmdline from PEB");
+            display_warning("Warning: could not read cmdline from PEB");
         }
         command_line[len/2] = 0;
     }
@@ -700,8 +704,9 @@ get_process_qualified_name(HANDLE process_handle,
         own_peb = get_own_peb();
         ASSERT(own_peb && own_peb->ProcessParameters);
         ASSERT(own_peb->ProcessParameters->ImagePathName.Buffer);
-
-        full_name = own_peb->ProcessParameters->ImagePathName.Buffer;
+        full_name =
+            get_process_param_buf(own_peb->ProcessParameters,
+                                  own_peb->ProcessParameters->ImagePathName.Buffer);
     } else {
         own_peb = NULL;
         /* get foreign process subkey */
@@ -736,7 +741,9 @@ get_process_qualified_name(HANDLE process_handle,
         if (process_handle == NULL) {
             /* get our own commandline */
             ASSERT(own_peb->ProcessParameters->CommandLine.Buffer);
-            process_commandline = own_peb->ProcessParameters->CommandLine.Buffer;
+            process_commandline =
+                get_process_param_buf(own_peb->ProcessParameters,
+                                      own_peb->ProcessParameters->CommandLine.Buffer);
         } else {
             /* get only command line from other process */
             get_process_imgname_cmdline(process_handle, NULL, 0, 
@@ -1048,7 +1055,7 @@ get_process_parameter_ex(HANDLE phandle, const char *name, char *value, int maxl
     NULL_TERMINATE_BUFFER(short_unqual_name);
     snprintf(appname, BUFFER_SIZE_ELEMENTS(appname), "%ls", short_unqual_name);
     NULL_TERMINATE_BUFFER(appname);
-    if (!get_config_val_other_app(appname, pid, name, value, maxlen,
+    if (!get_config_val_other_app(appname, pid, DR_PLATFORM_DEFAULT, name, value, maxlen,
                                   &app_specific, NULL, &from_1config) ||
         (!consider_1config && from_1config))
         return GET_PARAMETER_FAILURE;
@@ -1134,12 +1141,12 @@ is_windows_version_nt()
 
 /* see comments at is_windows_version_nt() */
 static bool
-is_windows_version_vista()
+is_windows_version_vista_plus()
 {
     PEB *peb = get_own_peb();
     /* we won't work on any other anyways */
     ASSERT(peb->OSPlatformId == VER_PLATFORM_WIN32_NT);
-    return (peb->OSMajorVersion == 6);
+    return (peb->OSMajorVersion >= 6);
 }
 
 /* verify safe mode registry key on Win2000+ */

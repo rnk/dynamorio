@@ -34,36 +34,17 @@ add_executable(run_in_bg run_in_bg.c)
 if (UNIX)
   add_executable(runstats runstats.c)
   add_executable(nudgeunix nudgeunix.c ${PROJECT_SOURCE_DIR}/core/linux/nudgesig.c)
+  add_executable(drloader drloader.c)
 
   include_directories(
-    ${PROJECT_SOURCE_DIR}/core/lib
-    )
+   ${PROJECT_SOURCE_DIR}/core
+   ${PROJECT_SOURCE_DIR}/core/lib
+  )
 
   add_definitions(-DNOT_DYNAMORIO_CORE)
 
-  # we generate 3 different scripts from drdeploy.in
-  if (X64)
-    set(archdefault 64)
-    set(archother 32)
-  else (X64)
-    set(archdefault 32)
-    set(archother 64)
-  endif (X64)
-  set(config 1)
-  set(runapp 0)
-  set(name "drconfig")
-  configure_file("${CMAKE_CURRENT_SOURCE_DIR}/drdeploy.in"
-    "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/${name}" @ONLY)
-  set(config 1)
-  set(runapp 1)
-  set(name "drrun")
-  configure_file("${CMAKE_CURRENT_SOURCE_DIR}/drdeploy.in"
-    "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/${name}" @ONLY)
-  set(config 0)
-  set(runapp 1)
-  set(name "drinject")
-  configure_file("${CMAKE_CURRENT_SOURCE_DIR}/drdeploy.in"
-    "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/${name}" @ONLY)
+  # i#1092: remove any stale symlink that might be there.
+  file(REMOVE "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/drdeploy")
   # we leave drdeploy for backward compat w/ old script
   execute_process(COMMAND ${CMAKE_COMMAND} -E create_symlink
     "drrun" "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/drdeploy"
@@ -78,9 +59,9 @@ if (UNIX)
     DESTINATION "${INSTALL_BIN}"
     FILE_PERMISSIONS OWNER_READ OWNER_EXECUTE 
     GROUP_READ GROUP_EXECUTE WORLD_READ WORLD_EXECUTE
-    PATTERN "run_in_bg*"
-    PATTERN "runstats*"
-    EXCLUDE)
+    PATTERN "run_in_bg*" EXCLUDE
+    PATTERN "runstats*" EXCLUDE
+    )
 
   # Set up our debugging support for gdb in the build directory.
   # We need to compute the final path of libdynamorio.so, with version number
@@ -94,7 +75,14 @@ if (UNIX)
     "${libdynamorio_so}-gdb.py"
     WORKING_DIRECTORY "${CMAKE_LIBRARY_OUTPUT_DIRECTORY}"
     OUTPUT_QUIET)
-  configure_file(gdbinit ${CMAKE_BINARY_DIR}/.gdbinit)
+  DR_install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/libdynamorio.so-gdb.py"
+    DESTINATION "${INSTALL_LIB}"
+    RENAME "libdynamorio.so.${soversion}-gdb.py"
+    PERMISSIONS OWNER_READ OWNER_EXECUTE 
+    GROUP_READ GROUP_EXECUTE WORLD_READ WORLD_EXECUTE)
+
+  set(tool_cflags "")
+  set(RESOURCES "")
 
   DR_install(TARGETS nudgeunix DESTINATION ${INSTALL_BIN})
 else (UNIX)
@@ -118,6 +106,7 @@ else (UNIX)
     DRload
     balloon 
     dummy 
+    create_process 
     )
   if (NOT X64)
     # FIXME i#118: ldmp not yet 64-bit
@@ -130,18 +119,28 @@ else (UNIX)
     ${PROJECT_SOURCE_DIR}/core/lib
     )
 
-  target_link_libraries(run_in_bg ntdll)
+  include(../make/ntdll_imports.cmake)
+
+  target_link_libraries(run_in_bg "${ntimp_lib}")
+  if ("${CMAKE_GENERATOR}" MATCHES "Visual Studio")
+    # for parallel build correctness we need a target dependence
+    add_dependencies(run_in_bg ntimp_tgt)
+  endif ()
 
   foreach (tgt ${tgts})
     add_executable(${tgt} ${tgt}.c ${RESOURCES})
 
     if ("${tgt}" STREQUAL "ldmp")
-      set(extra_lib "ntdll")
+      set(extra_lib libcmt "${ntimp_lib}")
+      if ("${CMAKE_GENERATOR}" MATCHES "Visual Studio")
+        # for parallel build correctness we need a target dependence
+        add_dependencies(${tgt} ntimp_tgt)
+      endif ()
     endif ("${tgt}" STREQUAL "ldmp")
     target_link_libraries(${tgt}
-      policy_static user32 advapi32 pdh imagehlp shell32 "${extra_lib}")
+      policy_static user32 advapi32 pdh imagehlp shell32 ${extra_lib})
 
-    string(REGEX MATCH "(closewnd|winstats)" no_unicode "${tgt}")
+    string(REGEX MATCH "(closewnd|winstats|create_process)" no_unicode "${tgt}")
     if (no_unicode)
       set(unicode_cflags "")
     else (no_unicode)
@@ -153,22 +152,6 @@ else (UNIX)
       COMPILE_FLAGS "${tool_cflags} ${unicode_cflags} -DRC_IS_${tgt}")
   endforeach (tgt)
 
-  # we generate 3 different tools from drdeploy.c
-  add_executable(drconfig drdeploy.c ${RESOURCES})
-  set_target_properties(drconfig PROPERTIES
-    COMPILE_FLAGS "${tool_cflags} -DRC_IS_drconfig -DDRCONFIG")
-  add_executable(drrun drdeploy.c ${RESOURCES})
-  set_target_properties(drrun PROPERTIES
-    COMPILE_FLAGS "${tool_cflags} -DRC_IS_drrun -DDRRUN")
-  add_executable(drinject drdeploy.c ${RESOURCES})
-  set_target_properties(drinject PROPERTIES
-    COMPILE_FLAGS "${tool_cflags} -DRC_IS_drinject -DDRINJECT")
-  set(tgts ${tgts} drconfig drrun drinject)
-  foreach (deploytgt drconfig drrun drinject)
-    target_link_libraries(${deploytgt}
-      policy_static user32 advapi32 pdh imagehlp shell32 drconfiglib drinjectlib)
-  endforeach ()
-
   # drdeploy.exe links to libutil/drconfiglib.dll.  When we build drdeploy,
   # we'll copy the DLL to the tools directory so users won't need to
   # update their path.
@@ -179,9 +162,34 @@ else (UNIX)
   # isn't runas admin which isn't quite as nice.  Disable for now.
   # $(MT) -manifest drdeploy.exe.manifest -outputresource:drdeploy.exe
 
-  DR_install(TARGETS ${tgts} DESTINATION "${INSTALL_BIN}")
-
 endif (UNIX)
+
+# we generate 3 different tools from drdeploy.c
+add_executable(drconfig drdeploy.c ${RESOURCES})
+set_target_properties(drconfig PROPERTIES
+  COMPILE_FLAGS "${tool_cflags} -DRC_IS_drconfig -DDRCONFIG")
+add_executable(drrun drdeploy.c ${RESOURCES})
+set_target_properties(drrun PROPERTIES
+  COMPILE_FLAGS "${tool_cflags} -DRC_IS_drrun -DDRRUN")
+add_executable(drinject drdeploy.c ${RESOURCES})
+set_target_properties(drinject PROPERTIES
+  COMPILE_FLAGS "${tool_cflags} -DRC_IS_drinject -DDRINJECT")
+set(tgts ${tgts} drconfig drrun drinject)
+
+foreach (deploytgt drconfig drrun drinject)
+  if (WINDOWS)
+    target_link_libraries(${deploytgt}
+      policy_static user32 advapi32 pdh imagehlp shell32)
+  endif ()
+  target_link_libraries(${deploytgt} drconfiglib)
+  add_rel_rpaths(${deploytgt} drconfiglib)
+  if (NOT ${deploytgt} MATCHES "drconfig")
+    target_link_libraries(${deploytgt} drinjectlib)
+    add_rel_rpaths(${deploytgt} drinjectlib)
+  endif ()
+endforeach ()
+
+DR_install(TARGETS ${tgts} DESTINATION "${INSTALL_BIN}")
 
 if (X64)
   set(SYMSFX "64")

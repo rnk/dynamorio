@@ -388,9 +388,11 @@ enum {
     MOV_EAX_2_EDX_RM      = 0xd0,
     MOV_EAX_2_EAX_RM      = 0xc0,
     MOV_derefEAX_2_EAX_RM = 0x00,
+    MOV_deref_disp8_EAX_2_EAX_RM = 0x40,
     MOV_IMM8_2_RM8        = 0xc6,
     MOV_IMM32_2_RM32      = 0xc7,
     MOV_IMM_RM_ABS        = 0x05,
+    MOV_IMM_XAX           = 0xb8,
 
     ADD_EAX_IMM32         = 0x05,
 
@@ -410,59 +412,76 @@ enum {
 #define ASSERT_ROOM(cur, buf, maxlen) \
     ASSERT(cur + maxlen < buf + sizeof(buf))
 
-/* i#142: 64-bit support only works if the hook location and the
- * allocated remote_code_buffer are in lower 2GB of the address space.
- * we ensure the latter, and ntdll seems to always be there, at least
- * on Vista and Win7.  just haven't bothered to write full
- * 64-bit-reachable code: partly b/c of next complaint:
+/* i#142, i#923: 64-bit support now works regardless of where the hook
+ * location and the allocated remote_code_buffer are.
  *
  * XXX: this is all really messy: these macros are too limited for
  * inserting general instructions, so for x64 I hacked it by leaving
  * in the pushes and copying from TOS into the register params.
- * I would prefer to throw all this out and replace w/ IR or asm
- * (and deal w/ linking into drinject).
+ * I would prefer to throw all this out and replace w/ IR or asm,
+ * which would be easy now that we have drinjectlib.
+ * Although for cross-arch injection (i#803) we want code for both
+ * bitwidths, which actually might be easier w/ the macros for 32-to-64.
  */
+
+/* If reachable is non-NULL, ensures the resulting allocation is
+ * 32-bit-disp-reachable from [reachable, reachable+PAGE_SIZE).
+ */
+static byte *
+allocate_remote_code_buffer(HANDLE phandle, size_t size, byte *reachable)
+{
+    NTSTATUS res;
+    byte *buf = (byte *) NULL;
 #ifdef X64
-# define CHECK_S64(val) \
-    ASSERT_NOT_IMPLEMENTED(CHECK_TRUNCATE_TYPE_int((ptr_int_t)(val)))
-# define CHECK_U64(val) \
-    ASSERT_NOT_IMPLEMENTED(CHECK_TRUNCATE_TYPE_uint((ptr_uint_t)(val)))
-#else
-# define CHECK_S64(val) /* nothing */
-# define CHECK_U64(val) /* nothing */
+    /* Start at bottom of reachability range and keep trying at higher addresses */
+    byte *pc = (byte *) ALIGN_FORWARD
+        (REACHABLE_32BIT_START((byte *)reachable, (byte *)reachable + PAGE_SIZE),
+         OS_ALLOC_GRANULARITY);
+    byte *end_pc = (byte *)
+        REACHABLE_32BIT_END((byte *)reachable, (byte *)reachable + PAGE_SIZE);
+    /* we can't just pick an address and see if it gets allocated
+     * b/c it could be in the middle of an existing reservation
+     * (stack, e.g.) and then when we free it we could free the entire
+     * reservation (yes this actually happened: i#753)
+     * Update: we now reserve+commit so this won't happen, but it means
+     * we need to be at an os alloc boundary (64K).
+     */
+    MEMORY_BASIC_INFORMATION mbi;
+    size_t got;
+    do {
+        res = nt_remote_query_virtual_memory(phandle, pc, &mbi, sizeof(mbi), &got);
+        if (got != sizeof(mbi)) {
+            /* bail and hope a low address works, which it will pre-win8 */
+            break;
+        }
+        if (NT_SUCCESS(res) && mbi.State == MEM_FREE && mbi.RegionSize >= size &&
+            /* we're reserving+committing so we need to be at an alloc boundary */
+            ALIGNED(pc, OS_ALLOC_GRANULARITY) &&
+            pc != NULL) {
+            buf = pc; /* we do NOT want mbi.AllocationBase as it may not be reachable */
+            break;
+        }
+        pc += mbi.RegionSize;
+    } while (NT_SUCCESS(res) && pc + size < end_pc);
 #endif
 
-static byte *
-allocate_remote_code_buffer(HANDLE phandle, size_t size)
-{
-    byte *buf = NULL;
-#ifdef X64
-    /* we require lower-2GB so pass a hint */
-    NTSTATUS res;
-    buf = (byte *)(ptr_int_t) 0x30000;
+    /* On Win8, a remote MEM_COMMIT in the dll address region fails with
+     * STATUS_CONFLICTING_ADDRESSES.  Yet a local commit works, and a remote
+     * reserve+commit works.  Go figure.
+     */
     res = nt_remote_allocate_virtual_memory(phandle, &buf, size,
-                                            PAGE_EXECUTE_READWRITE,
-                                            MEM_COMMIT);
-    if (/* try again w/ no hint: often ends up in low GB, no guarantee though */
-        res == STATUS_CONFLICTING_ADDRESSES ||
-        /* try again too: I'm seeing STATUS_INVALID_PAGE_PROTECTION on win7
-         * on conflicting address in some cases
-         */
-        !NT_SUCCESS(res)) {
-        buf = NULL;
+                                            PAGE_EXECUTE_READWRITE, MEM_RESERVE);
+    if (NT_SUCCESS(res)) {
+        res = nt_remote_allocate_virtual_memory(phandle, &buf, size,
+                                                PAGE_EXECUTE_READWRITE, MEM_COMMIT);
     }
-#endif
-    if (buf == NULL) {
-        NTSTATUS res = nt_remote_allocate_virtual_memory(phandle, &buf, size,
-                                                         PAGE_EXECUTE_READWRITE,
-                                                         MEM_COMMIT);
-        if (!NT_SUCCESS(res)
-            IF_X64(|| buf > MAX_LOW_2GB)) {
+
+    /* We know buf at low end reaches, but might have gone too high. */
+    if (!NT_SUCCESS(res) || !REL32_REACHABLE(buf + size, (byte*)reachable)) {
 #ifndef NOT_DYNAMORIO_CORE_PROPER
-            SYSLOG_INTERNAL_ERROR("failed to allocate child memory for injection");
+        SYSLOG_INTERNAL_ERROR("failed to allocate child memory for injection");
 #endif
-            return NULL;
-        }
+        return NULL;
     }
     return buf;
 }
@@ -476,7 +495,8 @@ free_remote_code_buffer(HANDLE phandle, byte *base)
 
 static void *
 inject_gencode_at_ldr(HANDLE phandle, char *dynamo_path, uint inject_location,
-                      void *inject_address, void *hook_location, byte hook_buf[5])
+                      void *inject_address, void *hook_location,
+                      byte hook_buf[EARLY_INJECT_HOOK_SIZE], void *must_reach)
 {
     void *hook_target;
     byte *remote_code_buffer = NULL, *remote_data_buffer;
@@ -488,7 +508,7 @@ inject_gencode_at_ldr(HANDLE phandle, char *dynamo_path, uint inject_location,
     char *takeover_func = "dynamorio_app_init_and_early_takeover";
     PUNICODE_STRING mod, mod_remote;
     PANSI_STRING func, func_remote;
-    int res;
+    int res, i;
     size_t num_bytes_in, num_bytes_out;
     uint old_prot;
 
@@ -510,7 +530,7 @@ inject_gencode_at_ldr(HANDLE phandle, char *dynamo_path, uint inject_location,
                            IN BOOLEAN TestAlert));
 
     /* get buffer for emitted code and data */
-    remote_code_buffer = allocate_remote_code_buffer(phandle, 2*PAGE_SIZE);
+    remote_code_buffer = allocate_remote_code_buffer(phandle, 2*PAGE_SIZE, must_reach);
     if (remote_code_buffer == NULL)
         goto error;
     remote_data_buffer = remote_code_buffer + PAGE_SIZE;
@@ -578,7 +598,8 @@ inject_gencode_at_ldr(HANDLE phandle, char *dynamo_path, uint inject_location,
     ASSERT(res);
         
 #define INSERT_INT(value)         \
-  *(int *)cur_local_pos = value;  \
+  ASSERT(CHECK_TRUNCATE_TYPE_int((ptr_int_t)(value))); \
+  *(int *)cur_local_pos = (int)(value); \
   cur_local_pos += sizeof(int)
 
 #define INSERT_ADDR(value)              \
@@ -655,6 +676,23 @@ inject_gencode_at_ldr(HANDLE phandle, char *dynamo_path, uint inject_location,
   *cur_local_pos++ = PUSH_IMM8;         \
   *cur_local_pos++ = value
 
+#ifdef X64
+# define PUSH_PTRSZ_IMMEDIATE(value) do {    \
+    *cur_local_pos++ = PUSH_IMM32;           \
+    INSERT_INT((int)(value));                \
+    if ((ptr_uint_t)(value) >= 0x80000000) { \
+        *cur_local_pos++ = MOV_IMM32_2_RM32; \
+        *cur_local_pos++ = 0x44;             \
+        *cur_local_pos++ = 0x24;             \
+        *cur_local_pos++ = 0x04; /*rsp+4*/   \
+        INSERT_INT((int)((value) >> 32));    \
+    }                                        \
+  } while (0)
+#else
+# define PUSH_PTRSZ_IMMEDIATE(value)    \
+  PUSH_IMMEDIATE(value)
+#endif
+
 #define MOV_ESP_TO_EAX()                \
   IF_X64(*cur_local_pos++ = REX_W;)     \
   *cur_local_pos++ = MOV_RM32_2_REG32;  \
@@ -730,22 +768,30 @@ inject_gencode_at_ldr(HANDLE phandle, char *dynamo_path, uint inject_location,
   INSERT_INT((int)(ptr_int_t)((byte *)target - \
                               (((cur_local_pos - local_buf)+4)+cur_remote_pos)))
 
-#define CALL(target_func)               \
+#ifdef X64
+/* for reachability, go through eax, which should be dead */
+# define CALL(target_func)              \
+  *cur_local_pos++ = REX_W;             \
+  *cur_local_pos++ = MOV_IMM_XAX;       \
+  INSERT_ADDR(target_func);             \
+  *cur_local_pos++ = CALL_RM32;         \
+  *cur_local_pos++ = CALL_EAX_RM;
+#else
+# define CALL(target_func)              \
   *cur_local_pos++ = CALL_REL32;        \
   INSERT_REL32_ADDRESS(target_func)
+#endif /* X64 */
 
 /* ecx will hold OldProtection afterwards */
 /* for x64 we need the 4 stack slots anyway so we do the pushes */
+/* on x64, up to caller to have rsp aligned to 16 prior to calling this macro */
 #define PROT_IN_ECX 0xbad15bad /* doesn't match a PAGE_* define */
 #define CHANGE_PROTECTION(start, size, new_protection)                \
   *cur_local_pos++ = PUSH_EAX; /* OldProtect slot */                  \
   MOV_ESP_TO_EAX(); /* get &OldProtect */                             \
-  CHECK_S64((ptr_int_t)ALIGN_FORWARD(start+size, PAGE_SIZE) -         \
-    (ptr_int_t)ALIGN_BACKWARD(start, PAGE_SIZE)); \
-  PUSH_IMMEDIATE((int)(ALIGN_FORWARD(start+size, PAGE_SIZE) -         \
-                 ALIGN_BACKWARD(start, PAGE_SIZE))); /* ProtectSize */ \
-  CHECK_U64(ALIGN_BACKWARD(start, PAGE_SIZE));                        \
-  PUSH_IMMEDIATE((int)ALIGN_BACKWARD(start, PAGE_SIZE)); /* BaseAddress */ \
+  PUSH_PTRSZ_IMMEDIATE(ALIGN_FORWARD(start+size, PAGE_SIZE) -         \
+                 ALIGN_BACKWARD(start, PAGE_SIZE)); /* ProtectSize */ \
+  PUSH_PTRSZ_IMMEDIATE(ALIGN_BACKWARD(start, PAGE_SIZE)); /* BaseAddress */ \
   *cur_local_pos++ = PUSH_EAX; /* arg 5 &OldProtect */                \
   if (new_protection == PROT_IN_ECX) {                                \
       *cur_local_pos++ = PUSH_ECX; /* arg 4 NewProtect */             \
@@ -761,7 +807,7 @@ inject_gencode_at_ldr(HANDLE phandle, char *dynamo_path, uint inject_location,
   IF_X64(MOV_EAX_TO_PARAM_1());                                       \
   PUSH_IMMEDIATE((int)(ptr_int_t)NT_CURRENT_PROCESS); /* arg ProcessHandle */ \
   IF_X64(MOV_TOS_TO_PARAM_0());                                       \
-  CALL(NtProtectVirtualMemory);                                       \
+  CALL(NtProtectVirtualMemory); /* 8 pushes => still aligned to 16 */ \
   /* no error checking, can't really do anything about it, FIXME */   \
   /* stdcall so just the three slots we made for the ptr arguments    \
    * left on the stack for 32-bit */                                  \
@@ -795,27 +841,27 @@ inject_gencode_at_ldr(HANDLE phandle, char *dynamo_path, uint inject_location,
     *cur_local_pos++ = PUSHF;
 
     /* restore trampoline, first make writable */
-    CHANGE_PROTECTION(hook_location, 5, PAGE_EXECUTE_READWRITE);
-    *cur_local_pos++ = MOV_IMM32_2_RM32; /* restore first 4 bytes of hook */
-    *cur_local_pos++ = MOV_IMM_RM_ABS;
-    CHECK_U64(hook_location);
-    CHECK_U64(cur_local_pos+8 - local_buf + cur_remote_pos);
-    INSERT_INT((int)(ptr_int_t)hook_location
-               /* rip-rel for x64 */
-               IF_X64(- (int)(ptr_int_t)(cur_local_pos+8 - local_buf +
-                                         cur_remote_pos)));
-    INSERT_INT(*(int *)hook_buf);
-    *cur_local_pos++ = MOV_IMM8_2_RM8; /* restore 5th byte of the hook */
-    *cur_local_pos++ = MOV_IMM_RM_ABS;
-    CHECK_U64((ptr_int_t)hook_location+4);
-    CHECK_U64(cur_local_pos+5 - local_buf + cur_remote_pos);
-    INSERT_INT((int)(ptr_int_t)hook_location+4
-               /* rip-rel for x64 */
-               IF_X64(- (int)(ptr_int_t)(cur_local_pos+5 - local_buf +
-                                         cur_remote_pos)));
-    *cur_local_pos++ = hook_buf[4];
+    CHANGE_PROTECTION(hook_location, EARLY_INJECT_HOOK_SIZE, PAGE_EXECUTE_READWRITE);
+    /* put target in xax to ensure we can reach it */
+    IF_X64(*cur_local_pos++ = REX_W);
+    *cur_local_pos++ = MOV_IMM_XAX;
+    INSERT_ADDR(hook_location);
+    for (i = 0; i < EARLY_INJECT_HOOK_SIZE/4; i++) {
+        /* restore bytes 4*i..4*i+3 of hook */
+        *cur_local_pos++ = MOV_IMM32_2_RM32;
+        *cur_local_pos++ = MOV_deref_disp8_EAX_2_EAX_RM;
+        *cur_local_pos++ = (byte) i*4;
+        INSERT_INT(*((int *)hook_buf+i));
+    }
+    for (i = i*4; i < EARLY_INJECT_HOOK_SIZE; i++) {
+        /* restore byte i of hook */
+        *cur_local_pos++ = MOV_IMM8_2_RM8;
+        *cur_local_pos++ = MOV_deref_disp8_EAX_2_EAX_RM;
+        *cur_local_pos++ = (byte) i;
+        *cur_local_pos++ = hook_buf[i];
+    }
     /* hook restored, restore protection */
-    CHANGE_PROTECTION(hook_location, 5, PROT_IN_ECX);
+    CHANGE_PROTECTION(hook_location, EARLY_INJECT_HOOK_SIZE, PROT_IN_ECX);
 
     if (inject_location == INJECT_LOCATION_KiUserException) {
         /* Making the first page of the image unreadable triggers an exception
@@ -827,17 +873,20 @@ inject_gencode_at_ldr(HANDLE phandle, char *dynamo_path, uint inject_location,
     /* call LdrLoadDll to load dr library */
     *cur_local_pos++ = PUSH_EAX; /* need slot for OUT hmodule*/
     MOV_ESP_TO_EAX();
+    IF_X64(*cur_local_pos++ = PUSH_EAX); /* extra slot to align to 16 for call */
     *cur_local_pos++ = PUSH_EAX; /* arg 4 OUT *hmodule */
     IF_X64(MOV_EAX_TO_PARAM_3());
-    CHECK_U64(mod_remote);
-    PUSH_IMMEDIATE((int)(ptr_int_t)mod_remote); /* our library name */
+    /* XXX: these push-ptrsz, mov-tos sequences are inefficient, but simpler
+     * for cross-platform
+     */
+    PUSH_PTRSZ_IMMEDIATE((ptr_int_t)mod_remote); /* our library name */
     IF_X64(MOV_TOS_TO_PARAM_2());
     PUSH_SHORT_IMMEDIATE(0x0); /* Flags OPTIONAL */
     IF_X64(MOV_TOS_TO_PARAM_1());
     PUSH_SHORT_IMMEDIATE(0x0); /* PathToFile OPTIONAL */
     IF_X64(MOV_TOS_TO_PARAM_0());
-    CALL(LdrLoadDll); /* see signature at decleration above */
-    IF_X64(ADD_IMM8_TO_ESP(4*XSP_SZ)); /* clean up 4 slots */
+    CALL(LdrLoadDll); /* see signature at declaration above */
+    IF_X64(ADD_IMM8_TO_ESP(5*XSP_SZ)); /* clean up 5 slots */
 
     /* stdcall so removed args so top of stack is now the slot containing the
      * returned handle.  Use LdrGetProcedureAddress to get the address of the
@@ -846,17 +895,18 @@ inject_gencode_at_ldr(HANDLE phandle, char *dynamo_path, uint inject_location,
     *cur_local_pos++ = POP_ECX; /* dr module handle */
     *cur_local_pos++ = PUSH_ECX; /* need slot for out ProcedureAddress */
     MOV_ESP_TO_EAX();
+    IF_X64(*cur_local_pos++ = PUSH_EAX); /* extra slot to align to 16 for call */
     *cur_local_pos++ = PUSH_EAX; /* arg 4 OUT *ProcedureAddress */
     IF_X64(MOV_EAX_TO_PARAM_3());
     PUSH_SHORT_IMMEDIATE(0x0); /* Ordinal OPTIONAL */
     IF_X64(MOV_TOS_TO_PARAM_2());
-    CHECK_U64(func_remote);
-    PUSH_IMMEDIATE((int)(ptr_int_t)func_remote); /* func name */
+    PUSH_PTRSZ_IMMEDIATE((ptr_int_t)func_remote); /* func name */
     IF_X64(MOV_TOS_TO_PARAM_1());
     *cur_local_pos++ = PUSH_ECX; /* module handle */
     IF_X64(MOV_TOS_TO_PARAM_0());
-    CALL(LdrGetProcedureAddress); /* see signature at decleration above */
-    IF_X64(ADD_IMM8_TO_ESP(4*XSP_SZ)); /* clean up 4 slots */
+    /* for x64, aligned at LdrLoadDll - 5 - 1 + 6 => aligned here */
+    CALL(LdrGetProcedureAddress); /* see signature at declaration above */
+    IF_X64(ADD_IMM8_TO_ESP(5*XSP_SZ)); /* clean up 5 slots */
 
     /* Top of stack is now the dr init and takeover function (stdcall removed
      * args). Check for errors and bail (FIXME debug build report somehow?) */
@@ -866,15 +916,15 @@ inject_gencode_at_ldr(HANDLE phandle, char *dynamo_path, uint inject_location,
     jmp_fixup1 = cur_local_pos++; /* jmp to after call below */
     /* Xref case 8373, LdrGetProcedureAdderss sometimes returns an
      * address of 0xffbadd11 even though it returned STATUS_SUCCESS */
-    CMP_TO_EAX(GET_PROC_ADDR_BAD_ADDR);
+    CMP_TO_EAX((int)GET_PROC_ADDR_BAD_ADDR);
     *cur_local_pos++ = JZ_REL8; /* JZ == JE */
     jmp_fixup2 = cur_local_pos++; /* jmp to after call below */
     IF_X64(ADD_IMM8_TO_ESP(-2*(int)XSP_SZ)); /* need 4 slots total */
-    CHECK_U64(remote_code_buffer);
-    PUSH_IMMEDIATE((int)(ptr_int_t)remote_code_buffer); /* arg to takeover func */
+    PUSH_PTRSZ_IMMEDIATE((ptr_int_t)remote_code_buffer); /* arg to takeover func */
     IF_X64(MOV_TOS_TO_PARAM_1());
     PUSH_IMMEDIATE(inject_location); /* arg to takeover func */
     IF_X64(MOV_TOS_TO_PARAM_0());
+    /* for x64, 2 pushes => aligned to 16 */
     *cur_local_pos++ = CALL_RM32; /* call EAX */
     *cur_local_pos++ = CALL_EAX_RM;
 #ifdef X64
@@ -892,8 +942,16 @@ inject_gencode_at_ldr(HANDLE phandle, char *dynamo_path, uint inject_location,
     INSERT_POP_ALL_REG();
     if (inject_location != INJECT_LOCATION_KiUserException) {
         /* jmp back to the hook location to resume execution */
+#ifdef X64
+        /* ind jmp w/ target rip-rel right after (thus 0 disp) */
+        *cur_local_pos++ = 0xff;
+        *cur_local_pos++ = 0x25;
+        INSERT_INT(0);
+        INSERT_ADDR(hook_location);
+#else
         *cur_local_pos++ = JMP_REL32;
         INSERT_REL32_ADDRESS(hook_location);
+#endif
     } else {
         /* we triggered the exception, so do an NtContinue back */
         /* see callback.c, esp+4 holds CONTEXT ** */
@@ -954,7 +1012,7 @@ inject_gencode_at_ldr(HANDLE phandle, char *dynamo_path, uint inject_location,
  */
 static void *
 inject_gencode_earliest(HANDLE phandle, char *dynamo_path, void *hook_location,
-                        byte hook_buf[5])
+                        byte hook_buf[EARLY_INJECT_HOOK_SIZE], void *must_reach)
 {
     bool success = false;
     NTSTATUS res;
@@ -970,6 +1028,7 @@ inject_gencode_earliest(HANDLE phandle, char *dynamo_path, void *hook_location,
     size_t num_bytes_out;
     uint old_prot;
     earliest_args_t args;
+    int i;
 
     /* map DR dll into child
      *
@@ -992,21 +1051,21 @@ inject_gencode_earliest(HANDLE phandle, char *dynamo_path, void *hook_location,
                             NULL /* unnamed */, 0, NULL, NULL);
     if (!NT_SUCCESS(res))
         goto done;
-    res = nt_map_view_of_section(section, /* 0 */
-                                 phandle, /* 1 */
-                                 &map, /* 2 */
-                                 0, /* 3 */
-                                 0 /* not page-file-backed */, /* 4 */
-                                 NULL, /* 5 */
-                                 (PSIZE_T) &view_size, /* 6 */
-                                 ViewUnmap, /* 7 */
-                                 0 /* no special top-down or anything */, /* 8 */
-                                 PAGE_EXECUTE_WRITECOPY); /* 9 */
+    res = nt_raw_MapViewOfSection(section, /* 0 */
+                                  phandle, /* 1 */
+                                  &map, /* 2 */
+                                  0, /* 3 */
+                                  0 /* not page-file-backed */, /* 4 */
+                                  NULL, /* 5 */
+                                  (PSIZE_T) &view_size, /* 6 */
+                                  ViewUnmap, /* 7 */
+                                  0 /* no special top-down or anything */, /* 8 */
+                                  PAGE_EXECUTE_WRITECOPY); /* 9 */
     if (!NT_SUCCESS(res))
         goto done;
 
     /* generate code and data */
-    remote_code_buf = allocate_remote_code_buffer(phandle, remote_alloc_sz);
+    remote_code_buf = allocate_remote_code_buffer(phandle, remote_alloc_sz, must_reach);
     if (remote_code_buf == NULL)
         goto done;
 
@@ -1031,7 +1090,7 @@ inject_gencode_earliest(HANDLE phandle, char *dynamo_path, void *hook_location,
     }
 
     /* we can't use heap_mmap() in drinjectlib */
-    local_code_buf = allocate_remote_code_buffer(NT_CURRENT_PROCESS, code_sz);
+    local_code_buf = allocate_remote_code_buffer(NT_CURRENT_PROCESS, code_sz, NULL);
     instrlist_init(&ilist);
 
     /* restore hook rather than trying to pass contents to C code
@@ -1039,10 +1098,17 @@ inject_gencode_earliest(HANDLE phandle, char *dynamo_path, void *hook_location,
      */
     APP(&ilist, INSTR_CREATE_mov_imm
         (GDC, opnd_create_reg(REG_XAX), OPND_CREATE_INTPTR((ptr_uint_t)hook_location)));
-    APP(&ilist, INSTR_CREATE_mov_st
-        (GDC, OPND_CREATE_MEM32(REG_XAX, 0), OPND_CREATE_INT32(*(int*)hook_buf)));
-    APP(&ilist, INSTR_CREATE_mov_st
-        (GDC, OPND_CREATE_MEM8(REG_XAX, 4), OPND_CREATE_INT8((char)hook_buf[4])));
+    for (i = 0; i < EARLY_INJECT_HOOK_SIZE/4; i++) {
+        /* restore bytes 4*i..4*i+3 of hook */
+        APP(&ilist, INSTR_CREATE_mov_st
+            (GDC, OPND_CREATE_MEM32(REG_XAX, i*4),
+             OPND_CREATE_INT32(*((int*)hook_buf+i))));
+    }
+    for (i = i*4; i < EARLY_INJECT_HOOK_SIZE; i++) {
+        /* restore byte i of hook */
+        APP(&ilist, INSTR_CREATE_mov_st
+            (GDC, OPND_CREATE_MEM8(REG_XAX, i), OPND_CREATE_INT8((char)hook_buf[i])));
+    }
 
     /* Call DR earliest-takeover routine w/ retaddr pointing at hooked
      * location.  DR will free remote_code_buf.
@@ -1082,14 +1148,24 @@ inject_gencode_earliest(HANDLE phandle, char *dynamo_path, void *hook_location,
 #else
     pc = (byte *)dynamorio_earliest_init_takeover - get_dynamorio_dll_start() + map;
 #endif
-    APP(&ilist, INSTR_CREATE_jmp(GDC, opnd_create_pc(pc)));
+    if (REL32_REACHABLE(pc, remote_code_buf) &&
+        /* over-estimate to be sure: we assert below we're < PAGE_SIZE */
+        REL32_REACHABLE(pc, remote_code_buf + PAGE_SIZE)) {
+        APP(&ilist, INSTR_CREATE_jmp(GDC, opnd_create_pc(pc)));
+    } else {
+        /* indirect through an inlined target */
+        instr_t *tgt = instr_build_bits(GDC, OP_UNDECODED, sizeof(pc));
+        APP(&ilist, INSTR_CREATE_jmp_ind(GDC, opnd_create_mem_instr(tgt, 0, OPSZ_PTR)));
+        instr_set_raw_bytes(tgt, (byte *) &pc, sizeof(pc));
+        APP(&ilist, tgt);
+    }
 
     /* can't use copy_and_re_relativize_raw_instr b/c don't have direct access:
      * need to finalize and then do direct copy to child process
      */
     pc = instrlist_encode_to_copy(GDC, &ilist, local_code_buf,
                                   remote_code_buf, local_code_buf + code_sz,
-                                  false);
+                                  true/*has instr targets*/);
     ASSERT(pc != NULL && pc < local_code_buf + code_sz);
     instrlist_clear(GDC, &ilist);
 
@@ -1188,22 +1264,35 @@ inject_into_new_process(HANDLE phandle, char *dynamo_path, bool map,
         goto error;
     }
 
+    /* Win8 wow64 has ntdll up high but it reserves all the reachable addresses,
+     * so we cannot use a relative jump to reach our code.  Rather than have
+     * different hooks for different situations, we just always do an indirect
+     * jump for x64.  Plus we always save the max size we need for that jump.
+     * We assume there's no other thread this early (already assuming that
+     * anyway) and that we restore the hook before we do anything; plus, the
+     * routines we're hooking are big enough that we won't clobber anything
+     * else.  Thus, we pass NULL instead of hook_location for must_reach.
+     */
     if (map) {
         hook_target = inject_gencode_earliest(phandle, dynamo_path, hook_location,
-                                              hook_buf);
+                                              hook_buf, NULL);
     } else {
         hook_target = inject_gencode_at_ldr(phandle, dynamo_path, inject_location,
-                                            inject_address, hook_location, hook_buf);
+                                            inject_address, hook_location, hook_buf, NULL);
     }
     if (hook_target == NULL)
         goto error;
 
-    /* place hook */
-    ASSERT(sizeof(hook_buf) == 5); /* standard 5 byte jmp rel32 hook */
+    /* Place hook */
+#ifndef X64
     hook_buf[0] = JMP_REL32;
-    IF_X64(ASSERT_NOT_IMPLEMENTED(REL32_REACHABLE
-                                  ((byte *)hook_location + 5, (byte*)hook_target)));
     *(int *)(&hook_buf[1]) = (int)((byte *)hook_target - ((byte *)hook_location + 5));
+#else
+    hook_buf[0] = JMP_ABS_IND64_OPCODE;
+    hook_buf[1] = JMP_ABS_MEM_IND64_MODRM;
+    *(int *)(&hook_buf[2]) = 0; /* rip-rel to following address */
+    *(byte **)(&hook_buf[6]) = hook_target;
+#endif
     if (!nt_remote_protect_virtual_memory(phandle, hook_location,
                                           sizeof(hook_buf),
                                           PAGE_EXECUTE_READWRITE, &old_prot)) {

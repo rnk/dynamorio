@@ -1,4 +1,5 @@
 /* **********************************************************
+ * Copyright (c) 2012 Google, Inc.  All rights reserved.
  * Copyright (c) 2005-2010 VMware, Inc.  All rights reserved.
  * **********************************************************/
 
@@ -34,6 +35,7 @@
 #include "tools.h"
 
 #ifdef LINUX
+# include <unistd.h>
 # include <sys/syscall.h> /* for SYS_* numbers */
 #endif
 
@@ -52,7 +54,9 @@ get_windows_version(void)
     assert(res != 0);
     if (version.dwPlatformId == VER_PLATFORM_WIN32_NT) {
         /* WinNT or descendents */
-        if (version.dwMajorVersion == 6 && version.dwMinorVersion == 1) {
+        if (version.dwMajorVersion == 6 && version.dwMinorVersion == 2) {
+            return WINDOWS_VERSION_8;
+        } else if (version.dwMajorVersion == 6 && version.dwMinorVersion == 1) {
             return WINDOWS_VERSION_7;
         } else if (version.dwMajorVersion == 6 && version.dwMinorVersion == 0) {
             return WINDOWS_VERSION_VISTA;
@@ -96,61 +100,127 @@ is_wow64(HANDLE hProcess)
         return res;
     }
 }
-#endif
 
+/* FIXME: Port these thread routines to Linux using the ones from linux/clone.c.
+ * We'll have to change existing Windows tests to pass a stack out param or leak
+ * the stack on Linux.
+ */
+
+# ifndef STATIC_LIBRARY  /* FIXME i#975: conflicts with DR's symbols. */
 /* Thread related functions */
 thread_handle
 create_thread(fptr f)
 {
     thread_handle th;
 
-#ifdef LINUX
-    /* FIXME: use the one from linux/clone.c */
-    ASSERT_NOT_IMPLEMENTED();
-#else
     uint tid;
     th = (thread_handle) _beginthreadex(NULL, 0, f, NULL, 0, &tid);
-#endif
     return th;
 }
+# endif
 
 void
 suspend_thread(thread_handle th)
 {
-#ifdef LINUX
-    ASSERT_NOT_IMPLEMENTED();
-#else
     SuspendThread(th);
-#endif
 }
 
 void
 resume_thread(thread_handle th)
 {
-#ifdef LINUX
-    ASSERT_NOT_IMPLEMENTED();
-#else
     ResumeThread(th);
-#endif
 }
 
 void
 join_thread(thread_handle th)
 {
-#ifdef LINUX
-    ASSERT_NOT_IMPLEMENTED();
-#else
     WaitForSingleObject(th, INFINITE);
+}
+
+# ifndef STATIC_LIBRARY  /* FIXME i#975: conflicts with DR's symbols. */
+void
+thread_yield()
+{
+    Sleep(0); /* stay ready */
+}
+# endif
+#endif  /* WINDOWS */
+
+int
+get_os_prot_word(int prot)
+{
+#ifdef LINUX
+    return ((TEST(ALLOW_READ, prot)  ? PROT_READ  : 0) |
+            (TEST(ALLOW_WRITE, prot) ? PROT_WRITE : 0) |
+            (TEST(ALLOW_EXEC, prot)  ? PROT_EXEC  : 0));
+#else
+    if (TEST(ALLOW_WRITE, prot)) {
+        if (TEST(ALLOW_EXEC, prot)) {
+            return PAGE_EXECUTE_READWRITE;
+        } else {
+            return PAGE_READWRITE;
+        }
+    } else {
+        if (TEST(ALLOW_READ, prot)) {
+            if (TEST(ALLOW_EXEC, prot)) {
+                return PAGE_EXECUTE_READ;
+            } else {
+                return PAGE_READONLY;
+            }
+        } else {
+            if (TEST(ALLOW_EXEC, prot)) {
+                return PAGE_EXECUTE;
+            } else {
+                return PAGE_NOACCESS;
+            }
+        }
+    }
+#endif
+}
+
+char *
+allocate_mem(int size, int prot)
+{
+#ifdef LINUX
+    return (char *) mmap((void *)0, size, get_os_prot_word(prot),
+                         MAP_PRIVATE|MAP_ANON, 0, 0);
+#else
+    return (char *) VirtualAlloc(NULL, size, MEM_COMMIT, get_os_prot_word(prot));
 #endif
 }
 
 void
-thread_yield()
+protect_mem(void *start, size_t len, int prot)
 {
 #ifdef LINUX
-    ASSERT_NOT_IMPLEMENTED();
+    void *page_start = (void *)(((ptr_int_t)start) & ~(PAGE_SIZE -1));
+    int page_len = (len + ((ptr_int_t)start - (ptr_int_t)page_start) + PAGE_SIZE - 1)
+        & ~(PAGE_SIZE - 1);
+    if (mprotect(page_start, page_len, get_os_prot_word(prot)) != 0) {
+        print("Error on mprotect: %d\n", errno);
+    }
 #else
-    Sleep(0); /* stay ready */
+    DWORD old;
+    if (VirtualProtect(start, len, get_os_prot_word(prot), &old) == 0) {
+        print("Error on VirtualProtect\n");
+    }
+#endif
+}
+
+void
+protect_mem_check(void *start, size_t len, int prot, int expected)
+{
+#ifdef LINUX
+    /* FIXME : add check */
+    protect_mem(start, len, prot);
+#else
+    DWORD old;
+    if (VirtualProtect(start, len, get_os_prot_word(prot), &old) == 0) {
+        print("Error on VirtualProtect\n");
+    }
+    if (old != get_os_prot_word(expected)) {
+        print("Unexpected previous permissions\n");
+    }
 #endif
 }
 
@@ -287,7 +357,75 @@ get_cache_line_size()
     return cache_line_size;
 }
 
+void
+print(const char *fmt, ...)
+{
+    va_list ap;
+    va_start(ap, fmt);
+    vfprintf(stderr, fmt, ap);
+    fflush(stderr);
+    va_end(ap);
+}
+
 #ifdef LINUX
+
+/***************************************************************************/
+/* a hopefuly portable /proc/@self/maps reader */
+
+/* these are defined in /usr/src/linux/fs/proc/array.c */
+#define MAPS_LINE_LENGTH        4096
+/* for systems with sizeof(void*) == 4: */
+#define MAPS_LINE_FORMAT4         "%08lx-%08lx %s %*x %*s %*u %4096s"
+#define MAPS_LINE_MAX4  49 /* sum of 8  1  8  1 4 1 8 1 5 1 10 1 */
+/* for systems with sizeof(void*) == 8: */
+#define MAPS_LINE_FORMAT8         "%016lx-%016lx %s %*x %*s %*u %4096s"
+#define MAPS_LINE_MAX8  73 /* sum of 16  1  16  1 4 1 16 1 5 1 10 1 */
+
+#define MAPS_LINE_MAX   MAPS_LINE_MAX8
+
+bool
+find_dynamo_library(void)
+{
+    pid_t pid = getpid();
+    char  proc_pid_maps[64];      /* file name */
+
+    FILE *maps;
+    char  line[MAPS_LINE_LENGTH];
+    int   count = 0;
+
+    /* open file's /proc/id/maps virtual map description */
+    int n = snprintf(proc_pid_maps, sizeof(proc_pid_maps),
+                     "/proc/%d/maps", pid);
+    if (n < 0 || n == sizeof(proc_pid_maps))
+        assert(0); /* paranoia */
+
+    maps = fopen(proc_pid_maps, "r");
+
+    while (!feof(maps)){
+        void *vm_start;
+        void *vm_end;
+        char perm[16];
+        char comment_buffer[MAPS_LINE_LENGTH];
+        int len;
+
+        if (NULL == fgets(line, sizeof(line), maps))
+            break;
+        len = sscanf(line,
+                     sizeof(void*) == 4 ? MAPS_LINE_FORMAT4 : MAPS_LINE_FORMAT8,
+                     (unsigned long*)&vm_start, (unsigned long*)&vm_end, perm,
+                     comment_buffer);
+        if (len < 4)
+            comment_buffer[0] = '\0';
+        if (strstr(comment_buffer, "libdynamorio.so") != 0) {
+            fclose(maps);
+            return true;
+        }
+    }
+
+    fclose(maps);
+    return false;
+}
+
 /******************************************************************************
  * Staticly linked and stateless versions of libc routines.
  */
@@ -387,6 +525,30 @@ nolibc_memset(void *dst, int val, size_t size)
         buf[i] = (char)val;
     }
 }
+
+/******************************************************************************
+ * Signal handling
+ */
+
+/* set up signal_handler as the handler for signal "sig" */
+void
+intercept_signal(int sig, handler_3_t handler, bool sigstack)
+{
+    int rc;
+    struct sigaction act;
+
+    act.sa_sigaction = (void (*)(int, struct siginfo *, void *)) handler;
+    rc = sigfillset(&act.sa_mask); /* block all signals within handler */
+    ASSERT_NOERR(rc);
+    act.sa_flags = SA_SIGINFO;
+    if (sigstack)
+        act.sa_flags = SA_ONSTACK;
+
+    /* arm the signal */
+    rc = sigaction(sig, &act, NULL);
+    ASSERT_NOERR(rc);
+}
+
 #endif /* LINUX */
 
 #else /* asm code *************************************************************/
@@ -535,5 +697,15 @@ syscall_0args:
         END_FUNC(FUNCNAME)
 #endif /* LINUX */
 
+#undef FUNCNAME
+#define FUNCNAME call_with_retaddr
+        DECLARE_FUNC(FUNCNAME)
+GLOBAL_LABEL(FUNCNAME:)
+        lea     REG_XAX, [REG_XSP]  /* Load address of retaddr. */
+        xchg    REG_XAX, ARG1       /* Swap with function pointer in arg1. */
+        jmp     REG_XAX             /* Call function, now with &retaddr as arg1. */
+        END_FUNC(FUNCNAME)
+
 END_FILE
+
 #endif

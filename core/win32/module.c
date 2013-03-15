@@ -72,6 +72,33 @@ module_area_free_IAT(module_area_t *ma);
 static bool
 get_module_resource_version_info(app_pc mod_base, version_info_t *info_out);
 
+#ifdef CLIENT_INTERFACE
+typedef struct _pe_module_import_iterator_t {
+    dr_module_import_t module_import;  /* module import returned by next() */
+
+    byte *mod_base;
+    /* Points into an array of IMAGE_IMPORT_DESCRIPTOR structs.  The last
+     * element of the array is zeroed.
+     */
+    IMAGE_IMPORT_DESCRIPTOR *cur_module;
+    IMAGE_IMPORT_DESCRIPTOR safe_module;    /* safe_read copy of cur_module */
+    byte *imports_end;                      /* end of the import descriptors */
+    bool hasnext;                           /* set to false on error or end */
+} pe_module_import_iterator_t;
+
+typedef struct _pe_symbol_import_iterator_t {
+    dr_symbol_import_t symbol_import;       /* symbol import returned by next() */
+    dr_symbol_import_t next_symbol;         /* next symbol import */
+
+    byte *mod_base;
+    dr_module_import_iterator_t *mod_iter;  /* only for iterating all modules */
+    IMAGE_IMPORT_DESCRIPTOR *cur_module;    /* always valid */
+    /* Points into the OriginalFirstThunk array of mod_iter->cur_module. */
+    IMAGE_THUNK_DATA *cur_thunk;
+    bool hasnext;                           /* set to false on error or end */
+} pe_symbol_import_iterator_t;
+#endif /* CLIENT_INTERFACE */
+
 /****************************************************************************
  * Section-to-file table for i#138 and PR 213463 (case 9028)
  */
@@ -988,8 +1015,18 @@ print_modules_ldrlist_and_ourlist(file_t f, bool dump_xml, bool conservative)
     LDR_MODULE *mod;
     uint traversed = 0;
 #ifdef DEBUG
-    RTL_CRITICAL_SECTION *lock = (RTL_CRITICAL_SECTION *) peb->LoaderLock;
-    thread_id_t owner = (thread_id_t) lock->OwningThread;
+    RTL_CRITICAL_SECTION *lock;
+    thread_id_t owner;
+#endif
+
+    if (ldr == NULL) {
+        ASSERT(dr_earliest_injected);
+        return;
+    }
+
+#ifdef DEBUG
+    lock = (RTL_CRITICAL_SECTION *) peb->LoaderLock;
+    owner = (thread_id_t) lock->OwningThread;
     LOG(GLOBAL, LOG_ALL, 2, "LoaderLock owned by %d\n", owner);
     if (owner != 0 && owner != get_thread_id()) {
         LOG(GLOBAL, LOG_ALL, 1, "WARNING: print_modules called w/o holding LoaderLock\n");
@@ -1355,10 +1392,13 @@ print_module_section_info(file_t file, app_pc addr)
  * - if nth > -1, the nth section, or nth segment if merge=true
  *
  * If a section or (if merge) group of sections are found that satisfy the above,
- * then returns the bounds of the section(s) in sec_start_out and sec_end_out (both are
+ * then returns the bounds of the section(s) in sec_start_out and sec_end_out
+ * and sec_end_unpad_out (end w/o padding for alignment) (all 3 are
  * optional) and returns true.  If no matching section(s) are found returns false.
  * If !merge the actual characteristics are returned in sec_characteristics_out,
  * which is optional and must be NULL if merge.
+ * If map_size, *sec_end_out will be the portion of the file that is mapped
+ * (but sec_end_nopad_out will be unchanged).
  *
  * FIXME - with case 10526 fix letting the exemption polices trim to section boundaries
  * is there any reason we still need merging support?
@@ -1367,6 +1407,7 @@ static bool
 is_in_executable_file_section(app_pc module_base, app_pc start_pc, app_pc end_pc,
                               app_pc *sec_start_out /* OPTIONAL OUT */,
                               app_pc *sec_end_out /* OPTIONAL OUT */, 
+                              app_pc *sec_end_nopad_out /* OPTIONAL OUT */,
                               uint *sec_characteristics_out /* OPTIONAL OUT */,
                               IMAGE_SECTION_HEADER *sec_header_out /* OPTIONAL OUT */,
                               uint sec_characteristics_match /* TESTANY, 0 to ignore */,
@@ -1378,7 +1419,7 @@ is_in_executable_file_section(app_pc module_base, app_pc start_pc, app_pc end_pc
     IMAGE_SECTION_HEADER *sec;
     uint i, seg_num = 0, prev_chars = 0;
     bool prev_sec_same_chars = false, result = false, stop_at_next_non_matching = false;
-    app_pc sec_start = 0, sec_end = 0;
+    app_pc sec_start = NULL, sec_end = NULL, sec_end_nopad = NULL;
 
     /* See case 7998 where a NULL base was passed. */
     ASSERT_CURIOSITY(module_base != NULL);
@@ -1437,6 +1478,8 @@ is_in_executable_file_section(app_pc module_base, app_pc start_pc, app_pc end_pc
                 prev_sec_same_chars = true;
             sec_end = module_base + sec->VirtualAddress +
                  get_image_section_size(sec, nt);
+            sec_end_nopad = module_base + sec->VirtualAddress +
+                get_image_section_unpadded_size(sec _IF_DEBUG(nt));
             LOG(GLOBAL, LOG_VMAREAS, 2,
                 "is_in_executable_file_section (module "PFX", region "PFX"-"PFX"): "
                 "%.*s == "PFX"-"PFX"\n",
@@ -1454,6 +1497,8 @@ is_in_executable_file_section(app_pc module_base, app_pc start_pc, app_pc end_pc
                         *sec_end_out = sec_end; /* merged section end */
                     }
                 }
+                if (sec_end_nopad_out != NULL)
+                    *sec_end_nopad_out = sec_end_nopad; /* merged nopad section end */
                 if (sec_characteristics_out != NULL)
                     *sec_characteristics_out = sec->Characteristics;
                 if (sec_header_out != NULL)
@@ -1477,6 +1522,8 @@ is_in_executable_file_section(app_pc module_base, app_pc start_pc, app_pc end_pc
                     seg_num++;
                 sec_end = module_base + sec->VirtualAddress +
                     get_image_section_size(sec, nt);
+                sec_end_nopad = module_base + sec->VirtualAddress +
+                    get_image_section_unpadded_size(sec _IF_DEBUG(nt));
             }
         }
         prev_chars = sec->Characteristics;
@@ -1491,7 +1538,7 @@ module_pc_section_lookup(app_pc module_base, app_pc pc, IMAGE_SECTION_HEADER *se
     if (section_out != NULL)
         memset(section_out, 0, sizeof(*section_out));
     return is_in_executable_file_section(module_base, pc, pc+1,
-                                         NULL, NULL, NULL, section_out,
+                                         NULL, NULL, NULL, NULL, section_out,
                                          0 /* any section */, NULL, false, -1, false);
 }
 
@@ -1504,7 +1551,7 @@ is_range_in_code_section(app_pc module_base, app_pc start_pc, app_pc end_pc,
                          app_pc *sec_end /* OPTIONAL OUT */)
 {
     return is_in_executable_file_section(module_base, start_pc, end_pc,
-                                         sec_start, sec_end, NULL, NULL,
+                                         sec_start, sec_end, NULL, NULL, NULL,
                                          IMAGE_SCN_CNT_CODE, NULL,
                                          false /* don't merge */, -1, false);
 }
@@ -1517,7 +1564,7 @@ is_in_code_section(app_pc module_base, app_pc addr,
                    app_pc *sec_end /* OPTIONAL OUT */)
 {
     return is_in_executable_file_section(module_base, addr, addr+1,
-                                         sec_start, sec_end, NULL, NULL,
+                                         sec_start, sec_end, NULL, NULL, NULL,
                                          IMAGE_SCN_CNT_CODE, NULL,
                                          true /* merge */, -1, false);
 }
@@ -1529,7 +1576,7 @@ is_in_dot_data_section(app_pc module_base, app_pc addr,
                        app_pc *sec_end /* OPTIONAL OUT */)
 {
     return is_in_executable_file_section(module_base, addr, addr+1,
-                                         sec_start, sec_end, NULL, NULL,
+                                         sec_start, sec_end, NULL, NULL, NULL,
                                          IMAGE_SCN_CNT_INITIALIZED_DATA |
                                          IMAGE_SCN_CNT_UNINITIALIZED_DATA,
                                          NULL, true /* merge */, -1, false);
@@ -1546,7 +1593,7 @@ is_in_xdata_section(app_pc module_base, app_pc addr,
      */
     uint sec_flags = 0;
     if (is_in_executable_file_section(module_base, addr, addr+1, 
-                                      sec_start, sec_end, &sec_flags, NULL,
+                                      sec_start, sec_end, NULL, &sec_flags, NULL,
                                       IMAGE_SCN_CNT_INITIALIZED_DATA, ".xdata",
                                       false /* don't merge */, -1, false)) {
         bool xdata_prot_match = TESTALL(IMAGE_SCN_MEM_READ | IMAGE_SCN_MEM_WRITE |
@@ -1566,9 +1613,21 @@ is_in_any_section(app_pc module_base, app_pc addr,
                   app_pc *sec_end /* OPTIONAL OUT */)
 {
     return is_in_executable_file_section(module_base, addr, addr+1,
-                                         sec_start, sec_end, NULL, NULL,
+                                         sec_start, sec_end, NULL, NULL, NULL,
                                          0 /* any section */, NULL,
                                          true /* merge */, -1, false);
+}
+
+bool
+get_executable_segment(app_pc module_base,
+                       app_pc *sec_start /* OPTIONAL OUT */,
+                       app_pc *sec_end /* OPTIONAL OUT */,
+                       app_pc *sec_end_nopad /* OPTIONAL OUT */)
+{
+    return is_in_executable_file_section(module_base, NULL, NULL,
+                                         sec_start, sec_end, sec_end_nopad, NULL, NULL,
+                                         IMAGE_SCN_MEM_EXECUTE,
+                                         NULL, true /* merge */, -1, false);
 }
 
 /* allow only true MEM_IMAGE mappings */
@@ -1599,7 +1658,7 @@ module_get_nth_segment(app_pc module_base, uint n,
                        uint *chars/*OPTIONAL OUT*/)
 {
     if (!is_in_executable_file_section
-        (module_base, NULL, NULL, start, end, chars, NULL, 0/* any section */, NULL,
+        (module_base, NULL, NULL, start, end, NULL, chars, NULL, 0/* any section */, NULL,
          true /* merge to make segments */, n, true/*mapped size*/)) {
         return false;
     }
@@ -1621,7 +1680,7 @@ get_named_section_bounds(app_pc module_base, const char *name,
                          app_pc *start/*OPTIONAL OUT*/, app_pc *end/*OPTIONAL OUT*/)
 {
     if (!is_in_executable_file_section(module_base, NULL, NULL, start, end, NULL, NULL,
-                                       0 /* any section */, name, true /* merge */,
+                                       NULL, 0 /* any section */, name, true /* merge */,
                                        -1, false)) {
         if (start != NULL)
             *start = NULL;
@@ -2018,10 +2077,19 @@ get_ldr_module_by_pc(app_pc pc)
     LIST_ENTRY *e, *mark;
     LDR_MODULE *mod;
     uint traversed = 0;     /* a simple infinite loop break out */
+#ifdef DEBUG
+    RTL_CRITICAL_SECTION *lock;
+    thread_id_t owner;
+#endif
+
+    if (ldr == NULL) {
+        ASSERT(dr_earliest_injected);
+        return NULL;
+    }
 
 #ifdef DEBUG
-    RTL_CRITICAL_SECTION *lock = (RTL_CRITICAL_SECTION *) peb->LoaderLock;
-    thread_id_t owner = (thread_id_t) lock->OwningThread;
+    lock = (RTL_CRITICAL_SECTION *) peb->LoaderLock;
+    owner = (thread_id_t) lock->OwningThread;
     if (owner != 0 && owner != get_thread_id()) {
         /* This will be a risky operation but we'll live with it.
            In case we walk in a list in an inconsistent state
@@ -2073,6 +2141,7 @@ void
 get_module_name(app_pc pc, char *buf, int max_chars)
 {
     LDR_MODULE *mod = get_ldr_module_by_pc(pc);
+    /* FIXME i#812: at earliest inject point this doesn't work: hardcode ntdll.dll? */
     if (mod != NULL) {
         wchar_to_char(buf, max_chars, mod->FullDllName.Buffer, mod->FullDllName.Length);
         return;
@@ -2750,7 +2819,7 @@ rct_add_rip_rel_addr(dcontext_t *dcontext, app_pc tgt _IF_DEBUG(app_pc src))
     bool res = false;
     if (modbase != NULL &&
         rct_ind_branch_target_lookup(dcontext, tgt) == NULL &&
-        is_in_executable_file_section(modbase, tgt, tgt+1, NULL, NULL,
+        is_in_executable_file_section(modbase, tgt, tgt+1, NULL, NULL, NULL,
                                       &secchar, NULL, 0, NULL, false, -1, false)) {
         ASSERT(DYNAMO_OPTION(rct_section_type) != 0 &&
                !TESTANY(~(IMAGE_SCN_CNT_CODE|IMAGE_SCN_CNT_INITIALIZED_DATA|
@@ -3407,7 +3476,8 @@ rct_analyze_module_at_violation(dcontext_t *dcontext, app_pc target_pc)
      */
     ASSERT(DYNAMO_OPTION(rct_section_type) != 0); /* sentinel for is_in_executable_... */
     if (!is_in_executable_file_section(module_base, target_pc, target_pc+1, NULL, NULL,
-                                       &sec_flags, NULL, DYNAMO_OPTION(rct_section_type),
+                                       NULL, &sec_flags, NULL,
+                                       DYNAMO_OPTION(rct_section_type),
                                        NULL, false /* no need to merge */, -1, false) ||
         (DYNAMO_OPTION(rct_section_type_exclude) != 0 &&
          TESTALL(DYNAMO_OPTION(rct_section_type_exclude), sec_flags))) {
@@ -3646,7 +3716,7 @@ os_modules_init(void)
                             (void(*)(void*)) section_to_file_free
                             _IF_DEBUG("section-to-file table"));
 
-    if (DYNAMO_OPTION(hide)) {
+    if (DYNAMO_OPTION(hide) && !dr_earliest_injected) {
         /* retrieve path before hiding, since this is called before os_init() */
         get_dynamorio_library_path();
         hide_from_module_lists();
@@ -6219,3 +6289,236 @@ os_module_has_dynamic_base(app_pc module_base)
     return TEST(IMAGE_DLLCHARACTERISTICS_DYNAMIC_BASE,
                 nt->OptionalHeader.DllCharacteristics);
 }
+
+#ifdef CLIENT_INTERFACE
+
+/* Returns true if the next module import was read and is valid.
+ */
+static bool
+safe_read_cur_module(pe_module_import_iterator_t *iter)
+{
+    /* Modules with no imports, such as ntdll, hit this check and not the
+     * OriginalFirstThunk sentinel check below.
+     */
+    if ((byte *)(iter->cur_module + 1) > iter->imports_end)
+        return false;
+    if (!SAFE_READ_VAL(iter->safe_module, iter->cur_module)) {
+        memset(&iter->safe_module, 0, sizeof(iter->safe_module));
+        return false;
+    }
+    /* The last module import is zeroed. */
+    if (iter->safe_module.OriginalFirstThunk == 0)
+        return false;
+    return true;
+}
+
+dr_module_import_iterator_t *
+dr_module_import_iterator_start(module_handle_t handle)
+{
+    pe_module_import_iterator_t *iter;
+    IMAGE_NT_HEADERS *nt;
+    IMAGE_DATA_DIRECTORY *dir;
+    app_pc base = (app_pc) handle;
+
+    if (!is_readable_pe_base(base))
+        return NULL;
+    iter = global_heap_alloc(sizeof(*iter) HEAPACCT(ACCT_CLIENT));
+
+    /* Should be safe after is_readable_pe_base(). */
+    /* XXX: Share with privload_get_import_descriptor()? */
+    nt = NT_HEADER(base);
+    dir = OPT_HDR(nt, DataDirectory) + IMAGE_DIRECTORY_ENTRY_IMPORT;
+    iter->mod_base = (byte *) base;
+    iter->cur_module = (IMAGE_IMPORT_DESCRIPTOR *)
+        RVA_TO_VA(base, dir->VirtualAddress);
+    iter->imports_end = (byte *) RVA_TO_VA(base, dir->VirtualAddress) + dir->Size;
+    iter->hasnext = safe_read_cur_module(iter);
+
+    iter->module_import.modname = NULL;
+    iter->module_import.module_import_desc = NULL;
+    return (dr_module_import_iterator_t *) iter;
+}
+
+bool
+dr_module_import_iterator_hasnext(dr_module_import_iterator_t *dr_iter)
+{
+    pe_module_import_iterator_t *iter = (pe_module_import_iterator_t *) dr_iter;
+    return (iter != NULL && iter->hasnext);
+}
+
+dr_module_import_t *
+dr_module_import_iterator_next(dr_module_import_iterator_t *dr_iter)
+{
+    pe_module_import_iterator_t *iter = (pe_module_import_iterator_t *) dr_iter;
+    DEBUG_DECLARE(dcontext_t *dcontext = get_thread_private_dcontext();)
+
+    CLIENT_ASSERT(iter != NULL, "invalid parameter");
+    CLIENT_ASSERT(iter->hasnext, "dr_module_import_iterator_next: !hasnext");
+    iter->module_import.modname =
+        (const char *) RVA_TO_VA(iter->mod_base, iter->safe_module.Name);
+    iter->module_import.module_import_desc =
+        (dr_module_import_desc_t *) iter->cur_module;
+    LOG(THREAD, LOG_LOADER, 3, "%s: yielding module "PFX", %s\n", __FUNCTION__,
+        iter->cur_module, iter->module_import.modname);
+
+    iter->cur_module++;
+    iter->hasnext = safe_read_cur_module(iter);
+    /* FIXME i#931: Iterate delay-load imports after normal imports. */
+
+    return &iter->module_import;
+}
+
+void
+dr_module_import_iterator_stop(dr_module_import_iterator_t *dr_iter)
+{
+    pe_module_import_iterator_t *iter = (pe_module_import_iterator_t *) dr_iter;
+    if (iter == NULL)
+        return;
+    global_heap_free(iter, sizeof(*iter) HEAPACCT(ACCT_CLIENT));
+}
+
+/* Reads iter->cur_thunk and sets iter->next_symbol.  Returns false if there are
+ * no more imports.
+ */
+static bool
+pe_symbol_import_iterator_read_thunk(pe_symbol_import_iterator_t *iter)
+{
+    IMAGE_THUNK_DATA safe_thunk;
+    if (!SAFE_READ_VAL(safe_thunk, iter->cur_thunk))
+        return false;
+    if (safe_thunk.u1.Function == 0)
+        return false;
+    iter->next_symbol.delay_load = false;
+    iter->next_symbol.by_ordinal =
+        CAST_TO_bool(TEST(IMAGE_ORDINAL_FLAG, safe_thunk.u1.Function));
+    if (iter->next_symbol.by_ordinal) {
+        iter->next_symbol.ordinal =
+            safe_thunk.u1.AddressOfData & (~IMAGE_ORDINAL_FLAG);
+        iter->next_symbol.name = NULL;
+    } else {
+        IMAGE_IMPORT_BY_NAME *by_name = (IMAGE_IMPORT_BY_NAME *)
+            RVA_TO_VA(iter->mod_base, safe_thunk.u1.AddressOfData);
+        /* Name is an array, so no safe_read. */
+        iter->next_symbol.name = (const char *) by_name->Name;
+        iter->next_symbol.ordinal = 0;
+    }
+    return true;
+}
+
+/* Initializes cur_thunk to refer to the OriginalFirstThunk of iter->cur_module.
+ */
+static bool
+pe_symbol_import_iterator_first_thunk(pe_symbol_import_iterator_t *iter)
+{
+    DWORD original_first_thunk;
+    if (!SAFE_READ_VAL(original_first_thunk,
+                       &iter->cur_module->OriginalFirstThunk)) {
+        return false;
+    }
+    iter->cur_thunk = (IMAGE_THUNK_DATA *)
+        RVA_TO_VA(iter->mod_base, original_first_thunk);
+    if (!pe_symbol_import_iterator_read_thunk(iter))
+        return false;
+    return true;
+}
+
+/* If we're iterating all module imports, go to the next imported module.
+ * Return false if we're iterating symbols from a specific module.
+ */
+static bool
+pe_symbol_import_iterator_next_module(pe_symbol_import_iterator_t *iter)
+{
+    if (iter->mod_iter == NULL) {
+        /* We're getting imports from a specific module, so we're done now. */
+        return false;
+    } else {
+        dr_module_import_t *mod_import;
+        if (!dr_module_import_iterator_hasnext(iter->mod_iter))
+            return false;
+        mod_import = dr_module_import_iterator_next(iter->mod_iter);
+        iter->cur_module = (IMAGE_IMPORT_DESCRIPTOR *)
+            mod_import->module_import_desc;
+        iter->next_symbol.modname = mod_import->modname;
+        if (!pe_symbol_import_iterator_first_thunk(iter))
+            return false;
+        return true;
+    }
+}
+
+dr_symbol_import_iterator_t *
+dr_symbol_import_iterator_start(module_handle_t handle,
+                                dr_module_import_desc_t *from_module)
+{
+    pe_symbol_import_iterator_t *iter;
+
+    iter = global_heap_alloc(sizeof(*iter) HEAPACCT(ACCT_CLIENT));
+    memset(iter, 0, sizeof(*iter));
+    iter->mod_base = (byte *) handle;
+    iter->cur_thunk = NULL;
+
+    if (from_module == NULL) {
+        iter->mod_iter = dr_module_import_iterator_start(handle);
+        if (iter->mod_iter == NULL)
+            goto error;
+        iter->hasnext = pe_symbol_import_iterator_next_module(iter);
+    } else {
+        DWORD modname_rva;
+        iter->mod_iter = NULL;
+        iter->cur_module = (IMAGE_IMPORT_DESCRIPTOR *) from_module;
+        if (!SAFE_READ_VAL(modname_rva, &iter->cur_module->Name))
+            goto error;
+        iter->next_symbol.modname =
+            (const char *) RVA_TO_VA(iter->mod_base, modname_rva);
+        iter->hasnext = pe_symbol_import_iterator_first_thunk(iter);
+    }
+
+    return (dr_symbol_import_iterator_t *) iter;
+
+error:
+    global_heap_free(iter, sizeof(*iter) HEAPACCT(ACCT_CLIENT));
+    return NULL;
+}
+
+bool
+dr_symbol_import_iterator_hasnext(dr_symbol_import_iterator_t *dr_iter)
+{
+    pe_symbol_import_iterator_t *iter = (pe_symbol_import_iterator_t *) dr_iter;
+    return (iter != NULL && iter->hasnext);
+}
+
+dr_symbol_import_t *
+dr_symbol_import_iterator_next(dr_symbol_import_iterator_t *dr_iter)
+{
+    pe_symbol_import_iterator_t *iter = (pe_symbol_import_iterator_t *) dr_iter;
+    dcontext_t *dcontext = get_thread_private_dcontext();
+    bool partial = false;
+    DWORD original_thunk_rva = 0;
+    DWORD symbol_rva = 0;
+
+    CLIENT_ASSERT(iter != NULL, "invalid parameter");
+    CLIENT_ASSERT(iter->hasnext, "dr_symbol_import_iterator_next: !hasnext");
+    /* Copy the data to return before we advance next_symbol. */
+    memcpy(&iter->symbol_import, &iter->next_symbol,
+           sizeof(iter->symbol_import));
+
+    iter->cur_thunk++;
+    iter->hasnext = pe_symbol_import_iterator_read_thunk(iter);
+    if (!iter->hasnext)
+        iter->hasnext = pe_symbol_import_iterator_next_module(iter);
+    /* FIXME i#931: Iterate delay-load imports after normal imports. */
+
+    return &iter->symbol_import;
+}
+
+void
+dr_symbol_import_iterator_stop(dr_symbol_import_iterator_t *dr_iter)
+{
+    pe_symbol_import_iterator_t *iter = (pe_symbol_import_iterator_t *) dr_iter;
+    if (iter == NULL)
+        return;
+    if (iter->mod_iter != NULL)
+        dr_module_import_iterator_stop(iter->mod_iter);
+    global_heap_free(iter, sizeof(*iter) HEAPACCT(ACCT_CLIENT));
+}
+
+#endif /* CLIENT_INTERFACE */

@@ -1,5 +1,5 @@
 # **********************************************************
-# Copyright (c) 2010-2011 Google, Inc.    All rights reserved.
+# Copyright (c) 2010-2012 Google, Inc.    All rights reserved.
 # Copyright (c) 2009-2010 VMware, Inc.    All rights reserved.
 # **********************************************************
 
@@ -29,23 +29,33 @@
 # OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH
 # DAMAGE.
 
-if (UNIX)
-  message(FATAL_ERROR "libutil is Windows-only")
-endif (UNIX)
-
-# These custom commands are per-subdir so can't just place at top level
-include(../make/CMake_events.cmake)
+# i#801: We use custom target (from core/CMakeLists.txt) to ensure headers
+# are generated before compiling .c files that use them.  We used to list the
+# header as a source file dependence in the targets that use them, but that
+# doesn't work well with non-Makefile generators.
+function (add_gen_events_deps target)
+  add_dependencies(${target} generate_syslog)
+  if (WIN32)
+    add_dependencies(${target} generate_events)
+  endif ()
+endfunction (add_gen_events_deps)
 
 # FIXME i#60: add rules from old Makefile for building unit tests
 # the tests had been broken for a while
+
+include_directories(BEFORE
+  ${PROJECT_SOURCE_DIR}/core
+  ${PROJECT_SOURCE_DIR}/core/lib
+  ${PROJECT_SOURCE_DIR}/core/win32
+  ${PROJECT_SOURCE_DIR}/core/x86
+  ${PROJECT_BINARY_DIR} # for events.h
+  )
 
 set(CORE_SRCS
   ${PROJECT_SOURCE_DIR}/core/options.c
   ${PROJECT_SOURCE_DIR}/core/win32/inject_shared.c
   ${PROJECT_SOURCE_DIR}/core/win32/module_shared.c
   ${PROJECT_SOURCE_DIR}/core/win32/drmarker.c
-  ${EVENTS_SRCS}
-  ${SYSLOG_SRCS}
   )
 set(RESOURCES ${PROJECT_SOURCE_DIR}/core/win32/resources.rc)
 set(BASE_SRCS
@@ -62,34 +72,38 @@ set(ROOT_SRCS
   mfapi.c
   )
 
-include_directories(BEFORE 
-  ${PROJECT_SOURCE_DIR}/core
-  ${PROJECT_SOURCE_DIR}/core/lib
-  ${PROJECT_SOURCE_DIR}/core/win32
-  ${PROJECT_SOURCE_DIR}/core/x86
-  ${PROJECT_BINARY_DIR} # for events.h
-  )
-add_definitions(-D_CRT_SECURE_NO_WARNINGS -DUNICODE -D_UNICODE)
 add_definitions(-DNOT_DYNAMORIO_CORE)
-if (NOT HOT_PATCHING_INTERFACE)
-  # We define this to get processes.h included: PROBE_API controls whether we
-  # expose it
-  add_definitions(-DHOT_PATCHING_INTERFACE)
-endif (NOT HOT_PATCHING_INTERFACE)
 
-# FIXME i#98: fix the underlying cause of these warnings and remove these exceptions
-set(nowarn "/wd4996 /wd4047 /wd4024 /wd4133 /wd4127 /wd4100 /wd4292 /wd4127 /wd4100")
-set(libutil_cflags "/wd4996 /wd4047 /wd4024 /wd4133 /wd4127 /wd4100 /wd4292 /wd4127 /wd4100")
-set(libutil_ldflags "/nodefaultlib:libc.lib")
+if (WIN32)
+  add_definitions(-D_CRT_SECURE_NO_WARNINGS -DUNICODE -D_UNICODE)
+  if (NOT HOT_PATCHING_INTERFACE)
+    # We define this to get processes.h included: PROBE_API controls whether we
+    # expose it
+    add_definitions(-DHOT_PATCHING_INTERFACE)
+  endif (NOT HOT_PATCHING_INTERFACE)
 
-add_library(policy_static ${BASE_SRCS} ${ROOT_SRCS} ${CORE_SRCS})
-set_target_properties(policy_static PROPERTIES
-  COMPILE_FLAGS "${libutil_cflags}")
-set_target_properties(policy_static PROPERTIES
-  LINK_FLAGS "${libutil_ldflags}")
+  # FIXME i#98: fix the underlying cause of these warnings and remove these exceptions
+  set(nowarn "/wd4996 /wd4047 /wd4024 /wd4133 /wd4127 /wd4100 /wd4292 /wd4127 /wd4100")
+  set(libutil_cflags "/wd4996 /wd4047 /wd4024 /wd4133 /wd4127 /wd4100 /wd4292 /wd4127 /wd4100")
+  set(libutil_ldflags "/nodefaultlib:libc.lib")
 
-add_library(drconfiglib SHARED ${BASE_SRCS} ${ROOT_SRCS} ${CORE_SRCS}
-  ${RESOURCES} dr_config.c drconfig.def)
+  add_library(policy_static ${BASE_SRCS} ${ROOT_SRCS} ${CORE_SRCS})
+  set_target_properties(policy_static PROPERTIES
+    COMPILE_FLAGS "${libutil_cflags}")
+  set_target_properties(policy_static PROPERTIES
+    LINK_FLAGS "${libutil_ldflags}")
+  add_gen_events_deps(policy_static)
+
+  set(DRCONFIG_SRCS dr_config.c ${BASE_SRCS} ${ROOT_SRCS} ${CORE_SRCS}
+    ${RESOURCES})
+else () # UNIX
+  # Most of it is unported.  We're just reusing some utils.c and the config
+  # file writing code currently.
+  set(DRCONFIG_SRCS dr_config.c utils.c)
+  set(libutil_cflags "")
+endif ()
+
+add_library(drconfiglib SHARED ${DRCONFIG_SRCS})
 set_target_properties(drconfiglib PROPERTIES
   # Set define parameters for resources.rc
   # Since it's hard to pass spaces in defines (I can get a " through using
@@ -98,30 +112,36 @@ set_target_properties(drconfiglib PROPERTIES
   COMPILE_FLAGS "${libutil_cflags} -DRC_IS_DRCONFIGLIB"
   # put dll in lib dir
   RUNTIME_OUTPUT_DIRECTORY${location_suffix} "${CMAKE_LIBRARY_OUTPUT_DIRECTORY}")
-set_target_properties(drconfiglib PROPERTIES
-  LINK_FLAGS "${libutil_ldflags}")
-# drinject.exe needs a copy in the bin dir
-add_custom_command(TARGET drconfiglib POST_BUILD COMMAND ${CMAKE_COMMAND}
-  ARGS -E copy "${CMAKE_LIBRARY_OUTPUT_DIRECTORY}/drconfiglib.dll"
-  "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/" VERBATIM)
+add_gen_events_deps(drconfiglib)
 
-add_executable(dumpevts dumpevts.c elm.c ${RESOURCES})
-set_target_properties(dumpevts PROPERTIES
-  # Set define parameters for resources.rc
-  COMPILE_FLAGS "${libutil_cflags} -DRC_IS_DUMPEVTS")
-set_target_properties(dumpevts PROPERTIES
-  LINK_FLAGS "${libutil_ldflags}")
-
-# used at Determina: not supported anymore
-if (MFAPI_ENABLED)
-  add_library(mfapi SHARED ${BASE_SRCS} ${ROOT_SRCS} ${CORE_SRCS}
-    ${RESOURCES} mfapi.c mfapi.res)
-  set_target_properties(mfapi PROPERTIES
-    # Set define parameters for resources.rc
-    COMPILE_FLAGS "${libutil_cflags} -DRC_IS_MFAPI")
-  set_target_properties(mfapi PROPERTIES
+if (WIN32)
+  set_target_properties(drconfiglib PROPERTIES
     LINK_FLAGS "${libutil_ldflags}")
-endif (MFAPI_ENABLED)
+  # drinject.exe needs a copy in the bin dir
+  add_custom_command(TARGET drconfiglib POST_BUILD COMMAND ${CMAKE_COMMAND}
+    ARGS -E copy "${CMAKE_LIBRARY_OUTPUT_DIRECTORY}/drconfiglib.dll"
+    "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/" VERBATIM)
+
+  add_executable(dumpevts dumpevts.c elm.c ${RESOURCES})
+  set_target_properties(dumpevts PROPERTIES
+    # Set define parameters for resources.rc
+    COMPILE_FLAGS "${libutil_cflags} -DRC_IS_DUMPEVTS")
+  set_target_properties(dumpevts PROPERTIES
+    LINK_FLAGS "${libutil_ldflags}")
+  add_gen_events_deps(dumpevts)
+
+  # used at Determina: not supported anymore
+  if (MFAPI_ENABLED)
+    add_library(mfapi SHARED ${BASE_SRCS} ${ROOT_SRCS} ${CORE_SRCS}
+      ${RESOURCES} mfapi.c mfapi.res)
+    set_target_properties(mfapi PROPERTIES
+      # Set define parameters for resources.rc
+      COMPILE_FLAGS "${libutil_cflags} -DRC_IS_MFAPI")
+    set_target_properties(mfapi PROPERTIES
+      LINK_FLAGS "${libutil_ldflags}")
+    add_gen_events_deps(mfapi)
+  endif (MFAPI_ENABLED)
+endif ()
 
 DR_install(TARGETS drconfiglib
   EXPORT ${exported_targets_name}
@@ -129,8 +149,7 @@ DR_install(TARGETS drconfiglib
   LIBRARY DESTINATION ${INSTALL_LIB_BASE} # .so
   ARCHIVE DESTINATION ${INSTALL_LIB_BASE} # .lib
   )
-export(TARGETS drconfiglib FILE
-  ${PROJECT_BINARY_DIR}/cmake/${exported_targets_name}.cmake APPEND)
+DR_export_target(drconfiglib)
 # drinject.exe and company need a copy in the bin dir
 DR_install(TARGETS drconfiglib DESTINATION ${INSTALL_BIN})
 

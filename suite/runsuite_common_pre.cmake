@@ -1,5 +1,5 @@
 # **********************************************************
-# Copyright (c) 2011 Google, Inc.    All rights reserved.
+# Copyright (c) 2011-2012 Google, Inc.    All rights reserved.
 # Copyright (c) 2009-2010 VMware, Inc.    All rights reserved.
 # **********************************************************
 
@@ -66,12 +66,15 @@ set(arg_include "")   # cmake file to include up front
 set(arg_preload "")   # cmake file to include prior to each 32-bit build
 set(arg_preload64 "") # cmake file to include prior to each 64-bit build
 set(arg_ssh OFF)      # running over cygwin ssh: disable pdbs
-set(arg_use_nmake OFF)# use nmake instead of devenv
+set(arg_use_nmake OFF)# use nmake instead of visual studio
+set(arg_use_msbuild OFF) # use msbuild instead of devenv for visual studio
 if (UNIX)
   set(arg_use_make ON)  # use unix make
 else (UNIX)
-  set(arg_use_make OFF) # use unix make instead of devenv
+  set(arg_use_make OFF) # use unix make instead of visual studio
 endif (UNIX)
+set(arg_use_ninja OFF)  # use ninja
+set(arg_generator "") # specify precise cmake generator (minus any "Win64")
 set(arg_long OFF)     # whether to run the long suite
 set(arg_already_built OFF) # for testing w/ already-built suite
 set(arg_exclude "")   # regex of tests to exclude
@@ -98,8 +101,17 @@ foreach (arg ${CTEST_SCRIPT_ARG})
   if (${arg} STREQUAL "use_nmake")
     set(arg_use_nmake ON)
   endif ()
+  if (${arg} STREQUAL "use_msbuild")
+    set(arg_use_msbuild ON)
+  endif ()
   if (${arg} STREQUAL "use_make")
     set(arg_use_make ON)
+  endif ()
+  if (${arg} STREQUAL "use_ninja")
+    set(arg_use_ninja ON)
+  endif ()
+  if (${arg} MATCHES "^generator=")
+    string(REGEX REPLACE "^generator=" "" arg_generator "${arg}")
   endif ()
   if (${arg} STREQUAL "long")
     set(arg_long ON)
@@ -132,6 +144,13 @@ if (arg_use_make)
     message(FATAL_ERROR "make requested but make not found")
   endif (NOT MAKE_COMMAND)
 endif (arg_use_make)
+
+if (arg_use_ninja)
+  find_program(NINJA_COMMAND ninja DOC "ninja command")
+  if (NOT NINJA_COMMAND)
+    message(FATAL_ERROR "ninja requested but ninja not found")
+  endif (NOT NINJA_COMMAND)
+endif (arg_use_ninja)
 
 if (arg_long)
   set(TEST_LONG ON)
@@ -199,6 +218,39 @@ else (arg_nightly)
   file(MAKE_DIRECTORY "${CTEST_DROP_SITE}:${CTEST_DROP_LOCATION}")
 endif (arg_nightly)
 
+# Find the number of CPUs on the current system.
+# Cribbed from http://www.kitware.com/blog/home/post/63
+if(NOT DEFINED PROCESSOR_COUNT)
+  # Unknown:
+  set(PROCESSOR_COUNT 4)  # Guess
+
+  # Linux:
+  set(cpuinfo_file "/proc/cpuinfo")
+  if(EXISTS "${cpuinfo_file}")
+    file(STRINGS "${cpuinfo_file}" procs REGEX "^processor.: [0-9]+$")
+    list(LENGTH procs PROCESSOR_COUNT)
+  endif()
+
+  # Mac:
+  if(APPLE)
+    find_program(cmd_sys_pro "system_profiler")
+    if(cmd_sys_pro)
+      execute_process(COMMAND ${cmd_sys_pro} OUTPUT_VARIABLE info)
+      string(REGEX REPLACE "^.*Total Number Of Cores: ([0-9]+).*$" "\\1"
+        PROCESSOR_COUNT "${info}")
+    endif()
+  endif()
+
+  # Windows:
+  if(WIN32)
+    if ($ENV{NUMBER_OF_PROCESSORS})
+      set(PROCESSOR_COUNT "$ENV{NUMBER_OF_PROCESSORS}")
+    endif ()
+  endif()
+endif()
+
+math(EXPR PROCESSOR_COUNT "${PROCESSOR_COUNT} + 2")
+
 # CTest goes and does our builds and then wants to configure
 # and build again and complains there's no top-level setting of
 # CTEST_BINARY_DIRECTORY: 
@@ -208,7 +260,41 @@ set(CTEST_CMAKE_COMMAND "${CMAKE_EXECUTABLE_NAME}")
 # outer file should set CTEST_PROJECT_NAME
 set(CTEST_COMMAND "${CTEST_EXECUTABLE_NAME}")
 
-if (arg_use_make)
+# Detect if the kernel is ia32 or x64.  If the kernel is ia32, there's no sense
+# in trying to run any x64 code.  On Windows, the x64 toolchain is built as x64
+# code, so we can't even build.  On Linux, it's possible to have an ia32
+# toolchain that targets x64, but we don't currently support it.
+if (NOT DEFINED KERNEL_IS_X64)  # Allow variable override.
+  if (WIN32)
+    # Check both PROCESSOR_ARCHITECTURE and PROCESSOR_ARCHITEW6432 in case CMake
+    # was built x64.
+    if ("$ENV{PROCESSOR_ARCHITECTURE}" MATCHES "AMD64" OR
+        "$ENV{PROCESSOR_ARCHITEW6432}" MATCHES "AMD64")
+      set(KERNEL_IS_X64 ON)
+    else ()
+      set(KERNEL_IS_X64 OFF)
+    endif ()
+  else ()
+    # uname -m is what the kernel supports.
+    execute_process(COMMAND uname -m
+      OUTPUT_VARIABLE machine
+      RESULT_VARIABLE cmd_result)
+    # If for some reason uname fails (not on PATH), assume the kernel is x64
+    # anyway.
+    if (cmd_result OR "${machine}" MATCHES "x86_64")
+      set(KERNEL_IS_X64 ON)
+    else ()
+      set(KERNEL_IS_X64 OFF)
+    endif ()
+  endif ()
+endif ()
+if (NOT KERNEL_IS_X64)
+  message("WARNING: Kernel is not x64, skipping x64 builds")
+endif ()
+
+if (arg_use_ninja)
+  set(CTEST_CMAKE_GENERATOR "Ninja")
+elseif (arg_use_make)
   set(CTEST_CMAKE_GENERATOR "Unix Makefiles")
   find_program(MAKE_COMMAND make DOC "make command")
   if (have_cygwin)
@@ -216,29 +302,70 @@ if (arg_use_make)
     # can't repro w/ VERBOSE=1
     set(CTEST_BUILD_COMMAND_BASE "${MAKE_COMMAND} -j2")
   else (have_cygwin)
-    set(CTEST_BUILD_COMMAND_BASE "${MAKE_COMMAND} -j5")
+    set(CTEST_BUILD_COMMAND_BASE "${MAKE_COMMAND} -j${PROCESSOR_COUNT}")
   endif (have_cygwin)
 elseif (arg_use_nmake)
   set(CTEST_CMAKE_GENERATOR "NMake Makefiles")
-else (arg_use_make)
-  # we don't yet support VS2010 (i#401) so prefer the others
-  get_filename_component(vs_dir [HKEY_LOCAL_MACHINE\\SOFTWARE\\Microsoft\\VisualStudio\\9.0\\Setup\\VS;ProductDir] REALPATH)
-  # on failure getting weird results: "c:/registry", so we assume will have Studio
-  if ("${vs_dir}" MATCHES "Studio")
-    set(vs_generator "Visual Studio 9 2008")
+else ()
+  if (arg_generator)
+    set(vs_generator ${arg_generator})
   else ()
-    get_filename_component(vs_dir [HKEY_LOCAL_MACHINE\\SOFTWARE\\Microsoft\\VisualStudio\\8.0\\Setup\\VS;ProductDir] REALPATH)
+    # Prefer the most recent version that's installed.  The user can use
+    # generator= to request an older version.
+    get_filename_component(vs_dir [HKEY_LOCAL_MACHINE\\SOFTWARE\\Microsoft\\VisualStudio\\11.0\\Setup\\VS;ProductDir] REALPATH)
+    # on failure getting weird results: "c:/registry", so we assume will have Studio
     if ("${vs_dir}" MATCHES "Studio")
-      set(vs_generator "Visual Studio 8 2005")
+      set(vs_generator "Visual Studio 11")
     else ()
       get_filename_component(vs_dir [HKEY_LOCAL_MACHINE\\SOFTWARE\\Microsoft\\VisualStudio\\10.0\\Setup\\VS;ProductDir] REALPATH)
       if ("${vs_dir}" MATCHES "Studio")
         set(vs_generator "Visual Studio 10")
+      else ()
+        get_filename_component(vs_dir [HKEY_LOCAL_MACHINE\\SOFTWARE\\Microsoft\\VisualStudio\\9.0\\Setup\\VS;ProductDir] REALPATH)
+        if ("${vs_dir}" MATCHES "Studio")
+          set(vs_generator "Visual Studio 9 2008")
+        else ()
+          get_filename_component(vs_dir [HKEY_LOCAL_MACHINE\\SOFTWARE\\Microsoft\\VisualStudio\\8.0\\Setup\\VS;ProductDir] REALPATH)
+          if ("${vs_dir}" MATCHES "Studio")
+            set(vs_generator "Visual Studio 8 2005")
+          else ()
+            message(FATAL_ERROR "Cannot determine Visual Studio version")
+          endif ()
+        endif ()
       endif ()
     endif ()
   endif ()
   message("Using ${vs_generator} generators")
-endif (arg_use_make)
+  if (arg_use_msbuild)
+    find_program(MSBUILD_PROGRAM msbuild)
+    if (MSBUILD_PROGRAM)
+      set(base_cache "${base_cache}
+        CMAKE_MAKE_PROGRAM:FILEPATH=${MSBUILD_PROGRAM}")
+      # Unfortunately we have to provide all the args (setting CMAKE_MAKE_PROGRAM
+      # doesn't do it for ctest builds).  We want ALL_BUILD.vcproj for pre-VS2010
+      # and ALL_BUILD.vcxproj for VS2010.
+      if (vs_generator MATCHES "Visual Studio 1.")
+        set(proj_file "ALL_BUILD.vcxproj")
+      else ()
+        set(proj_file "ALL_BUILD.vcproj")
+      endif ()
+      # Request parallel build on all available cores (sequential by default: i#800)
+      # via "/m".
+      # Configuration will be adjusted per build below.
+      set(CTEST_BUILD_COMMAND
+        "${MSBUILD_PROGRAM} ${proj_file} /p:Configuration=REPLACE_CONFIG /m")
+    else (MSBUILD_PROGRAM)
+      message("WARNING: cannot find msbuild; disabling")
+      set(arg_use_msbuild OFF)
+    endif (MSBUILD_PROGRAM)
+  endif (arg_use_msbuild)
+  if ("${cmake_ver_string}" STREQUAL "2.8.4")
+    # 2.8.4 uses msbuild by default.
+    # XXX: any way to tell other than matching version #?
+    # Request parallel build (sequential by default: i#800)
+    set(extra_build_args "/m")
+  endif ()
+endif ()
 
 function(get_default_config config builddir)
   file(READ "${builddir}/CMakeCache.txt" cache)
@@ -257,7 +384,13 @@ endfunction(get_default_config)
 function(testbuild_ex name is64 initial_cache test_only_in_long 
     add_to_package build_args)
   set(CTEST_BUILD_NAME "${name}")
-  if (NOT arg_use_nmake AND NOT arg_use_make)
+
+  # Skip x64 builds on a true ia32 machine.
+  if (is64 AND NOT KERNEL_IS_X64)
+    return()
+  endif ()
+
+  if (NOT arg_use_nmake AND NOT arg_use_make AND NOT arg_use_ninja)
     # we need a separate generator for 64-bit as well as the PATH
     # env var changes below (since we run cl directly)
     if (is64)
@@ -293,7 +426,10 @@ function(testbuild_ex name is64 initial_cache test_only_in_long
       # in the 2.8 release; going ahead and setting now.
       # For Linux these messages make little perf difference, and can help
       # diagnose errors or watch progress.
-      set(os_specific_defines "CMAKE_RULE_MESSAGES:BOOL=OFF")
+      # The messages only apply to Makefile generators, not Visual Studio.
+      if (NOT "${CTEST_CMAKE_GENERATOR}" MATCHES "Visual Studio")
+        set(os_specific_defines "CMAKE_RULE_MESSAGES:BOOL=OFF")
+      endif ()
     else (WIN32)
       set(os_specific_defines "")
     endif (WIN32)
@@ -315,6 +451,7 @@ function(testbuild_ex name is64 initial_cache test_only_in_long
       # FIXME: would be nice to have case-insensitive regex flag!
       # For now hardcoding VC, Bin, amd64
       if (is64)
+        set(ENV{ASM} "ml64")
         if (NOT "$ENV{LIB}" MATCHES "[Aa][Mm][Dd]64")
           # Note that we can't set ENV{PATH} as the output var of the replace:
           # it has to be its own set().
@@ -336,6 +473,7 @@ function(testbuild_ex name is64 initial_cache test_only_in_long
           set(ENV{LIBPATH} "${newlibpath}")
         endif (NOT "$ENV{LIB}" MATCHES "[Aa][Mm][Dd]64")
       else (is64)
+        set(ENV{ASM} "ml")
         if ("$ENV{LIB}" MATCHES "[Aa][Mm][Dd]64")
           string(REGEX REPLACE "(VC[/\\\\][Bb][Ii][Nn][/\\\\])[Aa][Mm][Dd]64" "\\1"
             newpath "$ENV{PATH}")
@@ -385,9 +523,14 @@ function(testbuild_ex name is64 initial_cache test_only_in_long
           get_default_config(defconfig "${CTEST_BINARY_DIRECTORY}")
           set(CTEST_BUILD_CONFIGURATION "${defconfig}")
           message("building default config \"${defconfig}\"")
-          if (NOT "${build_args}" STREQUAL "")
-            set(CTEST_BUILD_FLAGS "-- ${build_args}")
+          if (NOT "${build_args}" STREQUAL "" OR
+              NOT "${extra_build_args}" STREQUAL "")
+            set(CTEST_BUILD_FLAGS "-- ${extra_build_args} ${build_args}")
           endif ()
+          if (arg_use_msbuild)
+            string(REPLACE "REPLACE_CONFIG" "${defconfig}" CTEST_BUILD_COMMAND
+              "${CTEST_BUILD_COMMAND}")
+          endif (arg_use_msbuild)
         else ()
           set(CTEST_BUILD_FLAGS "${build_args}")
         endif ()
@@ -408,17 +551,17 @@ function(testbuild_ex name is64 initial_cache test_only_in_long
       # to run a subset of tests add an INCLUDE regexp to ctest_test.  e.g.:
       #   INCLUDE broadfun
       if (NOT "${arg_exclude}" STREQUAL "")
-        if ("${cmake_ver_string}" STRLESS "2.6.3")
+        if ("${cmake_ver_string}" VERSION_LESS "2.6.3")
           # EXCLUDE arg to ctest_test() is not available so we edit the list of tests
           file(READ "${CTEST_BINARY_DIRECTORY}/tests/CTestTestfile.cmake" testlist)
           string(REGEX REPLACE "ADD_TEST\\((${arg_exclude}) [^\\)]*\\)\n" ""
             testlist "${testlist}")
           file(WRITE "${CTEST_BINARY_DIRECTORY}/tests/CTestTestfile.cmake" "${testlist}")
-        else ("${cmake_ver_string}" STRLESS "2.6.3")
+        else ("${cmake_ver_string}" VERSION_LESS "2.6.3")
           set(ctest_test_args ${ctest_test_args} EXCLUDE ${arg_exclude})
-        endif ("${cmake_ver_string}" STRLESS "2.6.3")
+        endif ("${cmake_ver_string}" VERSION_LESS "2.6.3")
       endif (NOT "${arg_exclude}" STREQUAL "")
-      if ("${cmake_ver_string}" STRLESS "2.8.")
+      if ("${cmake_ver_string}" VERSION_LESS "2.8.")
         # Parallel tests not supported
         set(RUN_PARALLEL OFF)
       elseif (WIN32 AND TEST_LONG)
@@ -433,7 +576,8 @@ function(testbuild_ex name is64 initial_cache test_only_in_long
         # i#111: run tests in parallel, supported on CTest 2.8.0+
         # Note that adding -j to CMAKE_COMMAND does not work, though invoking
         # this script with -j does work, but we want parallel by default.
-        ctest_test(BUILD "${CTEST_BINARY_DIRECTORY}" PARALLEL_LEVEL 5)
+        ctest_test(BUILD "${CTEST_BINARY_DIRECTORY}"
+          PARALLEL_LEVEL ${PROCESSOR_COUNT})
       else (RUN_PARALLEL)
         ctest_test(BUILD "${CTEST_BINARY_DIRECTORY}")
       endif (RUN_PARALLEL)

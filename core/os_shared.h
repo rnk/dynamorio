@@ -1,5 +1,5 @@
 /* **********************************************************
- * Copyright (c) 2010-2012 Google, Inc.  All rights reserved.
+ * Copyright (c) 2010-2013 Google, Inc.  All rights reserved.
  * Copyright (c) 2003-2010 VMware, Inc.  All rights reserved.
  * **********************************************************/
 
@@ -58,9 +58,13 @@ void os_tls_init(void);
  */
 void os_tls_exit(struct _local_state_t *local_state, bool other_thread);
 void os_thread_init(dcontext_t *dcontext);
-void os_thread_exit(dcontext_t *dcontext);
+void os_thread_exit(dcontext_t *dcontext, bool other_thread);
+
+/* must only be called for the executing thread */
 void os_thread_under_dynamo(dcontext_t *dcontext);
+/* must only be called for the executing thread */
 void os_thread_not_under_dynamo(dcontext_t *dcontext);
+
 bool os_take_over_all_unknown_threads(dcontext_t *dcontext);
 
 void os_heap_init(void);
@@ -85,6 +89,12 @@ enum {
     HEAP_ERROR_NOT_AT_PREFERRED = 2,
 };
 typedef uint heap_error_code_t;
+
+/* For dr_raw_mem_alloc, try to allocate memory at preferred address. */
+void *os_raw_mem_alloc(void *preferred, size_t size, uint prot,
+                       heap_error_code_t *error_code);
+/* For dr_raw_mem_free, free memory allocated from os_raw_mem_alloc */
+void os_raw_mem_free(void *p, size_t size, heap_error_code_t *error_code);
 
 /* Reserve size bytes of virtual address space in one piece without committing swap
  * space for it.  If preferred is non-NULL then memory will be reserved at that address
@@ -170,6 +180,8 @@ os_tls_cfree(uint offset, uint num_slots);
 #endif
 
 bool
+os_should_swap_state(void);
+bool
 os_using_app_state(dcontext_t *dcontext);
 void
 os_swap_context(dcontext_t *dcontext, bool to_app);
@@ -222,7 +234,9 @@ enum {
     DUMPCORE_DEADLOCK           = 0x0004,
     DUMPCORE_ASSERTION          = 0x0008,
     DUMPCORE_FATAL_USAGE_ERROR  = 0x0010,
-    DUMPCORE_UNSUPPORTED_APP    = 0x0020,
+#ifdef CLIENT_INTERFACE
+    DUMPCORE_CLIENT_EXCEPTION   = 0x0020,
+#endif
     DUMPCORE_TIMEOUT            = 0x0040,
     DUMPCORE_CURIOSITY          = 0x0080,
 #ifdef HOT_PATCHING_INTERFACE       /* Part of fix for 5357 & 5988. */
@@ -253,6 +267,7 @@ enum {
      * implement. */
     DUMPCORE_APP_EXCEPTION      = 0x40000,
     DUMPCORE_TRY_EXCEPT         = 0x80000, /* even when we do have a handler */
+    DUMPCORE_UNSUPPORTED_APP    = 0x100000,
 
 #ifdef LINUX
     DUMPCORE_OPTION_PAUSE       = DUMPCORE_WAIT_FOR_DEBUGGER  |
@@ -261,6 +276,9 @@ enum {
                                   DUMPCORE_DEADLOCK           |
                                   DUMPCORE_ASSERTION          |
                                   DUMPCORE_FATAL_USAGE_ERROR  |
+# ifdef CLIENT_INTERFACE
+                                  DUMPCORE_CLIENT_EXCEPTION   |
+# endif
                                   DUMPCORE_UNSUPPORTED_APP    |
                                   DUMPCORE_TIMEOUT            |
                                   DUMPCORE_CURIOSITY          |
@@ -292,6 +310,15 @@ void os_syslog(syslog_event_type_t priority, uint message_id,
 typedef void * dr_auxlib_handle_t;
 /** An exported routine in a loaded client auxiliary library. */
 typedef void (*dr_auxlib_routine_ptr_t)();
+#if defined(WINDOWS) && !defined(X64)
+/**
+ * A handle to a loaded 64-bit client auxiliary library.  This is a different
+ * type than module_handle_t and is not necessarily the base address.
+ */
+typedef uint64 dr_auxlib64_handle_t;
+/** An exported routine in a loaded 64-bit client auxiliary library. */
+typedef uint64 dr_auxlib64_routine_ptr_t;
+#endif
 /* DR_API EXPORT END */
 
 /* Note that this is NOT identical to module_handle_t: on Linux this
@@ -303,6 +330,10 @@ typedef void * shlib_handle_t;
 typedef void (*shlib_routine_ptr_t)();
 
 shlib_handle_t load_shared_library(const char *name);
+#elif defined(WINDOWS) && !defined(X64)
+/* Used for non-CLIENT_INTERFACE as well */
+typedef uint64 dr_auxlib64_handle_t;
+typedef uint64 dr_auxlib64_routine_ptr_t;
 #endif
 
 #if defined(CLIENT_INTERFACE)
@@ -329,6 +360,18 @@ char *get_dynamorio_library_path(void);
 #define DR_MEMPROT_READ  0x01 /**< Read privileges. */
 #define DR_MEMPROT_WRITE 0x02 /**< Write privileges. */
 #define DR_MEMPROT_EXEC  0x04 /**< Execute privileges. */
+#ifdef WINDOWS
+# define DR_MEMPROT_GUARD 0x08 /**< Guard page (Windows only) */
+#endif
+/**
+ * DR's default cache consistency strategy modifies the page protection of
+ * pages containing code, making them read-only.  It pretends on application
+ * and client queries that the application is writable.  However, a client
+ * that writes to the memory will fault, and should check this flag to determine
+ * whether doing so is safe.  If the application writes to such memory, DR
+ * handles it automatically.
+ */
+#define DR_MEMPROT_PRETEND_WRITE 0x10
 
 /**
  * Flags describing memory used by dr_query_memory_ex().
@@ -359,6 +402,9 @@ typedef struct _dr_mem_info_t {
 #define MEMPROT_READ  DR_MEMPROT_READ
 #define MEMPROT_WRITE DR_MEMPROT_WRITE
 #define MEMPROT_EXEC  DR_MEMPROT_EXEC
+#ifdef WINDOWS
+# define MEMPROT_GUARD DR_MEMPROT_GUARD
+#endif
 bool get_memory_info(const byte *pc, byte **base_pc, size_t *size, uint *prot);
 bool query_memory_ex(const byte *pc, OUT dr_mem_info_t *info);
 #ifdef LINUX
@@ -367,6 +413,15 @@ bool query_memory_ex_from_os(const byte *pc, OUT dr_mem_info_t *info);
 #endif
 
 bool get_stack_bounds(dcontext_t *dcontext, byte **base, byte **top);
+
+/* Does a safe_read of *src_ptr into dst_var, returning true for success.  We
+ * assert that the size of dst and src match.  The other advantage over plain
+ * safe_read is that the caller doesn't need to pass sizeof(dst), which is
+ * useful for repeated small memory accesses.
+ */
+#define SAFE_READ_VAL(dst_var, src_ptr) \
+    (ASSERT(sizeof(dst_var) == sizeof(*src_ptr)), \
+     safe_read(src_ptr, sizeof(dst_var), &dst_var))
 
 bool is_readable_without_exception(const byte *pc, size_t size);
 bool is_readable_without_exception_query_os(byte *pc, size_t size);
@@ -578,7 +633,7 @@ bool remove_from_all_memory_areas(app_pc start, app_pc end);
 /* defaults to read only access, if write is not set ignores others */
 #define OS_OPEN_READ        0x01
 #define OS_OPEN_WRITE       0x02
-#define OS_OPEN_APPEND      0x04
+#define OS_OPEN_APPEND      0x04 /* if not set, the file is truncated */
 #define OS_OPEN_REQUIRE_NEW 0x08
 #define OS_EXECUTE          0x10 /* only used on win32, currently */
 #define OS_SHARE_DELETE     0x20 /* only used on win32, currently */
@@ -767,15 +822,13 @@ void wait_for_event(event_t e);
 timestamp_t
 get_timer_frequency(void);
 
-/* On Linux, returns the number of seconds since the Epoch (Jan 1, 1970).
- * On Windows, returns the number of seconds since Jan 1, 1600 (this is
+/* Returns the number of seconds since Jan 1, 1601 (this is
  * the current UTC time).
  */
 uint
 query_time_seconds(void);
 
-/* On Linux, returns the number of milliseconds since the Epoch (Jan 1, 1970).
- * On Windows, returns the number of milliseconds since Jan 1, 1600 (this is
+/* Returns the number of milliseconds since Jan 1, 1601 (this is
  * the current UTC time).
  */
 uint64
@@ -921,7 +974,7 @@ hook_text(byte *hook_code_buf, const app_pc image_addr,
           intercept_function_t hook_func, const void *callee_arg, 
           const after_intercept_action_t action_after,
           const bool abort_if_hooked, const bool ignore_cti,
-          byte **app_code_copy_p, byte **alt_exit_cti_p);
+          byte **app_code_copy_p, byte **alt_exit_tgt_p);
 void
 unhook_text(byte *hook_code_buf, app_pc image_addr);
 void
@@ -936,21 +989,30 @@ os_check_option_compatibility(void);
 
 /* Introduced as part of PR 250294 - 64-bit hook reachability. */
 #define LANDING_PAD_AREA_SIZE   64*1024
+#define MAX_HOOK_DISPLACED_LENGTH (JMP_LONG_LENGTH + MAX_INSTR_LENGTH)
 #ifdef X64
 /* 8 bytes for the 64-bit abs addr, 6 for abs ind jmp to the trampoline and 5
- * for return jmp back to the instruction after the hook. */
-# define LANDING_PAD_SIZE    19
+ * for return jmp back to the instruction after the hook.  Plus displaced instr(s).
+ */
+# define LANDING_PAD_SIZE    (19 + MAX_HOOK_DISPLACED_LENGTH)
 #else
 /* 5 bytes each for the two relative jumps (one to the trampoline and the 
- * other back to instruction after hook. */
-# define LANDING_PAD_SIZE    10
+ * other back to instruction after hook.  Plus displaced instr(s).
+ */
+# define LANDING_PAD_SIZE    (10 + MAX_HOOK_DISPLACED_LENGTH)
 #endif
 byte *alloc_landing_pad(app_pc addr_to_hook);
+
+bool
+trim_landing_pad(byte *lpad_start, size_t space_used);
+
 void landing_pads_to_executable_areas(bool add);
 
 /* in loader_shared.c */
 app_pc load_private_library(const char *filename);
 bool unload_private_library(app_pc modbase);
+/* searches in standard paths instead of requiring abs path */
+app_pc locate_and_load_private_library(const char *name);
 void loader_init(void);
 void loader_exit(void);
 void loader_thread_init(dcontext_t *dcontext);

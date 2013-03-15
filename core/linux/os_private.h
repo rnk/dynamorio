@@ -41,7 +41,9 @@
 
 #include <signal.h> /* for stack_t */
 #include "module.h" /* for os_module_data_t */
+#include "instr.h" /* for reg_id_t */
 #include <sys/time.h> /* struct itimerval */
+#include "dr_config.h" /* for dr_platform_t */
 
 /* for inline asm */
 #ifdef X64
@@ -65,6 +67,9 @@
                              CLONE_THREAD|CLONE_SYSVSEM|CLONE_SETTLS| \
                              CLONE_PARENT_SETTID|CLONE_CHILD_CLEARTID)
 
+/* Maximum number of arguments to Linux syscalls. */
+enum { MAX_SYSCALL_ARGS = 6 };
+
 /* thread-local data that's os-private, for modularity */
 typedef struct _os_thread_data_t {
     /* store stack info at thread startup, since stack can get fragmented in
@@ -86,6 +91,11 @@ typedef struct _os_thread_data_t {
      */
     mutex_t suspend_lock;
     int suspend_count;
+
+    /* Thread synchronization data held across a fork. */
+    thread_record_t **fork_threads;
+    int fork_num_threads;
+
     /* We would use event_t's here except we can't use mutexes in
      * our signal handler 
      */
@@ -120,8 +130,32 @@ typedef struct _os_thread_data_t {
     void *app_thread_areas; /* data structure for app's thread area info */
 } os_thread_data_t;
 
+enum { ARGC_PTRACE_SENTINEL = -1 };
+
+/* This data is pushed on the stack by the ptrace injection code. */
+typedef struct ptrace_stack_args_t {
+    ptr_int_t argc;              /* Set to ARGC_PTRACE_SENTINEL */
+    priv_mcontext_t mc;          /* Registers at attach time */
+    char home_dir[MAXIMUM_PATH]; /* In case the user of the injectee is not us. */
+} ptrace_stack_args_t;
+
+
 /* in os.c */
 void os_thread_take_over(priv_mcontext_t *mc);
+
+void
+set_executable_path(const char *);
+
+uint
+memprot_to_osprot(uint prot);
+
+bool
+mmap_syscall_succeeded(byte *retval);
+
+bool
+os_files_same(const char *path1, const char *path2);
+
+extern const reg_id_t syscall_regparms[MAX_SYSCALL_ARGS];
 
 /* in signal.c */
 struct _kernel_sigaction_t;
@@ -130,7 +164,7 @@ typedef struct _kernel_sigaction_t kernel_sigaction_t;
 void signal_init(void);
 void signal_exit(void);
 void signal_thread_init(dcontext_t *dcontext);
-void signal_thread_exit(dcontext_t *dcontext);
+void signal_thread_exit(dcontext_t *dcontext, bool other_thread);
 void handle_clone(dcontext_t *dcontext, uint flags);
 bool handle_sigaction(dcontext_t *dcontext, int sig,
                       const kernel_sigaction_t *act, 
@@ -204,6 +238,7 @@ bool module_read_program_header(app_pc base,
 
 void os_request_live_coredump(const char *msg);
 bool file_is_elf64(file_t f);
+bool get_elf_platform(file_t f, dr_platform_t *platform);
 
 /* helper routines for using futex(2). See i#96/PR 295561. in os.c */
 ptr_int_t 

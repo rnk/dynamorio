@@ -1,5 +1,5 @@
 /* **********************************************************
- * Copyright (c) 2011-2012 Google, Inc.  All rights reserved.
+ * Copyright (c) 2011-2013 Google, Inc.  All rights reserved.
  * **********************************************************/
 
 /*
@@ -65,6 +65,9 @@
 /* check if a single bit is set in var */
 #define TEST TESTANY
 
+/* drsym_info_t.name has 1 char in the struct */
+#define NAME_EXTRA_SZ(full_sz) ((full_sz) - 1)
+
 /* Memory pool that uses externally allocated memory.
  */
 typedef struct _mempool_t {
@@ -115,18 +118,31 @@ drsym_unix_lookup_symbol(void *moddata, const char *symbol, size_t *modoffs OUT,
                          uint flags);
 
 drsym_error_t
-drsym_unix_enumerate_symbols(void *moddata, drsym_enumerate_cb callback, void *data,
-                             uint flags);
+drsym_unix_enumerate_symbols(void *moddata, drsym_enumerate_cb callback,
+                             drsym_enumerate_ex_cb callback_ex, size_t info_size,
+                             void *data, uint flags);
 
 size_t
 drsym_unix_demangle_symbol(char *dst OUT, size_t dst_sz, const char *mangled,
                            uint flags);
 
 drsym_error_t
+drsym_unix_get_type(void *mod_in, size_t modoffs, uint levels_to_expand,
+                    char *buf, size_t buf_sz, drsym_type_t **type OUT);
+
+drsym_error_t
 drsym_unix_get_func_type(void *moddata, size_t modoffs, char *buf,
                          size_t buf_sz, drsym_func_type_t **func_type OUT);
 
 drsym_error_t
+drsym_unix_expand_type(const char *modpath, uint type_id, uint levels_to_expand,
+                       char *buf, size_t buf_sz,
+                       drsym_type_t **expanded_type OUT);
+
+drsym_error_t
 drsym_unix_get_module_debug_kind(void *moddata, drsym_debug_kind_t *kind OUT);
+
+drsym_error_t
+drsym_unix_enumerate_lines(void *mod_in, drsym_enumerate_lines_cb callback, void *data);
 
 #endif /* DRSYMS_PRIVATE_H */

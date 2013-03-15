@@ -1,5 +1,5 @@
 /* **********************************************************
- * Copyright (c) 2011 Google, Inc.  All rights reserved.
+ * Copyright (c) 2011-2012 Google, Inc.  All rights reserved.
  * Copyright (c) 2003-2010 VMware, Inc.  All rights reserved.
  * **********************************************************/
 
@@ -44,6 +44,9 @@
 # include <sys/mman.h>
 # include <stdlib.h> /* abort */
 # include <errno.h>
+# include <signal.h>
+# include <ucontext.h>
+# include <unistd.h>
 #else
 # include <windows.h>
 # include <process.h> /* _beginthreadex */
@@ -54,6 +57,18 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+#define BUFFER_SIZE_BYTES(buf)      sizeof(buf)
+#define BUFFER_SIZE_ELEMENTS(buf)   (BUFFER_SIZE_BYTES(buf) / sizeof(buf[0]))
+#define BUFFER_LAST_ELEMENT(buf)    buf[BUFFER_SIZE_ELEMENTS(buf) - 1]
+#define NULL_TERMINATE_BUFFER(buf)  BUFFER_LAST_ELEMENT(buf) = 0
+
+/* check if all bits in mask are set in var */
+#define TESTALL(mask, var) (((mask) & (var)) == (mask))
+/* check if any bit in mask is set in var */
+#define TESTANY(mask, var) (((mask) & (var)) != 0)
+/* check if a single bit is set in var */
+#define TEST TESTANY
 
 #ifdef USE_DYNAMO
 /* to avoid non-api tests depending on dr_api headers we rely on test
@@ -96,9 +111,11 @@ typedef __int64 int64;
 /* Function attributes. */
 #ifdef WINDOWS
 # define EXPORT __declspec(dllexport)
+# define IMPORT __declspec(dllimport)
 # define NOINLINE __declspec(noinline)
 #else /* LINUX */
 # define EXPORT __attribute__((visibility("default")))
+# define IMPORT extern
 # define NOINLINE __attribute__((noinline))
 #endif
 
@@ -148,19 +165,25 @@ typedef enum {
     COPY_CROSS_PAGE,
 } Copy_Mode;
 
-#define ALIGN_FORWARD(x, alignment) ((((uint)x) + ((alignment)-1)) & (~((alignment)-1)))
-#define ALIGN_BACKWARD(x, alignment) (((uint)x) & (~((alignment)-1)))
+#define ALIGN_BACKWARD(x, alignment) \
+        (((ptr_uint_t)x) & (~((ptr_uint_t)(alignment)-1)))
+#define ALIGN_FORWARD(x, alignment) \
+        ((((ptr_uint_t)x) + (((ptr_uint_t)alignment)-1)) & \
+         (~(((ptr_uint_t)alignment)-1)))
+#define ALIGNED(x, alignment) ((((ptr_uint_t)x) & ((alignment)-1)) == 0)
 
-#ifndef true
-# define true  (1)
-# define false (0)
+#ifndef __cplusplus
+# ifndef true
+#  define true  (1)
+#  define false (0)
+# endif
 #endif
 
 #if VERBOSE
 # define VERBOSE_PRINT print
 #else
 /* FIXME: varargs for windows...for now since we don't care about efficiency we do this: */
-static void VERBOSE_PRINT(char *fmt, ...) {}
+static void VERBOSE_PRINT(const char *fmt, ...) {}
 #endif
 
 #ifdef WINDOWS
@@ -190,18 +213,47 @@ static void VERBOSE_PRINT(char *fmt, ...) {}
 # endif
 #endif
 
+#ifdef LINUX
+# ifdef X64
+#  define SC_XIP rip
+# else
+#  define SC_XIP eip
+# endif
+
+# define ASSERT_NOERR(rc) do {                                 \
+    if (rc) {                                                  \
+        print("%s:%d rc=%d errno=%d %s\n",                     \
+              __FILE__, __LINE__,                              \
+              rc, errno, strerror(errno));                     \
+    }                                                          \
+} while (0);
+
+typedef void (*handler_1_t)(int);
+typedef void (*handler_3_t)(int, struct siginfo *, ucontext_t *);
+
+/* set up signal_handler as the handler for signal "sig" */
+void
+intercept_signal(int sig, handler_3_t handler, bool sigstack);
+#endif
+
+/* for cross-plaform siglongjmp */
+#ifdef LINUX
+# define SIGJMP_BUF sigjmp_buf
+# define SIGSETJMP(buf) sigsetjmp(buf, 1)
+# define SIGLONGJMP(buf, count) siglongjmp(buf, count)
+#else
+# define SIGJMP_BUF jmp_buf
+# define SIGSETJMP(buf) setjmp(buf)
+# define SIGLONGJMP(buf, count) longjmp(buf, count)
+#endif
+
 /* DynamoRIO prints directly by syscall to stderr, so we need to too to get
  * right output, esp. with ctest -j where fprintf(stderr) is buffered.
+ * Likely to crash if the stack is unaligned due to possible floating point args
+ * in XMM registers.
  */
-static void
-print(const char *fmt, ...)
-{
-    va_list ap;
-    va_start(ap, fmt);
-    vfprintf(stderr, fmt, ap);
-    fflush(stderr);
-    va_end(ap);
-}
+void
+print(const char *fmt, ...);
 
 /* just to be sure */
 #define printf do_not_use_printf__use_print
@@ -212,6 +264,23 @@ int code_self_mod(int iters);
 int code_inc(int foo);
 int code_dec(int foo);
 int dummy(void);
+
+/* This function implements a trampoline that portably gets its return address
+ * and tail calls to its first argument, which is a function pointer.  All
+ * other parameters are untouched.  It can be used like so:
+ *
+ * void bar(void);
+ * void foo(void **myretaddr, void *otherfunc) {
+ *     *myretaddr = (void*)otherfunc;
+ * }
+ * int main(void) {
+ *     call_with_retaddr((void*)foo, bar);
+ * }
+ *
+ * Which will cause foo to return to bar.  This is useful in security tests
+ * that want to overwrite their return address.
+ */
+int call_with_retaddr(void *func, ...);
 
 static size_t
 size(Code_Snippet func)
@@ -293,6 +362,10 @@ copy_to_buf_normal(char *buf, size_t buf_len, size_t *copied_len, Code_Snippet f
         break;
     default:
         print("Failed to copy func\n");
+    }
+    if (*(unsigned char*)start == 0xe9/*jmp*/) {
+        /* handle ILT indirection by resolving jmp target */
+        start = (unsigned char*)start + 5 + *(int*)((unsigned char*)start+1);
     }
     if (len > buf_len) {
         print("Insufficient buffer for copy, have %d need %d\n", buf_len, len);
@@ -455,82 +528,17 @@ get_process_mem_stats(HANDLE h, VM_COUNTERS *info)
 }
 #endif
 
-static int
-get_os_prot_word(int prot) 
-{
-#ifdef LINUX
-    return (((prot & ALLOW_READ) != 0) ? PROT_READ : 0) |
-        (((prot & ALLOW_WRITE) != 0) ? PROT_WRITE : 0) |
-        (((prot & ALLOW_EXEC) != 0) ? PROT_EXEC : 0);
-#else
-    if ((prot & ALLOW_WRITE) != 0) {
-        if ((prot & ALLOW_EXEC) != 0) {
-            return PAGE_EXECUTE_READWRITE;
-        } else {
-            return PAGE_READWRITE;
-        }
-    } else {
-        if ((prot & ALLOW_READ) != 0) {
-            if ((prot & ALLOW_EXEC) != 0) {
-                return PAGE_EXECUTE_READ;
-            } else {
-                return PAGE_READONLY;
-            }
-        } else {
-            if ((prot & ALLOW_EXEC) != 0) {
-                return PAGE_EXECUTE;
-            } else {
-                return PAGE_NOACCESS;
-            }
-        }
-    }
-#endif
-}
+int
+get_os_prot_word(int prot);
 
-static char *
-allocate_mem(int size, int prot) 
-{
-#ifdef LINUX
-    return (char *) mmap((void *)0, size, get_os_prot_word(prot), MAP_PRIVATE|MAP_ANON, 0, 0);
-#else
-    return (char *) VirtualAlloc(NULL, size, MEM_COMMIT, get_os_prot_word(prot));
-#endif
-}
+char *
+allocate_mem(int size, int prot);
 
-static void
-protect_mem(void *start, size_t len, int prot) 
-{
-#ifdef LINUX
-    void *page_start = (void *)(((ptr_int_t)start) & ~(PAGE_SIZE -1));
-    int page_len = (len + ((ptr_int_t)start - (ptr_int_t)page_start) + PAGE_SIZE - 1)
-        & ~(PAGE_SIZE - 1);
-    if (mprotect(page_start, page_len, get_os_prot_word(prot)) != 0) {
-        print("Error on mprotect: %d\n", errno);
-    }
-#else
-    DWORD old;
-    if (VirtualProtect(start, len, get_os_prot_word(prot), &old) == 0) {
-        print("Error on VirtualProtect\n");
-    }
-#endif
-}
+void
+protect_mem(void *start, size_t len, int prot);
 
-static void
-protect_mem_check(void *start, size_t len, int prot, int expected)
-{
-#ifdef LINUX 
-    /* FIXME : add check */
-    protect_mem(start, len, prot);
-#else 
-    DWORD old;
-    if (VirtualProtect(start, len, get_os_prot_word(prot), &old) == 0) {
-        print("Error on VirtualProtect\n");
-    }
-    if (old != get_os_prot_word(expected)) {
-        print("Unexpected previous permissions\n");
-    }
-#endif
-}
+void
+protect_mem_check(void *start, size_t len, int prot, int expected);
 
 void *
 reserve_memory(int size);
@@ -544,15 +552,7 @@ test_print(void *buf, int n)
 #ifdef LINUX
 # define USE_USER32()
 # ifdef NEED_HANDLER
-#  include <unistd.h>
-#  include <signal.h>
-#  include <ucontext.h>
-#  include <errno.h>
-#  define INIT() intercept_signal(SIGSEGV, signal_handler)
-
-/* just use single-arg handlers */
-typedef void (*handler_t)(int);
-typedef void (*handler_3_t)(int, struct siginfo *, void *);
+#  define INIT() intercept_signal(SIGSEGV, (handler_3_t) signal_handler, false)
 
 static void
 signal_handler(int sig)
@@ -564,35 +564,6 @@ signal_handler(int sig)
     }
     exit(-1);
 }
-
-#define ASSERT_NOERR(rc) do {                               \
-  if (rc) {                                                 \
-     print("%s:%d rc=%d errno=%d %s\n", __FILE__, __LINE__, \
-           rc, errno, strerror(errno));                     \
-  }                                                         \
-} while (0);
-
-/* set up signal_handler as the handler for signal "sig" */
-static void
-intercept_signal(int sig, handler_t handler)
-{
-    int rc;
-    struct sigaction act;
-
-    act.sa_sigaction = (handler_3_t) handler;
-    /* FIXME: due to DR bug 840 we cannot block ourself in the handler
-     * since the handler does not end in a sigreturn, so we have an empty mask
-     * and we use SA_NOMASK
-     */
-    rc = sigemptyset(&act.sa_mask); /* block no signals within handler */
-    ASSERT_NOERR(rc);
-    /* FIXME: due to DR bug #654 we use SA_SIGINFO -- change it once DR works */
-    act.sa_flags = SA_NOMASK | SA_SIGINFO | SA_ONSTACK;
-    
-    /* arm the signal */
-    rc = sigaction(sig, &act, NULL);
-    ASSERT_NOERR(rc);
-}
 # else
 #  define INIT()
 # endif /* NEED_HANDLER */
@@ -601,6 +572,8 @@ intercept_signal(int sig, handler_t handler)
 
 #  define INIT() set_global_filter()
 
+/* XXX: when updating here, update core/os_exports.h too */
+# define WINDOWS_VERSION_8      62
 # define WINDOWS_VERSION_7      61
 # define WINDOWS_VERSION_VISTA  60
 # define WINDOWS_VERSION_2003   52
@@ -714,6 +687,8 @@ __asm {             \
 #ifdef LINUX
 /* Forward decl for nanosleep. */
 struct timespec;
+
+bool find_dynamo_library(void);
 
 /* Staticly linked versions of libc routines that don't touch globals or errno.
  */

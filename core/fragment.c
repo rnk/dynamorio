@@ -1,5 +1,5 @@
 /* **********************************************************
- * Copyright (c) 2011-2012 Google, Inc.  All rights reserved.
+ * Copyright (c) 2011-2013 Google, Inc.  All rights reserved.
  * Copyright (c) 2000-2010 VMware, Inc.  All rights reserved.
  * **********************************************************/
 
@@ -438,7 +438,7 @@ add_shared_block(shared_entry_t **table, mutex_t *lock, fragment_t *f)
 }
 
 static void
-print_shared_table_stats(shared_entry_t **table, mutex_t *lock, char *name)
+print_shared_table_stats(shared_entry_t **table, mutex_t *lock, const char *name)
 {
     uint i;
     shared_entry_t *e;
@@ -644,7 +644,7 @@ static const fragment_entry_t fe_sentinel = { NULL_TAG, HASHLOOKUP_SENTINEL_STAR
 #define ENTRY_IS_SENTINEL(fe) IBL_ENTRY_IS_SENTINEL(fe)
 #define ENTRY_IS_INVALID(fe)  IBL_ENTRY_IS_INVALID(fe)
 #define IBL_ENTRIES_ARE_EQUAL(fe1,fe2)  ((fe1).tag_fragment == (fe2).tag_fragment)
-#define ENTRIES_ARE_EQUAL(fe1,fe2)  IBL_ENTRIES_ARE_EQUAL(fe1,fe2)
+#define ENTRIES_ARE_EQUAL(table,fe1,fe2)  IBL_ENTRIES_ARE_EQUAL(fe1,fe2)
 #define HASHTABLE_WHICH_HEAP(flags) FRAGTABLE_WHICH_HEAP(flags)
 #define HTLOCK_RANK               table_rwlock
 #define HASHTABLE_ENTRY_STATS 1
@@ -677,7 +677,7 @@ hashtable_ibl_free_entry(dcontext_t *dcontext, ibl_table_t *table,
 #define ENTRY_IS_EMPTY(f)         ((f) == (fragment_t *)&null_fragment)
 #define ENTRY_IS_SENTINEL(f)      ((f) == (fragment_t *)&sentinel_fragment)
 #define ENTRY_IS_INVALID(f)       ((f) == (fragment_t *)&unlinked_fragment)
-#define ENTRIES_ARE_EQUAL(f,g)    ((f) == (g))
+#define ENTRIES_ARE_EQUAL(t,f,g)  ((f) == (g))
 #define HASHTABLE_WHICH_HEAP(flags) FRAGTABLE_WHICH_HEAP(flags)
 #define HTLOCK_RANK               table_rwlock
 
@@ -1263,7 +1263,7 @@ hashtable_fragment_reset(dcontext_t *dcontext, fragment_table_t *table)
 #define ENTRY_IS_EMPTY(f)         APP_PC_ENTRY_IS_EMPTY(f)
 #define ENTRY_IS_SENTINEL(f)      APP_PC_ENTRY_IS_SENTINEL(f)
 #define ENTRY_IS_INVALID(f)       (false) /* no invalid entries */
-#define ENTRIES_ARE_EQUAL(f,g)    ((f) == (g))
+#define ENTRIES_ARE_EQUAL(t,f,g)  ((f) == (g))
 #define HASHTABLE_WHICH_HEAP(flags) (ACCT_AFTER_CALL)
 #define HTLOCK_RANK               app_pc_table_rwlock
 #define HASHTABLE_SUPPORT_PERSISTENCE 1
@@ -2446,8 +2446,10 @@ fragment_create(dcontext_t *dcontext, app_pc tag, int body_size,
     IF_X64(ASSERT_TRUNCATE(f->id, int, next_id));
     DOSTATS({ f->id = (int) next_id; });
     DO_GLOBAL_STATS({
-        if (!TEST(FRAG_IS_TRACE, f->flags))
+        if (!TEST(FRAG_IS_TRACE, f->flags)) {
             RSTATS_INC(num_bbs);
+            IF_X64(if (FRAG_IS_32(f->flags)) STATS_INC(num_32bit_bbs);)
+        }
     });
 #if defined(NATIVE_RETURN) && !defined(DEBUG)
     num_fragments++;
@@ -6421,6 +6423,11 @@ flush_fragments_synch_unlink_priv(dcontext_t *dcontext, app_pc base, size_t size
     if (DYNAMO_OPTION(shared_syscalls) && IS_SHARED_SYSCALL_THREAD_SHARED)
         unlink_shared_syscall(GLOBAL_DCONTEXT);
 #endif
+#ifdef CLIENT_INTERFACE
+    /* i#849: unlink while we clear out ibt */
+    if (!client_ibl_xfer_is_thread_private())
+        unlink_client_ibl_xfer(GLOBAL_DCONTEXT);
+#endif
 
     for (i=0; i<flush_num_threads; i++) {
         tgt_dcontext = flush_threads[i]->dcontext;
@@ -6496,6 +6503,11 @@ flush_fragments_synch_unlink_priv(dcontext_t *dcontext, app_pc base, size_t size
         if (DYNAMO_OPTION(shared_syscalls) && !IS_SHARED_SYSCALL_THREAD_SHARED)
             unlink_shared_syscall(tgt_dcontext);
 #endif
+#ifdef CLIENT_INTERFACE
+        /* i#849: unlink while we clear out ibt */
+        if (client_ibl_xfer_is_thread_private())
+            unlink_client_ibl_xfer(tgt_dcontext);
+#endif
 
         /* Optimization for shared deletion strategy: perform flush work
          * for a thread waiting at a system call on behalf of that thread
@@ -6554,6 +6566,16 @@ flush_fragments_synch_unlink_priv(dcontext_t *dcontext, app_pc base, size_t size
                      */
                     link_shared_syscall(tgt_dcontext);
                 }
+            }
+#endif
+#ifdef CLIENT_INTERFACE
+            if (client_ibl_xfer_is_thread_private()) {
+                if (SHARED_FRAGMENTS_ENABLED()) {
+                    /* see shared_syscall relink comment: we have to delay the relink */
+                    tgt_pt->flush_queue_nonempty = true;
+                    STATS_INC(num_flushq_relink_client_ibl);
+                } else
+                    link_client_ibl_xfer(dcontext);
             }
 #endif
             goto next_thread;
@@ -6699,6 +6721,10 @@ flush_fragments_unlink_shared(dcontext_t *dcontext, app_pc base, size_t size,
     /* Re-link thread-shared shared_syscall */
     if (DYNAMO_OPTION(shared_syscalls) && IS_SHARED_SYSCALL_THREAD_SHARED)
         link_shared_syscall(GLOBAL_DCONTEXT);
+#endif
+#ifdef CLIENT_INTERFACE
+    if (!client_ibl_xfer_is_thread_private())
+        link_client_ibl_xfer(GLOBAL_DCONTEXT);
 #endif
 
     STATS_ADD(num_flushed_fragments, num_flushed);
@@ -7182,7 +7208,7 @@ output_trace_binary(dcontext_t *dcontext, per_thread_t *pt, fragment_t *f,
             p += sizeof(linkcount_type_t);
         }
 #endif
-        if (TEST(LINK_SEPARATE_STUB, l->flags)) {
+        if (TEST(LINK_SEPARATE_STUB, l->flags) && stub_pc != NULL) {
             TRACEBUF_MAKE_ROOM(p, buf, DIRECT_EXIT_STUB_SIZE(f->flags));
             ASSERT(stub_pc < f->start_pc || stub_pc >= f->start_pc+f->size);
             memcpy(p, stub_pc, DIRECT_EXIT_STUB_SIZE(f->flags));
@@ -7560,7 +7586,7 @@ static app_to_cache_t a2c_sentinel = { /*assume invalid*/(app_pc)PTR_UINT_MINUS_
 #define ENTRY_IS_EMPTY(f)         ((f).app == a2c_empty.app)
 #define ENTRY_IS_SENTINEL(f)      ((f).app == a2c_sentinel.app)
 #define ENTRY_IS_INVALID(f)       (false) /* no invalid entries */
-#define ENTRIES_ARE_EQUAL(f,g)    ((f).app == (g).app)
+#define ENTRIES_ARE_EQUAL(t,f,g)  ((f).app == (g).app)
 #define HASHTABLE_WHICH_HEAP(flags) (ACCT_FRAG_TABLE)
 /* note that we give the th table a lower-ranked coarse_th_htable_rwlock */
 #define COARSE_HTLOCK_RANK        coarse_table_rwlock /* for use after hashtablex.h */
@@ -7826,7 +7852,7 @@ coarse_body_from_htable_entry(dcontext_t *dcontext, coarse_info_t *info,
 
 static void
 study_and_free_coarse_htable(coarse_info_t *info, coarse_table_t *htable,
-                             bool never_persisted _IF_DEBUG(char *name))
+                             bool never_persisted _IF_DEBUG(const char *name))
 {
     LOG(GLOBAL, LOG_FRAGMENT, 1, "Coarse %s %s hashtable stats:\n",
         info->module, name);

@@ -1,4 +1,5 @@
 /* **********************************************************
+ * Copyright (c) 2013 Google, Inc.  All rights reserved.
  * Copyright (c) 2007-2008 VMware, Inc.  All rights reserved.
  * **********************************************************/
 
@@ -247,7 +248,8 @@ BEGIN_MESSAGE_MAP(COptionsDlg, CDialog)
     // get current options string
     TCHAR path[MAX_PATH];
     int len = GetEnvironmentVariable(_T("DYNAMORIO_OPTIONS"), path, MAX_PATH);
-    if (len > 0)
+    assert(len <= MAX_PATH);
+    if (len > 0 && len <= MAX_PATH)
         m_opstring = path; // makes new storage, right?
     UpdateData(FALSE); // FALSE means set controls
 
@@ -285,8 +287,8 @@ void COptionsDlg::OnOK()
     UpdateData(TRUE); // TRUE means read from controls
         
     // set options string
-    int res = SetEnvironmentVariable(_T("DYNAMORIO_OPTIONS"), m_opstring);
-    assert(res != 0);
+    BOOL res = SetEnvironmentVariable(_T("DYNAMORIO_OPTIONS"), m_opstring);
+    assert(res);
 
     CDialog::OnOK();
 }
@@ -435,7 +437,7 @@ expand_ws_quotes(CString str, int &start, int &end)
     TCHAR msg[MAX_PATH];
     // this is independent of dialog box -- so grab string separately
     int len = GetEnvironmentVariable(_T("DYNAMORIO_OPTIONS"), msg, MAX_PATH);
-    if (len <= 0)
+    if (len == 0 || len > MAX_PATH)
         msg[0] = _T('\0');
     CString opstring = msg;
 
@@ -464,14 +466,15 @@ expand_ws_quotes(CString str, int &start, int &end)
                     if (res == IDYES) {
                         int start = (prev_pos - opstring.GetBuffer(0));
                         int end = (pos - opstring.GetBuffer(0));
+                        BOOL ok;
                         expand_ws_quotes(opstring, start, end);
                         opstring = opstring.Left(start) + 
                             opstring.Right(opstring.GetLength() - end);
                         // update pos
                         pos = opstring.GetBuffer(0) + start;
 
-                        res = SetEnvironmentVariable(_T("DYNAMORIO_OPTIONS"), opstring);
-                        assert(res != 0);
+                        ok = SetEnvironmentVariable(_T("DYNAMORIO_OPTIONS"), opstring);
+                        assert(ok);
                     }
                 }
             }

@@ -41,6 +41,7 @@
 #cmakedefine INTERNAL
 #cmakedefine DEBUG
 #cmakedefine DRGUI_DEMO
+#cmakedefine STATIC_LIBRARY
 
 /* target */
 #cmakedefine X64
@@ -61,9 +62,11 @@
 /* for use by developers */
 #cmakedefine KSTATS
 #cmakedefine CALLPROF
+#ifdef CALLPROF
+/* XXX: perhaps should rename CALLPROF cmake var to CALL_PROFILE */
+# define CALL_PROFILE
+#endif
 #cmakedefine LINKCOUNT
-#cmakedefine STANDALONE_UNIT_TEST
-#cmakedefine KEEP_SYMBOLS_FOR_LIBC_BACKTRACE
 #cmakedefine PARAMS_IN_REGISTRY
 
 /* when packaging */
@@ -93,6 +96,9 @@
 /* Issue 20: we need to know lib dirs for cross-arch execve */
 #define LIBDIR_X64 ${INSTALL_LIB_X64}
 #define LIBDIR_X86 ${INSTALL_LIB_X86}
+
+/* i#955: private loader search paths */
+#define DR_RPATH_SUFFIX "${DR_RPATH_SUFFIX}"
 
 /* dependent defines */
 /*

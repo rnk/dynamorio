@@ -1,5 +1,5 @@
 /* **********************************************************
- * Copyright (c) 2010-2012 Google, Inc.   All rights reserved.
+ * Copyright (c) 2010-2013 Google, Inc.   All rights reserved.
  * **********************************************************/
 
 /*
@@ -51,23 +51,44 @@ extern "C" {
  */
 /*@{*/ /* begin doxygen group */
 
+#ifndef STATIC_DRMGR_ONLY
+/* A client can use a static function like drmgr_decode_sysnum_from_wrapper
+ * directly, in which case, we allow the client to use following functions.
+ */
+
 /* drmgr replaces the bb event */
-#define dr_register_bb_event DO_NOT_USE_bb_event_USE_drmmgr_bb_events_instead
-#define dr_unregister_bb_event DO_NOT_USE_bb_event_USE_drmmgr_bb_events_instead
+# define dr_register_bb_event DO_NOT_USE_bb_event_USE_drmgr_bb_events_instead
+# define dr_unregister_bb_event DO_NOT_USE_bb_event_USE_drmgr_bb_events_instead
 
 /* drmgr replaces the tls field routines */
-#define dr_get_tls_field DO_NOT_USE_tls_field_USE_drmmgr_tls_field_instead
-#define dr_set_tls_field DO_NOT_USE_tls_field_USE_drmmgr_tls_field_instead
-#define dr_insert_read_tls_field DO_NOT_USE_tls_field_USE_drmmgr_tls_field_instead
-#define dr_insert_write_tls_field DO_NOT_USE_tls_field_USE_drmmgr_tls_field_instead
+# define dr_get_tls_field DO_NOT_USE_tls_field_USE_drmgr_tls_field_instead
+# define dr_set_tls_field DO_NOT_USE_tls_field_USE_drmgr_tls_field_instead
+# define dr_insert_read_tls_field DO_NOT_USE_tls_field_USE_drmgr_tls_field_instead
+# define dr_insert_write_tls_field DO_NOT_USE_tls_field_USE_drmgr_tls_field_instead
 
-/* drmgr replaces the thread init and exit event and pre-syscall event */
-#define dr_register_thread_init_event DO_NOT_USE_thread_event_USE_drmmgr_events_instead
-#define dr_unregister_thread_init_event DO_NOT_USE_thread_event_USE_drmmgr_events_instead
-#define dr_register_thread_exit_event DO_NOT_USE_thread_event_USE_drmmgr_events_instead
-#define dr_unregister_thread_exit_event DO_NOT_USE_thread_event_USE_drmmgr_events_instead
-#define dr_register_pre_syscall_event DO_NOT_USE_pre_syscall_USE_drmmgr_events_instead
-#define dr_unregister_pre_syscall_event DO_NOT_USE_pre_syscall_USE_drmmgr_events_instead
+/* drmgr replaces these events in order to provide ordering control */
+# define dr_register_thread_init_event DO_NOT_USE_thread_event_USE_drmgr_events_instead
+# define dr_unregister_thread_init_event DO_NOT_USE_thread_event_USE_drmgr_events_instead
+# define dr_register_thread_exit_event DO_NOT_USE_thread_event_USE_drmgr_events_instead
+# define dr_unregister_thread_exit_event DO_NOT_USE_thread_event_USE_drmgr_events_instead
+# define dr_register_pre_syscall_event DO_NOT_USE_pre_syscall_USE_drmgr_events_instead
+# define dr_unregister_pre_syscall_event DO_NOT_USE_pre_syscall_USE_drmgr_events_instead
+# define dr_register_post_syscall_event DO_NOT_USE_post_syscall_USE_drmgr_events_instead
+# define dr_unregister_post_syscall_event DO_NOT_USE_post_syscall_USE_drmgr_events_instead
+# define dr_register_module_load_event DO_NOT_USE_module_load_USE_drmgr_events_instead
+# define dr_unregister_module_load_event DO_NOT_USE_module_load_USE_drmgr_events_instead
+# define dr_register_module_unload_event DO_NOT_USE_module_unload_USE_drmgr_instead
+# define dr_unregister_module_unload_event DO_NOT_USE_module_unload_USE_drmgr_instead
+# define dr_register_signal_event DO_NOT_USE_signal_event_USE_drmgr_instead
+# define dr_unregister_signal_event DO_NOT_USE_signal_event_USE_drmgr_instead
+# define dr_register_exception_event DO_NOT_USE_exception_event_USE_drmgr_instead
+# define dr_unregister_exception_event DO_NOT_USE_exception_event_USE_drmgr_instead
+# define dr_register_restore_state_event DO_NOT_USE_restore_state_USE_drmgr_instead
+# define dr_unregister_restore_state_event DO_NOT_USE_restore_state_USE_drmgr_instead
+# define dr_register_restore_state_ex_event DO_NOT_USE_restore_state_ex_USE_drmgr_instead
+# define dr_unregister_restore_state_ex_event DO_NOT_USE_restore_state_ex_USE_drmgr_instead
+
+#endif /* !STATIC_DRMGR_ONLY */
 
 /***************************************************************************
  * TYPES
@@ -159,6 +180,15 @@ typedef struct _drmgr_priority_t {
     int priority;
 } drmgr_priority_t;
 
+/** Labels the current bb building phase */
+typedef enum {
+    DRMGR_PHASE_NONE,         /**< Not currently in a bb building event. */
+    DRMGR_PHASE_APP2APP,      /**< Currently in the app2app phase. */
+    DRMGR_PHASE_ANALYSIS,     /**< Currently in the analysis phase.. */
+    DRMGR_PHASE_INSERTION,    /**< Currently in the instrumentation insertion phase. */
+    DRMGR_PHASE_INSTRU2INSTRU,/**< Currently in the instru2instru phase. */
+} drmgr_bb_phase_t;
+
 /***************************************************************************
  * INIT
  */
@@ -166,8 +196,11 @@ typedef struct _drmgr_priority_t {
 DR_EXPORT
 /**
  * Initializes the drmgr extension.  Must be called prior to any of the
- * other routines, and should only be called once.
- * \return whether successful.  Will return false if called a second time.
+ * other routines.  Can be called multiple times (by separate components,
+ * normally) but each call must be paired with a corresponding call to
+ * drmgr_exit().
+ *
+ * \return whether successful.
  */
 bool
 drmgr_init(void);
@@ -367,6 +400,11 @@ drmgr_unregister_bb_instrumentation_ex_event(drmgr_app2app_ex_cb_t app2app_func,
                                              drmgr_insertion_cb_t insertion_func,
                                              drmgr_ilist_ex_cb_t instru2instru_func);
 
+DR_EXPORT
+/** Returns which bb phase is the current one, if any. */
+drmgr_bb_phase_t
+drmgr_current_bb_phase(void *drcontext);
+
 /***************************************************************************
  * TLS
  */
@@ -443,6 +481,24 @@ drmgr_insert_write_tls_field(void *drcontext, int idx,
 /***************************************************************************
  * CLS
  */
+
+/**
+ * Priority of drmgr instrumentation pass used to track CLS.  Users
+ * of drmgr can use the name DRMGR_PRIORITY_NAME_CLS in the
+ * drmgr_priority_t.before field or can use this numeric priority
+ * in the drmgr_priority_t.priority field to ensure proper
+ * instrumentation pass ordering.
+ */
+enum {
+    DRMGR_PRIORITY_INSERT_CLS   =  0, /**< Priority of CLS tracking */
+};
+
+/** Name of drmgr insert pass prioritiy for CLS tracking */
+#ifdef WINDOWS
+# define DRMGR_PRIORITY_NAME_CLS "drmgr_cls"
+#else
+# define DRMGR_PRIORITY_NAME_CLS NULL
+#endif
 
 DR_EXPORT
 /**
@@ -582,6 +638,17 @@ DR_EXPORT
 bool
 drmgr_pop_cls(void *drcontext);
 
+DR_EXPORT
+/**
+ * Returns the user-controlled callback-local-storage field for the
+ * given index, which was returned by drmgr_register_cls_field(), for
+ * the parent context (i.e., the context most recently pushed either
+ * by a Windows callback entry or a call to drmgr_push_cls()).  If
+ * there is no parent context, returns NULL.
+ */
+void *
+drmgr_get_parent_cls_field(void *drcontext, int idx);
+
 
 /***************************************************************************
  * INSTRUCTION NOTE FIELD
@@ -667,6 +734,19 @@ drmgr_register_pre_syscall_event(bool (*func)(void *drcontext, int sysnum));
 
 DR_EXPORT
 /**
+ * Registers a callback function for the pre-syscall event, which
+ * behaves just like DR's pre-syscall event
+ * dr_register_pre_syscall_event(), except that it is ordered according
+ * to \p priority.  A default priority of 0 is used for events registered
+ * via drmgr_register_pre_syscall_event().
+ * \return whether successful.
+ */
+bool
+drmgr_register_pre_syscall_event_ex(bool (*func)(void *drcontext, int sysnum),
+                                    drmgr_priority_t *priority);
+
+DR_EXPORT
+/**
  * Unregister a callback function for the pre-syscall event.
  * \return true if unregistration is successful and false if it is not
  * (e.g., \p func was not registered).
@@ -674,6 +754,244 @@ DR_EXPORT
 bool
 drmgr_unregister_pre_syscall_event(bool (*func)(void *drcontext, int sysnum));
 
+DR_EXPORT
+/**
+ * Registers a callback function for the post-syscall event, which
+ * behaves just like DR's post-syscall event
+ * dr_register_post_syscall_event().
+ * \return whether successful.
+ */
+bool
+drmgr_register_post_syscall_event(void (*func)(void *drcontext, int sysnum));
+
+DR_EXPORT
+/**
+ * Registers a callback function for the post-syscall event, which
+ * behaves just like DR's post-syscall event
+ * dr_register_post_syscall_event(), except that it is ordered according
+ * to \p priority.  A default priority of 0 is used for events registered
+ * via drmgr_register_post_syscall_event().
+ * \return whether successful.
+ */
+bool
+drmgr_register_post_syscall_event_ex(void (*func)(void *drcontext, int sysnum),
+                                    drmgr_priority_t *priority);
+
+DR_EXPORT
+/**
+ * Unregister a callback function for the post-syscall event.
+ * \return true if unregistration is successful and false if it is not
+ * (e.g., \p func was not registered).
+ */
+bool
+drmgr_unregister_post_syscall_event(void (*func)(void *drcontext, int sysnum));
+
+DR_EXPORT
+/**
+ * Registers a callback function for the module load event, which
+ * behaves just like DR's module load event
+ * dr_register_module_load_event().
+ * \return whether successful.
+ */
+bool
+drmgr_register_module_load_event(void (*func)(void *drcontext, const module_data_t *info,
+                                              bool loaded));
+
+DR_EXPORT
+/**
+ * Registers a callback function for the module load event, which
+ * behaves just like DR's module load event
+ * dr_register_module_load_event(), except that it is ordered according
+ * to \p priority.  A default priority of 0 is used for events registered
+ * via drmgr_register_module_load_event().
+ * \return whether successful.
+ */
+bool
+drmgr_register_module_load_event_ex(void (*func)
+                                    (void *drcontext, const module_data_t *info,
+                                     bool loaded),
+                                    drmgr_priority_t *priority);
+
+DR_EXPORT
+/**
+ * Unregister a callback function for the module load event.
+ * \return true if unregistration is successful and false if it is not
+ * (e.g., \p func was not registered).
+ */
+bool
+drmgr_unregister_module_load_event(void (*func)
+                                   (void *drcontext, const module_data_t *info,
+                                    bool loaded));
+
+DR_EXPORT
+/**
+ * Registers a callback function for the module unload event, which
+ * behaves just like DR's module unload event
+ * dr_register_module_unload_event().
+ * \return whether successful.
+ */
+bool
+drmgr_register_module_unload_event(void (*func)
+                                   (void *drcontext, const module_data_t *info));
+
+DR_EXPORT
+/**
+ * Registers a callback function for the module unload event, which
+ * behaves just like DR's module unload event
+ * dr_register_module_unload_event(), except that it is ordered according
+ * to \p priority.  A default priority of 0 is used for events registered
+ * via drmgr_register_module_unload_event().
+ * \return whether successful.
+ */
+bool
+drmgr_register_module_unload_event_ex(void (*func)
+                                      (void *drcontext, const module_data_t *info),
+                                      drmgr_priority_t *priority);
+
+DR_EXPORT
+/**
+ * Unregister a callback function for the module unload event.
+ * \return true if unregistration is successful and false if it is not
+ * (e.g., \p func was not registered).
+ */
+bool
+drmgr_unregister_module_unload_event(void (*func)
+                                     (void *drcontext, const module_data_t *info));
+
+#ifdef LINUX
+DR_EXPORT
+/**
+ * Registers a callback function for the signal event, which
+ * behaves just like DR's signal event dr_register_signal_event().
+ * \return whether successful.
+ */
+bool
+drmgr_register_signal_event(dr_signal_action_t (*func)
+                         (void *drcontext, dr_siginfo_t *siginfo));
+
+DR_EXPORT
+/**
+ * Registers a callback function for the signal event, which
+ * behaves just like DR's signal event dr_register_signal_event(),
+ * except that it is ordered according to \p priority.  A default
+ * priority of 0 is used for events registered via
+ * drmgr_register_signal_event().  Just like for DR, the first
+ * callback to return other than DR_SIGNAL_DELIVER will
+ * short-circuit event delivery to later callbacks.
+ * \return whether successful.
+ */
+bool
+drmgr_register_signal_event_ex(dr_signal_action_t (*func)
+                               (void *drcontext, dr_siginfo_t *siginfo),
+                               drmgr_priority_t *priority);
+
+DR_EXPORT
+/**
+ * Unregister a callback function for the signal event.
+ * \return true if unregistration is successful and false if it is not
+ * (e.g., \p func was not registered).
+ */
+bool
+drmgr_unregister_signal_event(dr_signal_action_t (*func)
+                              (void *drcontext, dr_siginfo_t *siginfo));
+#endif /* LINUX */
+
+#ifdef WINDOWS
+DR_EXPORT
+/**
+ * Registers a callback function for the exception event, which
+ * behaves just like DR's exception event dr_register_exception_event().
+ * \return whether successful.
+ */
+bool
+drmgr_register_exception_event(bool (*func)(void *drcontext, dr_exception_t *excpt));
+
+DR_EXPORT
+/**
+ * Registers a callback function for the exception event, which
+ * behaves just like DR's exception event dr_register_exception_event(),
+ * except that it is ordered according to \p priority.  A default
+ * priority of 0 is used for events registered via
+ * drmgr_register_exception_event().  Just like for DR, the first
+ * callback to return false will short-circuit event delivery to later
+ * callbacks.
+ * \return whether successful.
+ */
+bool
+drmgr_register_exception_event_ex(bool (*func)(void *drcontext, dr_exception_t *excpt),
+                                  drmgr_priority_t *priority);
+
+DR_EXPORT
+/**
+ * Unregister a callback function for the exception event.
+ * \return true if unregistration is successful and false if it is not
+ * (e.g., \p func was not registered).
+ */
+bool
+drmgr_unregister_exception_event(bool (*func)(void *drcontext, dr_exception_t *excpt));
+#endif /* WINDOWS */
+
+DR_EXPORT
+/**
+ * Registers a callback function for the restore state event, which
+ * behaves just like DR's restore state event dr_register_restore_state_event().
+ * \return whether successful.
+ */
+bool
+drmgr_register_restore_state_event(void (*func)
+                                   (void *drcontext, void *tag, dr_mcontext_t *mcontext,
+                                    bool restore_memory, bool app_code_consistent));
+
+DR_EXPORT
+/**
+ * Registers a callback function for the restore state extended event, which
+ * behaves just like DR's restore state event
+ * dr_register_restore_state_ex_event().
+ * \return whether successful.
+ */
+bool
+drmgr_register_restore_state_ex_event(bool (*func)(void *drcontext, bool restore_memory,
+                                                   dr_restore_state_info_t *info));
+
+DR_EXPORT
+/**
+ * Registers a callback function for the restore state extended event,
+ * which behaves just like DR's restore state event
+ * dr_register_restore_state_ex_event(), except that it is ordered
+ * according to \p priority among both extended and regular callbacks.
+ * A default priority of 0 is used for events registered via
+ * drmgr_register_restore_state_event() or
+ * drmgr_register_restore_state_ex_event().  Just like for DR, the
+ * first callback to return false will short-circuit event delivery to
+ * later callbacks.
+ * \return whether successful.
+ */
+bool
+drmgr_register_restore_state_ex_event_ex(bool (*func)(void *drcontext,
+                                                      bool restore_memory,
+                                                      dr_restore_state_info_t *info),
+                                         drmgr_priority_t *priority);
+
+DR_EXPORT
+/**
+ * Unregister a callback function for the restore state event.
+ * \return true if unregistration is successful and false if it is not
+ * (e.g., \p func was not registered).
+ */
+bool
+drmgr_unregister_restore_state_event(void (*func)
+                                     (void *drcontext, void *tag, dr_mcontext_t *mcontext,
+                                      bool restore_memory, bool app_code_consistent));
+
+DR_EXPORT
+/**
+ * Unregister a callback function for the restore state extended event.
+ * \return true if unregistration is successful and false if it is not
+ * (e.g., \p func was not registered).
+ */
+bool
+drmgr_unregister_restore_state_ex_event(bool (*func)(void *drcontext, bool restore_memory,
+                                                     dr_restore_state_info_t *info));
 
 /*@}*/ /* end doxygen group */
 

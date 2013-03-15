@@ -1,5 +1,5 @@
 # **********************************************************
-# Copyright (c) 2010-2012 Google, Inc.    All rights reserved.
+# Copyright (c) 2010-2013 Google, Inc.    All rights reserved.
 # **********************************************************
 
 # drutil: DynamoRIO Function Wrapping and Replacing Extension
@@ -27,7 +27,7 @@ cmake_minimum_required(VERSION 2.6)
 # SHARED is also required if multiple separate components all want to
 # use this same extension.
 option(DR_EXT_DRUTIL_STATIC "create drutil as a static, not shared, library (N.B.: ensure the LGPL license implications are acceptable for your tool, as well as ensuring no separately-linked components of your tool also use drutil, before enabling as a static library)")
-if (DR_EXT_DRUTIL_STATIC)
+if (DR_EXT_DRUTIL_STATIC OR STATIC_LIBRARY)
   set(libtype STATIC)
 else()
   set(libtype SHARED)
@@ -44,8 +44,7 @@ use_DynamoRIO_extension(drutil drmgr)
 if (UNIX)
   # static containers must be PIC to be linked into clients: else requires
   # relocations that run afoul of security policies, etc.
-  get_target_property(cur_flags drutil COMPILE_FLAGS)
-  set_target_properties(drutil PROPERTIES COMPILE_FLAGS "${cur_flags} -fPIC")
+  append_property_string(TARGET drutil COMPILE_FLAGS "-fPIC")
 endif (UNIX)
 # ensure we rebuild if includes change
 add_dependencies(drutil api_headers)
@@ -53,13 +52,11 @@ add_dependencies(drutil api_headers)
 if (WIN32 AND GENERATE_PDBS)
   # I believe it's the lack of CMAKE_BUILD_TYPE that's eliminating this?
   # In any case we make sure to add it (for release and debug, to get pdb):
-  get_target_property(cur_flags drutil LINK_FLAGS)
-  set_target_properties(drutil PROPERTIES LINK_FLAGS "${cur_flags} /debug")
+  append_property_string(TARGET drutil LINK_FLAGS "/debug")
 endif (WIN32 AND GENERATE_PDBS)
 
 # documentation is put into main DR docs/ dir
 
-export(TARGETS drutil FILE ${PROJECT_BINARY_DIR}/cmake/${exported_targets_name}.cmake
-  APPEND)
-install(TARGETS drutil EXPORT ${exported_targets_name} DESTINATION ${INSTALL_EXT_LIB})
-install(FILES drutil.h DESTINATION ${INSTALL_EXT_INCLUDE})
+DR_export_target(drutil)
+install_exported_target(drutil ${INSTALL_EXT_LIB})
+DR_install(FILES drutil.h DESTINATION ${INSTALL_EXT_INCLUDE})
